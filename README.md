@@ -6,7 +6,6 @@
 
 ![ALE report preview](https://raw.githubusercontent.com/CMG-GUTS/mllabiome/main/assets/report-preview-ale.png)
 
-
 Install is recommended with `uv`:
 
 ```bash
