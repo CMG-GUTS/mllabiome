@@ -1,0 +1,175 @@
+Name	Unnamed: 0	OTU	collection_date	host_bmi	host_age	host_sex	sex_flexibl	sample_type	host_psy	host_disease	host_ID	ID_flexibl	sample_storage_duration	sequencing_run	extraction_plate	author	host_subtype	Collection
+ERR3548959	24274	ASV5	2005-02-22	21.3294	51	male		stool		IBS	131	138	11	180216	27-1885	Hugerth	IBS-unspecified	1st
+ERR3549127	6711	ASV15	2006-10-13	25.2826	40	male	male	stool		Healthy	496	532	11	180316	27-1889	Hugerth	HC	1st
+ERR3549109	24256	ASV5	2006-09-12	22.4088	42	female	female	stool		Healthy	227	241	11	180316	27-1889	Hugerth	HC	1st
+ERR3549138	11636	ASV2	2006-04-25	25.7618	57	male	male	stool		Healthy	535	576	12	180406	27-2001	Hugerth	HC	1st
+ERR3549117	6652	ASV15	2006-10-05	21.9136	60	male	male	stool		Healthy	189	199	11	180316	27-1889	Hugerth	HC	1st
+ERR3549006	11980	ASV2	2006-01-17	19.2672	39	female	female	stool	mild depression,severe anxiety	Healthy	26	27	11	180216	27-1885	Hugerth	HC	1st
+ERR3549012	6343	ASV15	2006-02-28	18.9619	28	male	male	stool		IBS	17	18	11	180216	27-1885	Hugerth	IBS-unspecified	1st
+ERR3586200	11673	ASV2	2006-05	25.1486	29	female	female	stool	none	Healthy	487	523	10	180406	27-2001	Hugerth	HC	1st
+ERR3548993	11792	ASV2	2005-12-06	28.3675	53	male	male	stool		Healthy	674	725	11	180216	27-1885	Hugerth	HC	1st
+ERR3548946	370	ASV1	2005-05-31	25.0995	34	female	female	stool		Healthy	484	520	11	180202	27-1868	Hugerth	HC	1st
+ERR3586245	11870	ASV2	2006-06	20.1607	47	male	male	stool		Healthy	68	72	10	180406	27-2001	Hugerth	HC	1st
+ERR3549035	6311	ASV15	2006-03-10	25.2595	52	male	male	stool		Healthy	495	531	12	180223	27-1876	Hugerth	HC	1st
+ERR3586123	16702	ASV30	2006-01	24.1517	47	male	male	stool	none	Healthy	382	404	10	180406	27-2001	Hugerth	HC	1st
+ERR3549113	6563	ASV15	2006-08-31	25.8265	67	male	male	stool		Healthy	542	584	11	180316	27-1889	Hugerth	HC	1st
+ERR3549084	11903	ASV2	2006-10-10	30.2901	50	male	male	stool		IBS	721	777	11	180316	27-1881	Hugerth	IBS-unspecified	1st
+ERR3549086	11885	ASV2	2006-10-19	26.8274	58	male	male	stool		Healthy	602	650	11	180316	27-1881	Hugerth	HC	1st
+ERR3548979	11748	ASV2	2005-09-11	21.4619	34	female	female	stool		Healthy	143	152	11	180216	27-1885	Hugerth	HC	1st
+ERR3549004	6445	ASV15	2006-01-17	25.7117	41	female	female	stool		Healthy	530	572	11	180216	27-1885	Hugerth	HC	1st
+ERR3549016	24667	ASV5	2006-03-03	18.3768	30	female	female	stool		IBS	6	7	11	180216	27-1912	Hugerth	IBS-unspecified	1st
+ERR3549134	6635	ASV15	2002-10-29	26.5928	64	female	female	stool		Healthy	586	631	11	180316	27-1889	Hugerth	HC	1st
+ERR3549050	6342	ASV15	2006-03-28	26.2336	47	male	male	stool		Healthy	564	608	12	180223	27-1876	Hugerth	HC	1st
+ERR3549126	11644	ASV2	2006-10-10	23.9591	60	male	male	stool		Healthy	364	387	11	180316	27-1889	Hugerth	HC	1st
+ERR3549024	6331	ASV15	2006-05-09	22.1453	45	male	male	stool		Healthy	209	221	11	180223	27-1876	Hugerth	HC	1st
+ERR3549042	12045	ASV2	2006-04-06	23.5457	35	female	female	stool		Healthy	328	350	12	180223	27-1876	Hugerth	HC	1st
+ERR3548983	11597	ASV2	2006-04-21	32.872	62	male	male	stool		IBS	762	821	11	180216	27-1885	Hugerth	IBS-unspecified	1st
+ERR3548958	98	ASV1	2005-01-20	21.551	68	female	female	stool		Healthy	157	166	11	180216	27-1885	Hugerth	HC	1st
+ERR3549096	6741	ASV15	2006-08-22	23.4568	37	female	female	stool	severe anxiety	Healthy	319	341	11	180316	27-1881	Hugerth	HC	1st
+ERR3549071	12061	ASV2	2006-04-25	23.6712	59	female	female	stool		Healthy	344	366	12	180316	27-1881	Hugerth	HC	1st
+ERR3549091	11973	ASV2	2006-06-15	19.1512	20	male		stool		IBS	23	24	11	180316	27-1881	Hugerth	IBS-unspecified	1st
+ERR3548973	11758	ASV2	2005-06-20	21.9713	57	female	female	stool	mild anxiety	Healthy	195	205	11	180216	27-1885	Hugerth	HC	1st
+ERR3549011	11971	ASV2	2006-03-24	28.7274	32	female	female	stool		Healthy	692	746	11	180216	27-1885	Hugerth	HC	1st
+ERR3549052	11835	ASV2	2006-03-14	22.7244	45	female	female	stool	mild anxiety	IBS	261	278	12	180223	27-1876	Hugerth	IBS-unspecified	1st
+ERR3548980	11650	ASV2	2006-03-03	21.6721	63	female	female	stool		IBS	169	178	11	180216	27-1885	Hugerth	IBS-unspecified	1st
+ERR3549049	11888	ASV2	2006-03-03	22.3954	69	female	female	stool		Healthy	223	236	12	180223	27-1876	Hugerth	HC	1st
+ERR3586309	11608	ASV2	2006-09	20.4491	48	female	female	stool		IBS	78	83	10	180406	27-2001	Hugerth	IBS-unspecified	1st
+ERR3549080	6691	ASV15	2006-08-18	24.6914	57	male	male	stool		Healthy	444	474	11	180316	27-1881	Hugerth	HC	1st
+ERR3586192	11844	ASV2	2006-05	18.4013	46	female	female	stool	none	IBS	7	8	10	180406	27-2001	Hugerth	IBS-unspecified	1st
+ERR3548948	6702	ASV15	2006-03-27	21.2228	49	female	female	stool	severe depression	Healthy	120	128	11	180202	27-1868	Hugerth	HC	1st
+ERR3548960	21694	ASV43	2005-02-03	22.1297	45	male	male	stool		IBS	208	220	11	180216	27-1885	Hugerth	IBS-unspecified	1st
+ERR3586109	11928	ASV2	2006-03	26.8809	45	male	male	stool	none	Healthy	610	657	10	180216	27-1912	Hugerth	HC	1st
+ERR3548975	11821	ASV2	2005-06-30	27.3324	50	female	female	stool		Healthy	629	677	11	180216	27-1885	Hugerth	HC	1st
+ERR3548991	11649	ASV2	2005-11-15	24.9337	28	male	male	stool		Healthy	470	503	11	180216	27-1885	Hugerth	HC	1st
+ERR3549107	6572	ASV15	2006-10-05	24.841	68	female	female	stool		Healthy	464	496	11	180316	27-1889	Hugerth	HC	1st
+ERR3548978	6730	ASV15	2005-06-07	25.7122	45	male	male	stool	severe anxiety	Healthy	532	573	11	180216	27-1885	Hugerth	HC	1st
+ERR3586334	24605	ASV5	2006-10	28.7268	46	female	female	stool		Healthy	690	743	10	180406	27-2001	Hugerth	HC	1st
+ERR3548985	11721	ASV2	2005-10-25	21.4533	47	female	female	stool	mild anxiety	Healthy	140	149	11	180216	27-1885	Hugerth	HC	1st
+ERR3586076	6314	ASV15	2005-08	22.8625	28	female	female	stool		Healthy	272	290	11	180406	27-2001	Hugerth	HC	1st
+ERR3549069	12038	ASV2	2006-05-05	20.3052	62	female	female	stool	severe anxiety	Healthy	73	78	12	180316	27-1881	Hugerth	HC	1st
+ERR3549141	21551	ASV43	2006-09-05	24.8016	46	female	female	stool		IBS	457	489	11	180406	27-2001	Hugerth	IBS-unspecified	1st
+ERR3586276	11676	ASV2	2006-09	24.6537	48	male		stool	none	IBS	436	464	10	180406	27-2001	Hugerth	IBS-unspecified	1st
+ERR3549005	11997	ASV2	2006-01-31	19.052	57	female	female	stool		Healthy	19	21	11	180216	27-1885	Hugerth	HC	1st
+ERR3548981	11713	ASV2	2006-03-03	19.3792	22	male	male	stool		Healthy	29	30	11	180216	27-1885	Hugerth	HC	1st
+ERR3549000	12004	ASV2	2006-02-14	18.8324	66	female	female	stool		Healthy	15	16	11	180216	27-1885	Hugerth	HC	1st
+ERR3549116	6792	ASV15	2006-09-05	31.579	44	female	female	stool		Healthy	746	804	11	180316	27-1889	Hugerth	HC	1st
+ERR3548955	11828	ASV2	2004-12-09	24.6094	59	female	female	stool		Healthy	428	455	11	180202	27-1868	Hugerth	HC	1st
+ERR3548995	11855	ASV2	2005-12-13	19.487	33	male	male	stool		Healthy	33	35	11	180216	27-1885	Hugerth	HC	1st
+ERR3586302	6344	ASV15	2006-09	22.0581	53	female	female	stool		Healthy	202	212	10	180406	27-2001	Hugerth	HC	1st
+ERR3549140	24368	ASV5	2006-06-02	22.3958	45	female	female	stool		Healthy	224	237	11	180406	27-2001	Hugerth	HC	1st
+ERR3586264	11815	ASV2	2006-05	20.202	54	female	female	stool	none	Healthy	69	74	10	180406	27-2001	Hugerth	HC	1st
+ERR3548969	11633	ASV2	2005-09-01	23.2005	33	female	female	stool		Healthy	305	326	11	180216	27-1885	Hugerth	HC	1st
+ERR3549047	11825	ASV2	2006-03-17	27.102	53	male	male	stool		Healthy	618	666	12	180223	27-1876	Hugerth	HC	1st
+ERR3549053	15736	ASV28	2006-05-16	27.3356	70	male	male	stool		Healthy	630	678	12	180223	27-1876	Hugerth	HC	1st
+ERR3549098	20324	ASV4	2006-10-12	22.3214	45	female	female	stool		Healthy	221	234	11	180316	27-1881	Hugerth	HC	1st
+ERR3549003	12046	ASV2	2006-01-11	21.875	64	female	female	stool	mild anxiety	Healthy	188	198	11	180216	27-1885	Hugerth	HC	1st
+ERR3549027	11795	ASV2	2006-02-14	27.4348	66	male	male	stool		Healthy	634	682	12	180223	27-1876	Hugerth	HC	1st
+ERR3548990	6672	ASV15	2005-12-06	25.6611	31	male	male	stool		Healthy	525	565	11	180216	27-1885	Hugerth	HC	1st
+ERR3586074	11914	ASV2	2005-06	19.7055	23	female		stool	none	Healthy	43	45	11	180406	27-2001	Hugerth	HC	1st
+ERR3548951	11723	ASV2	2005-04-07	25.9455	27	male	male	stool		IBS	548	590	11	180202	27-1868	Hugerth	IBS-unspecified	1st
+ERR3549092	11996	ASV2	2006-06-09	20.7008	46	female	female	stool		Healthy	90	97	11	180316	27-1881	Hugerth	HC	1st
+ERR3549083	6800	ASV15	2006-06-13	32.0386	47	female	female	stool		IBS	750	809	11	180316	27-1881	Hugerth	IBS-unspecified	1st
+ERR3548966	6567	ASV15	2005-04-19	23.1206	47	female	female	stool	severe depression,mild anxiety	Healthy	300	321	11	180216	27-1885	Hugerth	HC	1st
+ERR3549039	11872	ASV2	2006-05-30	25.8806	56	female	female	stool	mild depression	Healthy	545	587	12	180223	27-1876	Hugerth	HC	1st
+ERR3586255	58	ASV1	2006-08	24.9108	49	female	female	stool		Healthy	466	498	10	180406	27-2001	Hugerth	HC	1st
+ERR3549072	12043	ASV2	2006-05-05	21.0373	54	male	male	stool		Healthy	106	113	12	180316	27-1881	Hugerth	HC	1st
+ERR3548984	11698	ASV2	2005-10-04	20.2848	26	male	male	stool	severe depression,mild anxiety	Healthy	72	77	11	180216	27-1885	Hugerth	HC	1st
+ERR3548952	11785	ASV2	2005-02-17	24.4898	63	female		stool	mild anxiety	IBS	416	444	11	180202	27-1868	Hugerth	IBS-unspecified	1st
+ERR3548996	6471	ASV15	2006-03-10	26.8809	45	female	female	stool		Healthy	609	658	11	180216	27-1885	Hugerth	HC	1st
+ERR3549001	12067	ASV2	2006-03-02	21.3039	50	female	female	stool		Healthy	128	136	11	180216	27-1885	Hugerth	HC	1st
+ERR3549026	11934	ASV2	2006-03-14	31.0559	68	male	male	stool	mild anxiety	Healthy	741	799	11	180223	27-1876	Hugerth	HC	1st
+ERR3549015	11891	ASV2	2006-03-03	25.464	55	female	female	stool		Healthy	511	549	11	180216	27-1912	Hugerth	HC	1st
+ERR3549021	11964	ASV2	2006-03-31	23.4568	47	female	female	stool		Healthy	321	343	11	180223	27-1876	Hugerth	HC	1st
+ERR3549095	11960	ASV2	2006-09-01	21.4844	32	male	male	stool	severe depression,severe anxiety	IBS	149	158	11	180316	27-1881	Hugerth	IBS-unspecified	1st
+ERR3549010	12057	ASV2	2006-04-24	23.7387	50	female	female	stool	mild anxiety	IBS	348	371	11	180216	27-1885	Hugerth	IBS-unspecified	1st
+ERR3549101	6665	ASV15	2006-10-05	22.0384	41	female	female	stool		Healthy	197	207	11	180316	27-1889	Hugerth	HC	1st
+ERR3549079	6628	ASV15	2006-06-05	24.8016	58	male	male	stool		IBS	458	490	12	180316	27-1881	Hugerth	IBS-unspecified	1st
+ERR3549007	6431	ASV15	2006-02-07	20.0288	53	male	male	stool		Healthy	56	60	11	180216	27-1885	Hugerth	HC	1st
+ERR3549090	11950	ASV2	2006-09-12	23.7955	35	female	female	stool	mild anxiety	IBS	352	375	11	180316	27-1881	Hugerth	IBS-unspecified	1st
+ERR3549056	21635	ASV43	2006-04-28	26.1719	38	male	male	stool		Healthy	561	605	11	180302	27-1868	Hugerth	HC	1st
+ERR3586041	12031	ASV2	2005-03	19.433	26	female	female	stool		IBS	30	31	11	180406	27-2001	Hugerth	IBS-unspecified	1st
+ERR3549073	12066	ASV2	2006-09-08	27.1314	60	male	male	stool		IBS	619	667	12	180316	27-1881	Hugerth	IBS-unspecified	1st
+ERR3549023	11906	ASV2	2006-03-21	26.8745	53	female	female	stool		Healthy	606	654	11	180223	27-1876	Hugerth	HC	1st
+ERR3548977	11705	ASV2	2005-07-11	19.1598	68	male	male	stool		Healthy	24	25	11	180216	27-1885	Hugerth	HC	1st
+ERR3549041	11995	ASV2	2006-02-28	33.2031	65	female	female	stool	mild anxiety	Healthy	764	823	12	180223	27-1876	Hugerth	HC	1st
+ERR3549040	57	ASV1	2006-09-29	28.2284	39	male	male	stool		Healthy	666	717	12	180223	27-1876	Hugerth	HC	1st
+ERR3548976	11642	ASV2	2005-09-06	32.133	24	male	male	stool		Healthy	751	810	11	180216	27-1885	Hugerth	HC	1st
+ERR3586185	11776	ASV2	2006-09	26.2985	41	male		stool	mild anxiety	Healthy	570	614	10	180406	27-2001	Hugerth	HC	1st
+ERR3549017	21855	ASV43	2006-05-04	21.1073	47	female	female	stool		Healthy	110	117	11	180223	27-1876	Hugerth	HC	1st
+ERR3549051	11772	ASV2	2006-09-14	31.6374	31	female	female	stool		Healthy	749	808	12	180223	27-1876	Hugerth	HC	1st
+ERR3586162	255	ASV1	2006-03	21.7079	57	female		stool	mild depression	IBS	173	182	10	180406	27-2001	Hugerth	IBS-unspecified	1st
+ERR3549094	11897	ASV2	2006-09-07	27.4286	48	male	male	stool		IBS	633	681	11	180316	27-1881	Hugerth	IBS-unspecified	1st
+ERR3549106	6549	ASV15	2006-08-18	23.4236	52	female	female	stool	severe anxiety	Healthy	314	336	11	180316	27-1889	Hugerth	HC	1st
+ERR3549074	11924	ASV2	2006-08-25	23.2254	45	male	male	stool		IBS	306	327	12	180316	27-1881	Hugerth	IBS-unspecified	1st
+ERR3549064	12060	ASV2	2006-04-21	25.7552	63	male	male	stool	mild depression,mild anxiety	Healthy	534	575	12	180316	27-1881	Hugerth	HC	1st
+ERR3549133	11770	ASV2	2002-12-03	22.9481	68	male	male	stool		Healthy	281	301	11	180316	27-1889	Hugerth	HC	1st
+ERR3549045	11762	ASV2	2006-05-19	25.8265	51	female	female	stool		Healthy	540	582	12	180223	27-1876	Hugerth	HC	1st
+ERR3586357	147	ASV1	2006-09	25.1532	69	female		stool	mild anxiety	Healthy	490	526	10	180406	27-2001	Hugerth	HC	1st
+ERR3549008	12052	ASV2	2006-01-26	19.8347	49	female	female	stool		IBS	50	54	11	180216	27-1885	Hugerth	IBS-unspecified	1st
+ERR3549068	12042	ASV2	2006-06-01	21.4844	59	male	male	stool	mild depression	Healthy	151	160	11	180316	27-1881	Hugerth	HC	1st
+ERR3549087	11908	ASV2	2006-06-16	24.6097	43	male	male	stool	mild depression	Healthy	430	457	11	180316	27-1881	Hugerth	HC	1st
+ERR3548963	6620	ASV15	2005-04-11	26.5625	54	female	female	stool		Healthy	581	626	11	180216	27-1885	Hugerth	HC	1st
+ERR3548953	6727	ASV15	2005-02-22	23.5883	41	male	male	stool		Healthy	336	358	11	180202	27-1868	Hugerth	HC	1st
+ERR3549063	11578	ASV2	2006-05-12	24.0569	64	male	male	stool	severe depression,severe anxiety	IBS	373	396	12	180316	27-1881	Hugerth	IBS-unspecified	1st
+ERR3549025	11911	ASV2	2006-04-28	26.8785	40	female	female	stool	mild depression,mild anxiety	Healthy	608	656	11	180223	27-1876	Hugerth	HC	1st
+ERR3549135	11693	ASV2	2003-07-08	24.3025	38	male	male	stool		IBS	400	425	11	180316	27-1889	Hugerth	IBS-unspecified	1st
+ERR3586320	203	ASV1	2006-08	24.0493	46	male		stool	severe anxiety	Healthy	372	394	10	180406	27-2001	Hugerth	HC	1st
+ERR3549108	6675	ASV15	2006-08-25	18.8707	69	female	female	stool		IBS	16	17	11	180316	27-1889	Hugerth	IBS-unspecified	1st
+ERR3549002	12009	ASV2	2006-01-31	21.2953	61	female	female	stool		Healthy	127	135	11	180216	27-1885	Hugerth	HC	1st
+ERR3549125	11703	ASV2	2006-09-15	26.6436	65	male	male	stool		Healthy	589	634	11	180316	27-1889	Hugerth	HC	1st
+ERR3548968	11570	ASV2	2005-04-21	18.1138	56	male	male	stool	none	Healthy	4	5	11	180216	27-1885	Hugerth	HC	1st
+ERR3549114	11569	ASV2	2006-10-19	27.3588	34	male	male	stool		IBS	631	679	11	180316	27-1889	Hugerth	IBS-unspecified	1st
+ERR3549032	6372	ASV15	2006-02-17	18.3655	38	male	male	stool		IBS	5	6	12	180223	27-1876	Hugerth	IBS-unspecified	1st
+ERR3549044	11942	ASV2	2006-04-21	19.9432	44	male	male	stool	mild anxiety	Healthy	52	56	12	180223	27-1876	Hugerth	HC	1st
+ERR3549059	11722	ASV2	2006-03-24	22.448	42	male	male	stool		Healthy	228	242	12	180316	27-1881	Hugerth	HC	1st
+ERR3549029	11858	ASV2	2006-04-04	32.8473	40	female	female	stool	severe depression,mild anxiety	Healthy	760	819	12	180223	27-1876	Hugerth	HC	1st
+ERR3548982	11614	ASV2	2005-11-01	22.8774	41	female	female	stool	severe anxiety	Healthy	273	292	11	180216	27-1885	Hugerth	HC	1st
+ERR3549078	6565	ASV15	2006-09-29	21.3593	53	female	female	stool	severe anxiety	Healthy	136	143	12	180316	27-1881	Hugerth	HC	1st
+ERR3548988	6609	ASV15	2005-11-24	25.2595	51	male	male	stool	mild anxiety	Healthy	494	530	11	180216	27-1885	Hugerth	HC	1st
+ERR3549088	11887	ASV2	2006-09-05	26.4463	46	female	female	stool		Healthy	576	621	11	180316	27-1881	Hugerth	HC	1st
+ERR3548972	62	ASV1	2005-07-01	25.7657	68	female	female	stool		IBS	536	577	11	180216	27-1885	Hugerth	IBS-unspecified	1st
+ERR3549018	11838	ASV2	2006-04-11	18.5901	40	female	female	stool		Healthy	9	10	11	180223	27-1876	Hugerth	HC	1st
+ERR3549020	24587	ASV5	2006-03-14	19.1358	59	male	male	stool		Healthy	21	23	11	180223	27-1876	Hugerth	HC	1st
+ERR3548961	11677	ASV2	2005-02-22	24.2215	28	female	female	stool	severe anxiety	IBS	397	422	11	180216	27-1885	Hugerth	IBS-unspecified	1st
+ERR3548997	6494	ASV15	2006-03-21	20.9024	32	male	male	stool		Healthy	98	105	11	180216	27-1885	Hugerth	HC	1st
+ERR3586300	11603	ASV2	2006-10	34.0204	49	female	female	stool	none	Healthy	773	833	10	180406	27-2001	Hugerth	HC	1st
+ERR3549121	4	ASV1	2006-09-22	25.5354	40	male	male	stool	mild depression	Healthy	517	556	11	180316	27-1889	Hugerth	HC	1st
+ERR3549120	11816	ASV2	2006-09-01	26.309	67	female	female	stool	mild depression	Healthy	571	616	11	180316	27-1889	Hugerth	HC	1st
+ERR3549031	11920	ASV2	2006-05-05	29.0548	33	female	female	stool	severe depression,severe anxiety	IBS	701	756	12	180223	27-1876	Hugerth	IBS-unspecified	1st
+ERR3549081	11998	ASV2	2006-05-18	32.5577	59	male	male	stool		Healthy	758	817	11	180316	27-1881	Hugerth	HC	1st
+ERR3548965	6625	ASV15	2005-03-15	20.3383	28	female	female	stool	none	IBS	75	80	11	180216	27-1885	Hugerth	IBS-unspecified	1st
+ERR3549105	11727	ASV2	2006-09-07	40.1547	43	female	female	stool		Healthy	790	853	11	180316	27-1889	Hugerth	HC	1st
+ERR3586259	11873	ASV2	2006-05	22.9854	51	female		stool	none	Healthy	286	306	10	180406	27-2001	Hugerth	HC	1st
+ERR3549111	6639	ASV15	2006-09-14	23.9395	48	female	female	stool		Healthy	362	385	11	180316	27-1889	Hugerth	HC	1st
+ERR3549058	11659	ASV2	2006-04-28	25.6173	51	male	male	stool		Healthy	522	562	12	180316	27-1881	Hugerth	HC	1st
+ERR3549060	20024	ASV4	2006-03-28	26.5832	65	female	female	stool		Healthy	585	630	12	180316	27-1881	Hugerth	HC	1st
+ERR3549009	12047	ASV2	2006-02-17	29.2184	58	female	female	stool		IBS	708	763	11	180216	27-1885	Hugerth	IBS-unspecified	1st
+ERR3549043	11879	ASV2	2006-03-24	19.3213	26	male	male	stool		Healthy	28	29	12	180223	27-1876	Hugerth	HC	1st
+ERR3549037	11809	ASV2	2006-03-03	23.0518	45	female	female	stool		IBS	293	313	12	180223	27-1876	Hugerth	IBS-unspecified	1st
+ERR3549115	11806	ASV2	2006-10-10	28.7268	67	female	female	stool	mild anxiety	Healthy	691	745	11	180316	27-1889	Hugerth	HC	1st
+ERR3549122	67	ASV1	2006-09-08	26.7755	57	female	female	stool	mild anxiety	IBS	599	647	11	180316	27-1889	Hugerth	IBS-unspecified	1st
+ERR3548967	11749	ASV2	2005-04-19	21.9774	43	female	female	stool		Healthy	196	206	11	180216	27-1885	Hugerth	HC	1st
+ERR3549123	11680	ASV2	2006-10-13	21.1463	41	male	male	stool		IBS	113	121	11	180316	27-1889	Hugerth	IBS-unspecified	1st
+ERR3549119	11874	ASV2	2006-10-03	19.8352	56	female	female	stool		Healthy	51	55	11	180316	27-1889	Hugerth	HC	1st
+ERR3549033	11925	ASV2	2006-03-23	25.0298	43	female	female	stool	mild depression,severe anxiety	Healthy	477	512	12	180223	27-1876	Hugerth	HC	1st
+ERR3548964	11802	ASV2	2005-05-24	22.9591	54	female	female	stool		Healthy	283	303	11	180216	27-1885	Hugerth	HC	1st
+ERR3548987	6546	ASV15	2005-10-18	22.1607	33	male	male	stool	mild anxiety	Healthy	211	224	11	180216	27-1885	Hugerth	HC	1st
+ERR3586190	11839	ASV2	2006-05	18.4013	46	female	female	stool	none	IBS	7	8	10	180216	27-1885	Hugerth	IBS-unspecified	1st
+ERR3586196	11847	ASV2	2006-05	24.8163	47	male	male	stool	none	Healthy	461	492	10	180216	27-1885	Hugerth	HC	1st
+ERR3549112	11619	ASV2	2006-09-07	21.7051	67	male	male	stool		Healthy	172	181	11	180316	27-1889	Hugerth	HC	1st
+ERR3549077	11987	ASV2	2006-08-24	25.5354	48	female	female	stool		Healthy	518	557	11	180316	27-1881	Hugerth	HC	1st
+ERR3549082	20419	ASV4	2006-08-25	23.4236	56	male	male	stool		Healthy	315	337	11	180316	27-1881	Hugerth	HC	1st
+ERR3549139	11657	ASV2	2006-06-16	24.8591	61	female	female	stool	severe anxiety	Healthy	465	497	12	180406	27-2001	Hugerth	HC	1st
+ERR3586108	11866	ASV2	2005-11	24.0317	32	male	male	stool	severe anxiety	Healthy	368	390	11	180316	27-1881	Hugerth	HC	1st
+ERR3586184	11955	ASV2	2006-09	26.2985	41	female		stool	none	Healthy	569	614	10	180216	27-1885	Hugerth	HC	1st
+ERR3586377	11993	ASV2	2006-10	21.3599	67	female	female	stool	none	Healthy	137	144	10	180223	27-1876	Hugerth	HC	1st
+ERR3586075	11977	ASV2	2005-08	22.8625	28	female	female	stool		Healthy	272	290	11	180316	27-1881	Hugerth	HC	1st
+ERR3586330	12018	ASV2	2006-09	20.0474	43	female	female	stool	none	IBS	58	62	10	180406	27-2001	Hugerth	IBS-unspecified	1st
+ERR3586199	11731	ASV2	2006-05	25.1486	29	female	female	stool	none	Healthy	487	523	10	180216	27-1885	Hugerth	HC	1st
+ERR3586285	11699	ASV2	2006-08	28.089	39	male		stool	none	Healthy	662	712	10	180406	27-2001	Hugerth	HC	1st
+ERR3586195	6337	ASV15	2006-04	24.7721	38	male	male	stool	none	IBS	450	480	10	180216	27-1912	Hugerth	IBS-unspecified	1st
+ERR3586084	11982	ASV2	2006-04	29.0859	54	male		stool	mild anxiety, severe depression	Healthy	707	761	10	180406	27-2001	Hugerth	HC	1st
+ERR3586161	192	ASV1	2006-03	21.7079	57	male		stool	none	IBS	174	182	10	180216	27-1885	Hugerth	IBS-unspecified	1st
+ERR3586291	11639	ASV2	2006-06	27.4348	69	female	female	stool		Healthy	635	683	10	180406	27-2001	Hugerth	HC	1st
+ERR3586146	12023	ASV2	2006-02	25.8806	50	male	male	stool	none	Healthy	544	585	10	180316	27-1881	Hugerth	HC	1st
+ERR3586191	11781	ASV2	2006-05	18.4013	46	female	female	stool	none	IBS	7	8	10	180302	27-1885	Hugerth	IBS-unspecified	1st

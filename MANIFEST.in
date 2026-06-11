@@ -1,0 +1,13 @@
+include README.md
+include LICENSE
+include pyproject.toml
+include .gitignore
+recursive-include tests *.py
+include mllabiome/py.typed
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude .DS_Store
+global-exclude ._* 
+prune build
+prune dist
+prune *.egg-info
