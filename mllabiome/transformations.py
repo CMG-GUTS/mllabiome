@@ -14,20 +14,14 @@ from .utils import _as_float_matrix, _clr, _finite, _relative
 
 @dataclass(frozen=True)
 class TransformationLabel:
-    """Operational label for one abundance transformation.
-
-    ``key`` is the implementation identifier used in configuration and result
-    files. ``abbreviation`` is the compact label used in tables and figures.
-    No method prose is stored in the package.
-    """
-
     key: str
     abbreviation: str
     aliases: tuple[str, ...] = ()
 
 
 TRANSFORMATION_LABELS: tuple[TransformationLabel, ...] = (
-    TransformationLabel("none", "RA", ("ra", "relative", "relative_abundance")),
+    TransformationLabel("identity", "Identity", ("raw", "unchanged")),
+    TransformationLabel("relative_abundance", "RA", ("none", "ra", "relative")),
     TransformationLabel("binary", "P/A", ("presence_absence", "pa")),
     TransformationLabel("sqrt", r"$\sqrt{x}$", ("sqrt_abundance",)),
     TransformationLabel("hellinger", "Hellinger"),
@@ -62,7 +56,7 @@ TRANSFORMATION_LABELS: tuple[TransformationLabel, ...] = (
     TransformationLabel("robust", "Robust", ("robust_z",)),
 )
 
-# Backward-compatible internal alias: this is label metadata only.
+
 TRANSFORMATION_SPACE = TRANSFORMATION_LABELS
 
 _TRANSFORMATION_LABEL_BY_KEY: dict[str, TransformationLabel] = {}
@@ -74,7 +68,7 @@ for _label in TRANSFORMATION_LABELS:
 
 
 def transformation_label(name: str) -> TransformationLabel:
-    """Return the operational display label for an abundance transformation."""
+
     key = str(name).strip().lower()
     label = _TRANSFORMATION_LABEL_BY_KEY.get(key)
     if label is not None:
@@ -83,7 +77,7 @@ def transformation_label(name: str) -> TransformationLabel:
 
 
 def transformation_space_table() -> pd.DataFrame:
-    """Return implementation keys and figure abbreviations for transformations."""
+
     return pd.DataFrame(
         [
             {
@@ -98,14 +92,14 @@ def transformation_space_table() -> pd.DataFrame:
 
 
 class Transform:
-    """Abundance-transformation definition with compact display metadata.
 
-    ``Transformation(name)`` uses a provided transformation.
-    ``Transformation(name, fn)`` applies ``fn(X)`` independently to train and test.
-    ``Transformation(name, fn, True)`` applies ``fn(X_train, X_test)`` so fold-fitted
-    statistics are estimated only from the training fold and then applied to the
-    validation/test fold.
-    """
+
+
+
+
+
+
+
 
     __slots__ = ("name", "_fn", "_is_bw", "abbreviation")
 
@@ -116,11 +110,12 @@ class Transform:
         is_bw: bool = False,
         abbreviation: str | None = None,
     ):
-        self.name = str(name)
+        requested_name = str(name)
+        self.name = transformation_label(requested_name).key
         if fn is None:
             provided = {t.name: t for t in build_count_transformations(include_inactive=True)}
             if self.name not in provided:
-                raise KeyError(f"Unknown abundance transformation {self.name!r}. Provide a callable for a custom transformation.")
+                raise KeyError(f"Unknown abundance transformation {requested_name!r}. Provide a callable for a custom transformation.")
             base = provided[self.name]
             fn = base._fn
             is_bw = base._is_bw
@@ -146,18 +141,23 @@ _Transformation = Transform
 
 
 def build_count_transformations(*, include_inactive: bool = True) -> list[Transformation]:
-    """Return library-provided abundance transformations as editable entries.
 
-    The returned objects use ``Transformation(name, function, paired)`` entries
-    and carry compact figure labels. Sweep configs can copy this list
-    and comment/uncomment entries directly.
-    """
+
+
+
+
+
     T = Transformation
 
     def _mr_local(X: np.ndarray, eps: float = 1e-10) -> np.ndarray:
         out = np.asarray(X, dtype=np.float64).copy()
         out[out <= 0] = eps
         return out
+
+    def identity_(x):
+
+
+        return _as_float_matrix(x).astype(np.float32, copy=False)
 
     def _ra(x):
         return _relative(x)
@@ -418,7 +418,8 @@ def build_count_transformations(*, include_inactive: bool = True) -> list[Transf
         return _i(tr), _i(te)
 
     all_items = [
-        T("none", _ra),
+        T("identity", identity_),
+        T("relative_abundance", _ra),
         T("binary", binary_),
         T("sqrt", sqrt_),
         T("hellinger", hellinger_),
@@ -458,10 +459,10 @@ def build_count_transformations(*, include_inactive: bool = True) -> list[Transf
 
 
 class CountTransformation:
-    """Fold-fitted count transformation."""
+
 
     def __init__(self, name: str, pseudo_count: float = 1e-6, random_state: int = 42):
-        self.name = str(name)
+        self.name = transformation_label(str(name)).key
         self.pseudo_count = float(pseudo_count)
         self.random_state = int(random_state)
         self._estimator: Any | None = None
@@ -489,7 +490,9 @@ class CountTransformation:
     def apply(self, X: np.ndarray) -> np.ndarray:
         X = _as_float_matrix(X)
         kind = self.name.lower()
-        if kind in {"none", "raw", "relative", "relative_abundance"}:
+        if kind in {"identity", "raw", "unchanged"}:
+            out = X
+        elif kind in {"relative_abundance", "none", "relative"}:
             out = _relative(X)
         elif kind in {"log", "log1p"}:
             out = np.log1p(np.clip(_relative(X), 0.0, None))
@@ -516,7 +519,7 @@ class CountTransformation:
         return _finite(out).astype(np.float32, copy=False)
 
     def apply_pair(self, X_tr: np.ndarray, X_te: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Fit on the training matrix, then apply to train and held-out matrices."""
+
         self.fit(X_tr)
         return self.apply(X_tr), self.apply(X_te)
 
@@ -528,20 +531,22 @@ class CountTransformation:
 
 def _count_transformation_name(item: Any) -> str:
     if isinstance(item, Transform):
-        return item.name
-    if hasattr(item, "name") and hasattr(item, "apply"):
-        return str(getattr(item, "name"))
-    return item if isinstance(item, str) else str(item[0])
+        name = item.name
+    elif hasattr(item, "name") and hasattr(item, "apply"):
+        name = str(getattr(item, "name"))
+    else:
+        name = item if isinstance(item, str) else str(item[0])
+    return transformation_label(str(name)).key
 
 
 def _count_transformation_spec(item: Any) -> tuple[str, Any | None]:
     if isinstance(item, Transform):
-        return item.name, item
+        return transformation_label(item.name).key, item
     if hasattr(item, "name") and hasattr(item, "apply"):
-        return str(getattr(item, "name")), item
+        return transformation_label(str(getattr(item, "name"))).key, item
     if isinstance(item, tuple):
-        return str(item[0]), item[1]
-    return str(item), None
+        return transformation_label(str(item[0])).key, item[1]
+    return transformation_label(str(item)).key, None
 
 
 def _count_transformation_reporting_fields(item: Any) -> dict[str, str]:
@@ -557,10 +562,10 @@ def _count_transformation_reporting_fields(item: Any) -> dict[str, str]:
 
 
 class CountTransformationAdapter:
-    """Fold-fitted adapter for built-in and user-defined count transformations."""
+
 
     def __init__(self, name: str, spec: Any = None, *, random_state: int = 42):
-        self.name = str(name)
+        self.name = transformation_label(str(name)).key
         self.spec = spec
         self.random_state = int(random_state)
         self.obj: Any | None = None
@@ -599,7 +604,7 @@ class CountTransformationAdapter:
         )
 
     def apply_pair(self, X_tr: np.ndarray, X_te: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Apply a transformation to a train/test pair without substitution."""
+
         if isinstance(self.spec, Transform) or (hasattr(self.spec, "name") and hasattr(self.spec, "apply")):
             a, b = self.spec.apply(_as_float_matrix(X_tr), _as_float_matrix(X_te))
             return _finite(a).astype(np.float32, copy=False), _finite(b).astype(np.float32, copy=False)
@@ -644,16 +649,18 @@ def _count_transformation_factory(
     item: Any, *, random_state: int
 ) -> tuple[str, Callable[[], CountTransformationAdapter]]:
     if isinstance(item, Transform) or (hasattr(item, "name") and hasattr(item, "apply")):
-        name = str(getattr(item, "name"))
-        return name, lambda item=item, random_state=random_state: CountTransformationAdapter(
+        name = transformation_label(str(getattr(item, "name"))).key
+        return name, lambda item=item, name=name, random_state=random_state: CountTransformationAdapter(
             name, item, random_state=random_state
         )
     if isinstance(item, tuple):
-        name, spec = item
-        return str(name), lambda name=name, spec=spec, random_state=random_state: CountTransformationAdapter(
-            str(name), spec, random_state=random_state
+        raw_name, spec = item
+        name = transformation_label(str(raw_name)).key
+        return name, lambda name=name, spec=spec, random_state=random_state: CountTransformationAdapter(
+            name, spec, random_state=random_state
         )
-    return str(item), lambda item=item, random_state=random_state: CountTransformationAdapter(
-        str(item), random_state=random_state
+    name = transformation_label(str(item)).key
+    return name, lambda name=name, random_state=random_state: CountTransformationAdapter(
+        name, random_state=random_state
     )
 

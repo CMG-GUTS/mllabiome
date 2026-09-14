@@ -63,7 +63,6 @@ def _rel(path: Path, start: Path) -> str:
 
 
 def _normalise_svg_for_report(svg: str) -> str:
-    """Return inline SVG content for HTML report embedding."""
     return svg
 
 def _fig(stem_or_path: Path, report_dir: Path, caption: str = "") -> str:
@@ -147,7 +146,7 @@ def _pct_cell(mean: Any, std: Any, *, bold: bool = False, html_mode: bool = Fals
     if not np.isfinite(m):
         body = "—" if html_mode else r"--"
         return body
-    # Metrics are stored as fractions. Report as percentages.
+
     body = f"{100*m:.2f}"
     if np.isfinite(s):
         sd = f"{100*s:.2f}" if html_mode else f"{100*s:05.2f}"
@@ -315,18 +314,19 @@ def _strategy_rows(root: Path) -> list[dict[str, Any]]:
             return sub.iloc[0].to_dict()
 
         sort_col = "inner_nMCC_mean" if "inner_nMCC_mean" in base.columns else "outer_nMCC_mean"
-        learner = base.get("learner", pd.Series([], dtype=str)).astype(str)
-        transform = base.get("count_transformation", pd.Series([], dtype=str)).astype(str)
+        learner = base.get("learner", pd.Series("", index=base.index, dtype=str)).astype(str)
+        transform = base.get("count_transformation", pd.Series("", index=base.index, dtype=str)).astype(str)
+        resolution = base.get("resolution", pd.Series("", index=base.index, dtype=str)).astype(str)
 
         automl_pool = base[
             learner.str.contains("FLAML|AutoML", case=False, regex=True).fillna(False)
-            & transform.str.fullmatch("none", case=False).fillna(False)
+            & transform.str.fullmatch("relative_abundance", case=False).fillna(False)
         ].copy()
-        # Strict AutoML baseline: only report FLAML/AutoML when raw-abundance
-        # results exist at the deepest available single rank in
-        # strain -> species -> genus order.  Do not fall back to a different
-        # transformation or multi-rank representation, because that would make
-        # the AutoML row incomparable to the configured baseline definition.
+
+
+
+
+
         automl = _pick_deepest_single_rank(automl_pool, sort_col=sort_col)
         if automl:
             by_strategy["AutoML"] = {"Strategy": "AutoML", "source": "mpma", **automl}
@@ -339,16 +339,25 @@ def _strategy_rows(root: Path) -> list[dict[str, Any]]:
         if baseline:
             by_strategy["Baseline RF"] = {"Strategy": "Baseline RF", "source": "mpma", **baseline}
 
+        siamcat = _pick(
+            learner.str.fullmatch("SIAMCAT", case=False).fillna(False)
+            & transform.str.fullmatch("identity", case=False).fillna(False)
+            & resolution.str.fullmatch("raw", case=False).fillna(False)
+        )
+        if siamcat:
+            by_strategy["SIAMCAT"] = {"Strategy": "SIAMCAT", "source": "mpma", **siamcat}
+
     by_strategy.setdefault("AutoML", {"Strategy": "AutoML", "source": "mpma"})
     by_strategy.setdefault("Baseline RF", {"Strategy": "Baseline RF", "source": "mpma"})
-    return [by_strategy[k] for k in ("MPMA-E", "MPMA-B", "AutoML", "Baseline RF")]
+    by_strategy.setdefault("SIAMCAT", {"Strategy": "SIAMCAT", "source": "mpma"})
+    return [by_strategy[k] for k in ("MPMA-E", "MPMA-B", "AutoML", "Baseline RF", "SIAMCAT")]
 
 
 def _strategy_performance_display(root: Path, *, html_mode: bool = False) -> pd.DataFrame:
     rows = _strategy_rows(root)
     if not rows:
         return pd.DataFrame()
-    # Bold best per metric by outer mean.
+
     best_by_metric: dict[str, str] = {}
     for metric, _ in _METRICS:
         vals = []
@@ -493,14 +502,13 @@ def _latex_task_name(title: str) -> str:
 
 
 def _strategy_latex_table(root: Path, path: Path, task_title: str) -> pd.DataFrame:
-    """Write the strategy-level performance table."""
     disp = _strategy_performance_display(root, html_mode=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     if disp.empty:
         path.write_text("% No performance rows available.\n", encoding="utf-8")
         return disp
     rows_by_strategy = {str(r["Strategy"]): r for _, r in disp.iterrows()}
-    strategies = ["MPMA-E", "MPMA-B", "AutoML", "Baseline RF"]
+    strategies = ["MPMA-E", "MPMA-B", "AutoML", "Baseline RF", "SIAMCAT"]
     metric_cols = ["ROC-AUC", "nMCC", "F1w", "Precision", "Recall"]
 
     def _cell(strategy: str, metric: str) -> str:
@@ -518,8 +526,9 @@ def _strategy_latex_table(root: Path, path: Path, task_title: str) -> pd.DataFra
         r"Held-out performance for the configured task. "
         r"MPMA-E = MPMAs Ensemble selected automatically by the framework based on inner validation score; "
         r"MPMA-B = single highest-scoring, based on inner validation, MPMA pipeline; "
-        r"AutoML = FLAML automated model search on raw abundances at the deepest available single rank; "
-        r"Baseline RF = 1000-tree random forest on arcsin-sqrt abundances at the deepest available single rank. "
+        r"AutoML = FLAML automated model search on relative abundances at the deepest available single rank; "
+        r"Baseline RF = 1000-tree random forest on arcsin-sqrt abundances at the deepest available single rank; "
+        r"SIAMCAT = SIAMCAT workflow on the raw input feature profile with the identity mllabiome transformation. "
         r"F1\textsubscript{w} = weighted F1. "
         r"Bold = best per metric. All values are percentages."
     )
@@ -550,22 +559,24 @@ def _strategy_latex_table(root: Path, path: Path, task_title: str) -> pd.DataFra
         r"  \parbox[c]{\mllabiometaskcol}{\raggedright #1}%",
         r"}",
         "",
-        r"\newcommand{\mllabiomestrategyblock}[4]{%",
+        r"\newcommand{\mllabiomestrategyblock}[5]{%",
         r"  \begin{tabular}[t]{l}",
         r"    #1\\",
         r"    #2\\",
         r"    #3\\",
-        r"    #4",
+        r"    #4\\",
+        r"    #5",
         r"  \end{tabular}%",
         r"}",
         "",
-        r"\newcommand{\mllabiomemetricblock}[4]{%",
+        r"\newcommand{\mllabiomemetricblock}[5]{%",
         r"  \makebox[\mllabiomemetriccol][c]{%",
         r"    \begin{tabular}[t]{c}",
         r"      #1\\",
         r"      #2\\",
         r"      #3\\",
-        r"      #4",
+        r"      #4\\",
+        r"      #5",
         r"    \end{tabular}%",
         r"  }%",
         r"}",
@@ -584,7 +595,7 @@ def _strategy_latex_table(root: Path, path: Path, task_title: str) -> pd.DataFra
         "",
         rf"\mllabiometaskblock{{{task}}}",
         r"&",
-        r"\mllabiomestrategyblock{\mbox{MPMA-E}}{\mbox{MPMA-B}}{AutoML}{\mbox{Baseline RF}}",
+        r"\mllabiomestrategyblock{\mbox{MPMA-E}}{\mbox{MPMA-B}}{AutoML}{\mbox{Baseline RF}}{SIAMCAT}",
         r"&",
         _metric_block("ROC-AUC"),
         r"&",

@@ -128,7 +128,7 @@ def _load_csv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
 
 def _load_matrix_tsv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
     abundance_path = Path(spec.abundance_path)
-    metadata_path = Path(spec.metadata_path)  # type: ignore[arg-type]
+    metadata_path = Path(spec.metadata_path)
     meta = pd.read_csv(metadata_path, sep=None, engine="python", dtype=str)
     if spec.sample_id_col not in meta.columns:
         raise ValueError(f"Metadata missing sample ID column {spec.sample_id_col!r}.")
@@ -168,6 +168,13 @@ def _dataset_from_feature_matrix(
             level_to_idx[lv].append(j)
     X_by_level: dict[str, np.ndarray] = {}
     names_by_level: dict[str, list[str]] = {}
+
+
+
+
+    X_by_level["all"] = X_all.astype(np.float32, copy=False)
+    names_by_level["all"] = list(feature_names)
+
     any_ranked = any(level_to_idx.values())
     for lv in TAXONOMIC_LEVELS:
         idx = level_to_idx.get(lv, [])
@@ -181,9 +188,9 @@ def _dataset_from_feature_matrix(
             X_by_level.setdefault(lv, X_all.astype(np.float32, copy=False))
             names_by_level.setdefault(lv, feature_names)
     else:
-        missing = [lv for lv in levels_needed if lv not in X_by_level and lv not in {"all", "features", "asis"}]
+        missing = [lv for lv in levels_needed if lv not in X_by_level and lv not in {"all", "features", "asis", "raw"}]
         if missing:
-            # Keep the run permissive: ad-hoc datasets often use partial taxonomy.
+
             X_by_level["all"] = X_all.astype(np.float32, copy=False)
             names_by_level["all"] = feature_names
     return Dataset(X_by_level=X_by_level, feature_names_by_level=names_by_level, y=y, sample_ids=sample_ids, metadata=meta, class_labels=class_labels)

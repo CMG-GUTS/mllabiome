@@ -26,6 +26,35 @@ def _proba_cols(df: pd.DataFrame) -> list[str]:
     return [c for c in df.columns if c.startswith("proba_")]
 
 
+def _excluded_config_ids(configs: pd.DataFrame, ensemble: Ensemble) -> set[str]:
+    """Return evaluated configuration IDs excluded from framework selection.
+
+    Excluded configurations remain in the evaluation outputs and can therefore
+    be surfaced as independent report comparators.  They are removed only from
+    MPMA-B selection and MPMA-E member/candidate selection.
+    """
+    if configs is None or configs.empty or "config_id" not in configs.columns:
+        return set()
+
+    mask = pd.Series(False, index=configs.index, dtype=bool)
+
+    ids = {str(x) for x in getattr(ensemble, "exclude_config_ids", ()) if str(x)}
+    if ids:
+        mask |= configs["config_id"].astype(str).isin(ids)
+
+    def _match(column: str, values: tuple[str, ...]) -> None:
+        nonlocal mask
+        vals = {str(x).casefold() for x in values if str(x)}
+        if vals and column in configs.columns:
+            mask |= configs[column].astype(str).str.casefold().isin(vals)
+
+    _match("learner", tuple(getattr(ensemble, "exclude_learners", ())))
+    _match("resolution", tuple(getattr(ensemble, "exclude_resolutions", ())))
+    _match("count_transformation", tuple(getattr(ensemble, "exclude_transformations", ())))
+
+    return set(configs.loc[mask, "config_id"].astype(str))
+
+
 def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
     root = sweep.root()
     ensemble_dir = root / "ensembling"
@@ -59,11 +88,18 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
             "selection strategies": sweep.ensemble.selection_strategies,
             "aggregation strategies": sweep.ensemble.aggregation_strategies,
             "ensemble sizes": sweep.ensemble.sizes,
+            "excluded learners": sweep.ensemble.exclude_learners or "none",
+            "excluded resolutions": sweep.ensemble.exclude_resolutions or "none",
+            "excluded transformations": sweep.ensemble.exclude_transformations or "none",
             "optimize metric": metric,
         },
     )
 
-    complete_ids = set(configs["config_id"].astype(str)) & set(preds["config_id"].astype(str))
+    excluded_ids = _excluded_config_ids(configs, sweep.ensemble)
+    complete_ids = (
+        set(configs["config_id"].astype(str))
+        & set(preds["config_id"].astype(str))
+    ) - excluded_ids
     preds = preds[preds["config_id"].astype(str).isin(complete_ids)].copy()
     inner = inner[inner["config_id"].astype(str).isin(complete_ids) & inner["ok"].eq(1)].copy()
     if preds.empty or inner.empty:

@@ -40,7 +40,7 @@ def _default_transformations():
 
 @dataclass(frozen=True)
 class MPDR:
-    """Microbiome Profile Data Representation."""
+
 
     resolution: str
     levels: tuple[str, ...]
@@ -49,7 +49,7 @@ class MPDR:
 
 @dataclass(frozen=True)
 class MPMA:
-    """Microbiome Profile Modelling Algorithm: one MPDR paired with one learner."""
+
 
     config_id: str
     mpdr: MPDR
@@ -105,17 +105,24 @@ class Ensemble:
     include_inactive: bool = False
 
 
+
+    exclude_config_ids: tuple[str, ...] = ()
+    exclude_learners: tuple[str, ...] = ()
+    exclude_resolutions: tuple[str, ...] = ()
+    exclude_transformations: tuple[str, ...] = ()
+
+
 @dataclass(init=False)
 class Explainability:
-    """Configuration for the explainability stage.
 
-    `targets` controls which fitted units are explained.  The default
-    `"auto"` runs the standard comparison suite: MPMA-E when an ensemble is
-    available, MPMA-B, and the strict Baseline RF when that baseline exists.
-    Pass an explicit tuple, for example `("mpma_b",)` or `("mpma_e",
-    "mpma_b")`, for a targeted rerun.  A config_id string may also be used
-    to explain one specific MPMA.
-    """
+
+
+
+
+
+
+
+
 
     targets: str | tuple[str, ...] = "auto"
     top_k: int = 30
@@ -198,12 +205,12 @@ class Sweep:
 
 
 def build_sweep_from_module(mod: Any) -> Sweep:
-    """Build a sweep from a Python config module.
 
-    Preferred config style is declarative: define EXPERIMENT_DIR, DATA,
-    _RESOLUTION_SETS, _build_count_transformations(), and _build_models().
-    Optional sections are EVALUATION, GATE, ENSEMBLE, EXPLAINABILITY, and TITLE.
-    """
+
+
+
+
+
     if hasattr(mod, "build_sweep"):
         obj = mod.build_sweep()
         if not isinstance(obj, Sweep):
@@ -219,7 +226,7 @@ def build_sweep_from_module(mod: Any) -> Sweep:
     missing = [name for name in required if not hasattr(mod, name)]
     if missing:
         raise TypeError(
-            "Config must define " + ", ".join(required) + 
+            "Config must define " + ", ".join(required) +
             f". Missing: {', '.join(missing)}."
         )
     data = getattr(mod, "DATA")
@@ -277,7 +284,7 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
     _prepare_dirs(root)
 
     resolutions = [_parse_resolution(r) for r in sweep.resolutions]
-    all_levels = tuple(dict.fromkeys(lv for _, levels in resolutions for lv in levels if lv not in {"all", "features", "asis"}))
+    all_levels = tuple(dict.fromkeys(lv for _, levels in resolutions for lv in levels if lv not in {"all", "features", "asis", "raw"}))
     dataset = load_dataset(sweep.data, all_levels or ("all",))
     learner_factories = [_learner_factory(x) for x in sweep.learners]
     count_transformation_specs = [_count_transformation_spec(x) for x in sweep.count_transformations]
@@ -403,7 +410,7 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
                                 inner_metric_rows.append(row)
                                 inner_scores[learner_name].append(float(metrics.get(sweep.gate.metric, np.nan)))
                                 inner_pred_rows.extend(_prediction_rows(inner_key, cid, va_idx, dataset, pred, proba, "inner", split_key))
-                            except Exception as exc:  # noqa: BLE001
+                            except Exception as exc:
                                 inner_metric_rows.append(_failed_metric_row(split_key, inner_key, cid, mpdr, learner_name, "inner", exc))
 
                     learners_needing_outer = [
@@ -456,7 +463,7 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
                                 metrics = compute_metrics(y[test_idx], pred, proba, dataset.classes)
                                 outer_metric_rows.append(_metric_row(metrics, split_key, None, cid, mpdr, learner_name, "outer"))
                                 outer_pred_rows.extend(_prediction_rows(split_key, cid, test_idx, dataset, pred, proba, "outer", split_key))
-                        except Exception as exc:  # noqa: BLE001
+                        except Exception as exc:
                             outer_metric_rows.append(_failed_metric_row(split_key, None, cid, mpdr, learner_name, "outer", exc))
                         finally:
                             prog.advance(mpma_task)
@@ -700,14 +707,14 @@ def _normalise_column_names(value: str | Sequence[str] | None) -> tuple[str, ...
 
 
 def _strata_from_metadata(meta: pd.DataFrame, y: np.ndarray, stratify_col: str | Sequence[str] | None) -> np.ndarray:
-    """Return labels used by stratified nested-CV splitting.
 
-    By default, repeated nested-CV is stratified by the encoded target labels.
-    When DATA.stratify_col is set, stratification is performed on the composite
-    of target label and the requested metadata column(s), preserving class
-    balance while also balancing the requested metadata strata whenever the
-    sample counts allow it.
-    """
+
+
+
+
+
+
+
     cols = _normalise_column_names(stratify_col)
     if not cols:
         return np.asarray(y, dtype=str)

@@ -30,8 +30,8 @@ def _resolution_from_name(name: str) -> tuple[str, tuple[str, ...]]:
         levels = tuple(x.strip() for x in name.split(",") if x.strip())
         if levels and all(x in TAXONOMIC_LEVELS for x in levels):
             return "+".join(levels), levels
-    if name in {"all", "features", "asis"}:
-        return name, ("all",)
+    if name in {"raw", "all", "features", "asis"}:
+        return "raw", ("all",)
     raise ValueError(f"Cannot parse taxonomic resolution {name!r}.")
 
 
@@ -45,15 +45,23 @@ def _range_levels(lo: str, hi: str) -> tuple[str, ...]:
 def _parse_resolution(item: Any) -> tuple[str, tuple[str, ...]]:
     if isinstance(item, tuple):
         name, levels = item
-        return str(name), tuple(str(x) for x in levels)
+        name = str(name).strip()
+        levels = tuple(str(x).strip() for x in levels)
+        if name in {"raw", "all", "features", "asis"} or any(x in {"raw", "all", "features", "asis"} for x in levels):
+            return "raw", ("all",)
+        return name, levels
     if hasattr(item, "name") and hasattr(item, "levels"):
-        return str(getattr(item, "name")), tuple(str(x) for x in getattr(item, "levels"))
+        name = str(getattr(item, "name")).strip()
+        levels = tuple(str(x).strip() for x in getattr(item, "levels"))
+        if name in {"raw", "all", "features", "asis"} or any(x in {"raw", "all", "features", "asis"} for x in levels):
+            return "raw", ("all",)
+        return name, levels
     return _resolution_from_name(str(item))
 
 
 def materialize_mpdr(dataset: Dataset, levels: Sequence[str]) -> tuple[np.ndarray, list[str]]:
     requested = tuple(levels)
-    if not requested or any(x in {"all", "features", "asis"} for x in requested):
+    if not requested or any(x in {"raw", "all", "features", "asis"} for x in requested):
         if "all" in dataset.X_by_level:
             return dataset.X_by_level["all"], dataset.feature_names_by_level["all"]
         requested = tuple(k for k in TAXONOMIC_LEVELS if k in dataset.X_by_level)

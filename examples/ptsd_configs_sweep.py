@@ -51,7 +51,7 @@ _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
     # ("domain-order", ("domain", "phylum", "class", "order")),
     # ("domain-family", ("domain", "phylum", "class", "order", "family")),
     # ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
-    ("domain-species", ("domain", "phylum", "class", "order", "family", "genus", "species")),
+    # ("domain-species", ("domain", "phylum", "class", "order", "family", "genus", "species")),
 
     # ("phylum-class", ("phylum", "class")),
     # ("phylum-order", ("phylum", "class", "order")),
@@ -75,13 +75,16 @@ _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
     # ("class+family", ("class", "family")),
     # ("class+genus", ("class", "genus")),
     # ("order+genus", ("order", "genus")),
+    ("raw", ("all",)),
 ]
 
 
 def _build_count_transformations():
     T = mll.Transformation
     return [
-        # T("none"),               # RA --> T("relative_abundance")
+        T("identity"),
+
+        # T("relative_abundance"), # RA
         # T("binary"),             # P/A
         # T("hellinger"),          # Hellinger
         # T("arcsin_sqrt"),        # arcsin-sqrt
