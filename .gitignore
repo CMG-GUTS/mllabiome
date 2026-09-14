@@ -51,3 +51,8 @@ outputs/
 reports/
 results/
 examples/runs/
+runs/
+
+# Potential inputs and custom files
+data/
+sandbox/

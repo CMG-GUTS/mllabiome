@@ -6,7 +6,6 @@ import warnings
 from typing import Any, Callable
 
 import numpy as np
-
 from sklearn.base import BaseEstimator, clone
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis, QuadraticDiscriminantAnalysis
@@ -86,7 +85,6 @@ def _logistic_regression(*, kind: str = "l2", **kwargs) -> LogisticRegression:
             params.setdefault("C", np.inf)
             params.setdefault("l1_ratio", 0.0)
         return LogisticRegression(**params)
-
     # scikit-learn <1.8 compatibility.
     if kind == "l1":
         params.setdefault("penalty", "l1")
@@ -216,6 +214,10 @@ def build_learner(name: str) -> BaseEstimator:
         return DecisionTreeClassifier(min_samples_leaf=5, random_state=42)
     if base in {"flaml", "flaml_600s", "automl"}:
         return FLAMLClassifier(time_budget=600, metric="roc_auc", n_jobs=1, random_state=42)
+    if base in {"siamcat"}:
+        from .siamcat import SIAMCATClassifier
+
+        return SIAMCATClassifier()
     if base.startswith("xgb"):
         mod = importlib.import_module("xgboost")
         return mod.XGBClassifier(eval_metric="logloss", random_state=42, verbosity=0, nthread=1)
@@ -226,4 +228,3 @@ def build_learner(name: str) -> BaseEstimator:
         mod = importlib.import_module("catboost")
         return mod.CatBoostClassifier(verbose=False, random_seed=42, allow_writing_files=False)
     raise ValueError(f"Unknown learner {name!r}. Provide (name, estimator) in the sweep config to add it.")
-

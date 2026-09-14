@@ -42,8 +42,8 @@ _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
     # ("phylum", ("phylum",)),
     # ("class", ("class",)),
     # ("order", ("order",)),
-    ("family", ("family",)),
-    ("genus", ("genus",)),
+    # ("family", ("family",)),
+    # ("genus", ("genus",)),
 
     # # Continuous ranges
     # ("domain-phylum", ("domain", "phylum")),
@@ -51,6 +51,8 @@ _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
     # ("domain-order", ("domain", "phylum", "class", "order")),
     # ("domain-family", ("domain", "phylum", "class", "order", "family")),
     # ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
+    ("domain-species", ("domain", "phylum", "class", "order", "family", "genus", "species")),
+
     # ("phylum-class", ("phylum", "class")),
     # ("phylum-order", ("phylum", "class", "order")),
     # # ("phylum-family", ("phylum", "class", "order", "family")),
@@ -79,7 +81,7 @@ _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
 def _build_count_transformations():
     T = mll.Transformation
     return [
-        T("none"),               # RA
+        # T("none"),               # RA --> T("relative_abundance")
         # T("binary"),             # P/A
         # T("hellinger"),          # Hellinger
         # T("arcsin_sqrt"),        # arcsin-sqrt
@@ -115,26 +117,26 @@ def _build_count_transformations():
 def _build_models():
     M = []
 
-    M.append(("RF_1000_msl5", RandomForestClassifier(
-        n_estimators=1000,
-        min_samples_leaf=5,
-        n_jobs=1,
-        random_state=42,
-    )))
-
-    # Uncomment additional learners as needed.
-    # M.append(("RF_default", RandomForestClassifier(n_jobs=1, random_state=42)))
-    # M.append(("ET_default", ExtraTreesClassifier(n_jobs=1, random_state=42)))
-    # M.append(("HistGB", HistGradientBoostingClassifier(random_state=42)))
-    # M.append(("LR_l2_C1_bal", LogisticRegression(
-    #     penalty="l2", C=1.0, max_iter=3000,
-    #     solver="saga", class_weight="balanced", random_state=42,
+    # M.append(("RF_1000_msl5", RandomForestClassifier(
+    #     n_estimators=1000,
+    #     min_samples_leaf=5,
+    #     n_jobs=1,
+    #     random_state=42,
     # )))
-    M.append(("Ridge_a1", RidgeClassifier(alpha=1.0, random_state=42)))
-    M.append(("BNB", BernoulliNB()))
-    # M.append(("GNB", GaussianNB()))
-    # M.append(("kNN_default", KNeighborsClassifier()))
-    M.append(("NearestCentroid_raw", NearestCentroid()))
+
+    # # Uncomment additional learners as needed.
+    # # M.append(("RF_default", RandomForestClassifier(n_jobs=1, random_state=42)))
+    # # M.append(("ET_default", ExtraTreesClassifier(n_jobs=1, random_state=42)))
+    # # M.append(("HistGB", HistGradientBoostingClassifier(random_state=42)))
+    # # M.append(("LR_l2_C1_bal", LogisticRegression(
+    # #     penalty="l2", C=1.0, max_iter=3000,
+    # #     solver="saga", class_weight="balanced", random_state=42,
+    # # )))
+    # M.append(("Ridge_a1", RidgeClassifier(alpha=1.0, random_state=42)))
+    # M.append(("BNB", BernoulliNB()))
+    # # M.append(("GNB", GaussianNB()))
+    # # M.append(("kNN_default", KNeighborsClassifier()))
+    # M.append(("NearestCentroid_raw", NearestCentroid()))
     # AutoML comparator. Uncomment to include the AutoML strategy in the report.
     # M.append(("FLAML_600s", mll.FLAMLClassifier(time_budget=6, metric="roc_auc", n_jobs=1, random_state=42)))
 
@@ -142,6 +144,24 @@ def _build_models():
     #     kernel="rbf", C=1.0, gamma="scale",
     #     probability=True, class_weight="balanced", random_state=42,
     # )))
+
+    # M.append((
+    #     "SIAMCAT",
+    #     mll.SIAMCATClassifier(
+    #         method="lasso",
+    #         filter_method="abundance",
+    #         filter_cutoff=0.001,
+    #         normalization="log.std",
+    #         num_folds=2,
+    #         num_resample=1,
+    #         random_state=42,
+    #         verbose=0,
+    #     ),
+    # ))
+
+    M.append(
+        "SIAMCAT",
+    )
 
     return M
 
@@ -158,10 +178,18 @@ EVALUATION = mll.Evaluation(
 
 GATE = mll.QualificationGate(enabled=False, metric="nMCC", threshold=0.51)
 ENSEMBLE = mll.Ensemble(sizes=(3,), optimize_metric="nMCC")
+# EXPLAINABILITY = mll.Explainability(
+#     targets="auto",
+#     top_k=30,
+#     representative_instances=True,
+#     instance_sample_ids=(),  # e.g. ("sample_id_to_explain",)
+#     top_instance_features=5,
+# )
+
 EXPLAINABILITY = mll.Explainability(
-    targets="auto",
-    top_k=30,
-    representative_instances=True,
-    instance_sample_ids=(),  # e.g. ("sample_id_to_explain",)
-    top_instance_features=5,
+    targets=("mpma_b",),
+    methods=("permutation",),
+    n_repeats=3,
+    top_k=15,
+    representative_instances=False,
 )

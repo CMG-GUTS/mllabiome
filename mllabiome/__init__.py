@@ -7,7 +7,6 @@ from .threading import configure_thread_limits
 configure_thread_limits()
 
 __version__ = "0.1.0"
-
 from .configs_sweep import (
     Ensemble,
     Evaluation,
@@ -32,6 +31,7 @@ from .metrics import compute_metrics
 from .pipeline import run_all
 from .report import write_report
 from .resolutions import materialize_mpdr
+from .siamcat import SIAMCATClassifier
 from .transformations import (
     TRANSFORMATION_LABELS,
     TRANSFORMATION_SPACE,
@@ -59,6 +59,7 @@ __all__ = [
     "mll",
     "METRIC_COLUMNS",
     "QualificationGate",
+    "SIAMCATClassifier",
     "Sweep",
     "TAXONOMIC_LEVELS",
     "Transform",
@@ -83,7 +84,6 @@ __all__ = [
     "transformation_label",
     "transformation_space_table",
 ]
-
 
 # Compact public namespace alias for configuration files:
 #     from mllabiome import mll
