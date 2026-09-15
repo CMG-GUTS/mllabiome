@@ -1,5 +1,16 @@
 <img src="https://raw.githubusercontent.com/CMG-GUTS/mllabiome/main/assets/favicon.svg" width="80" height="80" alt="mllabiome icon">
 
+## Example configs
+
+Runnable example configurations are available under `examples/`:
+
+```bash
+mllabiome examples/ptsd_configs_sweep.py
+mllabiome examples/ptsd_configs_sweep.py --stage evaluate
+mllabiome examples/ibs_lodo_configs_sweep.py --stage evaluate
+```
+
+
 <i>Example report sections generated with `mllabiome`.</i>
 
 ![XAI report preview](https://raw.githubusercontent.com/CMG-GUTS/mllabiome/main/assets/report-preview-xai.png)
@@ -239,14 +250,4 @@ Each run writes tables and figures under `experiment_dir`:
 ## License
 
 Licensed under the Apache License, Version 2.0. See `LICENSE`.
-
-## Example configs
-
-Runnable example configurations are available under `examples/`:
-
-```bash
-mllabiome examples/ptsd_configs_sweep.py
-mllabiome examples/ptsd_configs_sweep.py --stage evaluate
-mllabiome examples/ibs_lodo_configs_sweep.py --stage evaluate
-```
 
