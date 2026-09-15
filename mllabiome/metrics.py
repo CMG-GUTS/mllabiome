@@ -7,9 +7,8 @@ from sklearn.base import BaseEstimator
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
-    balanced_accuracy_score,
     f1_score,
-    matthews_corrcoef,
+    log_loss,
     precision_score,
     recall_score,
     roc_auc_score,
@@ -50,8 +49,9 @@ def _predict_proba_aligned(
             raw = np.column_stack([1.0 - raw, raw])
         learned = np.asarray(getattr(clf, "classes_", classes), dtype=int)
         out = np.zeros((X.shape[0], len(classes)), dtype=float)
+        class_set = set(classes.tolist())
         for j, c in enumerate(learned):
-            if c in set(classes.tolist()) and j < raw.shape[1]:
+            if c in class_set and j < raw.shape[1]:
                 out[:, int(np.where(classes == c)[0][0])] = raw[:, j]
         if out.sum(axis=1).min() <= 0:
             out = _renormalize_proba(raw, len(classes))
@@ -64,8 +64,9 @@ def _predict_proba_aligned(
         return softmax(score, axis=1).astype(np.float32)
     pred = np.asarray(_estimator_call(clf, "predict", X), dtype=int)
     out = np.zeros((X.shape[0], len(classes)), dtype=float)
+    class_set = set(classes.tolist())
     for i, p in enumerate(pred):
-        if p in set(classes.tolist()):
+        if p in class_set:
             out[i, int(np.where(classes == p)[0][0])] = 1.0
     return _renormalize_proba(out, len(classes)).astype(np.float32)
 
@@ -92,17 +93,105 @@ def _renormalize_proba(p: np.ndarray, n_classes: int) -> np.ndarray:
     return p
 
 
+def _balanced_accuracy_known_classes(
+    y_true: np.ndarray, y_pred: np.ndarray, classes: np.ndarray
+) -> float:
+    """Balanced accuracy without sklearn single-label warnings.
+
+    This is the mean recall over classes represented in ``y_true``, matching
+    scikit-learn's balanced-accuracy definition while handling bootstrap/LODO
+    resamples that contain a single observed class explicitly.
+    """
+    y_true = np.asarray(y_true, dtype=int)
+    y_pred = np.asarray(y_pred, dtype=int)
+    classes = np.asarray(classes, dtype=int)
+    present = [int(c) for c in classes if np.any(y_true == int(c))]
+    if not present:
+        return float("nan")
+    recalls: list[float] = []
+    for c in present:
+        mask = y_true == c
+        support = int(mask.sum())
+        if support > 0:
+            recalls.append(float(np.mean(y_pred[mask] == c)))
+    return float(np.mean(recalls)) if recalls else float("nan")
+
+
+def _matthews_corrcoef_known_classes(
+    y_true: np.ndarray, y_pred: np.ndarray, classes: np.ndarray
+) -> float:
+    """Multiclass Matthews correlation coefficient without warnings.
+
+    Uses the Gorodkin/Jurman confusion-matrix formulation used for multiclass
+    MCC.  A zero denominator returns 0.0, matching scikit-learn's behavior for
+    degenerate one-class predictions/resamples.
+    """
+    y_true = np.asarray(y_true, dtype=int)
+    y_pred = np.asarray(y_pred, dtype=int)
+    base_classes = np.asarray(classes, dtype=int)
+    labels = np.unique(np.concatenate([base_classes, y_true, y_pred])).astype(int)
+    if labels.size == 0:
+        return float("nan")
+
+    index = {int(c): i for i, c in enumerate(labels)}
+    cm = np.zeros((len(labels), len(labels)), dtype=np.int64)
+    for yt, yp in zip(y_true, y_pred, strict=True):
+        cm[index[int(yt)], index[int(yp)]] += 1
+
+    true_marginals = cm.sum(axis=1, dtype=np.float64)
+    pred_marginals = cm.sum(axis=0, dtype=np.float64)
+    correct = float(np.trace(cm))
+    total = float(cm.sum())
+
+    numerator = correct * total - float(np.dot(pred_marginals, true_marginals))
+    denominator_sq = (total**2 - float(np.dot(pred_marginals, pred_marginals))) * (
+        total**2 - float(np.dot(true_marginals, true_marginals))
+    )
+    if denominator_sq <= 0.0:
+        return 0.0
+    return float(numerator / np.sqrt(denominator_sq))
+
+
+def _multiclass_brier(
+    y_true: np.ndarray, y_proba: np.ndarray, classes: np.ndarray
+) -> float:
+    """Generalized multicategory Brier score.
+
+    This is mean_i sum_k (p_ik - 1[y_i=k])^2. Lower is better.
+    The binary task uses the conventional one-column binary Brier score instead.
+    """
+    index = {int(c): j for j, c in enumerate(classes)}
+    one_hot = np.zeros_like(y_proba, dtype=float)
+    for i, y in enumerate(np.asarray(y_true, dtype=int)):
+        if int(y) in index:
+            one_hot[i, index[int(y)]] = 1.0
+    return float(np.mean(np.sum((y_proba - one_hot) ** 2, axis=1)))
+
+
 def compute_metrics(
     y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray, classes: np.ndarray
 ) -> dict[str, float]:
     y_true = np.asarray(y_true, dtype=int)
     y_pred = np.asarray(y_pred, dtype=int)
+    classes = np.asarray(classes, dtype=int)
     y_proba = _renormalize_proba(y_proba, len(classes))
     out: dict[str, float] = {k: float("nan") for k in METRIC_COLUMNS}
+    # Proper-scoring metrics are exposed by this function without being added to
+    # the legacy METRIC_COLUMNS schema. That keeps the existing sweep/report
+    # tables byte-for-byte compatible while allowing the advanced OOF reporting
+    # layer to opt into these additional metrics.
+    out.update(
+        {
+            "Brier": float("nan"),
+            "Brier_multiclass": float("nan"),
+            "LogLoss": float("nan"),
+        }
+    )
     if len(y_true) == 0:
         return out
+
     out["Accuracy"] = float(accuracy_score(y_true, y_pred))
-    out["BalAcc"] = float(balanced_accuracy_score(y_true, y_pred))
+    out["BalAcc"] = _balanced_accuracy_known_classes(y_true, y_pred, classes)
     out["F1w"] = float(f1_score(y_true, y_pred, average="weighted", zero_division=0))
     out["F1_macro"] = float(f1_score(y_true, y_pred, average="macro", zero_division=0))
     out["Precision"] = float(
@@ -111,16 +200,32 @@ def compute_metrics(
     out["Recall"] = float(
         recall_score(y_true, y_pred, average="macro", zero_division=0)
     )
-    out["nMCC"] = float((matthews_corrcoef(y_true, y_pred) + 1.0) / 2.0)
+    out["nMCC"] = float(
+        (_matthews_corrcoef_known_classes(y_true, y_pred, classes) + 1.0) / 2.0
+    )
+
+    # Proper scoring rule: log loss for binary and multiclass tasks. Supplying the
+    # complete label set keeps the metric defined when an individual held-out
+    # fold happens not to contain every class.
+    try:
+        out["LogLoss"] = float(log_loss(y_true, y_proba, labels=classes.tolist()))
+    except Exception:
+        pass
+
     present = np.array([c for c in classes if c in set(y_true.tolist())], dtype=int)
     try:
         if len(classes) == 2:
+            # Existing package convention: the final probability column is the
+            # binary positive class. positive_class propagation is intentionally
+            # a separate API-correctness change from this statistics update.
             pos = classes[-1]
             pos_col = int(np.where(classes == pos)[0][0])
             yt = (y_true == pos).astype(int)
+            p_pos = np.clip(y_proba[:, pos_col], 0.0, 1.0)
+            out["Brier"] = float(np.mean((yt - p_pos) ** 2))
             if len(np.unique(yt)) == 2:
-                out["AUC"] = float(roc_auc_score(yt, y_proba[:, pos_col]))
-                out["PR_AUC"] = float(average_precision_score(yt, y_proba[:, pos_col]))
+                out["AUC"] = float(roc_auc_score(yt, p_pos))
+                out["PR_AUC"] = float(average_precision_score(yt, p_pos))
         elif len(present) >= 2:
             cols = [int(np.where(classes == c)[0][0]) for c in present]
             pp = _renormalize_proba(y_proba[:, cols], len(cols))
@@ -150,8 +255,10 @@ def compute_metrics(
                     average="macro",
                 )
             )
+            out["Brier_multiclass"] = _multiclass_brier(y_true, y_proba, classes)
     except Exception:
         pass
+
     return {
         k: (round(v, 6) if np.isfinite(v) else float("nan")) for k, v in out.items()
     }

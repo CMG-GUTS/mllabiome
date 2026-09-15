@@ -12,7 +12,7 @@ from .console import error, stage
 from .ensemble_sweep import sweep_ensemble
 from .explainability import explain
 from .pipeline import run_all
-from .report import write_report
+from .report_oof import write_report
 
 
 def _load_sweep(path: Path) -> Sweep:
@@ -29,7 +29,6 @@ def _load_sweep(path: Path) -> Sweep:
 def main(argv: list[str] | None = None) -> None:
     install_rich_traceback(show_locals=False)
     argv = list(sys.argv[1:] if argv is None else argv)
-
     parser = argparse.ArgumentParser(
         prog="mllabiome",
         description="Run the configured MPMA sweep, ensemble sweep, and explainability stages.",
@@ -45,7 +44,6 @@ def main(argv: list[str] | None = None) -> None:
         "--redo", action="store_true", help="Recompute completed evaluation outputs."
     )
     args = parser.parse_args(argv)
-
     try:
         sweep = _load_sweep(args.config)
     except Exception as exc:
@@ -56,7 +54,6 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.redo:
         sweep.evaluation.redo = True
-
     if args.stage == "all":
         run_all(sweep)
     elif args.stage == "evaluate":

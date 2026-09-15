@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import RidgeClassifier
 
 from mllabiome import mll
 
@@ -20,8 +21,9 @@ DATA = mll.Data(
 )
 
 _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
-    ("genus", ("genus",)),
-    ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
+    # ("family", ("family",)),
+    # ("genus", ("genus",)),
+    # ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
     ("raw", ("all",)),
 ]
 
@@ -29,9 +31,9 @@ _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
 def _build_count_transformations():
     T = mll.Transformation
     return [
-        # T("identity"),
-        T("relative_abundance"),
-        T("arcsine_sqrt"),
+        T("identity"),
+        # T("relative_abundance"),
+        # T("arcsine_sqrt"),
     ]
 
 
@@ -55,7 +57,8 @@ def _build_models():
         #         random_state=42,
         #     ),
         # ),
-        # "SIAMCAT",
+        "SIAMCAT",
+        # ("Ridge_a1", RidgeClassifier(alpha=1.0, random_state=42))
     ]
 
 
@@ -81,7 +84,7 @@ ENSEMBLE = mll.Ensemble(
 )
 
 EXPLAINABILITY = mll.Explainability(
-    targets=("mpma_b", "mpma_e"),
+    targets=("mpma_b",),
     methods=("permutation",),
     n_repeats=1,
     top_k=15,
