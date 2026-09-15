@@ -21,9 +21,9 @@ DATA = mll.Data(
 )
 
 _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
-    # ("family", ("family",)),
-    # ("genus", ("genus",)),
-    # ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
+    ("family", ("family",)),
+    ("genus", ("genus",)),
+    ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
     ("raw", ("all",)),
 ]
 
@@ -32,8 +32,8 @@ def _build_count_transformations():
     T = mll.Transformation
     return [
         T("identity"),
-        # T("relative_abundance"),
-        # T("arcsine_sqrt"),
+        T("relative_abundance"),
+        T("arcsine_sqrt"),
     ]
 
 
@@ -57,7 +57,7 @@ def _build_models():
         #         random_state=42,
         #     ),
         # ),
-        "SIAMCAT",
+        # "SIAMCAT",
         # ("Ridge_a1", RidgeClassifier(alpha=1.0, random_state=42))
     ]
 
