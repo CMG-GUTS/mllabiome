@@ -15,6 +15,7 @@ from .console import console, path_table, stage, success
 from .utils import dump_json_standard
 from .metrics import compute_metrics
 from .report_statistics import run_report_statistics
+from .report_compute import run_compute_accounting
 
 _METRICS = [
     ("AUC", "ROC-AUC"),
@@ -1231,6 +1232,9 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
     procedure = _procedure_table(sweep, root)
     top10_html = _top_mpma_display(_top_mpma_raw(root, 10), html_mode=True)
     strategy_rows = _strategy_rows(root)
+    compute_accounting = run_compute_accounting(root, sweep, strategy_rows)
+    compute_display = compute_accounting.get("display", pd.DataFrame())
+    compute_environment = compute_accounting.get("environment", {})
     statistics = run_report_statistics(
         root,
         sweep.evaluation.protocol,
@@ -1294,6 +1298,34 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
     ensemble_summary = _ensemble_summary_table(root)
     ensemble_members = _ensemble_members_table(root)
 
+    cpu_model = str(compute_environment.get("cpu_model", "")).strip()
+    logical_cpus = compute_environment.get("logical_cpus", "")
+    physical_cpus = compute_environment.get("physical_cpus", "")
+    workers = compute_environment.get("evaluation_workers", "")
+    threads_per_worker = compute_environment.get("threads_per_worker", "")
+    total_memory = compute_environment.get("memory_total_bytes")
+    memory_text = ""
+    try:
+        if total_memory is not None and np.isfinite(float(total_memory)):
+            memory_text = f"{float(total_memory) / (1024**3):.1f} GiB RAM"
+    except Exception:
+        memory_text = ""
+    hardware_parts = [
+        x
+        for x in [
+            cpu_model,
+            f"{physical_cpus} physical / {logical_cpus} logical CPUs"
+            if physical_cpus and logical_cpus
+            else "",
+            memory_text,
+            f"{workers} workers × {threads_per_worker} threads"
+            if workers and threads_per_worker
+            else "",
+        ]
+        if x
+    ]
+    hardware_text = " · ".join(hardware_parts)
+
     procedure.to_csv(tables_dir / "evaluation_procedure.tsv", sep="\t", index=False)
     top10_html.to_csv(
         tables_dir / "top10_mpma_inner_outer_performance.tsv", sep="\t", index=False
@@ -1303,6 +1335,9 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
     )
     primary_pairwise.to_csv(
         tables_dir / "strategy_pairwise_primary_metric.tsv", sep="\t", index=False
+    )
+    compute_display.to_csv(
+        tables_dir / "strategy_compute_display.tsv", sep="\t", index=False
     )
     ensemble_summary.to_csv(tables_dir / "mpma_e_selection.tsv", sep="\t", index=False)
     ensemble_members.to_csv(tables_dir / "mpma_e_members.tsv", sep="\t", index=False)
@@ -1464,6 +1499,9 @@ code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consol
 <h3 id="statistics">Statistical comparisons</h3>
 <p>Differences are Strategy A minus Strategy B. The table below shows the configured primary selection metric. Full pairwise results for ROC-AUC, PR-AUC (AP), nMCC, weighted F1, precision, and recall are saved in strategy_pairwise_tests.tsv. Holm adjustment is applied across strategy pairs within each metric.</p>
 {_html_table(primary_pairwise)}
+<h3 id="compute">Computational resources</h3>
+<p>Compute is reported as additive CPU core-hours, model-fit count, and peak resident memory for the worker process tree. CPU core-hours include child-process CPU time, including external R processes when used. FLOPs are intentionally not reported because mixed classical-ML workloads such as tree induction, branching, comparisons, memory operations, and SIAMCAT/R routines are not represented faithfully by a portable floating-point-operation count. MPMA-B and MPMA-E share the MPMA search pool, so their compute values overlap and must not be summed.{(" Hardware: " + html.escape(hardware_text) + ".") if hardware_text else ""}</p>
+{_html_table(compute_display)}
 <h2 id="top-mpmas">Top 10 MPMA-B configurations</h2>
 {_html_table(top10_html, raw_html_cols=top_metric_cols)}
 
@@ -1517,6 +1555,12 @@ code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consol
         ),
         "strategy_statistics_manifest": statistics.get(
             "manifest_path", tables_dir / "strategy_statistics_manifest.json"
+        ),
+        "strategy_compute": compute_accounting.get(
+            "compute_path", tables_dir / "strategy_compute.tsv"
+        ),
+        "compute_accounting_manifest": compute_accounting.get(
+            "manifest_path", tables_dir / "compute_accounting_manifest.json"
         ),
     }
     path_table("Report outputs", outputs)

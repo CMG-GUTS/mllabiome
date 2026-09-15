@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import time
+import zlib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed, parallel_backend
 from scipy.special import expit, softmax
 from sklearn.base import BaseEstimator
 from sklearn.metrics import (
@@ -22,6 +25,7 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.model_selection import StratifiedKFold
+from threadpoolctl import threadpool_limits
 
 from .data import Data, Dataset, load_dataset
 from .console import info, path_table, progress, stage, success, summary_table
@@ -40,6 +44,12 @@ from .transformations import (
     _count_transformation_spec,
 )
 from .selection import write_mpma_b_selection_outputs
+from .runtime import (
+    configure_estimator_threads,
+    resolve_execution_plan,
+    thread_environment,
+)
+from .compute import ResourceTracker, machine_profile
 
 
 def _default_transformations():
@@ -88,7 +98,11 @@ class Evaluation:
     repeats: int = 2
     random_state: int = 42
     optimize_metric: str = "nMCC"
-    n_jobs: int = 1
+    n_jobs: int | str = 1
+    parallel_backend: str = "loky"
+    memory_fraction: float = 0.80
+    min_worker_memory_gib: float = 1.0
+    resource_sample_interval_s: float = 0.10
     redo: bool = False
 
 
@@ -316,10 +330,321 @@ def _inner_validation_label(plan: Evaluation) -> str | int:
     return plan.inner_folds
 
 
+def _prediction_rows_values(
+    key: str,
+    cid: str,
+    idx: np.ndarray,
+    sample_ids: Sequence[str],
+    y: np.ndarray,
+    class_labels: Sequence[str],
+    pred: np.ndarray,
+    proba: np.ndarray,
+    stage: str,
+    outer_split_key: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row_no, sample_idx in enumerate(idx):
+        i = int(sample_idx)
+        row = {
+            "stage": stage,
+            "split_key": key,
+            "outer_split_key": outer_split_key,
+            "sample_id": str(sample_ids[i]),
+            "sample_index": i,
+            "config_id": cid,
+            "y_true": int(y[i]),
+            "y_pred": int(pred[row_no]),
+        }
+        for j, label in enumerate(class_labels):
+            row[f"proba_{label}"] = float(proba[row_no, j])
+        if len(class_labels) == 2:
+            row["y_proba_pos"] = float(proba[row_no, 1])
+        rows.append(row)
+    return rows
+
+
+def _evaluate_mpma_split_task(
+    X_base: np.ndarray,
+    y: np.ndarray,
+    classes: np.ndarray,
+    class_labels: Sequence[str],
+    sample_ids: Sequence[str],
+    train_idx: np.ndarray,
+    test_idx: np.ndarray,
+    inner_splits: Sequence[tuple[np.ndarray, np.ndarray]],
+    split_key: str,
+    protocol: str,
+    res_name: str,
+    levels: Sequence[str],
+    ct_name: str,
+    ct_item: Any,
+    transformation_factory_builder: Any,
+    learner_name: str,
+    learner_factory: Any,
+    cid: str,
+    gate_enabled: bool,
+    gate_metric: str,
+    gate_threshold: float | None,
+    existing_inner_keys: set[str],
+    existing_inner_scores: Sequence[float],
+    existing_qualification: dict[str, Any] | None,
+    needs_outer: bool,
+    random_state: int,
+    threads_per_worker: int,
+    resource_sample_interval_s: float,
+) -> dict[str, Any]:
+    tracker = ResourceTracker(sample_interval_s=resource_sample_interval_s).start()
+    mpdr = MPDR(
+        resolution=res_name, levels=tuple(levels), count_transformation=str(ct_name)
+    )
+    result = {
+        "split_key": split_key,
+        "config_id": cid,
+        "inner_metrics": [],
+        "inner_predictions": [],
+        "outer_metrics": [],
+        "outer_predictions": [],
+        "qualification": [],
+        "job_resources": [],
+        "fits": 0,
+    }
+    scores = [float(x) for x in existing_inner_scores if np.isfinite(x)]
+    with (
+        thread_environment(threads_per_worker),
+        threadpool_limits(limits=max(1, int(threads_per_worker))),
+    ):
+        for inner_no, (inner_train_local, inner_val_local) in enumerate(inner_splits):
+            inner_key = f"{split_key}__i{inner_no}"
+            if inner_key in existing_inner_keys:
+                continue
+            tr_idx = train_idx[np.asarray(inner_train_local, dtype=int)]
+            va_idx = train_idx[np.asarray(inner_val_local, dtype=int)]
+            if len(np.unique(y[tr_idx])) < 2 or len(va_idx) == 0:
+                continue
+            _, inner_ct_factory = transformation_factory_builder(
+                ct_item, random_state=random_state
+            )
+            fitted = inner_ct_factory()
+            X_inner_train, X_inner_val, _ = _lodo_feature_pair(
+                X_base, tr_idx, va_idx, protocol
+            )
+            try:
+                X_tr, X_va = fitted.apply_pair(X_inner_train, X_inner_val)
+                clf = configure_estimator_threads(learner_factory(), threads_per_worker)
+                clf.fit(X_tr, y[tr_idx])
+                proba = _predict_proba_aligned(clf, X_va, classes)
+                pred = classes[proba.argmax(axis=1)]
+                metrics = compute_metrics(y[va_idx], pred, proba, classes)
+                row = _metric_row(
+                    metrics, split_key, inner_key, cid, mpdr, learner_name, "inner"
+                )
+                result["inner_metrics"].append(row)
+                result["inner_predictions"].extend(
+                    _prediction_rows_values(
+                        inner_key,
+                        cid,
+                        va_idx,
+                        sample_ids,
+                        y,
+                        class_labels,
+                        pred,
+                        proba,
+                        "inner",
+                        split_key,
+                    )
+                )
+                score = float(metrics.get(gate_metric, np.nan))
+                if np.isfinite(score):
+                    scores.append(score)
+                result["fits"] += 1
+            except Exception as exc:
+                result["inner_metrics"].append(
+                    _failed_metric_row(
+                        split_key, inner_key, cid, mpdr, learner_name, "inner", exc
+                    )
+                )
+        qualified = True
+        gate_score = float("nan")
+        if gate_enabled:
+            if existing_qualification is not None:
+                qualified = bool(int(existing_qualification.get("qualified", 0)))
+                gate_score = float(existing_qualification.get("inner_score", np.nan))
+            else:
+                gate_score = float(np.mean(scores)) if scores else float("nan")
+                gate = QualificationGate(
+                    enabled=True, metric=gate_metric, threshold=gate_threshold
+                )
+                qualified = gate.qualifies(gate_score)
+                result["qualification"].append(
+                    {
+                        "split_key": split_key,
+                        "config_id": cid,
+                        "mpdr_id": _mpdr_id(ct_name, res_name),
+                        "count_transformation": str(ct_name),
+                        "resolution": res_name,
+                        "levels": ",".join(levels),
+                        "learner": learner_name,
+                        "gate_enabled": 1,
+                        "gate_metric": gate_metric,
+                        "gate_threshold": gate_threshold,
+                        "inner_score": gate_score,
+                        "qualified": int(qualified),
+                    }
+                )
+        if needs_outer and qualified:
+            _, outer_ct_factory = transformation_factory_builder(
+                ct_item, random_state=random_state
+            )
+            fitted_outer = outer_ct_factory()
+            X_outer_train, X_outer_test, _ = _lodo_feature_pair(
+                X_base, train_idx, test_idx, protocol
+            )
+            try:
+                X_train, X_test = fitted_outer.apply_pair(X_outer_train, X_outer_test)
+                clf = configure_estimator_threads(learner_factory(), threads_per_worker)
+                clf.fit(X_train, y[train_idx])
+                proba = _predict_proba_aligned(clf, X_test, classes)
+                pred = classes[proba.argmax(axis=1)]
+                metrics = compute_metrics(y[test_idx], pred, proba, classes)
+                row = _metric_row(
+                    metrics, split_key, None, cid, mpdr, learner_name, "outer"
+                )
+                result["outer_metrics"].append(row)
+                result["outer_predictions"].extend(
+                    _prediction_rows_values(
+                        split_key,
+                        cid,
+                        test_idx,
+                        sample_ids,
+                        y,
+                        class_labels,
+                        pred,
+                        proba,
+                        "outer",
+                        split_key,
+                    )
+                )
+                result["fits"] += 1
+            except Exception as exc:
+                result["outer_metrics"].append(
+                    _failed_metric_row(
+                        split_key, None, cid, mpdr, learner_name, "outer", exc
+                    )
+                )
+    measured = tracker.stop()
+    resource_row = {
+        "split_key": str(split_key),
+        "config_id": str(cid),
+        "resolution": str(res_name),
+        "count_transformation": str(ct_name),
+        "learner": str(learner_name),
+        "fits": int(result.get("fits", 0)),
+        "threads_per_worker": int(threads_per_worker),
+        **measured,
+    }
+    result["job_resources"] = [resource_row]
+    result["elapsed_s"] = float(measured.get("wall_time_s", 0.0))
+    return result
+
+
+def _checkpoint_result(root: Path, result: dict[str, Any]) -> None:
+    payload = {
+        "inner_metrics": result.get("inner_metrics", []),
+        "inner_predictions": result.get("inner_predictions", []),
+        "outer_metrics": result.get("outer_metrics", []),
+        "outer_predictions": result.get("outer_predictions", []),
+        "qualification": result.get("qualification", []),
+        "job_resources": result.get("job_resources", []),
+    }
+    blob = zlib.compress(
+        json.dumps(payload, allow_nan=True, separators=(",", ":")).encode("utf-8"),
+        level=3,
+    )
+    conn = sqlite3.connect(root / "configs.db")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS evaluation_checkpoints (
+                config_id TEXT NOT NULL,
+                split_key TEXT NOT NULL,
+                payload BLOB NOT NULL,
+                elapsed_s REAL,
+                PRIMARY KEY (config_id, split_key)
+            )"""
+        )
+        conn.execute(
+            """INSERT OR REPLACE INTO evaluation_checkpoints(config_id, split_key, payload, elapsed_s)
+               VALUES (?, ?, ?, ?)""",
+            (
+                str(result.get("config_id", "")),
+                str(result.get("split_key", "")),
+                sqlite3.Binary(blob),
+                float(result.get("elapsed_s", 0.0)),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _load_checkpoint_frames(
+    root: Path, current_config_ids: set[str], outer_keys: set[str]
+) -> dict[str, pd.DataFrame]:
+    empty = {
+        "outer_metrics": pd.DataFrame(),
+        "inner_metrics": pd.DataFrame(),
+        "outer_predictions": pd.DataFrame(),
+        "inner_predictions": pd.DataFrame(),
+        "qualification": pd.DataFrame(),
+        "job_resources": pd.DataFrame(),
+    }
+    db_path = root / "configs.db"
+    if not db_path.exists():
+        return empty
+    conn = sqlite3.connect(db_path)
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='evaluation_checkpoints'"
+        ).fetchone()
+        if not exists:
+            return empty
+        rows = conn.execute(
+            "SELECT config_id, split_key, payload FROM evaluation_checkpoints"
+        ).fetchall()
+    finally:
+        conn.close()
+    buckets = {k: [] for k in empty}
+    for config_id, split_key, blob in rows:
+        if str(config_id) not in current_config_ids or str(split_key) not in outer_keys:
+            continue
+        try:
+            payload = json.loads(zlib.decompress(blob).decode("utf-8"))
+        except Exception:
+            continue
+        for key in buckets:
+            buckets[key].extend(payload.get(key, []))
+    return {
+        key: pd.DataFrame(rows) if rows else pd.DataFrame()
+        for key, rows in buckets.items()
+    }
+
+
+def _clear_evaluation_checkpoints(root: Path) -> None:
+    db_path = root / "configs.db"
+    if not db_path.exists():
+        return
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("DROP TABLE IF EXISTS evaluation_checkpoints")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def evaluate(sweep: Sweep) -> dict[str, Path]:
     root = sweep.root()
     _prepare_dirs(root)
-
     resolutions = [_parse_resolution(r) for r in sweep.resolutions]
     all_levels = tuple(
         dict.fromkeys(
@@ -338,8 +663,9 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
         sweep.resolutions, sweep.count_transformations, sweep.learners
     )
     _write_config_table(root, configs)
+    if sweep.evaluation.redo:
+        _clear_evaluation_checkpoints(root)
     _write_manifest(root, sweep, dataset)
-
     y = dataset.y
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
     strata = _strata_from_metadata(dataset.metadata, y, sweep.data.stratify_col)
@@ -348,9 +674,11 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
     )
     current_config_ids = set(configs["config_id"].astype(str))
     current_outer_keys = {str(s["split_key"]) for s in outer_splits}
-
     existing = _load_existing_evaluation(
-        root, current_config_ids, current_outer_keys, redo=sweep.evaluation.redo
+        root,
+        current_config_ids,
+        current_outer_keys,
+        redo=sweep.evaluation.redo,
     )
     if not sweep.gate.enabled:
         existing["qualification"] = pd.DataFrame()
@@ -362,13 +690,80 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
     qualification_map = (
         _qualification_map(existing["qualification"]) if sweep.gate.enabled else {}
     )
-
-    outer_metric_rows: list[dict[str, Any]] = []
-    inner_metric_rows: list[dict[str, Any]] = []
-    outer_pred_rows: list[dict[str, Any]] = []
-    inner_pred_rows: list[dict[str, Any]] = []
-    qualification_rows: list[dict[str, Any]] = []
-
+    mpdr_cache = {
+        res_name: np.asarray(materialize_mpdr(dataset, levels)[0], dtype=np.float32)
+        for res_name, levels in resolutions
+    }
+    tasks = []
+    split_task_counts: dict[str, int] = {}
+    for split in outer_splits:
+        split_key = str(split["split_key"])
+        train_idx = np.asarray(split["train_idx"], dtype=int)
+        test_idx = np.asarray(split["test_idx"], dtype=int)
+        if len(np.unique(y[train_idx])) < 2 or len(test_idx) == 0:
+            continue
+        inner_splits = _inner_splits(
+            sweep.evaluation,
+            y,
+            train_idx,
+            groups,
+            split,
+            strata,
+            sweep.data.stratify_col,
+        )
+        inner_keys = [
+            f"{split_key}__i{inner_no}" for inner_no in range(len(inner_splits))
+        ]
+        for res_name, levels in resolutions:
+            X_base = mpdr_cache[res_name]
+            for ct_name, ct_spec in count_transformation_specs:
+                ct_item = (ct_name, ct_spec) if ct_spec is not None else ct_name
+                for learner_name, learner_factory in learner_factories:
+                    cid = _config_id(str(ct_name), res_name, learner_name)
+                    missing_inner = {
+                        key for key in inner_keys if (key, cid) not in inner_done
+                    }
+                    needs_outer = not _outer_pair_complete(
+                        split_key, cid, outer_done, qualification_map
+                    )
+                    if not missing_inner and not needs_outer:
+                        continue
+                    task = delayed(_evaluate_mpma_split_task)(
+                        X_base,
+                        y,
+                        dataset.classes,
+                        tuple(dataset.class_labels),
+                        tuple(dataset.sample_ids),
+                        train_idx,
+                        test_idx,
+                        tuple(inner_splits),
+                        split_key,
+                        sweep.evaluation.protocol,
+                        res_name,
+                        tuple(levels),
+                        str(ct_name),
+                        ct_item,
+                        _count_transformation_factory,
+                        learner_name,
+                        learner_factory,
+                        cid,
+                        bool(sweep.gate.enabled),
+                        str(sweep.gate.metric),
+                        sweep.gate.threshold,
+                        set(inner_keys) - missing_inner,
+                        _existing_inner_scores(
+                            existing["inner_metrics"], split_key, cid, sweep.gate.metric
+                        ),
+                        qualification_map.get((split_key, cid)),
+                        bool(needs_outer),
+                        int(sweep.evaluation.random_state),
+                        1,
+                        float(sweep.evaluation.resource_sample_interval_s),
+                    )
+                    tasks.append((split_key, cid, task))
+                    split_task_counts[split_key] = (
+                        split_task_counts.get(split_key, 0) + 1
+                    )
     expected_pairs = len(outer_splits) * len(configs)
     completed_pairs = sum(
         1
@@ -378,8 +773,25 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
             str(split["split_key"]), cid, outer_done, qualification_map
         )
     )
-
+    execution = resolve_execution_plan(
+        sweep.evaluation.n_jobs,
+        len(tasks) or 1,
+        backend=sweep.evaluation.parallel_backend,
+        memory_fraction=sweep.evaluation.memory_fraction,
+        min_worker_memory_gib=sweep.evaluation.min_worker_memory_gib,
+    )
+    prepared_tasks = []
+    for split_key, cid, task in tasks:
+        fn, args, kwargs = task
+        args = list(args)
+        args[-2] = execution.threads_per_worker
+        prepared_tasks.append((split_key, cid, fn, tuple(args), kwargs))
     stage("Configuration sweep", sweep.title)
+    memory_gib = (
+        "unknown"
+        if execution.memory_bytes is None
+        else f"{execution.memory_bytes / (1024**3):.1f} GiB"
+    )
     summary_table(
         "Sweep overview",
         {
@@ -395,6 +807,12 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
             "inner folds": _inner_validation_label(sweep.evaluation),
             "gate": "on" if sweep.gate.enabled else "off",
             "completed MPMA/split pairs": f"{completed_pairs:,}/{expected_pairs:,}",
+            "pending jobs": f"{len(prepared_tasks):,}",
+            "CPU logical/physical": f"{execution.logical_cpus}/{execution.physical_cpus}",
+            "available memory": memory_gib,
+            "workers": execution.workers,
+            "threads per worker": execution.threads_per_worker,
+            "parallel backend": execution.backend,
             "experiment dir": root,
         },
     )
@@ -402,22 +820,30 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
         info(
             "Resuming sweep: completed MPMA/split pairs are kept; newly enabled or missing pairs will be evaluated."
         )
-    elif completed_pairs == expected_pairs and expected_pairs > 0:
+    if not prepared_tasks:
         success(
             "Current sweep configuration is already complete; no evaluation jobs to run."
         )
         _write_tables(
             root,
-            outer_metric_rows,
-            inner_metric_rows,
-            outer_pred_rows,
-            inner_pred_rows,
-            qualification_rows,
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
             existing=existing,
             gate_enabled=sweep.gate.enabled,
         )
+        selection_tracker = ResourceTracker(
+            sample_interval_s=sweep.evaluation.resource_sample_interval_s
+        ).start()
         write_mpma_b_selection_outputs(
             root, sweep.evaluation.optimize_metric, plan=sweep.ensemble
+        )
+        dump_json_standard(
+            selection_tracker.stop(),
+            root / "tables" / "mpma_b_selection_resources.json",
         )
         _write_rankings_and_figures(
             root, dataset.class_labels, sweep.evaluation.optimize_metric
@@ -427,271 +853,73 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
         )
         path_table("Configuration sweep outputs", _existing_outputs(root))
         return _existing_outputs(root)
-
     t0 = time.perf_counter()
-    total_mpma_units = max(1, expected_pairs)
+    outer_metric_rows: list[dict[str, Any]] = []
+    inner_metric_rows: list[dict[str, Any]] = []
+    outer_pred_rows: list[dict[str, Any]] = []
+    inner_pred_rows: list[dict[str, Any]] = []
+    qualification_rows: list[dict[str, Any]] = []
+    job_resource_rows: list[dict[str, Any]] = []
+    completed_by_split: dict[str, int] = {}
     with progress() as prog:
-        outer_task = prog.add_task("Outer splits", total=len(outer_splits))
-        mpma_task = prog.add_task(
-            "MPMA evaluations", total=total_mpma_units, completed=completed_pairs
+        job_task = prog.add_task("MPMA/split jobs", total=len(prepared_tasks))
+        split_task = prog.add_task(
+            "Outer splits completed", total=len(split_task_counts)
         )
-        for split_no, split in enumerate(outer_splits, start=1):
-            split_key = str(split["split_key"])
-            train_idx = split["train_idx"]
-            test_idx = split["test_idx"]
-            if len(np.unique(y[train_idx])) < 2 or len(test_idx) == 0:
-                prog.advance(outer_task)
-                continue
-            inner_splits = _inner_splits(
-                sweep.evaluation,
-                y,
-                train_idx,
-                groups,
-                split,
-                strata,
-                sweep.data.stratify_col,
+        if execution.workers == 1:
+            iterator = (
+                fn(*args, **kwargs) for _, _, fn, args, kwargs in prepared_tasks
             )
-            inner_keys = [
-                f"{split_key}__i{inner_no}" for inner_no, _ in enumerate(inner_splits)
+        else:
+            delayed_tasks = [
+                delayed(fn)(*args, **kwargs)
+                for _, _, fn, args, kwargs in prepared_tasks
             ]
-            prog.update(
-                outer_task,
-                description=f"Outer split {split_no}/{len(outer_splits)} · {split_key}",
-            )
-
-            for res_name, levels in resolutions:
-                X_base, _ = materialize_mpdr(dataset, levels)
-                for ct_name, ct_spec in count_transformation_specs:
-                    mpdr_cids = [
-                        _config_id(str(ct_name), res_name, learner_name)
-                        for learner_name, _ in learner_factories
-                    ]
-                    if (
-                        inner_keys
-                        and all(
-                            (ik, cid) in inner_done
-                            for ik in inner_keys
-                            for cid in mpdr_cids
-                        )
-                        and all(
-                            _outer_pair_complete(
-                                split_key, cid, outer_done, qualification_map
-                            )
-                            for cid in mpdr_cids
-                        )
+            backend_kwargs = {"n_jobs": execution.workers}
+            if execution.backend == "loky":
+                backend_kwargs["inner_max_num_threads"] = execution.threads_per_worker
+            with parallel_backend(execution.backend, **backend_kwargs):
+                iterator = Parallel(
+                    n_jobs=execution.workers,
+                    backend=execution.backend,
+                    return_as="generator_unordered",
+                    pre_dispatch=max(execution.workers, execution.workers * 2),
+                    batch_size=1,
+                    max_nbytes="1M",
+                    mmap_mode="r",
+                )(delayed_tasks)
+                for result in iterator:
+                    _checkpoint_result(root, result)
+                    inner_metric_rows.extend(result.get("inner_metrics", []))
+                    inner_pred_rows.extend(result.get("inner_predictions", []))
+                    outer_metric_rows.extend(result.get("outer_metrics", []))
+                    outer_pred_rows.extend(result.get("outer_predictions", []))
+                    qualification_rows.extend(result.get("qualification", []))
+                    job_resource_rows.extend(result.get("job_resources", []))
+                    split_key = str(result.get("split_key", ""))
+                    completed_by_split[split_key] = (
+                        completed_by_split.get(split_key, 0) + 1
+                    )
+                    if completed_by_split[split_key] == split_task_counts.get(
+                        split_key, 0
                     ):
-                        continue
-
-                    _, ct_factory = (
-                        _count_transformation_factory(
-                            (ct_name, ct_spec),
-                            random_state=sweep.evaluation.random_state,
-                        )
-                        if ct_spec is not None
-                        else _count_transformation_factory(
-                            ct_name, random_state=sweep.evaluation.random_state
-                        )
-                    )
-                    mpdr = MPDR(
-                        resolution=res_name,
-                        levels=tuple(levels),
-                        count_transformation=str(ct_name),
-                    )
-                    inner_scores: dict[str, list[float]] = {}
-                    for learner_name, _ in learner_factories:
-                        cid = _config_id(str(ct_name), res_name, learner_name)
-                        inner_scores[learner_name] = _existing_inner_scores(
-                            existing["inner_metrics"], split_key, cid, sweep.gate.metric
-                        )
-
-                    for inner_no, (inner_train_local, inner_val_local) in enumerate(
-                        inner_splits
-                    ):
-                        inner_key = f"{split_key}__i{inner_no}"
-                        tr_idx = train_idx[inner_train_local]
-                        va_idx = train_idx[inner_val_local]
-                        if len(np.unique(y[tr_idx])) < 2 or len(va_idx) == 0:
-                            continue
-                        missing_learners = [
-                            (learner_name, factory)
-                            for learner_name, factory in learner_factories
-                            if (
-                                inner_key,
-                                _config_id(str(ct_name), res_name, learner_name),
-                            )
-                            not in inner_done
-                        ]
-                        if not missing_learners:
-                            continue
-                        _, inner_ct_factory = (
-                            _count_transformation_factory(
-                                (ct_name, ct_spec),
-                                random_state=sweep.evaluation.random_state,
-                            )
-                            if ct_spec is not None
-                            else _count_transformation_factory(
-                                ct_name, random_state=sweep.evaluation.random_state
-                            )
-                        )
-                        fitted = inner_ct_factory()
-                        X_inner_train, X_inner_val, _ = _lodo_feature_pair(
-                            X_base, tr_idx, va_idx, sweep.evaluation.protocol
-                        )
-                        X_tr, X_va = fitted.apply_pair(X_inner_train, X_inner_val)
-                        for learner_name, factory in missing_learners:
-                            cid = _config_id(str(ct_name), res_name, learner_name)
-                            try:
-                                clf = factory()
-                                clf.fit(X_tr, y[tr_idx])
-                                proba = _predict_proba_aligned(
-                                    clf, X_va, dataset.classes
-                                )
-                                pred = dataset.classes[proba.argmax(axis=1)]
-                                metrics = compute_metrics(
-                                    y[va_idx], pred, proba, dataset.classes
-                                )
-                                row = _metric_row(
-                                    metrics,
-                                    split_key,
-                                    inner_key,
-                                    cid,
-                                    mpdr,
-                                    learner_name,
-                                    "inner",
-                                )
-                                inner_metric_rows.append(row)
-                                inner_scores[learner_name].append(
-                                    float(metrics.get(sweep.gate.metric, np.nan))
-                                )
-                                inner_pred_rows.extend(
-                                    _prediction_rows(
-                                        inner_key,
-                                        cid,
-                                        va_idx,
-                                        dataset,
-                                        pred,
-                                        proba,
-                                        "inner",
-                                        split_key,
-                                    )
-                                )
-                            except Exception as exc:
-                                inner_metric_rows.append(
-                                    _failed_metric_row(
-                                        split_key,
-                                        inner_key,
-                                        cid,
-                                        mpdr,
-                                        learner_name,
-                                        "inner",
-                                        exc,
-                                    )
-                                )
-
-                    learners_needing_outer = [
-                        (learner_name, factory)
-                        for learner_name, factory in learner_factories
-                        if not _outer_pair_complete(
-                            split_key,
-                            _config_id(str(ct_name), res_name, learner_name),
-                            outer_done,
-                            qualification_map,
-                        )
-                    ]
-                    if not learners_needing_outer:
-                        continue
-
-                    fitted_outer = ct_factory()
-                    X_outer_train, X_outer_test, _ = _lodo_feature_pair(
-                        X_base, train_idx, test_idx, sweep.evaluation.protocol
-                    )
-                    X_train, X_test = fitted_outer.apply_pair(
-                        X_outer_train, X_outer_test
-                    )
-
-                    for learner_name, factory in learners_needing_outer:
-                        cid = _config_id(str(ct_name), res_name, learner_name)
-                        pair = (split_key, cid)
-                        qrow = qualification_map.get(pair)
-                        if not sweep.gate.enabled:
-                            qualified = True
-                        elif qrow is not None:
-                            qualified = bool(int(qrow.get("qualified", 0)))
-                            score = float(qrow.get("inner_score", np.nan))
-                        else:
-                            scores = [
-                                x
-                                for x in inner_scores.get(learner_name, [])
-                                if np.isfinite(x)
-                            ]
-                            score = float(np.mean(scores)) if scores else float("nan")
-                            qualified = sweep.gate.qualifies(score)
-                            qrow_new = {
-                                "split_key": split_key,
-                                "config_id": cid,
-                                "mpdr_id": _mpdr_id(ct_name, res_name),
-                                "count_transformation": str(ct_name),
-                                "resolution": res_name,
-                                "levels": ",".join(levels),
-                                "learner": learner_name,
-                                "gate_enabled": 1,
-                                "gate_metric": sweep.gate.metric,
-                                "gate_threshold": sweep.gate.threshold,
-                                "inner_score": score,
-                                "qualified": int(qualified),
-                            }
-                            qualification_rows.append(qrow_new)
-                            qualification_map[pair] = qrow_new
-                        try:
-                            if qualified and pair not in outer_done:
-                                clf = factory()
-                                clf.fit(X_train, y[train_idx])
-                                proba = _predict_proba_aligned(
-                                    clf, X_test, dataset.classes
-                                )
-                                pred = dataset.classes[proba.argmax(axis=1)]
-                                metrics = compute_metrics(
-                                    y[test_idx], pred, proba, dataset.classes
-                                )
-                                outer_metric_rows.append(
-                                    _metric_row(
-                                        metrics,
-                                        split_key,
-                                        None,
-                                        cid,
-                                        mpdr,
-                                        learner_name,
-                                        "outer",
-                                    )
-                                )
-                                outer_pred_rows.extend(
-                                    _prediction_rows(
-                                        split_key,
-                                        cid,
-                                        test_idx,
-                                        dataset,
-                                        pred,
-                                        proba,
-                                        "outer",
-                                        split_key,
-                                    )
-                                )
-                        except Exception as exc:
-                            outer_metric_rows.append(
-                                _failed_metric_row(
-                                    split_key,
-                                    None,
-                                    cid,
-                                    mpdr,
-                                    learner_name,
-                                    "outer",
-                                    exc,
-                                )
-                            )
-                        finally:
-                            prog.advance(mpma_task)
-            prog.advance(outer_task)
-
+                        prog.advance(split_task)
+                    prog.advance(job_task)
+                iterator = None
+        if execution.workers == 1:
+            for result in iterator:
+                _checkpoint_result(root, result)
+                inner_metric_rows.extend(result.get("inner_metrics", []))
+                inner_pred_rows.extend(result.get("inner_predictions", []))
+                outer_metric_rows.extend(result.get("outer_metrics", []))
+                outer_pred_rows.extend(result.get("outer_predictions", []))
+                qualification_rows.extend(result.get("qualification", []))
+                job_resource_rows.extend(result.get("job_resources", []))
+                split_key = str(result.get("split_key", ""))
+                completed_by_split[split_key] = completed_by_split.get(split_key, 0) + 1
+                if completed_by_split[split_key] == split_task_counts.get(split_key, 0):
+                    prog.advance(split_task)
+                prog.advance(job_task)
     _write_tables(
         root,
         outer_metric_rows,
@@ -699,11 +927,18 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
         outer_pred_rows,
         inner_pred_rows,
         qualification_rows,
+        job_resource_rows,
         existing=existing,
         gate_enabled=sweep.gate.enabled,
     )
+    selection_tracker = ResourceTracker(
+        sample_interval_s=sweep.evaluation.resource_sample_interval_s
+    ).start()
     write_mpma_b_selection_outputs(
         root, sweep.evaluation.optimize_metric, plan=sweep.ensemble
+    )
+    dump_json_standard(
+        selection_tracker.stop(), root / "tables" / "mpma_b_selection_resources.json"
     )
     _write_rankings_and_figures(
         root, dataset.class_labels, sweep.evaluation.optimize_metric
@@ -715,14 +950,32 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
     dump_json_standard(
         {
             "elapsed_s": elapsed,
+            "workers": execution.workers,
+            "threads_per_worker": execution.threads_per_worker,
+            "logical_cpus": execution.logical_cpus,
+            "physical_cpus": execution.physical_cpus,
+            "n_jobs_completed": len(prepared_tasks),
             "n_outer_rows_added": len(outer_metric_rows),
             "n_inner_rows_added": len(inner_metric_rows),
             "n_qualification_rows_added": len(qualification_rows),
+            "cpu_core_hours_added": float(
+                sum(float(r.get("cpu_core_hours", 0.0)) for r in job_resource_rows)
+            ),
+            "model_fits_added": int(
+                sum(int(r.get("fits", 0)) for r in job_resource_rows)
+            ),
+            "peak_job_rss_gib": float(
+                max(
+                    [float(r.get("peak_rss_gib", 0.0)) for r in job_resource_rows]
+                    or [0.0]
+                )
+            ),
+            "machine": machine_profile(execution.logical_cpus, execution.physical_cpus),
         },
         root / "run_summary.json",
     )
     success(
-        f"Configuration sweep completed in {elapsed:.1f}s · added {len(outer_metric_rows):,} outer rows and {len(inner_metric_rows):,} inner rows"
+        f"Configuration sweep completed in {elapsed:.1f}s · workers={execution.workers} · added {len(outer_metric_rows):,} outer rows and {len(inner_metric_rows):,} inner rows"
     )
     outputs = _existing_outputs(root)
     path_table("Configuration sweep outputs", outputs)
@@ -756,16 +1009,45 @@ def _existing_outputs(root: Path) -> dict[str, Path]:
         "mpma_b_outer_results": root / "results" / "mpma_b_outer_results.tsv",
         "mpma_b_summary": root / "tables" / "mpma_b_strategy_summary.json",
         "mpma_b_final_candidate": root / "tables" / "mpma_b_final_candidate.json",
+        "job_resources": root / "tables" / "job_resources.tsv",
+        "mpma_b_selection_resources": root
+        / "tables"
+        / "mpma_b_selection_resources.json",
     }
 
 
+def _parquet_path(path: Path) -> Path:
+    return path.with_suffix(".parquet")
+
+
 def _read_tsv(path: Path) -> pd.DataFrame:
+    parquet = _parquet_path(path)
+    if parquet.exists() and parquet.stat().st_size > 0:
+        try:
+            return pd.read_parquet(parquet)
+        except Exception:
+            pass
     if not path.exists() or path.stat().st_size == 0:
         return pd.DataFrame()
     try:
         return pd.read_csv(path, sep="\t")
     except pd.errors.EmptyDataError:
         return pd.DataFrame()
+
+
+def _write_dataframe(path: Path, frame: pd.DataFrame) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    parquet = _parquet_path(path)
+    tsv_tmp = path.with_name(path.name + ".tmp")
+    parquet_tmp = parquet.with_name(parquet.name + ".tmp")
+    frame.to_csv(tsv_tmp, sep="\t", index=False)
+    tsv_tmp.replace(path)
+    try:
+        frame.to_parquet(parquet_tmp, index=False, compression="zstd")
+        parquet_tmp.replace(parquet)
+    except Exception:
+        if parquet_tmp.exists():
+            parquet_tmp.unlink()
 
 
 def _filter_current(
@@ -796,6 +1078,7 @@ def _load_existing_evaluation(
         "outer_predictions": pd.DataFrame(),
         "inner_predictions": pd.DataFrame(),
         "qualification": pd.DataFrame(),
+        "job_resources": pd.DataFrame(),
     }
     if redo:
         return empty
@@ -805,11 +1088,29 @@ def _load_existing_evaluation(
         "outer_predictions": root / "predictions" / "outer_predictions.tsv",
         "inner_predictions": root / "inner_predictions" / "inner_predictions.tsv",
         "qualification": root / "tables" / "qualification_gate.tsv",
+        "job_resources": root / "tables" / "job_resources.tsv",
     }
-    return {
+    base = {
         name: _filter_current(_read_tsv(path), current_config_ids, outer_keys)
         for name, path in tables.items()
     }
+    checkpoints = _load_checkpoint_frames(root, current_config_ids, outer_keys)
+    subsets = {
+        "outer_metrics": ["split_key", "config_id"],
+        "inner_metrics": ["inner_key", "config_id"],
+        "outer_predictions": ["split_key", "config_id", "sample_id"],
+        "inner_predictions": ["split_key", "config_id", "sample_id"],
+        "qualification": ["split_key", "config_id"],
+        "job_resources": ["split_key", "config_id"],
+    }
+    for key in base:
+        cp = checkpoints.get(key, pd.DataFrame())
+        base[key] = _concat_existing_new(
+            base[key],
+            cp.to_dict(orient="records") if cp is not None and not cp.empty else [],
+            subsets[key],
+        )
+    return base
 
 
 def _done_pairs(df: pd.DataFrame, split_col: str) -> set[tuple[str, str]]:
@@ -1309,6 +1610,7 @@ def _write_tables(
     outer_preds: list[dict[str, Any]],
     inner_preds: list[dict[str, Any]],
     qualification: list[dict[str, Any]],
+    job_resources: list[dict[str, Any]],
     existing: dict[str, pd.DataFrame] | None = None,
     gate_enabled: bool = False,
 ) -> None:
@@ -1342,6 +1644,11 @@ def _write_tables(
         if gate_enabled
         else pd.DataFrame()
     )
+    resource_df = _concat_existing_new(
+        existing.get("job_resources", pd.DataFrame()),
+        job_resources,
+        ["split_key", "config_id"],
+    )
 
     for frame in (outer_df, inner_df):
         if "transformation_abbreviation" in frame.columns:
@@ -1350,17 +1657,16 @@ def _write_tables(
             frame["count_transformation"] = frame["count_transformation"].map(
                 _count_transformation_name
             )
-    outer_df.to_csv(root / "results" / "outer_results.tsv", sep="\t", index=False)
-    inner_df.to_csv(root / "inner_results" / "inner_results.tsv", sep="\t", index=False)
-    outer_pred_df.to_csv(
-        root / "predictions" / "outer_predictions.tsv", sep="\t", index=False
+    _write_dataframe(root / "results" / "outer_results.tsv", outer_df)
+    _write_dataframe(root / "inner_results" / "inner_results.tsv", inner_df)
+    _write_dataframe(root / "predictions" / "outer_predictions.tsv", outer_pred_df)
+    _write_dataframe(
+        root / "inner_predictions" / "inner_predictions.tsv", inner_pred_df
     )
-    inner_pred_df.to_csv(
-        root / "inner_predictions" / "inner_predictions.tsv", sep="\t", index=False
-    )
+    _write_dataframe(root / "tables" / "job_resources.tsv", resource_df)
     qpath = root / "tables" / "qualification_gate.tsv"
     if gate_enabled:
-        qual_df.to_csv(qpath, sep="\t", index=False)
+        _write_dataframe(qpath, qual_df)
     elif qpath.exists():
         qpath.unlink()
     _update_completion_db(root, outer_df, inner_df)

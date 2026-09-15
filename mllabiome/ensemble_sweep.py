@@ -16,6 +16,7 @@ from .metrics import _renormalize_proba, compute_metrics
 from .mpma_e_figure import write_single_task_mpma_e_figure
 from .selection import select_final_mpma_candidate
 from .utils import TAXONOMIC_LEVELS, dump_json_standard
+from .compute import ResourceTracker
 
 
 def _load_manifest(root: Path) -> dict[str, Any]:
@@ -562,6 +563,11 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
             "optimize metric": metric,
         },
     )
+    resource_tracker = ResourceTracker(
+        sample_interval_s=float(
+            getattr(sweep.evaluation, "resource_sample_interval_s", 0.10)
+        )
+    ).start()
     selection, selected_outer_predictions, fold_metrics = select_mpma_e_by_outer_fold(
         inner_results,
         inner_predictions,
@@ -633,6 +639,8 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
     comparison.to_csv(
         ensemble_dir / "final_model_comparison.tsv", sep="\t", index=False
     )
+    resource_path = ensemble_dir / "mpma_e_selection_resources.json"
+    dump_json_standard(resource_tracker.stop(), resource_path)
     stale_candidate_plot = ensemble_dir / "ensemble_candidates.png"
     if stale_candidate_plot.exists():
         stale_candidate_plot.unlink()
@@ -663,6 +671,7 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
         "mpma_e_candidates": candidate_path,
         "mpma_e_summary": summary_path,
         "mpma_e_final_candidate": final_path,
+        "mpma_e_selection_resources": resource_path,
         **mpma_e_outputs,
     }
     path_table("Ensemble outputs", outputs)

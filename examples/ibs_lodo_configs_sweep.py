@@ -112,7 +112,7 @@ _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
     ("class", ("class",)),
     ("order", ("order",)),
     # ("family", ("family",)),
-    # ("genus", ("genus",)),
+    ("genus", ("genus",)),
     # Continuous ranges up to genus
     # ("domain-phylum", ("domain", "phylum")),
     # ("domain-class", ("domain", "phylum", "class")),
@@ -128,7 +128,7 @@ _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
     # ("class-genus", ("class", "order", "family", "genus")),
     # ("order-family", ("order", "family")),
     # ("order-genus", ("order", "family", "genus")),
-    # ("family-genus", ("family", "genus")),
+    ("family-genus", ("family", "genus")),
     # Non-adjacent two-rank selections
     # ("domain+class", ("domain", "class")),
     # ("domain+order", ("domain", "order")),
