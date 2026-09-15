@@ -7,12 +7,9 @@ from typing import Any, Callable
 import numpy as np
 import pandas as pd
 from scipy.stats import rankdata
-from skbio.stats.composition import alr as skbio_alr
 from skbio.stats.composition import closure as skbio_closure
 from skbio.stats.composition import clr as skbio_clr
-from skbio.stats.composition import ilr as skbio_ilr
 from skbio.stats.composition import multi_replace as skbio_multi_replace
-from skbio.stats.composition import rclr as skbio_rclr
 from sklearn.base import BaseEstimator, clone
 from sklearn.preprocessing import (
     PowerTransformer,
@@ -35,6 +32,11 @@ class TransformationLabel:
         return self.key
 
 
+# Publication-facing invariant:
+# every built-in abundance transformation preserves the number, order, and
+# one-to-one identity of input taxon features. A transformed coordinate may
+# represent a transformed abundance (for example CLR[taxon]), but it must not
+# become an unnamed balance, a pairwise ratio, or another latent coordinate.
 TRANSFORMATION_LABELS: tuple[TransformationLabel, ...] = (
     TransformationLabel("identity", ("raw", "unchanged", "identity")),
     TransformationLabel(
@@ -65,44 +67,8 @@ TRANSFORMATION_LABELS: tuple[TransformationLabel, ...] = (
         ),
     ),
     TransformationLabel(
-        "robust_centered_log_ratio_zero_preserving",
-        ("rclr", "robust_clr", "rclr"),
-    ),
-    TransformationLabel(
-        "additive_log_ratio_first_reference",
-        (
-            "alr",
-            "scikit-bio_alr",
-            "skbio_alr",
-            "scikit_bio_alr",
-            "scikitbio_alr",
-            "alr_first",
-            "alr-first",
-            "alr_last",
-        ),
-    ),
-    TransformationLabel(
-        "isometric_log_ratio_egozcue",
-        (
-            "ilr",
-            "scikit-bio_ilr",
-            "skbio_ilr",
-            "scikit_bio_ilr",
-            "scikitbio_ilr",
-            "ilr_egoz",
-            "ilr_egozcue",
-            "ilr_seq",
-            "ilr-egoz.",
-        ),
-    ),
-    TransformationLabel(
         "standardized_centered_log_ratio_multiplicative_replacement",
         ("clr_std", "clr_epsilon_z", "clr_eps_z", "clr-mult+z"),
-        "extended",
-    ),
-    TransformationLabel(
-        "standardized_isometric_log_ratio_egozcue",
-        ("ilr_std", "ilr_seq_z", "ilr-egoz.+z"),
         "extended",
     ),
     TransformationLabel(
@@ -135,13 +101,7 @@ TRANSFORMATION_LABELS: tuple[TransformationLabel, ...] = (
         ("prev_weighted", "prevalence_weighted", "prev_wt", "prev-wt-ra"),
         "extended",
     ),
-    TransformationLabel(
-        "pairwise_log_ratio_multiplicative_replacement_500",
-        ("pairwise_logratio", "pair_logr_500", "pair-logr-500"),
-        "extended",
-    ),
 )
-
 
 TRANSFORMATION_SPACE = TRANSFORMATION_LABELS
 
@@ -151,7 +111,11 @@ for _label in TRANSFORMATION_LABELS:
     for _alias in _label.aliases:
         _TRANSFORMATION_LABEL_BY_KEY[str(_alias).lower()] = _label
 
+# Removed transformations either changed dimensionality/feature identity or
+# were legacy aliases. The replacement is a feature-preserving alternative,
+# not a claim of mathematical equivalence.
 _REMOVED_TRANSFORMATIONS = {
+    # Legacy aliases retained as informative errors.
     "log": "log10_relative_abundance_half_min_pseudocount",
     "log1p": "log10_relative_abundance_half_min_pseudocount",
     "ln1p": "log10_relative_abundance_half_min_pseudocount",
@@ -173,6 +137,37 @@ _REMOVED_TRANSFORMATIONS = {
     "row_rank_z": "within_sample_fractional_rank",
     "rank_unit": "within_sample_fractional_rank",
     "row_rank_unit": "within_sample_fractional_rank",
+    # Removed to keep a strict one-input-taxon <-> one-output-coordinate contract.
+    "robust_centered_log_ratio_zero_preserving": "centered_log_ratio_multiplicative_replacement",
+    "rclr": "centered_log_ratio_multiplicative_replacement",
+    "robust_clr": "centered_log_ratio_multiplicative_replacement",
+    "additive_log_ratio_first_reference": "centered_log_ratio_multiplicative_replacement",
+    "alr": "centered_log_ratio_multiplicative_replacement",
+    "scikit-bio_alr": "centered_log_ratio_multiplicative_replacement",
+    "skbio_alr": "centered_log_ratio_multiplicative_replacement",
+    "scikit_bio_alr": "centered_log_ratio_multiplicative_replacement",
+    "scikitbio_alr": "centered_log_ratio_multiplicative_replacement",
+    "alr_first": "centered_log_ratio_multiplicative_replacement",
+    "alr-first": "centered_log_ratio_multiplicative_replacement",
+    "alr_last": "centered_log_ratio_multiplicative_replacement",
+    "isometric_log_ratio_egozcue": "centered_log_ratio_multiplicative_replacement",
+    "ilr": "centered_log_ratio_multiplicative_replacement",
+    "scikit-bio_ilr": "centered_log_ratio_multiplicative_replacement",
+    "skbio_ilr": "centered_log_ratio_multiplicative_replacement",
+    "scikit_bio_ilr": "centered_log_ratio_multiplicative_replacement",
+    "scikitbio_ilr": "centered_log_ratio_multiplicative_replacement",
+    "ilr_egoz": "centered_log_ratio_multiplicative_replacement",
+    "ilr_egozcue": "centered_log_ratio_multiplicative_replacement",
+    "ilr_seq": "centered_log_ratio_multiplicative_replacement",
+    "ilr-egoz.": "centered_log_ratio_multiplicative_replacement",
+    "standardized_isometric_log_ratio_egozcue": "standardized_centered_log_ratio_multiplicative_replacement",
+    "ilr_std": "standardized_centered_log_ratio_multiplicative_replacement",
+    "ilr_seq_z": "standardized_centered_log_ratio_multiplicative_replacement",
+    "ilr-egoz.+z": "standardized_centered_log_ratio_multiplicative_replacement",
+    "pairwise_log_ratio_multiplicative_replacement_500": "centered_log_ratio_multiplicative_replacement",
+    "pairwise_logratio": "centered_log_ratio_multiplicative_replacement",
+    "pair_logr_500": "centered_log_ratio_multiplicative_replacement",
+    "pair-logr-500": "centered_log_ratio_multiplicative_replacement",
 }
 
 
@@ -183,7 +178,11 @@ def transformation_label(name: str) -> TransformationLabel:
         return label
     if key in _REMOVED_TRANSFORMATIONS:
         replacement = _REMOVED_TRANSFORMATIONS[key]
-        raise KeyError(f"Transformation {name!r} was removed. Use {replacement!r}.")
+        raise KeyError(
+            f"Transformation {name!r} was removed because mllabiome now requires "
+            "all abundance transformations to preserve one-to-one taxon feature "
+            f"identity. Consider {replacement!r} instead."
+        )
     return TransformationLabel(str(name), (), "custom")
 
 
@@ -225,15 +224,52 @@ def _relative_abundance(X: np.ndarray) -> np.ndarray:
 def _positive_composition(X: np.ndarray) -> np.ndarray:
     raw = _matrix(X, nonnegative=True, nonzero_rows=True)
     rel = raw / raw.sum(axis=1, keepdims=True)
-    return np.asarray(skbio_multi_replace(skbio_closure(rel)), dtype=np.float64)
+    out = np.asarray(skbio_multi_replace(skbio_closure(rel)), dtype=np.float64)
+
+    # scikit-bio composition functions may squeeze the sample axis for a
+    # single-row matrix. mllabiome's transformation contract is always 2-D:
+    # (n_samples, n_features), including n_samples == 1.
+    if out.ndim == 1 and raw.shape[0] == 1 and out.shape[0] == raw.shape[1]:
+        out = out.reshape(1, -1)
+    if out.shape != raw.shape:
+        raise ValueError(
+            "Multiplicative zero replacement changed the abundance matrix shape: "
+            f"expected {raw.shape}, got {out.shape}."
+        )
+    return out
 
 
-def _finite_output(X: np.ndarray) -> np.ndarray:
+def _clr_matrix(X: np.ndarray) -> np.ndarray:
+    """Return CLR coordinates while preserving the 2-D sample axis."""
+    positive = _positive_composition(X)
+    out = np.asarray(skbio_clr(positive), dtype=np.float64)
+    if out.ndim == 1 and positive.shape[0] == 1 and out.shape[0] == positive.shape[1]:
+        out = out.reshape(1, -1)
+    if out.shape != positive.shape:
+        raise ValueError(
+            "CLR transformation changed the abundance matrix shape: "
+            f"expected {positive.shape}, got {out.shape}."
+        )
+    return out
+
+
+def _finite_output(
+    X: np.ndarray,
+    *,
+    expected_shape: tuple[int, int] | None = None,
+    context: str = "transformation",
+) -> np.ndarray:
     out = np.asarray(X, dtype=np.float64)
     if out.ndim != 2:
         raise ValueError("A transformation returned a non-matrix result.")
     if not np.isfinite(out).all():
         raise ValueError("A transformation returned non-finite values.")
+    if expected_shape is not None and out.shape != expected_shape:
+        raise ValueError(
+            f"{context} must preserve sample and taxon dimensions: expected "
+            f"shape {expected_shape}, got {out.shape}. mllabiome requires a "
+            "one-to-one correspondence between transformed columns and input taxa."
+        )
     return out.astype(np.float32, copy=False)
 
 
@@ -246,8 +282,7 @@ class _BuiltinTransformer:
         self.variable_mask_: np.ndarray | None = None
         self.sorted_columns_: list[np.ndarray] | None = None
         self.prevalence_: np.ndarray | None = None
-        self.pair_i_: np.ndarray | None = None
-        self.pair_j_: np.ndarray | None = None
+        self.n_features_in_: int | None = None
 
     def _base_transform(self, X: np.ndarray) -> np.ndarray:
         name = self.name
@@ -262,18 +297,7 @@ class _BuiltinTransformer:
         if name == "arcsine_sqrt":
             return np.arcsin(np.sqrt(_relative_abundance(X)))
         if name == "centered_log_ratio_multiplicative_replacement":
-            return np.asarray(skbio_clr(_positive_composition(X)), dtype=np.float64)
-        if name == "robust_centered_log_ratio_zero_preserving":
-            raw = _matrix(X, nonnegative=True, nonzero_rows=True)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                out = np.asarray(skbio_rclr(raw), dtype=np.float64)
-            return np.where(np.isnan(out), 0.0, out)
-        if name == "additive_log_ratio_first_reference":
-            return np.asarray(
-                skbio_alr(_positive_composition(X), ref_idx=0), dtype=np.float64
-            )
-        if name == "isometric_log_ratio_egozcue":
-            return np.asarray(skbio_ilr(_positive_composition(X)), dtype=np.float64)
+            return _clr_matrix(X)
         if name == "within_sample_fractional_rank":
             raw = _matrix(X, nonnegative=True)
             if raw.shape[1] == 0:
@@ -283,7 +307,10 @@ class _BuiltinTransformer:
         raise KeyError(name)
 
     def fit(self, X: np.ndarray) -> "_BuiltinTransformer":
+        raw = _matrix(X)
+        self.n_features_in_ = int(raw.shape[1])
         name = self.name
+
         if name == "log10_relative_abundance_half_min_pseudocount":
             _matrix(X, nonnegative=True, nonzero_rows=True)
             rel = _relative_abundance(X)
@@ -294,10 +321,7 @@ class _BuiltinTransformer:
                 )
             self.pseudocount_ = float(positive.min()) / 2.0
         elif name == "standardized_centered_log_ratio_multiplicative_replacement":
-            base = np.asarray(skbio_clr(_positive_composition(X)), dtype=np.float64)
-            self.scaler_ = StandardScaler().fit(base)
-        elif name == "standardized_isometric_log_ratio_egozcue":
-            base = np.asarray(skbio_ilr(_positive_composition(X)), dtype=np.float64)
+            base = _clr_matrix(X)
             self.scaler_ = StandardScaler().fit(base)
         elif name == "yeo_johnson_relative_abundance":
             base = _relative_abundance(X)
@@ -318,30 +342,32 @@ class _BuiltinTransformer:
         elif name == "robust_scaled_relative_abundance":
             self.scaler_ = RobustScaler().fit(_relative_abundance(X))
         elif name == "training_ecdf_rank":
-            raw = _matrix(X, nonnegative=True)
-            self.sorted_columns_ = [np.sort(raw[:, j]) for j in range(raw.shape[1])]
+            abundance = _matrix(X, nonnegative=True)
+            self.sorted_columns_ = [
+                np.sort(abundance[:, j]) for j in range(abundance.shape[1])
+            ]
         elif name == "prevalence_weighted_relative_abundance":
-            raw = _matrix(X, nonnegative=True)
-            self.prevalence_ = (raw > 0).mean(axis=0).astype(np.float64)
-        elif name == "pairwise_log_ratio_multiplicative_replacement_500":
-            raw = _matrix(X, nonnegative=True, nonzero_rows=True)
-            n_features = raw.shape[1]
-            if n_features < 2:
-                raise ValueError(
-                    "Pairwise log-ratio transformation requires at least two features."
-                )
-            pairs = np.array(np.triu_indices(n_features, k=1)).T
-            if len(pairs) > 500:
-                rng = np.random.RandomState(self.random_state)
-                pairs = pairs[rng.choice(len(pairs), 500, replace=False)]
-            self.pair_i_ = pairs[:, 0]
-            self.pair_j_ = pairs[:, 1]
+            abundance = _matrix(X, nonnegative=True)
+            self.prevalence_ = (abundance > 0).mean(axis=0).astype(np.float64)
         else:
             self._base_transform(X)
         return self
 
+    def _expected_shape(self, X: np.ndarray) -> tuple[int, int]:
+        raw = _matrix(X)
+        if self.n_features_in_ is None:
+            raise RuntimeError("Transformation has not been fitted.")
+        if raw.shape[1] != self.n_features_in_:
+            raise ValueError(
+                "Feature count differs from the fitted abundance transformation: "
+                f"expected {self.n_features_in_}, got {raw.shape[1]}."
+            )
+        return raw.shape
+
     def transform(self, X: np.ndarray) -> np.ndarray:
         name = self.name
+        expected_shape = self._expected_shape(X)
+
         if name in {
             "identity",
             "relative_abundance",
@@ -349,27 +375,31 @@ class _BuiltinTransformer:
             "hellinger",
             "arcsine_sqrt",
             "centered_log_ratio_multiplicative_replacement",
-            "robust_centered_log_ratio_zero_preserving",
-            "additive_log_ratio_first_reference",
-            "isometric_log_ratio_egozcue",
             "within_sample_fractional_rank",
         }:
-            return _finite_output(self._base_transform(X))
+            return _finite_output(
+                self._base_transform(X),
+                expected_shape=expected_shape,
+                context=f"Built-in transformation {name!r}",
+            )
         if name == "log10_relative_abundance_half_min_pseudocount":
             if self.pseudocount_ is None:
                 raise RuntimeError("Transformation has not been fitted.")
             _matrix(X, nonnegative=True, nonzero_rows=True)
-            return _finite_output(np.log10(_relative_abundance(X) + self.pseudocount_))
+            return _finite_output(
+                np.log10(_relative_abundance(X) + self.pseudocount_),
+                expected_shape=expected_shape,
+                context=f"Built-in transformation {name!r}",
+            )
         if name == "standardized_centered_log_ratio_multiplicative_replacement":
             if self.scaler_ is None:
                 raise RuntimeError("Transformation has not been fitted.")
-            base = np.asarray(skbio_clr(_positive_composition(X)), dtype=np.float64)
-            return _finite_output(self.scaler_.transform(base))
-        if name == "standardized_isometric_log_ratio_egozcue":
-            if self.scaler_ is None:
-                raise RuntimeError("Transformation has not been fitted.")
-            base = np.asarray(skbio_ilr(_positive_composition(X)), dtype=np.float64)
-            return _finite_output(self.scaler_.transform(base))
+            base = _clr_matrix(X)
+            return _finite_output(
+                self.scaler_.transform(base),
+                expected_shape=expected_shape,
+                context=f"Built-in transformation {name!r}",
+            )
         if name == "yeo_johnson_relative_abundance":
             base = _relative_abundance(X)
             out = np.zeros_like(base, dtype=np.float64)
@@ -380,30 +410,46 @@ class _BuiltinTransformer:
                 if self.scaler_ is None:
                     raise RuntimeError("Transformation has not been fitted.")
                 out[:, mask] = self.scaler_.transform(base[:, mask])
-            return _finite_output(out)
+            return _finite_output(
+                out,
+                expected_shape=expected_shape,
+                context=f"Built-in transformation {name!r}",
+            )
         if name == "quantile_normal_relative_abundance":
             if self.scaler_ is None:
                 raise RuntimeError("Transformation has not been fitted.")
-            return _finite_output(self.scaler_.transform(_relative_abundance(X)))
+            return _finite_output(
+                self.scaler_.transform(_relative_abundance(X)),
+                expected_shape=expected_shape,
+                context=f"Built-in transformation {name!r}",
+            )
         if name == "robust_scaled_relative_abundance":
             if self.scaler_ is None:
                 raise RuntimeError("Transformation has not been fitted.")
-            return _finite_output(self.scaler_.transform(_relative_abundance(X)))
+            return _finite_output(
+                self.scaler_.transform(_relative_abundance(X)),
+                expected_shape=expected_shape,
+                context=f"Built-in transformation {name!r}",
+            )
         if name == "training_ecdf_rank":
-            raw = _matrix(X, nonnegative=True)
+            abundance = _matrix(X, nonnegative=True)
             if self.sorted_columns_ is None:
                 raise RuntimeError("Transformation has not been fitted.")
-            if raw.shape[1] != len(self.sorted_columns_):
+            if abundance.shape[1] != len(self.sorted_columns_):
                 raise ValueError(
                     "Feature count differs from the fitted ECDF transformation."
                 )
-            out = np.zeros_like(raw, dtype=np.float64)
+            out = np.zeros_like(abundance, dtype=np.float64)
             for j, sorted_col in enumerate(self.sorted_columns_):
                 n = max(len(sorted_col), 1)
                 out[:, j] = np.searchsorted(
-                    sorted_col, raw[:, j], side="right"
+                    sorted_col, abundance[:, j], side="right"
                 ) / float(n)
-            return _finite_output(out)
+            return _finite_output(
+                out,
+                expected_shape=expected_shape,
+                context=f"Built-in transformation {name!r}",
+            )
         if name == "prevalence_weighted_relative_abundance":
             if self.prevalence_ is None:
                 raise RuntimeError("Transformation has not been fitted.")
@@ -411,12 +457,11 @@ class _BuiltinTransformer:
             weighted = rel * self.prevalence_[None, :]
             sums = weighted.sum(axis=1, keepdims=True)
             out = np.divide(weighted, sums, out=np.zeros_like(weighted), where=sums > 0)
-            return _finite_output(out)
-        if name == "pairwise_log_ratio_multiplicative_replacement_500":
-            if self.pair_i_ is None or self.pair_j_ is None:
-                raise RuntimeError("Transformation has not been fitted.")
-            comp = _positive_composition(X)
-            return _finite_output(np.log(comp[:, self.pair_i_] / comp[:, self.pair_j_]))
+            return _finite_output(
+                out,
+                expected_shape=expected_shape,
+                context=f"Built-in transformation {name!r}",
+            )
         raise KeyError(f"Unknown abundance transformation {name!r}.")
 
     def apply_pair(
@@ -442,9 +487,16 @@ class Transform:
             raise KeyError(
                 f"Unknown abundance transformation {requested!r}. Provide a callable for a custom transformation."
             )
+        if fn is not None and bool(is_bw):
+            raise ValueError(
+                "Two-array custom transformations are disabled because passing both "
+                "training and held-out matrices to the same callable cannot enforce "
+                "train-only fitting. Use a stateless fn(X), or provide an estimator-like "
+                "object with fit(X_train) and transform/apply(X)."
+            )
         self.name = info.key
         self._fn = fn
-        self._is_bw = bool(is_bw)
+        self._is_bw = False
 
     def apply(
         self, X_tr: np.ndarray, X_te: np.ndarray
@@ -453,11 +505,20 @@ class Transform:
             return _BuiltinTransformer(self.name, random_state=42).apply_pair(
                 X_tr, X_te
             )
-        if self._is_bw:
-            a, b = self._fn(X_tr, X_te)
-        else:
-            a, b = self._fn(X_tr), self._fn(X_te)
-        return _finite_output(a), _finite_output(b)
+        a = self._fn(X_tr)
+        b = self._fn(X_te)
+        return (
+            _finite_output(
+                a,
+                expected_shape=_matrix(X_tr).shape,
+                context=f"Custom transformation {self.name!r}",
+            ),
+            _finite_output(
+                b,
+                expected_shape=_matrix(X_te).shape,
+                context=f"Custom transformation {self.name!r}",
+            ),
+        )
 
 
 Transformation = Transform
@@ -479,7 +540,13 @@ class CountTransformation:
         self, name: str, pseudo_count: float | None = None, random_state: int = 42
     ):
         self.name = transformation_label(str(name)).key
-        self.pseudo_count = None if pseudo_count is None else float(pseudo_count)
+        if pseudo_count is not None:
+            raise ValueError(
+                "pseudo_count is not configurable. "
+                "'log10_relative_abundance_half_min_pseudocount' estimates exactly "
+                "half the minimum positive relative abundance from the training fold."
+            )
+        self.pseudo_count = None
         self.random_state = int(random_state)
         self._impl: _BuiltinTransformer | None = None
 
@@ -537,6 +604,7 @@ class CountTransformationAdapter:
         self.spec = spec
         self.random_state = int(random_state)
         self.obj: Any | None = None
+        self.n_features_in_: int | None = None
 
     def _make(self) -> Any:
         if self.spec is None:
@@ -553,12 +621,20 @@ class CountTransformationAdapter:
             return self.spec
         if callable(self.spec) and _callable_looks_like_factory(self.spec):
             return self.spec()
+        if callable(self.spec) and _callable_accepts_two_required(self.spec):
+            raise TypeError(
+                "Two-array custom transformation callables are not supported. "
+                "Use an estimator-like object with fit(X_train) and transform/apply(X), "
+                "or a stateless one-array callable."
+            )
         return self.spec
 
     def fit(self, X: np.ndarray) -> "CountTransformationAdapter":
+        X_float = _as_float_matrix(X)
+        self.n_features_in_ = int(np.asarray(X_float).shape[1])
         obj = self._make()
         if hasattr(obj, "fit"):
-            obj.fit(_as_float_matrix(X))
+            obj.fit(X_float)
         self.obj = obj
         return self
 
@@ -567,19 +643,32 @@ class CountTransformationAdapter:
             raise RuntimeError(
                 f"Count transformation {self.name!r} has not been fitted."
             )
+        X_float = _as_float_matrix(X)
+        expected_shape = np.asarray(X_float).shape
+        if self.n_features_in_ is not None and expected_shape[1] != self.n_features_in_:
+            raise ValueError(
+                "Feature count differs from the fitted abundance transformation: "
+                f"expected {self.n_features_in_}, got {expected_shape[1]}."
+            )
         obj = self.obj
         if isinstance(obj, Transform):
             raise RuntimeError(
                 "Callable Transformation objects must be applied to a train/test pair."
             )
         if hasattr(obj, "apply"):
-            return _finite_output(obj.apply(_as_float_matrix(X)))
-        if hasattr(obj, "transform"):
-            return _finite_output(obj.transform(_as_float_matrix(X)))
-        if callable(obj):
-            return _finite_output(obj(_as_float_matrix(X)))
-        raise TypeError(
-            f"Custom count transformation {self.name!r} must be callable or provide fit/apply or fit/transform."
+            result = obj.apply(X_float)
+        elif hasattr(obj, "transform"):
+            result = obj.transform(X_float)
+        elif callable(obj):
+            result = obj(X_float)
+        else:
+            raise TypeError(
+                f"Custom count transformation {self.name!r} must be callable or provide fit/apply or fit/transform."
+            )
+        return _finite_output(
+            result,
+            expected_shape=expected_shape,
+            context=f"Count transformation {self.name!r}",
         )
 
     def apply_pair(
@@ -588,8 +677,10 @@ class CountTransformationAdapter:
         if isinstance(self.spec, Transform) and self.spec._fn is not None:
             return self.spec.apply(_as_float_matrix(X_tr), _as_float_matrix(X_te))
         if callable(self.spec) and _callable_accepts_two_required(self.spec):
-            a, b = self.spec(_as_float_matrix(X_tr), _as_float_matrix(X_te))
-            return _finite_output(a), _finite_output(b)
+            raise TypeError(
+                "Two-array custom transformation callables are not supported because "
+                "they can inspect held-out data while fitting."
+            )
         self.fit(X_tr)
         return self.apply(X_tr), self.apply(X_te)
 

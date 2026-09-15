@@ -26,19 +26,31 @@ DATA = mll.Data(
 )
 
 _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
-    ("family", ("family",)),
-    ("genus", ("genus",)),
-    ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
+    # ("family", ("family",)),
+    # ("genus", ("genus",)),
+    # ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
     ("raw", ("all",)),
 ]
 
 
 def _build_count_transformations():
     T = mll.Transformation
+
     return [
-        T("identity"),
         T("relative_abundance"),
+        T("identity"),
+        T("presence_absence"),
+        T("hellinger"),
         T("arcsine_sqrt"),
+        T("log10_relative_abundance_half_min_pseudocount"),
+        T("centered_log_ratio_multiplicative_replacement"),
+        T("standardized_centered_log_ratio_multiplicative_replacement"),
+        T("yeo_johnson_relative_abundance"),
+        T("quantile_normal_relative_abundance"),
+        T("robust_scaled_relative_abundance"),
+        T("within_sample_fractional_rank"),
+        T("training_ecdf_rank"),
+        T("prevalence_weighted_relative_abundance"),
     ]
 
 
@@ -58,30 +70,30 @@ def _build_models():
     )
 
     # M.append(("Ridge_a1", RidgeClassifier(alpha=1.0, random_state=42)))
-    # M.append(("BNB", BernoulliNB()))
+    M.append(("BNB", BernoulliNB()))
     # M.append(("NearestCentroid_raw", NearestCentroid()))
 
-    M.append(
-        (
-            "XGB",
-            XGBClassifier(
-                objective="binary:logistic",
-                n_estimators=500,
-                learning_rate=0.03,
-                max_depth=3,
-                min_child_weight=5,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                reg_alpha=0.1,
-                reg_lambda=1.0,
-                eval_metric="logloss",
-                tree_method="hist",
-                n_jobs=1,
-                random_state=42,
-                verbosity=0,
-            ),
-        )
-    )
+    # M.append(
+    #     (
+    #         "XGB",
+    #         XGBClassifier(
+    #             objective="binary:logistic",
+    #             n_estimators=500,
+    #             learning_rate=0.03,
+    #             max_depth=3,
+    #             min_child_weight=5,
+    #             subsample=0.8,
+    #             colsample_bytree=0.8,
+    #             reg_alpha=0.1,
+    #             reg_lambda=1.0,
+    #             eval_metric="logloss",
+    #             tree_method="hist",
+    #             n_jobs=1,
+    #             random_state=42,
+    #             verbosity=0,
+    #         ),
+    #     )
+    # )
 
     return M
 

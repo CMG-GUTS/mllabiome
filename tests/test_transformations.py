@@ -1,14 +1,9 @@
-import warnings
-
 import numpy as np
 import pytest
 from scipy.stats import rankdata
-from skbio.stats.composition import alr as skbio_alr
 from skbio.stats.composition import closure as skbio_closure
 from skbio.stats.composition import clr as skbio_clr
-from skbio.stats.composition import ilr as skbio_ilr
 from skbio.stats.composition import multi_replace as skbio_multi_replace
-from skbio.stats.composition import rclr as skbio_rclr
 from sklearn.preprocessing import (
     PowerTransformer,
     QuantileTransformer,
@@ -22,11 +17,13 @@ from mllabiome.resolutions import _parse_resolution, materialize_mpdr
 from mllabiome.transformations import (
     TRANSFORMATION_LABELS,
     CountTransformation,
+    CountTransformationAdapter,
     Transformation,
     transformation_space_table,
 )
 
-CANONICAL_TRANSFORMATIONS = {
+
+EXPECTED_TRANSFORMATIONS = {
     "identity",
     "relative_abundance",
     "presence_absence",
@@ -34,18 +31,13 @@ CANONICAL_TRANSFORMATIONS = {
     "arcsine_sqrt",
     "log10_relative_abundance_half_min_pseudocount",
     "centered_log_ratio_multiplicative_replacement",
-    "robust_centered_log_ratio_zero_preserving",
-    "additive_log_ratio_first_reference",
-    "isometric_log_ratio_egozcue",
     "standardized_centered_log_ratio_multiplicative_replacement",
-    "standardized_isometric_log_ratio_egozcue",
     "yeo_johnson_relative_abundance",
     "quantile_normal_relative_abundance",
     "robust_scaled_relative_abundance",
     "within_sample_fractional_rank",
     "training_ecdf_rank",
     "prevalence_weighted_relative_abundance",
-    "pairwise_log_ratio_multiplicative_replacement_500",
 }
 
 
@@ -119,7 +111,7 @@ def _resolution_dataset():
 
 
 def test_every_builtin_transformation_has_an_explicit_correctness_contract():
-    assert {label.key for label in TRANSFORMATION_LABELS} == CANONICAL_TRANSFORMATIONS
+    assert {label.key for label in TRANSFORMATION_LABELS} == EXPECTED_TRANSFORMATIONS
 
 
 def test_canonical_aliases():
@@ -129,9 +121,11 @@ def test_canonical_aliases():
     assert Transformation("sqrt").name == "hellinger"
     assert Transformation("arcsin_sqrt").name == "arcsine_sqrt"
     assert Transformation("clr").name == "centered_log_ratio_multiplicative_replacement"
-    assert Transformation("rclr").name == "robust_centered_log_ratio_zero_preserving"
-    assert Transformation("alr").name == "additive_log_ratio_first_reference"
-    assert Transformation("scikit-bio_ilr").name == "isometric_log_ratio_egozcue"
+
+
+def test_unknown_transformation_requires_an_explicit_custom_callable():
+    with pytest.raises(KeyError, match="Unknown abundance transformation"):
+        Transformation("not_a_builtin_transformation")
 
 
 def test_identity_is_exact_no_op():
@@ -198,9 +192,17 @@ def test_log10_relative_abundance_pseudocount_is_fitted_from_training_only():
     np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-6)
     assert transform._impl is not None
     assert transform._impl.pseudocount_ == pytest.approx(expected_pseudocount)
+
     contaminated_batch = np.vstack([test[0], [1e-30, 1.0, 0.0], [1e12, 1.0, 1.0]])
     contaminated_out = transform.apply(contaminated_batch)
     np.testing.assert_allclose(contaminated_out[0], out[0], rtol=1e-6, atol=1e-6)
+
+
+def test_pseudocount_argument_is_not_silently_ignored():
+    with pytest.raises(ValueError, match="not configurable"):
+        CountTransformation(
+            "log10_relative_abundance_half_min_pseudocount", pseudo_count=1e-6
+        )
 
 
 def test_clr_matches_scikit_bio_and_has_zero_row_mean():
@@ -215,55 +217,38 @@ def test_clr_matches_scikit_bio_and_has_zero_row_mean():
     )
 
 
-def test_rclr_matches_scikit_bio_with_explicit_zero_preserving_policy():
-    X = _train_matrix()
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
-        out = CountTransformation(
-            "robust_centered_log_ratio_zero_preserving"
-        ).fit_apply(X)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        direct = np.asarray(skbio_rclr(X), dtype=float)
-    expected = np.where(np.isnan(direct), 0.0, direct)
-    np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-6)
-    np.testing.assert_array_equal(
-        out[X == 0], np.zeros(np.count_nonzero(X == 0), dtype=np.float32)
-    )
-    for i in range(X.shape[0]):
-        mask = X[i] > 0
-        assert out[i, mask].mean() == pytest.approx(0.0, abs=1e-6)
-
-
-def test_alr_matches_scikit_bio_and_has_d_minus_one_coordinates():
-    X = _train_matrix()
-    out = CountTransformation("additive_log_ratio_first_reference").fit_apply(X)
-    expected = np.asarray(skbio_alr(_positive_composition(X), ref_idx=0), dtype=float)
-    assert out.shape == (X.shape[0], X.shape[1] - 1)
+def test_clr_single_sample_preserves_2d_shape_and_matches_scikit_bio():
+    X = _test_matrix()[0:1]
+    out = CountTransformation(
+        "centered_log_ratio_multiplicative_replacement"
+    ).fit_apply(X)
+    expected = np.asarray(skbio_clr(_positive_composition(X)), dtype=float)
+    if expected.ndim == 1:
+        expected = expected.reshape(1, -1)
+    assert out.shape == X.shape
     np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-6)
 
 
-def test_ilr_matches_scikit_bio_egozcue_basis_and_has_d_minus_one_coordinates():
-    X = _train_matrix()
-    out = CountTransformation("isometric_log_ratio_egozcue").fit_apply(X)
-    expected = np.asarray(skbio_ilr(_positive_composition(X)), dtype=float)
-    assert out.shape == (X.shape[0], X.shape[1] - 1)
-    np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-6)
+def test_standardized_clr_single_test_sample_preserves_2d_shape():
+    train = _train_matrix()
+    X = _test_matrix()[0:1]
+    transform = CountTransformation(
+        "standardized_centered_log_ratio_multiplicative_replacement"
+    ).fit(train)
+    out = transform.apply(X)
+    assert out.shape == X.shape
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        "centered_log_ratio_multiplicative_replacement",
-        "additive_log_ratio_first_reference",
-        "isometric_log_ratio_egozcue",
-    ],
-)
-def test_log_ratio_transforms_are_invariant_to_samplewise_positive_scaling(name):
+def test_log_ratio_transform_is_invariant_to_samplewise_positive_scaling():
     X = _train_matrix()
     scales = np.array([7.0, 0.25, 1000.0, 2.0, 13.0, 0.1])[:, None]
     scaled = X * scales
-    original = CountTransformation(name).fit_apply(X)
-    rescaled = CountTransformation(name).fit_apply(scaled)
+    original = CountTransformation(
+        "centered_log_ratio_multiplicative_replacement"
+    ).fit_apply(X)
+    rescaled = CountTransformation(
+        "centered_log_ratio_multiplicative_replacement"
+    ).fit_apply(scaled)
     np.testing.assert_allclose(original, rescaled, rtol=1e-5, atol=1e-5)
 
 
@@ -278,23 +263,6 @@ def test_standardized_clr_matches_scikit_bio_then_training_standardization():
     out_train, out_test = CountTransformation(
         "standardized_centered_log_ratio_multiplicative_replacement"
     ).apply_pair(train, test)
-    np.testing.assert_allclose(out_train, expected_train, rtol=1e-5, atol=1e-5)
-    np.testing.assert_allclose(out_test, expected_test, rtol=1e-5, atol=1e-5)
-    np.testing.assert_allclose(out_train.mean(axis=0), 0.0, rtol=0, atol=1e-6)
-
-
-def test_standardized_ilr_matches_scikit_bio_then_training_standardization():
-    train = _train_matrix()
-    test = _test_matrix()
-    train_base = np.asarray(skbio_ilr(_positive_composition(train)), dtype=float)
-    test_base = np.asarray(skbio_ilr(_positive_composition(test)), dtype=float)
-    scaler = StandardScaler().fit(train_base)
-    expected_train = scaler.transform(train_base)
-    expected_test = scaler.transform(test_base)
-    out_train, out_test = CountTransformation(
-        "standardized_isometric_log_ratio_egozcue"
-    ).apply_pair(train, test)
-    assert out_train.shape[1] == train.shape[1] - 1
     np.testing.assert_allclose(out_train, expected_train, rtol=1e-5, atol=1e-5)
     np.testing.assert_allclose(out_test, expected_test, rtol=1e-5, atol=1e-5)
     np.testing.assert_allclose(out_train.mean(axis=0), 0.0, rtol=0, atol=1e-6)
@@ -386,9 +354,7 @@ def test_training_ecdf_rank_uses_only_training_distribution():
     out = transform.apply(test)
     expected = np.array([[0.5, 0.5], [0.0, 1.0], [1.0, 0.25]], dtype=float)
     np.testing.assert_allclose(out, expected, rtol=0, atol=1e-7)
-    contaminated_batch = np.vstack([test[0], [-1e9, 1e9], [1e9, -1e9]])
-    with pytest.raises(ValueError):
-        transform.apply(contaminated_batch)
+
     valid_contaminated_batch = np.vstack([test[0], [0.0, 1e9], [1e9, 0.0]])
     contaminated_out = transform.apply(valid_contaminated_batch)
     np.testing.assert_allclose(contaminated_out[0], out[0], rtol=0, atol=1e-7)
@@ -416,25 +382,58 @@ def test_prevalence_weighted_relative_abundance_uses_training_prevalence_only():
     np.testing.assert_allclose(out.sum(axis=1), 1.0, rtol=1e-6, atol=1e-7)
 
 
-def test_pairwise_log_ratio_matches_all_pairs_after_multiplicative_replacement():
-    X = _train_matrix()
-    out = CountTransformation(
-        "pairwise_log_ratio_multiplicative_replacement_500", random_state=7
-    ).fit_apply(X)
-    comp = _positive_composition(X)
-    pairs = np.array(np.triu_indices(X.shape[1], k=1)).T
-    expected = np.log(comp[:, pairs[:, 0]] / comp[:, pairs[:, 1]])
-    assert out.shape == (X.shape[0], len(pairs))
-    np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-6)
+@pytest.mark.parametrize("name", sorted(EXPECTED_TRANSFORMATIONS))
+def test_every_builtin_preserves_sample_and_feature_dimensions(name):
+    train = _train_matrix()
+    test = _test_matrix()
+    out_train, out_test = CountTransformation(name).apply_pair(train, test)
+    assert out_train.shape == train.shape
+    assert out_test.shape == test.shape
 
 
-def test_pairwise_log_ratio_caps_output_at_500_coordinates():
-    rng = np.random.RandomState(11)
-    X = rng.lognormal(mean=0.0, sigma=1.0, size=(8, 33))
-    out = CountTransformation(
-        "pairwise_log_ratio_multiplicative_replacement_500", random_state=7
-    ).fit_apply(X)
-    assert out.shape == (X.shape[0], 500)
+@pytest.mark.parametrize("name", sorted(EXPECTED_TRANSFORMATIONS))
+def test_test_sample_transform_is_invariant_to_other_test_samples(name):
+    train = _train_matrix()
+    first = _test_matrix()[0:1]
+    batch = np.vstack(
+        [
+            first,
+            [1000.0, 1.0, 1.0, 1.0],
+            [1.0, 1000.0, 2.0, 3.0],
+        ]
+    )
+    transform = CountTransformation(name).fit(train)
+    alone = transform.apply(first)[0]
+    together = transform.apply(batch)[0]
+    np.testing.assert_allclose(alone, together, rtol=1e-6, atol=1e-6)
+
+
+def test_fitted_transform_rejects_different_feature_count():
+    transform = CountTransformation("relative_abundance").fit(_train_matrix())
+    with pytest.raises(ValueError, match="Feature count differs"):
+        transform.apply(np.ones((2, _train_matrix().shape[1] + 1)))
+
+
+def test_custom_transform_must_preserve_dimensions():
+    transform = Transformation("bad_custom", lambda X: np.asarray(X)[:, :-1])
+    with pytest.raises(ValueError, match="one-to-one correspondence"):
+        transform.apply(_train_matrix(), _test_matrix())
+
+
+def test_two_array_custom_transform_is_rejected_to_protect_train_test_boundary():
+    with pytest.raises(
+        ValueError, match="Two-array custom transformations are disabled"
+    ):
+        Transformation("unsafe", lambda X_train, X_test: (X_train, X_test), True)
+
+
+def test_adapter_rejects_two_array_callable():
+    def unsafe(X_train, X_test):
+        return X_train, X_test
+
+    adapter = CountTransformationAdapter("unsafe_custom", unsafe)
+    with pytest.raises(TypeError, match="Two-array custom transformation"):
+        adapter.apply_pair(_train_matrix(), _test_matrix())
 
 
 @pytest.mark.parametrize(
@@ -501,13 +500,21 @@ def test_raw_relative_abundance_uses_exact_complete_original_feature_matrix():
     np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-7)
 
 
-def test_compositional_log_ratio_transforms_reject_all_zero_samples():
+def test_compositional_log_transforms_reject_all_zero_samples():
     X = np.array([[1.0, 2.0, 3.0], [0.0, 0.0, 0.0]], dtype=float)
     for name in (
         "centered_log_ratio_multiplicative_replacement",
-        "additive_log_ratio_first_reference",
-        "isometric_log_ratio_egozcue",
+        "standardized_centered_log_ratio_multiplicative_replacement",
+        "log10_relative_abundance_half_min_pseudocount",
     ):
+        with pytest.raises(ValueError):
+            CountTransformation(name).fit_apply(X)
+
+
+def test_all_abundance_based_transforms_reject_negative_values():
+    X = _train_matrix().copy()
+    X[0, 0] = -1.0
+    for name in EXPECTED_TRANSFORMATIONS - {"identity"}:
         with pytest.raises(ValueError):
             CountTransformation(name).fit_apply(X)
 
