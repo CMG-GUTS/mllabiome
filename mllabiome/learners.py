@@ -25,12 +25,11 @@ from sklearn.linear_model import (
 )
 from sklearn.naive_bayes import BernoulliNB, GaussianNB, MultinomialNB
 from sklearn.neighbors import KNeighborsClassifier, NearestCentroid
-from sklearn.svm import SVC, LinearSVC
+from sklearn.svm import LinearSVC, SVC
 from sklearn.tree import DecisionTreeClassifier
 
 
 def _feature_names_from_X(X: Any) -> list[str]:
-    """Return stable string feature names for estimator backends that track them."""
     if hasattr(X, "columns"):
         return [str(c) for c in list(X.columns)]
     arr = np.asarray(X)
@@ -39,7 +38,6 @@ def _feature_names_from_X(X: Any) -> list[str]:
 
 
 def _as_named_frame(X: Any, feature_names: list[str]):
-    """Coerce prediction input to a DataFrame with the names used at fit time."""
     import pandas as pd
 
     if isinstance(X, pd.DataFrame):
@@ -58,7 +56,6 @@ def _as_named_frame(X: Any, feature_names: list[str]):
 
 
 def _quiet_known_flaml_sklearn_warnings():
-    """Suppress noisy warnings emitted by FLAML's internal sklearn candidates."""
     warnings.filterwarnings(
         "ignore",
         message=r"'penalty' was deprecated.*",
@@ -80,11 +77,9 @@ def _quiet_known_flaml_sklearn_warnings():
 
 
 def _logistic_regression(*, kind: str = "l2", **kwargs) -> LogisticRegression:
-    """Construct LogisticRegression without scikit-learn 1.8 penalty deprecation noise."""
     params = dict(kwargs)
     default = inspect.signature(LogisticRegression).parameters["penalty"].default
     if default == "deprecated":
-        # scikit-learn >=1.8: penalty is replaced by l1_ratio/C semantics.
         if kind == "l1":
             params.setdefault("solver", "saga")
             params.setdefault("l1_ratio", 1.0)
@@ -97,7 +92,6 @@ def _logistic_regression(*, kind: str = "l2", **kwargs) -> LogisticRegression:
             params.setdefault("C", np.inf)
             params.setdefault("l1_ratio", 0.0)
         return LogisticRegression(**params)
-    # scikit-learn <1.8 compatibility.
     if kind == "l1":
         params.setdefault("penalty", "l1")
         params.setdefault("solver", "saga")
@@ -112,6 +106,20 @@ def _logistic_regression(*, kind: str = "l2", **kwargs) -> LogisticRegression:
     return LogisticRegression(**params)
 
 
+def _calibrated(estimator: BaseEstimator) -> BaseEstimator:
+    return CalibratedClassifierCV(estimator, method="sigmoid", cv=3)
+
+
+def _require_probability_estimator(estimator: BaseEstimator) -> BaseEstimator:
+    if callable(getattr(estimator, "predict_proba", None)):
+        return estimator
+    if callable(getattr(estimator, "decision_function", None)):
+        return _calibrated(estimator)
+    raise TypeError(
+        f"{type(estimator).__name__} provides neither predict_proba nor decision_function and cannot be used as a probability-producing learner."
+    )
+
+
 def _learner_name(item: Any) -> str:
     if hasattr(item, "name") and not isinstance(item, tuple):
         return str(getattr(item, "name"))
@@ -122,9 +130,20 @@ def _learner_factory(item: Any) -> tuple[str, Callable[[], BaseEstimator]]:
     if isinstance(item, tuple):
         name, spec = item
         if isinstance(spec, BaseEstimator):
-            return str(name), lambda spec=spec: clone(spec)
+            return str(name), lambda spec=spec: _require_probability_estimator(
+                clone(spec)
+            )
         if callable(spec):
-            return str(name), spec
+
+            def factory(spec=spec):
+                estimator = spec()
+                if not isinstance(estimator, BaseEstimator):
+                    raise TypeError(
+                        f"Learner factory for {name!r} must return a scikit-learn BaseEstimator."
+                    )
+                return _require_probability_estimator(estimator)
+
+            return str(name), factory
         raise TypeError(
             f"Learner tuple for {name!r} must contain an estimator or factory."
         )
@@ -132,8 +151,6 @@ def _learner_factory(item: Any) -> tuple[str, Callable[[], BaseEstimator]]:
 
 
 class FLAMLClassifier(BaseEstimator):
-    """Small scikit-learn-compatible FLAML AutoML wrapper."""
-
     def __init__(
         self,
         time_budget=600,
@@ -179,6 +196,10 @@ class FLAMLClassifier(BaseEstimator):
         with warnings.catch_warnings():
             _quiet_known_flaml_sklearn_warnings()
             self.model_.fit(**fit_kwargs)
+        if not callable(getattr(self.model_, "predict_proba", None)):
+            raise TypeError(
+                "FLAML selected a classifier that does not provide predict_proba."
+            )
         return self
 
     def predict(self, X):
@@ -191,8 +212,7 @@ class FLAMLClassifier(BaseEstimator):
 
 
 def build_learner(name: str) -> BaseEstimator:
-    key = str(name)
-    base = key.lower()
+    base = str(name).lower()
     if base in {"lr", "lr_l2", "lr_l2_bal", "logistic"}:
         return _logistic_regression(
             kind="l2", max_iter=2000, class_weight="balanced", random_state=42
@@ -202,9 +222,9 @@ def build_learner(name: str) -> BaseEstimator:
             kind="l1", max_iter=3000, class_weight="balanced", random_state=42
         )
     if base in {"ridge", "ridge_a1", "ridgeclassifier"}:
-        return RidgeClassifier(alpha=1.0, random_state=42)
+        return _calibrated(RidgeClassifier(alpha=1.0, random_state=42))
     if base == "ridge_a01":
-        return RidgeClassifier(alpha=0.1, random_state=42)
+        return _calibrated(RidgeClassifier(alpha=0.1, random_state=42))
     if base in {"rf", "rf_500_msl5"}:
         return RandomForestClassifier(
             n_estimators=500, min_samples_leaf=5, n_jobs=1, random_state=42
@@ -233,41 +253,37 @@ def build_learner(name: str) -> BaseEstimator:
             random_state=42,
         )
     if base in {"calib_lsvc", "caliblsvc_c1_sig"}:
-        return CalibratedClassifierCV(
-            LinearSVC(C=1.0, class_weight="balanced", max_iter=5000, random_state=42),
-            method="sigmoid",
-            cv=3,
+        return _calibrated(
+            LinearSVC(C=1.0, class_weight="balanced", max_iter=5000, random_state=42)
         )
     if base in {"knn", "knn_default"}:
         return KNeighborsClassifier()
     if base in {"nearestcentroid", "nearestcentroid_raw"}:
-        return NearestCentroid()
+        return _require_probability_estimator(NearestCentroid())
     if base in {"gnb", "gaussiannb"}:
         return GaussianNB()
     if base in {"bnb", "bernoullinb"}:
         return BernoulliNB()
     if base in {"mnb", "multinomialnb"}:
         return MultinomialNB()
-    if base in {"lda"}:
+    if base == "lda":
         return LinearDiscriminantAnalysis()
-    if base in {"qda"}:
+    if base == "qda":
         return QuadraticDiscriminantAnalysis(reg_param=0.1)
     if base in {"sgd_log", "sgd"}:
         return SGDClassifier(loss="log_loss", penalty="l2", random_state=42)
     if base in {"pa", "pa_default"}:
-        return CalibratedClassifierCV(
-            PassiveAggressiveClassifier(random_state=42), method="sigmoid", cv=3
-        )
+        return _calibrated(PassiveAggressiveClassifier(random_state=42))
     if base in {"dt", "decisiontree"}:
         return DecisionTreeClassifier(min_samples_leaf=5, random_state=42)
     if base in {"flaml", "flaml_600s", "automl"}:
         return FLAMLClassifier(
             time_budget=600, metric="roc_auc", n_jobs=1, random_state=42
         )
-    if base in {"siamcat"}:
+    if base == "siamcat":
         from .siamcat import SIAMCATClassifier
 
-        return SIAMCATClassifier()
+        return _calibrated(SIAMCATClassifier())
     if base.startswith("xgb"):
         mod = importlib.import_module("xgboost")
         return mod.XGBClassifier(

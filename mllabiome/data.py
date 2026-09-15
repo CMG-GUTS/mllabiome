@@ -33,10 +33,17 @@ class Dataset:
     sample_ids: list[str]
     metadata: pd.DataFrame
     class_labels: list[str]
+    positive_class: int | None
 
     @property
     def classes(self) -> np.ndarray:
         return np.arange(len(self.class_labels), dtype=int)
+
+    @property
+    def positive_class_label(self) -> str | None:
+        if self.positive_class is None:
+            return None
+        return self.class_labels[int(self.positive_class)]
 
 
 def load_dataset(spec: Data, levels_needed: Iterable[str] | None = None) -> Dataset:
@@ -63,36 +70,240 @@ def load_dataset(spec: Data, levels_needed: Iterable[str] | None = None) -> Data
     )
 
 
+def _is_missing(value: Any) -> bool:
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _normalise_text(value: Any) -> str:
+    return str(value).strip()
+
+
+def _normalise_lookup(value: Any) -> str:
+    return _normalise_text(value).casefold()
+
+
+def _resolve_positive_from_codes(
+    positive_class: int | str,
+    unique_codes: list[int],
+    code_labels: dict[int, str],
+    raw_key_to_code: dict[str, int],
+) -> int:
+    if isinstance(positive_class, (int, np.integer)):
+        value = int(positive_class)
+        if value in unique_codes:
+            return value
+        if 0 <= value < len(unique_codes):
+            return unique_codes[value]
+    token = _normalise_lookup(positive_class)
+    if token in raw_key_to_code:
+        return int(raw_key_to_code[token])
+    for code, label in code_labels.items():
+        if _normalise_lookup(label) == token:
+            return int(code)
+    try:
+        numeric = int(_normalise_text(positive_class))
+    except ValueError:
+        numeric = None
+    if numeric is not None and numeric in unique_codes:
+        return numeric
+    allowed = [code_labels[code] for code in unique_codes]
+    raise ValueError(
+        f"positive_class={positive_class!r} does not identify a binary class. Available classes: {allowed!r}."
+    )
+
+
+def _resolve_positive_from_labels(
+    positive_class: int | str,
+    labels: list[str],
+    raw_values: list[Any] | None = None,
+) -> int:
+    if isinstance(positive_class, (int, np.integer)):
+        value = int(positive_class)
+        if raw_values is not None:
+            for index, raw in enumerate(raw_values):
+                if isinstance(raw, (int, np.integer, float, np.floating)):
+                    if float(raw) == float(value):
+                        return index
+        if 0 <= value < len(labels):
+            return value
+    token = _normalise_lookup(positive_class)
+    matches = [i for i, label in enumerate(labels) if _normalise_lookup(label) == token]
+    if len(matches) == 1:
+        return matches[0]
+    raise ValueError(
+        f"positive_class={positive_class!r} does not identify a binary class. Available classes: {labels!r}."
+    )
+
+
 def _encode_y(
     values: Sequence[Any],
     label_map: Mapping[Any, int] | None = None,
     labels: tuple[str, ...] | None = None,
-) -> tuple[np.ndarray, list[str]]:
-    s = pd.Series(values)
+    positive_class: int | str = 1,
+) -> tuple[np.ndarray, list[str], int | None]:
+    raw = list(values)
+    if not raw:
+        raise ValueError("Target column is empty.")
+    missing = [i for i, value in enumerate(raw) if _is_missing(value)]
+    if missing:
+        raise ValueError(
+            f"Target column contains missing values at {len(missing)} row(s); first positions: {missing[:5]!r}."
+        )
+
     if label_map is not None:
-        mapping = {str(k).strip().lower(): int(v) for k, v in label_map.items()}
-        y = np.array([mapping.get(str(v).strip().lower(), -1) for v in s], dtype=int)
-        valid_codes = sorted(set(mapping.values()))
+        normalised_map: dict[str, tuple[Any, int]] = {}
+        for key, code in label_map.items():
+            token = _normalise_lookup(key)
+            if not token:
+                raise ValueError("label_map contains an empty label key.")
+            if token in normalised_map:
+                raise ValueError(
+                    f"label_map contains duplicate labels after case-insensitive normalization: {key!r}."
+                )
+            try:
+                mapped_code = int(code)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"label_map value for {key!r} must be an integer class code."
+                ) from exc
+            normalised_map[token] = (key, mapped_code)
+
+        unknown = sorted(
+            {
+                _normalise_text(value)
+                for value in raw
+                if _normalise_lookup(value) not in normalised_map
+            }
+        )
+        if unknown:
+            raise ValueError(
+                f"Target column contains labels not present in label_map: {unknown!r}."
+            )
+
+        external_codes = np.asarray(
+            [normalised_map[_normalise_lookup(value)][1] for value in raw], dtype=int
+        )
+        unique_codes = sorted(set(external_codes.tolist()))
+        if len(unique_codes) < 2:
+            raise ValueError("Classification requires at least two observed classes.")
+
+        keys_by_code: dict[int, list[str]] = {code: [] for code in unique_codes}
+        for original_key, code in normalised_map.values():
+            if code in keys_by_code:
+                keys_by_code[code].append(_normalise_text(original_key))
+
         if labels is not None:
-            labels_out = [str(x) for x in labels]
+            labels_out = [_normalise_text(value) for value in labels]
+            if len(labels_out) != len(unique_codes):
+                raise ValueError(
+                    f"class_labels has {len(labels_out)} entries but {len(unique_codes)} classes are observed."
+                )
+            if len(set(labels_out)) != len(labels_out):
+                raise ValueError("class_labels must be unique.")
+            code_labels = dict(zip(unique_codes, labels_out))
         else:
-            inv = {int(v): str(k) for k, v in label_map.items()}
-            labels_out = [inv.get(code, str(code)) for code in valid_codes]
-        return y, labels_out
-    if labels is None:
-        numeric = pd.to_numeric(s, errors="coerce")
-        if numeric.notna().all():
-            vals = numeric.astype(int).to_numpy()
-            uniq = sorted(pd.unique(vals).tolist())
-            mapping = {v: i for i, v in enumerate(uniq)}
-            y = np.array([mapping[v] for v in vals], dtype=int)
-            return y, [str(v) for v in uniq]
-        labels_out = sorted(str(x) for x in s.dropna().unique())
+            merged = [code for code, keys in keys_by_code.items() if len(keys) != 1]
+            if merged:
+                raise ValueError(
+                    "class_labels is required when label_map maps multiple raw labels to one class code."
+                )
+            code_labels = {code: keys_by_code[code][0] for code in unique_codes}
+
+        if len(unique_codes) == 2:
+            raw_key_to_code = {
+                token: code
+                for token, (_, code) in normalised_map.items()
+                if code in unique_codes
+            }
+            positive_code = _resolve_positive_from_codes(
+                positive_class, unique_codes, code_labels, raw_key_to_code
+            )
+            ordered_codes = [code for code in unique_codes if code != positive_code] + [
+                positive_code
+            ]
+            positive_index = 1
+        else:
+            ordered_codes = unique_codes
+            positive_index = None
+
+        internal = {code: index for index, code in enumerate(ordered_codes)}
+        y = np.asarray([internal[int(code)] for code in external_codes], dtype=int)
+        labels_final = [code_labels[code] for code in ordered_codes]
+        return y, labels_final, positive_index
+
+    if labels is not None:
+        labels_out = [_normalise_text(value) for value in labels]
+        if len(labels_out) < 2:
+            raise ValueError("class_labels must contain at least two classes.")
+        if len(set(labels_out)) != len(labels_out):
+            raise ValueError("class_labels must be unique.")
+        raw_text = [_normalise_text(value) for value in raw]
+        unknown = sorted(set(raw_text) - set(labels_out))
+        if unknown:
+            raise ValueError(
+                f"Target column contains labels not present in class_labels: {unknown!r}."
+            )
+        ordered_labels = list(labels_out)
+        if len(ordered_labels) == 2:
+            positive_index_original = _resolve_positive_from_labels(
+                positive_class, ordered_labels
+            )
+            positive_label = ordered_labels[positive_index_original]
+            ordered_labels = [
+                label for label in ordered_labels if label != positive_label
+            ] + [positive_label]
+            positive_index = 1
+        else:
+            positive_index = None
+        mapping = {label: index for index, label in enumerate(ordered_labels)}
+        y = np.asarray([mapping[value] for value in raw_text], dtype=int)
+        return y, ordered_labels, positive_index
+
+    numeric = pd.to_numeric(pd.Series(raw), errors="coerce")
+    if numeric.notna().all():
+        raw_values = numeric.tolist()
+        unique_values = sorted(pd.unique(numeric).tolist())
+        labels_out = [_normalise_text(value) for value in unique_values]
+        if len(unique_values) < 2:
+            raise ValueError("Classification requires at least two observed classes.")
+        if len(unique_values) == 2:
+            positive_index_original = _resolve_positive_from_labels(
+                positive_class, labels_out, unique_values
+            )
+            positive_value = unique_values[positive_index_original]
+            ordered_values = [
+                value for value in unique_values if value != positive_value
+            ] + [positive_value]
+            positive_index = 1
+        else:
+            ordered_values = unique_values
+            positive_index = None
+        value_to_index = {value: index for index, value in enumerate(ordered_values)}
+        y = np.asarray([value_to_index[value] for value in raw_values], dtype=int)
+        return y, [_normalise_text(value) for value in ordered_values], positive_index
+
+    raw_text = [_normalise_text(value) for value in raw]
+    unique_labels = sorted(set(raw_text))
+    if len(unique_labels) < 2:
+        raise ValueError("Classification requires at least two observed classes.")
+    if len(unique_labels) == 2:
+        positive_index_original = _resolve_positive_from_labels(
+            positive_class, unique_labels
+        )
+        positive_label = unique_labels[positive_index_original]
+        ordered_labels = [
+            label for label in unique_labels if label != positive_label
+        ] + [positive_label]
+        positive_index = 1
     else:
-        labels_out = [str(x) for x in labels]
-    mapping = {v: i for i, v in enumerate(labels_out)}
-    y = np.array([mapping.get(str(v), -1) for v in s], dtype=int)
-    return y, labels_out
+        ordered_labels = unique_labels
+        positive_index = None
+    mapping = {label: index for index, label in enumerate(ordered_labels)}
+    y = np.asarray([mapping[value] for value in raw_text], dtype=int)
+    return y, ordered_labels, positive_index
 
 
 def _load_csv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
@@ -114,13 +325,12 @@ def _load_csv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
         sample_ids = df[spec.sample_id_col].astype(str).tolist()
     else:
         sample_ids = [str(i) for i in range(len(df))]
-    y, class_labels = _encode_y(
-        df[spec.target_col].tolist(), spec.label_map, spec.class_labels
+    y, class_labels, positive_class = _encode_y(
+        df[spec.target_col].tolist(),
+        spec.label_map,
+        spec.class_labels,
+        spec.positive_class,
     )
-    keep = y >= 0
-    df = df.loc[keep].reset_index(drop=True)
-    y = y[keep]
-    sample_ids = [sid for sid, ok in zip(sample_ids, keep) if ok]
     reserved = {spec.sample_id_col, spec.target_col, *(spec.metadata_cols or ())}
     if spec.group_col:
         reserved.add(spec.group_col)
@@ -141,7 +351,14 @@ def _load_csv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
     feature_names = [str(c) for c in numeric_cols]
     X_all = df[numeric_cols].to_numpy(dtype=np.float32)
     return _dataset_from_feature_matrix(
-        X_all, feature_names, y, sample_ids, df, class_labels, levels_needed
+        X_all,
+        feature_names,
+        y,
+        sample_ids,
+        df,
+        class_labels,
+        positive_class,
+        levels_needed,
     )
 
 
@@ -221,8 +438,7 @@ def _read_feature_by_sample_tsv(
         bio.columns = sample_ids
         return bio, sample_ids
     raise ValueError(
-        "Cannot determine whether the abundance TSV is headered or headerless. "
-        "Headerless matrices require exactly one abundance column per metadata row."
+        "Cannot determine whether the abundance TSV is headered or headerless. Headerless matrices require exactly one abundance column per metadata row."
     )
 
 
@@ -245,13 +461,12 @@ def _load_matrix_tsv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Data
         abundance_path, metadata_sample_ids
     )
     meta = meta.set_index(spec.sample_id_col).loc[selected_sample_ids].reset_index()
-    y, class_labels = _encode_y(
-        meta[spec.target_col].tolist(), spec.label_map, spec.class_labels
+    y, class_labels, positive_class = _encode_y(
+        meta[spec.target_col].tolist(),
+        spec.label_map,
+        spec.class_labels,
+        spec.positive_class,
     )
-    keep = y >= 0
-    selected_sample_ids = [sid for sid, ok in zip(selected_sample_ids, keep) if ok]
-    meta = meta.loc[keep].reset_index(drop=True)
-    y = y[keep]
     X = bio[selected_sample_ids].T.to_numpy(dtype=np.float32)
     feature_names = bio.index.tolist()
     return _dataset_from_feature_matrix(
@@ -261,6 +476,7 @@ def _load_matrix_tsv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Data
         selected_sample_ids,
         meta,
         class_labels,
+        positive_class,
         levels_needed,
     )
 
@@ -272,6 +488,7 @@ def _dataset_from_feature_matrix(
     sample_ids: list[str],
     meta: pd.DataFrame,
     class_labels: list[str],
+    positive_class: int | None,
     levels_needed: tuple[str, ...],
 ) -> Dataset:
     X_all = np.asarray(X_all, dtype=np.float32)
@@ -285,6 +502,14 @@ def _dataset_from_feature_matrix(
         raise ValueError(
             "Abundance matrix column count does not match the number of feature names."
         )
+    if len(y) != len(sample_ids):
+        raise ValueError("Target length does not match the number of sample IDs.")
+    if not np.all(np.isin(y, np.arange(len(class_labels), dtype=int))):
+        raise ValueError(
+            "Encoded target contains values outside the canonical class range."
+        )
+    if len(class_labels) == 2 and positive_class != 1:
+        raise ValueError("Binary positive class must be canonical internal class 1.")
     level_to_idx: dict[str, list[int]] = {lv: [] for lv in TAXONOMIC_LEVELS}
     for j, name in enumerate(feature_names):
         level = _taxonomic_rank(name)
@@ -300,10 +525,11 @@ def _dataset_from_feature_matrix(
     return Dataset(
         X_by_level=X_by_level,
         feature_names_by_level=names_by_level,
-        y=y,
+        y=np.asarray(y, dtype=int),
         sample_ids=sample_ids,
         metadata=meta,
         class_labels=class_labels,
+        positive_class=positive_class,
     )
 
 

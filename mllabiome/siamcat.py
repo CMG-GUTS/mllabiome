@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import os
 import shutil
 import subprocess
@@ -11,7 +10,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.special import expit
 from sklearn.base import BaseEstimator, ClassifierMixin
 
 from .siamcat_runtime import ensure_siamcat_runtime
@@ -24,8 +22,6 @@ def _feature_names_from_X(X: Any) -> list[str]:
         arr = np.asarray(X)
         n_features = 1 if arr.ndim == 1 else int(arr.shape[1])
         raw = [f"feature_{i:06d}" for i in range(n_features)]
-
-    # SIAMCAT requires unique row names. Keep names stable across fit/predict.
     seen: dict[str, int] = {}
     out: list[str] = []
     for name in raw:
@@ -52,33 +48,7 @@ def _as_2d_float(X: Any) -> np.ndarray:
     return arr
 
 
-def _score_to_probability(score: np.ndarray) -> np.ndarray:
-    score = np.asarray(score, dtype=float)
-    if score.size == 0:
-        return score
-    finite = score[np.isfinite(score)]
-    if finite.size and finite.min() >= 0.0 and finite.max() <= 1.0:
-        return np.clip(score, 0.0, 1.0)
-    return expit(score)
-
-
 class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
-    """scikit-learn compatible wrapper around the native SIAMCAT workflow.
-
-    mllabiome controls the outer/inner validation split and supplies the selected
-    MPDR representation to this estimator. SIAMCAT then owns its native feature
-    filtering, normalization, internal data split/model fitting, and frozen
-    holdout normalization.
-
-    The default arguments mirror SIAMCAT's documented defaults:
-    abundance filtering at 0.001, log.std normalization, 2-fold/1-resample
-    internal split, and lasso modelling.
-
-    For the closest native SIAMCAT comparison in mllabiome, use the existing
-    ``asis`` resolution together with the existing ``none`` count transformation
-    (which supplies relative abundances) and learner ``SIAMCAT``.
-    """
-
     def __init__(
         self,
         method: str = "lasso",
@@ -215,17 +185,12 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
         self.classes_ = np.unique(y_arr)
         if len(self.classes_) < 2:
             raise ValueError("SIAMCATClassifier requires at least two classes.")
-
         self.n_features_in_ = int(arr.shape[1])
         self.feature_names_in_ = np.asarray(_feature_names_from_X(X), dtype=object)
         self._workdir_ = Path(tempfile.mkdtemp(prefix="mllabiome-siamcat-"))
         X_path = self._workdir_ / "train.tsv"
         self._write_features(X_path, X, fitted=True)
         self._model_paths_: list[Path] = []
-
-        # Binary SIAMCAT natively models one case group against one control group.
-        # For multiclass mllabiome tasks, use SIAMCAT's documented one-vs-rest
-        # semantics once per class and normalize the resulting class scores.
         target_classes = (
             [self.classes_[-1]] if len(self.classes_) == 2 else list(self.classes_)
         )
@@ -234,7 +199,6 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
             model_path = self._workdir_ / f"model_{index:03d}.rds"
             self._fit_binary_model(X_path, y_binary, model_path)
             self._model_paths_.append(model_path)
-
         self._binary_target_classes_ = np.asarray(target_classes, dtype=object)
         return self
 
@@ -261,7 +225,7 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
             raise RuntimeError("SIAMCAT returned non-finite prediction scores.")
         return score
 
-    def predict_proba(self, X: Any) -> np.ndarray:
+    def decision_function(self, X: Any) -> np.ndarray:
         if not hasattr(self, "_model_paths_"):
             raise RuntimeError("SIAMCATClassifier has not been fitted.")
         arr = _as_2d_float(X)
@@ -275,32 +239,25 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
             self._predict_binary_score(path, X_path, i)
             for i, path in enumerate(self._model_paths_)
         ]
-
         if len(self.classes_) == 2:
-            p1 = _score_to_probability(scores[0])
-            return np.column_stack([1.0 - p1, p1]).astype(np.float32)
-
-        p = np.column_stack([_score_to_probability(score) for score in scores])
-        p = np.clip(p, 1e-12, None)
-        denom = p.sum(axis=1, keepdims=True)
-        denom[denom <= 0] = 1.0
-        return (p / denom).astype(np.float32)
+            return np.asarray(scores[0], dtype=float)
+        return np.column_stack(scores).astype(float)
 
     def predict(self, X: Any) -> np.ndarray:
-        proba = self.predict_proba(X)
-        return np.asarray(self.classes_)[np.argmax(proba, axis=1)]
+        score = np.asarray(self.decision_function(X), dtype=float)
+        if len(self.classes_) == 2:
+            if np.all((score >= 0.0) & (score <= 1.0)):
+                positive = score >= 0.5
+            else:
+                positive = score >= 0.0
+            return np.where(positive, self.classes_[-1], self.classes_[0])
+        return np.asarray(self.classes_)[np.argmax(score, axis=1)]
 
     def cleanup(self) -> None:
         workdir = getattr(self, "_workdir_", None)
-        if workdir:
-            shutil.rmtree(workdir, ignore_errors=True)
+        if workdir is not None:
+            shutil.rmtree(workdir)
             self._workdir_ = None
-
-    def __del__(self):
-        try:
-            self.cleanup()
-        except Exception:
-            pass
 
 
 __all__ = ["SIAMCATClassifier"]

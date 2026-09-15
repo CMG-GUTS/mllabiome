@@ -12,7 +12,6 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{name = "mllabiome contributors"}]
 keywords = ["microbiome", "machine-learning", "bioinformatics", "explainability"]
-
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
@@ -24,12 +23,11 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
   "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
-
 dependencies = [
   "numpy>=1.23",
   "pandas>=1.5",
   "scipy>=1.9",
-  "scikit-learn>=1.2",
+  "scikit-learn>=1.6",
   "matplotlib>=3.6",
   "polars>=0.20",
   "pyarrow>=12",
@@ -45,6 +43,7 @@ dependencies = [
   "flaml>=2",
   "tqdm>=4.66",
   "psutil>=7.2.2",
+  "ruff>=0.16.7",
 ]
 
 [project.urls]
