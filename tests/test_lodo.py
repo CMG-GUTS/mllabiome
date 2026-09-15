@@ -348,6 +348,7 @@ def _feature_dataset():
         sample_ids=metadata["sample_id"].tolist(),
         metadata=metadata,
         class_labels=["control", "case"],
+        positive_class=1,
     )
 
 

@@ -100,7 +100,8 @@ def _strategy_prediction_frames(
         if str(r.get("Strategy", "")).strip()
     }
     frames: dict[str, pd.DataFrame] = {}
-    build_final_models(root)
+    if "MPMA-B" in rows or "MPMA-E" in rows:
+        build_final_models(root)
     outer = _ensure_outer_split_key(
         _read_tsv(root / "predictions" / "outer_predictions.tsv")
     )

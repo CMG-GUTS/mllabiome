@@ -75,6 +75,7 @@ def _dataset(n=12, y=None, outer_feature_shift=None):
         sample_ids=[f"s{i}" for i in range(n)],
         metadata=pd.DataFrame({"sample_id": [f"s{i}" for i in range(n)]}),
         class_labels=["control", "case"],
+        positive_class=1,
     )
 
 

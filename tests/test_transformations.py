@@ -114,6 +114,7 @@ def _resolution_dataset():
         sample_ids=["s1", "s2", "s3"],
         metadata=None,
         class_labels=["control", "case"],
+        positive_class=1,
     )
 
 
