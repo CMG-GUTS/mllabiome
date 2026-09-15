@@ -45,41 +45,46 @@ def _build_count_transformations():
 def _build_models():
     M = []
 
-    M.append((
-        "RF_1000_msl5",
-        RandomForestClassifier(
-            n_estimators=1000,
-            min_samples_leaf=5,
-            n_jobs=1,
-            random_state=42,
-        ),
-    ))
+    M.append(
+        (
+            "RF_1000_msl5",
+            RandomForestClassifier(
+                n_estimators=1000,
+                min_samples_leaf=5,
+                n_jobs=1,
+                random_state=42,
+            ),
+        )
+    )
 
-    M.append(("Ridge_a1", RidgeClassifier(alpha=1.0, random_state=42)))
+    # M.append(("Ridge_a1", RidgeClassifier(alpha=1.0, random_state=42)))
     # M.append(("BNB", BernoulliNB()))
     # M.append(("NearestCentroid_raw", NearestCentroid()))
 
-    M.append((
-        "XGB",
-        XGBClassifier(
-            objective="binary:logistic",
-            n_estimators=500,
-            learning_rate=0.03,
-            max_depth=3,
-            min_child_weight=5,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            reg_alpha=0.1,
-            reg_lambda=1.0,
-            eval_metric="logloss",
-            tree_method="hist",
-            n_jobs=1,
-            random_state=42,
-            verbosity=0,
-        ),
-    ))
+    M.append(
+        (
+            "XGB",
+            XGBClassifier(
+                objective="binary:logistic",
+                n_estimators=500,
+                learning_rate=0.03,
+                max_depth=3,
+                min_child_weight=5,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                reg_alpha=0.1,
+                reg_lambda=1.0,
+                eval_metric="logloss",
+                tree_method="hist",
+                n_jobs=1,
+                random_state=42,
+                verbosity=0,
+            ),
+        )
+    )
 
     return M
+
 
 EVALUATION = mll.Evaluation(
     protocol="repeated_nested_cv",
