@@ -12,12 +12,13 @@ import pandas as pd
 
 from .configs_sweep import Sweep
 from .console import console, path_table, stage, success
-from .metrics import compute_metrics
-from .transformations import transformation_label
 from .utils import dump_json_standard
+from .metrics import compute_metrics
+from .report_statistics import run_report_statistics
 
 _METRICS = [
     ("AUC", "ROC-AUC"),
+    ("PR_AUC", "PR-AUC (AP)"),
     ("nMCC", "nMCC"),
     ("F1w", "F1$_{w}$"),
     ("Precision", "Precision"),
@@ -160,6 +161,40 @@ def _pct_cell(
     return body
 
 
+def _pct_ci_cell(
+    estimate: Any,
+    std: Any,
+    low: Any,
+    high: Any,
+    *,
+    bold: bool = False,
+    html_mode: bool = False,
+) -> str:
+    e = _safe_float(estimate)
+    sd = _safe_float(std)
+    lo = _safe_float(low)
+    hi = _safe_float(high)
+    if not np.isfinite(e):
+        return "—" if html_mode else r"--"
+    body = f"{100 * e:.2f}"
+    if np.isfinite(sd):
+        sd_text = f"{100 * sd:.2f}" if html_mode else f"{100 * sd:05.2f}"
+        body += (" ± " if html_mode else r"$\pm$") + sd_text
+    if np.isfinite(lo) and np.isfinite(hi):
+        body += f" [{100 * lo:.2f}, {100 * hi:.2f}]"
+    if bold:
+        return f"<strong>{body}</strong>" if html_mode else rf"\textbf{{{body}}}"
+    return body
+
+
+def _strategy_statistics_summary(root: Path) -> pd.DataFrame:
+    return _read_tsv(root / "report" / "tables" / "strategy_metrics_bootstrap.tsv")
+
+
+def _strategy_pairwise_tests(root: Path) -> pd.DataFrame:
+    return _read_tsv(root / "report" / "tables" / "strategy_pairwise_tests.tsv")
+
+
 def _mean_std_from_cols(
     row: pd.Series | dict[str, Any], prefix: str, metric: str
 ) -> tuple[float, float]:
@@ -175,16 +210,6 @@ def _mean_std_from_cols(
     return _safe_float(mean), _safe_float(std)
 
 
-def _canonical_transformation_name(value: Any) -> str:
-    text = str(value).strip()
-    if not text or text.lower() == "nan":
-        return ""
-    try:
-        return transformation_label(text).key
-    except KeyError:
-        return text
-
-
 def _agg_metrics(path: Path, prefix: str) -> pd.DataFrame:
     df = _read_tsv(path)
     if df.empty or "config_id" not in df.columns:
@@ -193,13 +218,15 @@ def _agg_metrics(path: Path, prefix: str) -> pd.DataFrame:
         df = df[pd.to_numeric(df["ok"], errors="coerce").fillna(0).eq(1)]
     if df.empty:
         return pd.DataFrame()
-    if "count_transformation" in df.columns:
-        df["count_transformation"] = df["count_transformation"].map(
-            _canonical_transformation_name
-        )
     id_cols = [
         c
-        for c in ["config_id", "count_transformation", "resolution", "learner"]
+        for c in [
+            "config_id",
+            "count_transformation",
+            "transformation_abbreviation",
+            "resolution",
+            "learner",
+        ]
         if c in df.columns
     ]
     metric_cols = [c for c, _ in _METRICS if c in df.columns]
@@ -244,8 +271,8 @@ def _top_mpma_display(df: pd.DataFrame, *, html_mode: bool = False) -> pd.DataFr
         row = {
             "Rank": int(r.get("rank", len(rows) + 1)),
             "Resolution": str(r.get("resolution", "")),
-            "Transformation": _canonical_transformation_name(
-                r.get("count_transformation", "")
+            "MPDR transformation": str(
+                r.get("transformation_abbreviation", r.get("count_transformation", ""))
             ),
             "Learner": str(r.get("learner", "")),
         }
@@ -270,6 +297,9 @@ def _selected_json(root: Path) -> dict[str, Any]:
 
 
 def _best_mpma_row(root: Path) -> dict[str, Any]:
+    nested = _read_json(root / "tables" / "mpma_b_strategy_summary.json")
+    if isinstance(nested, dict) and nested:
+        return nested
     selected = _selected_json(root)
     best = (
         selected.get("inner_val_best_mpma")
@@ -340,6 +370,9 @@ def _ensemble_outer_metrics_from_predictions(
 
 
 def _ensemble_row(root: Path) -> dict[str, Any]:
+    nested = _read_json(root / "ensembling" / "mpma_e_strategy_summary.json")
+    if isinstance(nested, dict) and nested:
+        return nested
     selected = _selected_json(root)
     ens = (
         selected.get("inner_val_best_mpmas_ensemble")
@@ -354,6 +387,19 @@ def _ensemble_row(root: Path) -> dict[str, Any]:
         if k not in row or not np.isfinite(_safe_float(row.get(k))):
             row[k] = v
     return row
+
+
+def _ensemble_final_candidate(root: Path) -> dict[str, Any]:
+    final = _read_json(root / "ensembling" / "mpma_e_final_candidate.json")
+    if isinstance(final, dict) and final:
+        return final
+    selected = _selected_json(root)
+    ens = (
+        selected.get("inner_val_best_mpmas_ensemble")
+        or selected.get("inner_val_best_ensemble")
+        or {}
+    )
+    return ens if isinstance(ens, dict) else {}
 
 
 def _strategy_rows(root: Path) -> list[dict[str, Any]]:
@@ -456,7 +502,47 @@ def _strategy_performance_display(
     rows = _strategy_rows(root)
     if not rows:
         return pd.DataFrame()
-
+    stats = _strategy_statistics_summary(root)
+    if not stats.empty and {
+        "Strategy",
+        "metric",
+        "estimate",
+        "ci_low",
+        "ci_high",
+    }.issubset(stats.columns):
+        best_by_metric: dict[str, str] = {}
+        for metric, _ in _METRICS:
+            sub = stats[stats["metric"].astype(str).eq(metric)].copy()
+            sub["estimate"] = pd.to_numeric(sub["estimate"], errors="coerce")
+            sub = sub[np.isfinite(sub["estimate"].to_numpy(dtype=float))]
+            if not sub.empty:
+                best_by_metric[metric] = str(
+                    sub.sort_values("estimate", ascending=False).iloc[0]["Strategy"]
+                )
+        out = []
+        for row in rows:
+            strategy = str(row.get("Strategy", ""))
+            rr = {"Strategy": strategy}
+            for metric, label in _METRICS:
+                sub = stats[
+                    stats["Strategy"].astype(str).eq(strategy)
+                    & stats["metric"].astype(str).eq(metric)
+                ]
+                key = label.replace("$", "").replace("_{w}", "w")
+                if sub.empty:
+                    rr[key] = "—" if html_mode else r"--"
+                    continue
+                r = sub.iloc[0]
+                rr[key] = _pct_ci_cell(
+                    r.get("estimate"),
+                    r.get("std"),
+                    r.get("ci_low"),
+                    r.get("ci_high"),
+                    bold=(best_by_metric.get(metric) == strategy),
+                    html_mode=html_mode,
+                )
+            out.append(rr)
+        return pd.DataFrame(out)
     best_by_metric: dict[str, str] = {}
     for metric, _ in _METRICS:
         vals = []
@@ -481,7 +567,7 @@ def _strategy_performance_display(
 
 
 def _ensemble_summary_table(root: Path) -> pd.DataFrame:
-    ens = _ensemble_row(root)
+    ens = _ensemble_final_candidate(root)
     if not ens:
         return pd.DataFrame()
     row = {
@@ -500,28 +586,29 @@ def _ensemble_members_table(root: Path) -> pd.DataFrame:
         p = root / "figures" / "mpma_e_members.tsv"
     if p.exists():
         df = pd.read_csv(p, sep="\t")
-        transform_col = (
-            "raw_transform"
-            if "raw_transform" in df.columns
-            else "transformation"
-            if "transformation" in df.columns
-            else None
-        )
-        out = pd.DataFrame(index=df.index)
-        if "member_order" in df.columns:
-            out["Member"] = df["member_order"]
-        if "ranks" in df.columns:
-            out["Resolution"] = df["ranks"]
-        if transform_col is not None:
-            out["Transformation"] = df[transform_col].map(
-                _canonical_transformation_name
-            )
-        if "classifier_family" in df.columns:
-            out["Learner family"] = df["classifier_family"]
-        if "raw_model" in df.columns:
-            out["Learner"] = df["raw_model"]
-        return out.reset_index(drop=True)
-    ens = _ensemble_row(root)
+        rename = {
+            "member_order": "Member",
+            "ranks": "Resolution",
+            "transformation": "MPDR transformation",
+            "classifier_family": "Learner family",
+            "raw_transform": "count_transformation",
+            "raw_model": "learner",
+        }
+        cols = [
+            c
+            for c in [
+                "member_order",
+                "ranks",
+                "transformation",
+                "classifier_family",
+                "raw_transform",
+                "raw_model",
+            ]
+            if c in df.columns
+        ]
+        out = df[cols].rename(columns=rename).copy() if cols else df.copy()
+        return out
+    ens = _ensemble_final_candidate(root)
     members = ens.get("members", [])
     if isinstance(members, str):
         try:
@@ -565,7 +652,12 @@ def _procedure_table(sweep: Sweep, root: Path) -> pd.DataFrame:
                 if ev.protocol not in {"lodo", "leave_one_dataset_out"}
                 else "held-out datasets",
             ],
-            ["Inner folds", ev.inner_folds],
+            [
+                "Inner folds",
+                "leave-one-dataset-out across outer-training datasets"
+                if ev.protocol in {"lodo", "leave_one_dataset_out"}
+                else ev.inner_folds,
+            ],
             ["Repeats", ev.repeats],
             ["Selection metric", ev.optimize_metric],
             ["Random seed", ev.random_state],
@@ -659,7 +751,7 @@ def _strategy_latex_table(root: Path, path: Path, task_title: str) -> pd.DataFra
         return disp
     rows_by_strategy = {str(r["Strategy"]): r for _, r in disp.iterrows()}
     strategies = ["MPMA-E", "MPMA-B", "AutoML", "Baseline RF", "SIAMCAT"]
-    metric_cols = ["ROC-AUC", "nMCC", "F1w", "Precision", "Recall"]
+    metric_cols = ["ROC-AUC", "PR-AUC (AP)", "nMCC", "F1w", "Precision", "Recall"]
 
     def _cell(strategy: str, metric: str) -> str:
         row = rows_by_strategy.get(strategy)
@@ -676,11 +768,12 @@ def _strategy_latex_table(root: Path, path: Path, task_title: str) -> pd.DataFra
         r"Held-out performance for the configured task. "
         r"MPMA-E = MPMAs Ensemble selected automatically by the framework based on inner validation score; "
         r"MPMA-B = single highest-scoring, based on inner validation, MPMA pipeline; "
-        r"AutoML = FLAML automated model search on relative abundances at the deepest available single rank; "
+        r"AutoML = FLAML automated model search on raw abundances at the deepest available single rank; "
         r"Baseline RF = 1000-tree random forest on arcsin-sqrt abundances at the deepest available single rank; "
-        r"SIAMCAT = SIAMCAT workflow on the raw input feature profile with the identity mllabiome transformation. "
+        r"SIAMCAT = SIAMCAT workflow on the complete original taxonomic lineage without a mllabiome abundance transformation. "
+        r"PR-AUC (AP) = average precision, the framework's precision-recall summary. "
         r"F1\textsubscript{w} = weighted F1. "
-        r"Bold = best per metric. All values are percentages."
+        r"Values are mean $\pm$ SD across outer evaluation units, followed by 95\% bootstrap confidence intervals for the mean. Bold = best mean per metric. All values are percentages."
     )
     lines = [
         r"\begin{table}[htbp]",
@@ -702,7 +795,7 @@ def _strategy_latex_table(root: Path, path: Path, task_title: str) -> pd.DataFra
         r"\setlength{\mllabiometaskcol}{3.00cm}",
         r"\setlength{\mllabiomestrategycol}{1.75cm}",
         r"\setlength{\mllabiomemetriccol}{%",
-        r"  \dimexpr(\linewidth-\mllabiometaskcol-\mllabiomestrategycol-12\tabcolsep)/5\relax",
+        r"  \dimexpr(\linewidth-\mllabiometaskcol-\mllabiomestrategycol-14\tabcolsep)/6\relax",
         r"}",
         "",
         r"\newcommand{\mllabiometaskblock}[1]{%",
@@ -731,12 +824,13 @@ def _strategy_latex_table(root: Path, path: Path, task_title: str) -> pd.DataFra
         r"  }%",
         r"}",
         "",
-        r"\begin{tabular}{p{\mllabiometaskcol}p{\mllabiomestrategycol}p{\mllabiomemetriccol}p{\mllabiomemetriccol}p{\mllabiomemetriccol}p{\mllabiomemetriccol}p{\mllabiomemetriccol}}",
+        r"\begin{tabular}{p{\mllabiometaskcol}p{\mllabiomestrategycol}p{\mllabiomemetriccol}p{\mllabiomemetriccol}p{\mllabiomemetriccol}p{\mllabiomemetriccol}p{\mllabiomemetriccol}p{\mllabiomemetriccol}}",
         "",
         r"\toprule",
         r"\multicolumn{1}{l}{\textbf{Task}} &",
         r"\multicolumn{1}{l}{\textbf{Strategy}} &",
         r"\multicolumn{1}{c}{\textbf{ROC-AUC}} &",
+        r"\multicolumn{1}{c}{\textbf{PR-AUC}} &",
         r"\multicolumn{1}{c}{\textbf{nMCC}} &",
         r"\multicolumn{1}{c}{\textbf{F1\textsubscript{w}}} &",
         r"\multicolumn{1}{c}{\textbf{Precision}} &",
@@ -748,6 +842,8 @@ def _strategy_latex_table(root: Path, path: Path, task_title: str) -> pd.DataFra
         r"\mllabiomestrategyblock{\mbox{MPMA-E}}{\mbox{MPMA-B}}{AutoML}{\mbox{Baseline RF}}{SIAMCAT}",
         r"&",
         _metric_block("ROC-AUC"),
+        r"&",
+        _metric_block("PR-AUC (AP)"),
         r"&",
         _metric_block("nMCC"),
         r"&",
@@ -1084,7 +1180,7 @@ def _print_report_summary(
             for c in [
                 "Rank",
                 "Resolution",
-                "Transformation",
+                "MPDR transformation",
                 "Learner",
                 "Inner nMCC",
                 "Outer nMCC",
@@ -1105,9 +1201,10 @@ def _print_report_summary(
             for c in [
                 "Member",
                 "Resolution",
-                "Transformation",
+                "MPDR transformation",
                 "Learner family",
-                "Learner",
+                "count_transformation",
+                "learner",
             ]
             if c in ensemble_members.columns
         ]
@@ -1132,11 +1229,68 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
     stage("Report", str(report_dir))
 
     procedure = _procedure_table(sweep, root)
+    top10_html = _top_mpma_display(_top_mpma_raw(root, 10), html_mode=True)
+    strategy_rows = _strategy_rows(root)
+    statistics = run_report_statistics(
+        root,
+        sweep.evaluation.protocol,
+        strategy_rows,
+        n_bootstrap=2000,
+        random_state=sweep.evaluation.random_state,
+    )
     _strategy_latex_table(
         root, tables_dir / "task_strategy_performance.tex", sweep.title
     )
-    top10_html = _top_mpma_display(_top_mpma_raw(root, 10), html_mode=True)
     strategy_html = _strategy_performance_display(root, html_mode=True)
+    pairwise = statistics.get("pairwise", pd.DataFrame())
+    primary_pairwise = (
+        pairwise[
+            pairwise["metric"].astype(str).eq(str(sweep.evaluation.optimize_metric))
+        ].copy()
+        if not pairwise.empty and "metric" in pairwise.columns
+        else pd.DataFrame()
+    )
+    if not primary_pairwise.empty:
+        primary_pairwise = primary_pairwise[
+            [
+                c
+                for c in [
+                    "strategy_a",
+                    "strategy_b",
+                    "difference_a_minus_b",
+                    "difference_ci_low",
+                    "difference_ci_high",
+                    "test",
+                    "p_value",
+                    "p_holm",
+                    "significant_holm_0_05",
+                ]
+                if c in primary_pairwise.columns
+            ]
+        ].copy()
+        primary_pairwise = primary_pairwise.rename(
+            columns={
+                "strategy_a": "Strategy A",
+                "strategy_b": "Strategy B",
+                "difference_a_minus_b": "Difference A-B",
+                "difference_ci_low": "95% CI low",
+                "difference_ci_high": "95% CI high",
+                "test": "Test",
+                "p_value": "p",
+                "p_holm": "Holm p",
+                "significant_holm_0_05": "Holm p<0.05",
+            }
+        )
+        for c in ("Difference A-B", "95% CI low", "95% CI high"):
+            if c in primary_pairwise.columns:
+                primary_pairwise[c] = pd.to_numeric(
+                    primary_pairwise[c], errors="coerce"
+                ).map(lambda x: f"{x:.4f}" if np.isfinite(x) else "")
+        for c in ("p", "Holm p"):
+            if c in primary_pairwise.columns:
+                primary_pairwise[c] = pd.to_numeric(
+                    primary_pairwise[c], errors="coerce"
+                ).map(lambda x: f"{x:.4g}" if np.isfinite(x) else "")
     ensemble_summary = _ensemble_summary_table(root)
     ensemble_members = _ensemble_members_table(root)
 
@@ -1146,6 +1300,9 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
     )
     strategy_html.to_csv(
         tables_dir / "task_strategy_performance.tsv", sep="\t", index=False
+    )
+    primary_pairwise.to_csv(
+        tables_dir / "strategy_pairwise_primary_metric.tsv", sep="\t", index=False
     )
     ensemble_summary.to_csv(tables_dir / "mpma_e_selection.tsv", sep="\t", index=False)
     ensemble_members.to_csv(tables_dir / "mpma_e_members.tsv", sep="\t", index=False)
@@ -1295,13 +1452,18 @@ code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consol
 <a href="#mpma-e-members">Members</a>
 <a href="#explainability-comparison">Explainability</a>
 <a href="#figures">Figures</a>
+<a href="#statistics">Statistics</a>
 </nav></div></header>
 <div class="report-shell"><main id="top" class="report-content">
 <h2 id="procedure" class="first-section">Evaluation procedure</h2>
 {_html_table(procedure)}
 <h2 id="performance">Task performance summary</h2>
+<p>Held-out strategy performance is reported as mean ± SD across outer evaluation units, followed by a 95% bootstrap confidence interval for the mean. For LODO, outer units are held-out datasets; for nested cross-validation, they are outer test folds. PR-AUC (AP) is average precision. All available framework metrics, bootstrap summaries, and pairwise tests are saved in the report tables.</p>
 {_html_table(strategy_html, raw_html_cols=strat_metric_cols)}
 {_tex_link(tables_dir / "task_strategy_performance.tex", report_dir, "task_strategy_performance.tex")}
+<h3 id="statistics">Statistical comparisons</h3>
+<p>Differences are Strategy A minus Strategy B. The table below shows the configured primary selection metric. Full pairwise results for ROC-AUC, PR-AUC (AP), nMCC, weighted F1, precision, and recall are saved in strategy_pairwise_tests.tsv. Holm adjustment is applied across strategy pairs within each metric.</p>
+{_html_table(primary_pairwise)}
 <h2 id="top-mpmas">Top 10 MPMA-B configurations</h2>
 {_html_table(top10_html, raw_html_cols=top_metric_cols)}
 
@@ -1344,6 +1506,18 @@ code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consol
         "top10_mpmas_tsv": tables_dir / "top10_mpma_inner_outer_performance.tsv",
         "mpma_e_selection_tsv": tables_dir / "mpma_e_selection.tsv",
         "mpma_e_members_tsv": tables_dir / "mpma_e_members.tsv",
+        "strategy_outer_unit_metrics": statistics.get(
+            "unit_metrics_path", tables_dir / "strategy_outer_unit_metrics.tsv"
+        ),
+        "strategy_metrics_bootstrap": statistics.get(
+            "summary_path", tables_dir / "strategy_metrics_bootstrap.tsv"
+        ),
+        "strategy_pairwise_tests": statistics.get(
+            "pairwise_path", tables_dir / "strategy_pairwise_tests.tsv"
+        ),
+        "strategy_statistics_manifest": statistics.get(
+            "manifest_path", tables_dir / "strategy_statistics_manifest.json"
+        ),
     }
     path_table("Report outputs", outputs)
     return outputs
