@@ -6,8 +6,7 @@ import pandas as pd
 import pytest
 
 import mllabiome.configs_sweep as cs
-from mllabiome.configs_sweep import (Evaluation, QualificationGate, Sweep,
-                                     evaluate)
+from mllabiome.configs_sweep import Evaluation, QualificationGate, Sweep, evaluate
 from mllabiome.data import Data, Dataset
 
 

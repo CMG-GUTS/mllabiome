@@ -10,10 +10,11 @@ import pandas as pd
 from scipy.stats import rankdata
 
 from .configs_sweep import Ensemble, Sweep
-from .console import path_table, progress, stage, success, summary_table
+from .console import path_table, stage, success, summary_table
 from .data import load_dataset
 from .metrics import _renormalize_proba, compute_metrics
 from .mpma_e_figure import write_single_task_mpma_e_figure
+from .selection import select_final_mpma_candidate
 from .utils import TAXONOMIC_LEVELS, dump_json_standard
 
 
@@ -27,322 +28,39 @@ def _proba_cols(df: pd.DataFrame) -> list[str]:
 
 
 def _excluded_config_ids(configs: pd.DataFrame, ensemble: Ensemble) -> set[str]:
-    """Return evaluated configuration IDs excluded from framework selection.
-
-    Excluded configurations remain in the evaluation outputs and can therefore
-    be surfaced as independent report comparators.  They are removed only from
-    MPMA-B selection and MPMA-E member/candidate selection.
-    """
     if configs is None or configs.empty or "config_id" not in configs.columns:
         return set()
-
     mask = pd.Series(False, index=configs.index, dtype=bool)
-
     ids = {str(x) for x in getattr(ensemble, "exclude_config_ids", ()) if str(x)}
     if ids:
         mask |= configs["config_id"].astype(str).isin(ids)
 
-    def _match(column: str, values: tuple[str, ...]) -> None:
+    def match(column: str, values: tuple[str, ...]) -> None:
         nonlocal mask
         vals = {str(x).casefold() for x in values if str(x)}
         if vals and column in configs.columns:
             mask |= configs[column].astype(str).str.casefold().isin(vals)
 
-    _match("learner", tuple(getattr(ensemble, "exclude_learners", ())))
-    _match("resolution", tuple(getattr(ensemble, "exclude_resolutions", ())))
-    _match(
+    match("learner", tuple(getattr(ensemble, "exclude_learners", ())))
+    match("resolution", tuple(getattr(ensemble, "exclude_resolutions", ())))
+    match(
         "count_transformation", tuple(getattr(ensemble, "exclude_transformations", ()))
     )
-
     return set(configs.loc[mask, "config_id"].astype(str))
 
 
-def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
-    root = sweep.root()
-    ensemble_dir = root / "ensembling"
-    ensemble_dir.mkdir(parents=True, exist_ok=True)
-    pred_path = root / "predictions" / "outer_predictions.tsv"
-    inner_path = root / "inner_results" / "inner_results.tsv"
-    config_path = root / "configs.tsv"
-    if not pred_path.exists() or not inner_path.exists():
-        raise FileNotFoundError("Run evaluate(sweep) before sweep_ensemble(sweep).")
-
-    preds = pd.read_csv(pred_path, sep="\t")
-    inner = pd.read_csv(inner_path, sep="\t")
-    configs = pd.read_csv(config_path, sep="\t")
-    pcols = _proba_cols(preds)
-    if not pcols:
-        raise ValueError("Outer predictions do not contain probability columns.")
-
-    metric = sweep.ensemble.optimize_metric
-    if metric not in inner.columns:
-        metric = (
-            sweep.evaluation.optimize_metric
-            if sweep.evaluation.optimize_metric in inner.columns
-            else "nMCC"
-        )
-
-    all_candidate_rows: list[dict[str, Any]] = []
-    all_fold_predictions: list[dict[str, Any]] = []
-    candidate_specs = _ensemble_configs(sweep.ensemble)
-
-    stage("Ensemble sweep", str(root))
-    summary_table(
-        "Ensemble search",
-        {
-            "candidate ensembles": f"{len(candidate_specs):,}",
-            "selection strategies": sweep.ensemble.selection_strategies,
-            "aggregation strategies": sweep.ensemble.aggregation_strategies,
-            "ensemble sizes": sweep.ensemble.sizes,
-            "excluded learners": sweep.ensemble.exclude_learners or "none",
-            "excluded resolutions": sweep.ensemble.exclude_resolutions or "none",
-            "excluded transformations": sweep.ensemble.exclude_transformations
-            or "none",
-            "optimize metric": metric,
-        },
-    )
-
-    excluded_ids = _excluded_config_ids(configs, sweep.ensemble)
-    complete_ids = (
-        set(configs["config_id"].astype(str)) & set(preds["config_id"].astype(str))
-    ) - excluded_ids
-    preds = preds[preds["config_id"].astype(str).isin(complete_ids)].copy()
-    inner = inner[
-        inner["config_id"].astype(str).isin(complete_ids) & inner["ok"].eq(1)
-    ].copy()
-    if preds.empty or inner.empty:
-        raise RuntimeError(
-            "No complete MPMA predictions are available for ensemble search."
-        )
-
-    with progress() as prog:
-        candidate_task = prog.add_task(
-            "Ensemble candidates", total=len(candidate_specs)
-        )
-        for spec in candidate_specs:
-            prog.update(
-                candidate_task,
-                description=f"Ensemble {spec['selection_strategy']} + {spec['aggregation_strategy']}",
-            )
-            fold_metrics: list[dict[str, float]] = []
-            fold_member_sets: list[list[str]] = []
-            for outer_split, fold_pred in preds.groupby("outer_split_key", sort=False):
-                inner_subset = inner[
-                    inner["split_key"].astype(str).eq(str(outer_split))
-                ]
-                if inner_subset.empty:
-                    inner_subset = inner
-                scores = (
-                    inner_subset.groupby("config_id")[metric]
-                    .mean()
-                    .dropna()
-                    .sort_values(ascending=False)
-                )
-                scores = scores[scores.index.astype(str).isin(complete_ids)]
-                members = _select_members(scores, configs, spec, sweep.ensemble)
-                if len(members) < 2:
-                    continue
-                ordered_samples = (
-                    fold_pred[["sample_id", "y_true"]]
-                    .drop_duplicates("sample_id")
-                    .sort_values("sample_id")
-                )
-                stack, weights = [], []
-                valid = True
-                for cid in members:
-                    sub = (
-                        fold_pred[fold_pred["config_id"].astype(str).eq(str(cid))]
-                        .set_index("sample_id")
-                        .reindex(ordered_samples["sample_id"])
-                    )
-                    if sub[pcols].isna().any().any():
-                        valid = False
-                        break
-                    stack.append(sub[pcols].to_numpy(dtype=float))
-                    weights.append(float(scores.get(cid, np.nan)))
-                if not valid or len(stack) < 2:
-                    continue
-                proba = _aggregate_proba(
-                    np.stack(stack, axis=0),
-                    np.asarray(weights, dtype=float),
-                    spec["aggregation_strategy"],
-                )
-                classes = np.arange(proba.shape[1], dtype=int)
-                y_true = ordered_samples["y_true"].to_numpy(dtype=int)
-                y_pred = classes[proba.argmax(axis=1)]
-                mets = compute_metrics(y_true, y_pred, proba, classes)
-                fold_metrics.append(mets)
-                fold_member_sets.append(members)
-                for i, sid in enumerate(ordered_samples["sample_id"].tolist()):
-                    row = {
-                        "ensemble_config_id": spec["ensemble_config_id"],
-                        "outer_split_key": outer_split,
-                        "sample_id": sid,
-                        "y_true": int(y_true[i]),
-                        "y_pred": int(y_pred[i]),
-                    }
-                    for j, col in enumerate(pcols):
-                        row[col] = float(proba[i, j])
-                    all_fold_predictions.append(row)
-            prog.advance(candidate_task)
-            if not fold_metrics:
-                continue
-            fold_tab = pd.DataFrame(fold_metrics)
-            means = fold_tab.mean(numeric_only=True).to_dict()
-            stds = fold_tab.std(numeric_only=True, ddof=1).fillna(0.0).to_dict()
-            counts = fold_tab.count(numeric_only=True).to_dict()
-            row = {
-                **spec,
-                **{f"{k}_mean": float(v) for k, v in means.items()},
-                "n_folds": len(fold_metrics),
-            }
-            row.update({f"{k}_std": float(v) for k, v in stds.items()})
-            row.update({f"{k}_count": int(v) for k, v in counts.items()})
-            row["members"] = json.dumps(_mode_member_set(fold_member_sets))
-            all_candidate_rows.append(row)
-
-    cand = pd.DataFrame(all_candidate_rows)
-    if cand.empty:
-        raise RuntimeError("No valid ensemble candidates were produced.")
-    score_col = f"{sweep.ensemble.optimize_metric}_mean"
-    if score_col not in cand.columns:
-        score_col = "nMCC_mean"
-    cand = cand.sort_values(score_col, ascending=False)
-    cand.to_csv(ensemble_dir / "ensemble_candidate_scores.tsv", sep="\t", index=False)
-    pd.DataFrame(all_fold_predictions).to_csv(
-        ensemble_dir / "ensemble_predictions.tsv", sep="\t", index=False
-    )
-
-    rankings = pd.read_csv(root / "tables" / "mpma_rankings.tsv", sep="\t")
-    best_mpma = _inner_val_best_mpma(inner, rankings, metric)
-    best_ensemble = cand.iloc[0].to_dict()
-    selected = {
-        "inner_val_best_mpma": best_mpma,
-        "inner_val_best_mpmas_ensemble": best_ensemble,
-        "terminology": {
-            "MPMA-B": "best single MPMA selected by inner-validation scoring",
-            "MPMA-E": "ensemble of MPMAs selected and aggregated by inner-validation scoring",
-        },
-    }
-    dump_json_standard(selected, ensemble_dir / "selected_unit.json")
-
-    comp = _final_model_comparison(best_mpma, best_ensemble, score_col)
-    comp.to_csv(ensemble_dir / "final_model_comparison.tsv", sep="\t", index=False)
-    stale_candidate_plot = ensemble_dir / "ensemble_candidates.png"
-    if stale_candidate_plot.exists():
-        stale_candidate_plot.unlink()
-
-    X_fig, taxa_fig, source_fig = _matrix_for_mpma_e_figure(sweep)
-    mpma_e_outputs = write_single_task_mpma_e_figure(
-        root,
-        task_key=root.name,
-        task_title=sweep.title,
-        X=X_fig,
-        taxa=taxa_fig,
-        source=source_fig,
-        out_dir=root / "figures",
-        out_name="mpma_e",
-        include_inactive_configs=True,
-        max_members=20,
-        seed=sweep.evaluation.random_state,
-    )
-
-    success(
-        f"Ensemble sweep completed · best={best_ensemble['ensemble_config_id']} · {score_col}={best_ensemble[score_col]:.4f}"
-    )
-    outputs = {
-        "ensemble_dir": ensemble_dir,
-        "selected_unit": ensemble_dir / "selected_unit.json",
-        "comparison": ensemble_dir / "final_model_comparison.tsv",
-        **mpma_e_outputs,
-    }
-    path_table("Ensemble outputs", outputs)
-    return outputs
-
-
-def _matrix_for_mpma_e_figure(sweep: Sweep) -> tuple[np.ndarray, list[str], str]:
-    """Return the raw input abundance matrix for the MPMA-E schematic.
-
-    Member strips are derived from this matrix by aggregation to their selected
-    MPDR ranks. The input strip reflects the complete profile table, not only
-    the subset of ranks enabled in the sweep configuration.
-    """
-    X, feature_names = _raw_input_matrix_for_figure(sweep)
-    if X.size == 0 or len(feature_names) == 0:
-        raise RuntimeError(
-            "No raw abundance matrix is available for MPMA-E visualisation."
-        )
-    return X, feature_names, "raw input abundance matrix"
-
-
-def _raw_input_matrix_for_figure(sweep: Sweep) -> tuple[np.ndarray, list[str]]:
-    spec = sweep.data
-    abundance_path = Path(spec.abundance_path)
-    metadata_path = Path(spec.metadata_path) if spec.metadata_path is not None else None
-    fmt = spec.format
-    if fmt == "auto":
-        fmt = (
-            "metaphlan_tsv"
-            if abundance_path.suffix.lower() in {".tsv", ".txt"} and metadata_path
-            else "wide_csv"
-        )
-
-    if fmt in {"matrix_tsv", "metaphlan_tsv", "profile_tsv"}:
-        if metadata_path is None:
-            raise ValueError(
-                "Data.metadata_path is required for MetaPhlAn-style TSV input."
-            )
-        meta = pd.read_csv(metadata_path, sep=None, engine="python", dtype=str)
-        bio = pd.read_csv(abundance_path, sep="\t", index_col=0, low_memory=False)
-        bio.index = bio.index.astype(str).str.strip()
-        bio.columns = bio.columns.astype(str).str.strip()
-        meta[spec.sample_id_col] = meta[spec.sample_id_col].astype(str).str.strip()
-        common = [
-            sid for sid in meta[spec.sample_id_col].tolist() if sid in set(bio.columns)
-        ]
-        if not common:
-            raise ValueError(
-                "No sample IDs overlap between metadata and abundance matrix."
-            )
-        X = bio[common].T.to_numpy(dtype=np.float32)
-        return X, bio.index.tolist()
-
-    if fmt in {"csv", "wide_csv"}:
-        df = pd.read_csv(abundance_path)
-        if metadata_path is not None:
-            meta = pd.read_csv(metadata_path, sep=None, engine="python")
-            if (
-                spec.sample_id_col not in df.columns
-                or spec.sample_id_col not in meta.columns
-            ):
-                raise ValueError(
-                    f"sample_id_col={spec.sample_id_col!r} must exist in both CSV files."
-                )
-            df = df.merge(
-                meta, on=spec.sample_id_col, how="inner", suffixes=("", "__meta")
-            )
-        reserved = {spec.sample_id_col, spec.target_col, *(spec.metadata_cols or ())}
-        if spec.group_col:
-            reserved.add(spec.group_col)
-        numeric_cols = [
-            c
-            for c in df.columns
-            if c not in reserved and pd.api.types.is_numeric_dtype(df[c])
-        ]
-        if not numeric_cols:
-            raise ValueError(
-                "No numeric abundance columns found after excluding metadata columns."
-            )
-        return df[numeric_cols].to_numpy(dtype=np.float32), [
-            str(c) for c in numeric_cols
-        ]
-
-    dataset = load_dataset(sweep.data, TAXONOMIC_LEVELS)
-    if "all" in dataset.X_by_level:
-        return dataset.X_by_level["all"], dataset.feature_names_by_level.get("all", [])
-    blocks = list(dataset.X_by_level.values())
-    names = [name for lv in dataset.feature_names_by_level.values() for name in lv]
-    return np.concatenate(blocks, axis=1), names
+def _eligible_config_ids(configs: pd.DataFrame, ensemble: Ensemble) -> set[str]:
+    if configs is None or configs.empty or "config_id" not in configs.columns:
+        return set()
+    frame = configs.copy()
+    if (
+        not bool(getattr(ensemble, "include_inactive", False))
+        and "active" in frame.columns
+    ):
+        active = pd.to_numeric(frame["active"], errors="coerce").fillna(0).astype(int)
+        frame = frame[active.eq(1)]
+    excluded = _excluded_config_ids(frame, ensemble)
+    return set(frame["config_id"].astype(str)) - excluded
 
 
 def _ensemble_configs(plan: Ensemble) -> list[dict[str, Any]]:
@@ -358,12 +76,12 @@ def _ensemble_configs(plan: Ensemble) -> list[dict[str, Any]]:
                             :12
                         ],
                         "optimize_metric": plan.optimize_metric,
-                        "selection_strategy": sel,
+                        "selection_strategy": str(sel),
                         "ensemble_size": int(size),
                         "threshold_score": plan.threshold_score
                         if sel == "threshold"
                         else np.nan,
-                        "aggregation_strategy": agg,
+                        "aggregation_strategy": str(agg),
                     }
                 )
     return rows
@@ -388,12 +106,17 @@ def _model_family(name: str) -> str:
 
 
 def _select_members(
-    scores: pd.Series, configs: pd.DataFrame, spec: dict[str, Any], plan: Ensemble
+    scores: pd.Series,
+    configs: pd.DataFrame,
+    spec: dict[str, Any],
+    plan: Ensemble,
 ) -> list[str]:
     size = int(spec["ensemble_size"])
     sel = str(spec["selection_strategy"])
     ordered = [str(x) for x in scores.index.tolist()]
-    meta = configs.drop_duplicates("config_id").set_index("config_id")
+    meta = configs.drop_duplicates("config_id").copy()
+    meta["config_id"] = meta["config_id"].astype(str)
+    meta = meta.set_index("config_id")
     if sel == "top_k":
         return ordered[:size]
     if sel == "threshold":
@@ -401,7 +124,8 @@ def _select_members(
             :size
         ]
     if sel == "best_per_family":
-        out, seen = [], set()
+        out = []
+        seen = set()
         for cid in ordered:
             fam = _model_family(meta.loc[cid, "learner"] if cid in meta.index else cid)
             if fam not in seen:
@@ -411,7 +135,8 @@ def _select_members(
                 break
         return out
     if sel == "best_per_resolution":
-        out, seen = [], set()
+        out = []
+        seen = set()
         for cid in ordered:
             res = str(meta.loc[cid, "resolution"] if cid in meta.index else "")
             if res not in seen:
@@ -422,7 +147,10 @@ def _select_members(
         return out
     if sel == "diverse_top_k":
         out = _select_members(
-            scores, configs, {**spec, "selection_strategy": "best_per_family"}, plan
+            scores,
+            configs,
+            {**spec, "selection_strategy": "best_per_family"},
+            plan,
         )
         for cid in ordered:
             if len(out) >= size:
@@ -435,7 +163,7 @@ def _select_members(
 
 def _aggregate_proba(stack: np.ndarray, weights: np.ndarray, method: str) -> np.ndarray:
     stack = np.asarray(stack, dtype=float)
-    weights = np.nan_to_num(weights, nan=0.0)
+    weights = np.nan_to_num(np.asarray(weights, dtype=float), nan=0.0)
     if stack.ndim != 3:
         raise ValueError("Expected stack shape: n_members × n_samples × n_classes")
     method = str(method)
@@ -466,137 +194,552 @@ def _aggregate_proba(stack: np.ndarray, weights: np.ndarray, method: str) -> np.
     return _renormalize_proba(proba, stack.shape[2])
 
 
-def _mode_member_set(member_sets: list[list[str]]) -> list[str]:
-    if not member_sets:
-        return []
-    counts: dict[str, int] = {}
-    for members in member_sets:
-        for cid in members:
-            counts[cid] = counts.get(cid, 0) + 1
-    first = member_sets[0]
-    return sorted(
-        counts, key=lambda c: (-counts[c], first.index(c) if c in first else 9999)
-    )[: len(first)]
-
-
-def _inner_val_best_mpma(
-    inner: pd.DataFrame, outer_rankings: pd.DataFrame, metric: str
-) -> dict[str, Any]:
-    """Return the MPMA-B row selected by inner validation, augmented with outer estimates."""
-    if inner is None or inner.empty or "config_id" not in inner.columns:
-        return (
-            outer_rankings.iloc[0].to_dict()
-            if outer_rankings is not None and not outer_rankings.empty
-            else {}
+def _complete_inner_scores(
+    inner: pd.DataFrame,
+    outer_split_key: str | None,
+    metric: str,
+    eligible_ids: set[str],
+) -> pd.Series:
+    required = {"inner_key", "config_id", metric}
+    missing = required - set(inner.columns)
+    if missing:
+        raise ValueError(
+            f"Inner-results table is missing required columns: {sorted(missing)}"
         )
-    score_metric = (
-        metric
-        if metric in inner.columns
-        else ("nMCC" if "nMCC" in inner.columns else None)
-    )
-    if score_metric is None:
-        return (
-            outer_rankings.iloc[0].to_dict()
-            if outer_rankings is not None and not outer_rankings.empty
-            else {}
-        )
-    ok = inner.copy()
-    if "ok" in ok.columns:
-        ok = ok[pd.to_numeric(ok["ok"], errors="coerce").fillna(0).eq(1)]
-    if ok.empty:
-        return (
-            outer_rankings.iloc[0].to_dict()
-            if outer_rankings is not None and not outer_rankings.empty
-            else {}
-        )
-    id_cols = [
-        c
-        for c in [
-            "config_id",
-            "mpdr_id",
-            "count_transformation",
-            "transformation_abbreviation",
-            "resolution",
-            "levels",
-            "learner",
-        ]
-        if c in ok.columns
-    ]
-    metrics = [
-        c for c in ["nMCC", "AUC", "BalAcc", "Accuracy", "F1w"] if c in ok.columns
-    ]
-    agg = ok.groupby(id_cols, dropna=False)[metrics].agg(["mean", "std", "count"])
-    agg.columns = [f"inner_{m}_{stat}" for m, stat in agg.columns]
-    rank = agg.reset_index().sort_values(f"inner_{score_metric}_mean", ascending=False)
-    best = rank.iloc[0].to_dict()
-    if (
-        outer_rankings is not None
-        and not outer_rankings.empty
-        and "config_id" in outer_rankings.columns
-    ):
-        cid = str(best.get("config_id", ""))
-        match = outer_rankings[outer_rankings["config_id"].astype(str).eq(cid)]
-        if not match.empty:
-            outer = match.iloc[0].to_dict()
-            for k, v in outer.items():
-                if k.endswith("_mean") or k.endswith("_std") or k.endswith("_count"):
-                    best[f"outer_{k}"] = v
-                elif k not in best:
-                    best[k] = v
-    best["selection_basis"] = "inner_validation"
-    best["score"] = best.get(f"inner_{score_metric}_mean", best.get("inner_nMCC_mean"))
-    return best
-
-
-def _final_model_comparison(
-    best_mpma: dict[str, Any], best_ensemble: dict[str, Any], score_col: str
-) -> pd.DataFrame:
+    frame = inner.copy()
+    if outer_split_key is not None:
+        if "split_key" not in frame.columns:
+            raise ValueError("Inner-results table must contain split_key.")
+        frame = frame[frame["split_key"].astype(str).eq(str(outer_split_key))]
+    frame["config_id"] = frame["config_id"].astype(str)
+    frame["inner_key"] = frame["inner_key"].astype(str)
+    frame[metric] = pd.to_numeric(frame[metric], errors="coerce")
+    frame = frame[frame["config_id"].isin(eligible_ids)]
+    if "ok" in frame.columns:
+        ok = pd.to_numeric(frame["ok"], errors="coerce").fillna(0).astype(int)
+        frame = frame[ok.eq(1)]
+    expected = set(frame["inner_key"].dropna().astype(str))
+    if not expected:
+        return pd.Series(dtype=float)
     rows = []
-    if best_mpma:
-        rows.append(
+    for config_id, group in frame.groupby("config_id", sort=True):
+        group = group.drop_duplicates("inner_key", keep="last")
+        valid = group[np.isfinite(group[metric].to_numpy(dtype=float))]
+        if set(valid["inner_key"].astype(str)) != expected:
+            continue
+        rows.append((str(config_id), float(valid[metric].mean())))
+    if not rows:
+        return pd.Series(dtype=float)
+    scores = pd.Series(dict(rows), dtype=float)
+    order = sorted(scores.index, key=lambda cid: (-float(scores[cid]), str(cid)))
+    return scores.loc[order]
+
+
+def _prediction_frame_for_outer(
+    predictions: pd.DataFrame,
+    outer_split_key: str | None,
+) -> pd.DataFrame:
+    frame = predictions.copy()
+    if "outer_split_key" not in frame.columns:
+        if "split_key" not in frame.columns:
+            raise ValueError(
+                "Prediction table must contain outer_split_key or split_key."
+            )
+        frame["outer_split_key"] = frame["split_key"]
+    if outer_split_key is not None:
+        frame = frame[frame["outer_split_key"].astype(str).eq(str(outer_split_key))]
+    frame["config_id"] = frame["config_id"].astype(str)
+    return frame
+
+
+def _aligned_stack(
+    predictions: pd.DataFrame,
+    members: list[str],
+    pcols: list[str],
+    inner: bool,
+) -> tuple[pd.DataFrame, np.ndarray] | tuple[None, None]:
+    if not members:
+        return None, None
+    if inner:
+        if "split_key" not in predictions.columns:
+            raise ValueError("Inner predictions must contain split_key.")
+        key_cols = ["split_key", "sample_id"]
+    else:
+        key_cols = ["sample_id"]
+    base_cols = key_cols + ["y_true"]
+    ordered = (
+        predictions[base_cols]
+        .drop_duplicates(key_cols)
+        .sort_values(key_cols)
+        .reset_index(drop=True)
+    )
+    stacks = []
+    for cid in members:
+        sub = predictions[predictions["config_id"].eq(str(cid))].copy()
+        sub = sub.drop_duplicates(key_cols, keep="last")
+        sub = ordered[key_cols].merge(
+            sub[key_cols + pcols], on=key_cols, how="left", validate="one_to_one"
+        )
+        if sub[pcols].isna().any().any():
+            return None, None
+        stacks.append(sub[pcols].to_numpy(dtype=float))
+    if len(stacks) != len(members):
+        return None, None
+    return ordered, np.stack(stacks, axis=0)
+
+
+def _score_inner_candidate(
+    spec: dict[str, Any],
+    scores: pd.Series,
+    predictions: pd.DataFrame,
+    configs: pd.DataFrame,
+    plan: Ensemble,
+    pcols: list[str],
+) -> dict[str, Any] | None:
+    members = _select_members(scores, configs, spec, plan)
+    if len(members) < 2:
+        return None
+    weights = np.asarray(
+        [float(scores.get(cid, np.nan)) for cid in members], dtype=float
+    )
+    fold_metrics = []
+    for inner_key, fold in predictions.groupby("split_key", sort=True):
+        ordered, stack = _aligned_stack(fold, members, pcols, False)
+        if ordered is None or stack is None:
+            return None
+        proba = _aggregate_proba(stack, weights, str(spec["aggregation_strategy"]))
+        classes = np.arange(proba.shape[1], dtype=int)
+        y_true = ordered["y_true"].to_numpy(dtype=int)
+        y_pred = classes[proba.argmax(axis=1)]
+        fold_metrics.append(compute_metrics(y_true, y_pred, proba, classes))
+    if not fold_metrics:
+        return None
+    tab = pd.DataFrame(fold_metrics)
+    means = tab.mean(numeric_only=True).to_dict()
+    stds = tab.std(numeric_only=True, ddof=1).fillna(0.0).to_dict()
+    counts = tab.count(numeric_only=True).to_dict()
+    row = {
+        **spec,
+        "members": json.dumps(members),
+        "member_count": int(len(members)),
+        "n_inner_folds": int(len(fold_metrics)),
+    }
+    row.update({f"{key}_mean": float(value) for key, value in means.items()})
+    row.update({f"{key}_std": float(value) for key, value in stds.items()})
+    row.update({f"{key}_count": int(value) for key, value in counts.items()})
+    return row
+
+
+def _candidate_table_for_inner(
+    inner_results: pd.DataFrame,
+    inner_predictions: pd.DataFrame,
+    configs: pd.DataFrame,
+    plan: Ensemble,
+    metric: str,
+    outer_split_key: str | None,
+    available_ids: set[str] | None = None,
+) -> pd.DataFrame:
+    eligible = _eligible_config_ids(configs, plan)
+    if available_ids is not None:
+        eligible &= {str(x) for x in available_ids}
+    scores = _complete_inner_scores(inner_results, outer_split_key, metric, eligible)
+    if scores.empty:
+        return pd.DataFrame()
+    pred = _prediction_frame_for_outer(inner_predictions, outer_split_key)
+    pred = pred[pred["config_id"].isin(set(scores.index))].copy()
+    pcols = _proba_cols(pred)
+    if not pcols:
+        raise ValueError("Inner predictions do not contain probability columns.")
+    rows = []
+    for spec in _ensemble_configs(plan):
+        row = _score_inner_candidate(spec, scores, pred, configs, plan, pcols)
+        if row is None:
+            continue
+        rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    score_col = f"{metric}_mean" if f"{metric}_mean" in out.columns else "nMCC_mean"
+    out = out.sort_values(
+        [score_col, "ensemble_config_id"], ascending=[False, True], kind="mergesort"
+    )
+    return out.reset_index(drop=True)
+
+
+def select_mpma_e_by_outer_fold(
+    inner_results: pd.DataFrame,
+    inner_predictions: pd.DataFrame,
+    outer_predictions: pd.DataFrame,
+    configs: pd.DataFrame,
+    plan: Ensemble,
+    metric: str,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    outer = _prediction_frame_for_outer(outer_predictions, None)
+    inner_pred = _prediction_frame_for_outer(inner_predictions, None)
+    outer_pcols = _proba_cols(outer)
+    if not outer_pcols:
+        raise ValueError("Outer predictions do not contain probability columns.")
+    selections = []
+    prediction_rows = []
+    metric_rows = []
+    outer_keys = sorted(set(outer["outer_split_key"].astype(str)))
+    for outer_key in outer_keys:
+        fold_outer = outer[outer["outer_split_key"].astype(str).eq(outer_key)].copy()
+        fold_inner_pred = inner_pred[
+            inner_pred["outer_split_key"].astype(str).eq(outer_key)
+        ].copy()
+        if fold_outer.empty or fold_inner_pred.empty:
+            continue
+        available_ids = set(fold_outer["config_id"].astype(str))
+        candidates = _candidate_table_for_inner(
+            inner_results,
+            inner_predictions,
+            configs,
+            plan,
+            metric,
+            outer_key,
+            available_ids,
+        )
+        if candidates.empty:
+            continue
+        score_col = (
+            f"{metric}_mean" if f"{metric}_mean" in candidates.columns else "nMCC_mean"
+        )
+        winner = candidates.iloc[0].to_dict()
+        members = json.loads(str(winner["members"]))
+        eligible = _eligible_config_ids(configs, plan) & available_ids
+        scores = _complete_inner_scores(inner_results, outer_key, metric, eligible)
+        ordered, stack = _aligned_stack(fold_outer, members, outer_pcols, False)
+        if ordered is None or stack is None:
+            continue
+        weights = np.asarray(
+            [float(scores.get(cid, np.nan)) for cid in members], dtype=float
+        )
+        proba = _aggregate_proba(stack, weights, str(winner["aggregation_strategy"]))
+        classes = np.arange(proba.shape[1], dtype=int)
+        y_true = ordered["y_true"].to_numpy(dtype=int)
+        y_pred = classes[proba.argmax(axis=1)]
+        outer_metrics = compute_metrics(y_true, y_pred, proba, classes)
+        selections.append(
             {
-                "unit": "MPMA-B",
-                "config_id": best_mpma.get("config_id", ""),
-                "score": best_mpma.get(
-                    "score",
-                    best_mpma.get(score_col, best_mpma.get("nMCC_mean", np.nan)),
-                ),
-                "count_transformation": best_mpma.get("count_transformation", ""),
-                "resolution": best_mpma.get("resolution", ""),
-                "learner": best_mpma.get("learner", ""),
-                "members": "",
+                "outer_split_key": outer_key,
+                "ensemble_config_id": str(winner["ensemble_config_id"]),
+                "selection_basis": "outer_fold_inner_validation_predictions",
+                "selection_metric": str(metric),
+                "inner_score": float(winner[score_col]),
+                "selection_strategy": str(winner["selection_strategy"]),
+                "aggregation_strategy": str(winner["aggregation_strategy"]),
+                "ensemble_size": int(winner["ensemble_size"]),
+                "member_count": int(winner["member_count"]),
+                "members": json.dumps(members),
             }
         )
-    rows.append(
+        metric_rows.append(
+            {
+                "outer_split_key": outer_key,
+                "ensemble_config_id": str(winner["ensemble_config_id"]),
+                **outer_metrics,
+            }
+        )
+        ordered = ordered.copy()
+        ordered["outer_split_key"] = outer_key
+        ordered["ensemble_config_id"] = str(winner["ensemble_config_id"])
+        ordered["selection_strategy"] = str(winner["selection_strategy"])
+        ordered["aggregation_strategy"] = str(winner["aggregation_strategy"])
+        ordered["members"] = json.dumps(members)
+        ordered["y_pred"] = y_pred.astype(int)
+        for j, col in enumerate(outer_pcols):
+            ordered[col] = proba[:, j]
+        prediction_rows.extend(ordered.to_dict(orient="records"))
+    return (
+        pd.DataFrame(selections),
+        pd.DataFrame(prediction_rows),
+        pd.DataFrame(metric_rows),
+    )
+
+
+def summarize_mpma_e_strategy(fold_metrics: pd.DataFrame) -> dict[str, Any]:
+    if fold_metrics is None or fold_metrics.empty:
+        return {}
+    out: dict[str, Any] = {
+        "Strategy": "MPMA-E",
+        "selection_basis": "outer_fold_inner_validation_predictions",
+        "n_outer_folds": int(len(fold_metrics)),
+    }
+    for metric in fold_metrics.columns:
+        if metric in {"outer_split_key", "ensemble_config_id"}:
+            continue
+        vals = (
+            pd.to_numeric(fold_metrics[metric], errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna()
+        )
+        if vals.empty:
+            continue
+        out[f"outer_{metric}_mean"] = float(vals.mean())
+        out[f"outer_{metric}_std"] = float(vals.std(ddof=1)) if len(vals) > 1 else 0.0
+        out[f"outer_{metric}_count"] = int(len(vals))
+    return out
+
+
+def select_final_mpma_e_candidate(
+    inner_results: pd.DataFrame,
+    inner_predictions: pd.DataFrame,
+    configs: pd.DataFrame,
+    plan: Ensemble,
+    metric: str,
+) -> tuple[dict[str, Any], pd.DataFrame]:
+    candidates = _candidate_table_for_inner(
+        inner_results,
+        inner_predictions,
+        configs,
+        plan,
+        metric,
+        None,
+        None,
+    )
+    if candidates.empty:
+        return {}, candidates
+    score_col = (
+        f"{metric}_mean" if f"{metric}_mean" in candidates.columns else "nMCC_mean"
+    )
+    candidates = candidates.rename(columns={score_col: "inner_score"})
+    first = candidates.iloc[0].to_dict()
+    best = {
+        "ensemble_config_id": str(first["ensemble_config_id"]),
+        "selection_basis": "all_inner_validation_predictions_for_final_refit",
+        "selection_metric": str(metric),
+        "inner_score": float(first["inner_score"]),
+        "selection_strategy": str(first["selection_strategy"]),
+        "aggregation_strategy": str(first["aggregation_strategy"]),
+        "ensemble_size": int(first["ensemble_size"]),
+        "member_count": int(first["member_count"]),
+        "members": str(first["members"]),
+    }
+    for key, value in first.items():
+        if key in best or key in {"optimize_metric", "threshold_score"}:
+            continue
+        if key.startswith("outer_"):
+            continue
+        best[f"inner_{key}"] = value
+    return best, candidates
+
+
+def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
+    root = sweep.root()
+    ensemble_dir = root / "ensembling"
+    ensemble_dir.mkdir(parents=True, exist_ok=True)
+    outer_path = root / "predictions" / "outer_predictions.tsv"
+    inner_result_path = root / "inner_results" / "inner_results.tsv"
+    inner_prediction_path = root / "inner_predictions" / "inner_predictions.tsv"
+    config_path = root / "configs.tsv"
+    required = [outer_path, inner_result_path, inner_prediction_path, config_path]
+    if any(not path.exists() for path in required):
+        raise FileNotFoundError("Run evaluate(sweep) before sweep_ensemble(sweep).")
+    outer_predictions = pd.read_csv(outer_path, sep="\t")
+    inner_results = pd.read_csv(inner_result_path, sep="\t")
+    inner_predictions = pd.read_csv(inner_prediction_path, sep="\t")
+    configs = pd.read_csv(config_path, sep="\t")
+    metric = sweep.ensemble.optimize_metric
+    if metric not in inner_results.columns:
+        metric = (
+            sweep.evaluation.optimize_metric
+            if sweep.evaluation.optimize_metric in inner_results.columns
+            else "nMCC"
+        )
+    stage("Ensemble sweep", str(root))
+    summary_table(
+        "Ensemble search",
         {
-            "unit": "MPMA-E",
-            "config_id": best_ensemble.get("ensemble_config_id", ""),
-            "score": best_ensemble.get(score_col, np.nan),
-            "count_transformation": "",
-            "resolution": "",
-            "learner": f"{best_ensemble.get('selection_strategy')} + {best_ensemble.get('aggregation_strategy')}",
-            "members": best_ensemble.get("members", "[]"),
-        }
+            "candidate ensembles": f"{len(_ensemble_configs(sweep.ensemble)):,}",
+            "selection strategies": sweep.ensemble.selection_strategies,
+            "aggregation strategies": sweep.ensemble.aggregation_strategies,
+            "ensemble sizes": sweep.ensemble.sizes,
+            "excluded learners": sweep.ensemble.exclude_learners or "none",
+            "excluded resolutions": sweep.ensemble.exclude_resolutions or "none",
+            "excluded transformations": sweep.ensemble.exclude_transformations
+            or "none",
+            "optimize metric": metric,
+        },
     )
-    return pd.DataFrame(rows)
-
-
-def _plot_ensemble_candidates(
-    cand: pd.DataFrame, score_col: str, out: Path, top_n: int = 20
-) -> None:
-    if cand.empty:
-        return
-    import matplotlib.pyplot as plt
-
-    top = cand.head(top_n).copy()
-    labels = top.apply(
-        lambda r: f"{r['selection_strategy']}\n{r['aggregation_strategy']}", axis=1
+    selection, selected_outer_predictions, fold_metrics = select_mpma_e_by_outer_fold(
+        inner_results,
+        inner_predictions,
+        outer_predictions,
+        configs,
+        sweep.ensemble,
+        metric,
     )
-    fig, ax = plt.subplots(figsize=(9, max(3, 0.35 * len(top))))
-    ax.barh(np.arange(len(top)), top[score_col].astype(float))
-    ax.set_yticks(np.arange(len(top)), labels)
-    ax.invert_yaxis()
-    ax.set_xlabel(score_col.replace("_", " "))
-    fig.tight_layout()
-    fig.savefig(out, dpi=220)
-    plt.close(fig)
+    if selection.empty or selected_outer_predictions.empty or fold_metrics.empty:
+        raise RuntimeError("No valid nested ensemble selections were produced.")
+    final_ensemble, candidates = select_final_mpma_e_candidate(
+        inner_results,
+        inner_predictions,
+        configs,
+        sweep.ensemble,
+        metric,
+    )
+    if not final_ensemble:
+        raise RuntimeError(
+            "No valid final ensemble candidate was produced from inner validation predictions."
+        )
+    nested_summary = summarize_mpma_e_strategy(fold_metrics)
+    final_mpma = select_final_mpma_candidate(
+        inner_results,
+        configs,
+        metric,
+        plan=sweep.ensemble,
+    )
+    selection_path = ensemble_dir / "mpma_e_outer_selection.tsv"
+    prediction_path = ensemble_dir / "ensemble_predictions.tsv"
+    result_path = ensemble_dir / "mpma_e_outer_results.tsv"
+    candidate_path = ensemble_dir / "ensemble_candidate_scores.tsv"
+    summary_path = ensemble_dir / "mpma_e_strategy_summary.json"
+    final_path = ensemble_dir / "mpma_e_final_candidate.json"
+    selection.to_csv(selection_path, sep="\t", index=False)
+    selected_outer_predictions.to_csv(prediction_path, sep="\t", index=False)
+    fold_metrics.to_csv(result_path, sep="\t", index=False)
+    candidates.to_csv(candidate_path, sep="\t", index=False)
+    dump_json_standard(nested_summary, summary_path)
+    dump_json_standard(final_ensemble, final_path)
+    selected = {
+        "inner_val_best_mpma": final_mpma,
+        "inner_val_best_mpmas_ensemble": final_ensemble,
+        "nested_mpma_e": nested_summary,
+        "terminology": {
+            "MPMA-B": "fold-specific single MPMA selected by inner-validation scoring for nested performance; separate final candidate selected from all inner validation for refit",
+            "MPMA-E": "fold-specific ensemble specification selected by inner-validation predictions for nested performance; separate final candidate selected from all inner validation predictions for refit",
+        },
+    }
+    dump_json_standard(selected, ensemble_dir / "selected_unit.json")
+    comparison = pd.DataFrame(
+        [
+            {
+                "unit": "MPMA-B final candidate",
+                "config_id": final_mpma.get("config_id", ""),
+                "selection_basis": final_mpma.get("selection_basis", ""),
+                "inner_score": final_mpma.get("inner_score", np.nan),
+                "members": "",
+            },
+            {
+                "unit": "MPMA-E final candidate",
+                "config_id": final_ensemble.get("ensemble_config_id", ""),
+                "selection_basis": final_ensemble.get("selection_basis", ""),
+                "inner_score": final_ensemble.get("inner_score", np.nan),
+                "members": final_ensemble.get("members", "[]"),
+            },
+        ]
+    )
+    comparison.to_csv(
+        ensemble_dir / "final_model_comparison.tsv", sep="\t", index=False
+    )
+    stale_candidate_plot = ensemble_dir / "ensemble_candidates.png"
+    if stale_candidate_plot.exists():
+        stale_candidate_plot.unlink()
+    X_fig, taxa_fig, source_fig = _matrix_for_mpma_e_figure(sweep)
+    mpma_e_outputs = write_single_task_mpma_e_figure(
+        root,
+        task_key=root.name,
+        task_title=sweep.title,
+        X=X_fig,
+        taxa=taxa_fig,
+        source=source_fig,
+        out_dir=root / "figures",
+        out_name="mpma_e",
+        include_inactive_configs=True,
+        max_members=20,
+        seed=sweep.evaluation.random_state,
+    )
+    success(
+        f"Ensemble sweep completed · final candidate={final_ensemble['ensemble_config_id']} · inner {metric}={final_ensemble['inner_score']:.4f}"
+    )
+    outputs = {
+        "ensemble_dir": ensemble_dir,
+        "selected_unit": ensemble_dir / "selected_unit.json",
+        "comparison": ensemble_dir / "final_model_comparison.tsv",
+        "mpma_e_selection": selection_path,
+        "mpma_e_predictions": prediction_path,
+        "mpma_e_outer_results": result_path,
+        "mpma_e_candidates": candidate_path,
+        "mpma_e_summary": summary_path,
+        "mpma_e_final_candidate": final_path,
+        **mpma_e_outputs,
+    }
+    path_table("Ensemble outputs", outputs)
+    return outputs
+
+
+def _matrix_for_mpma_e_figure(sweep: Sweep) -> tuple[np.ndarray, list[str], str]:
+    X, feature_names = _raw_input_matrix_for_figure(sweep)
+    if X.size == 0 or len(feature_names) == 0:
+        raise RuntimeError(
+            "No raw abundance matrix is available for MPMA-E visualisation."
+        )
+    return X, feature_names, "raw input abundance matrix"
+
+
+def _raw_input_matrix_for_figure(sweep: Sweep) -> tuple[np.ndarray, list[str]]:
+    spec = sweep.data
+    abundance_path = Path(spec.abundance_path)
+    metadata_path = Path(spec.metadata_path) if spec.metadata_path is not None else None
+    fmt = spec.format
+    if fmt == "auto":
+        fmt = (
+            "metaphlan_tsv"
+            if abundance_path.suffix.lower() in {".tsv", ".txt"} and metadata_path
+            else "wide_csv"
+        )
+    if fmt in {"matrix_tsv", "metaphlan_tsv", "profile_tsv"}:
+        if metadata_path is None:
+            raise ValueError(
+                "Data.metadata_path is required for MetaPhlAn-style TSV input."
+            )
+        meta = pd.read_csv(metadata_path, sep=None, engine="python", dtype=str)
+        bio = pd.read_csv(abundance_path, sep="\t", index_col=0, low_memory=False)
+        bio.index = bio.index.astype(str).str.strip()
+        bio.columns = bio.columns.astype(str).str.strip()
+        meta[spec.sample_id_col] = meta[spec.sample_id_col].astype(str).str.strip()
+        common = [
+            sid for sid in meta[spec.sample_id_col].tolist() if sid in set(bio.columns)
+        ]
+        if not common:
+            raise ValueError(
+                "No sample IDs overlap between metadata and abundance matrix."
+            )
+        X = bio[common].T.to_numpy(dtype=np.float32)
+        return X, bio.index.tolist()
+    if fmt in {"csv", "wide_csv"}:
+        df = pd.read_csv(abundance_path)
+        if metadata_path is not None:
+            meta = pd.read_csv(metadata_path, sep=None, engine="python")
+            if (
+                spec.sample_id_col not in df.columns
+                or spec.sample_id_col not in meta.columns
+            ):
+                raise ValueError(
+                    f"sample_id_col={spec.sample_id_col!r} must exist in both CSV files."
+                )
+            df = df.merge(
+                meta, on=spec.sample_id_col, how="inner", suffixes=("", "__meta")
+            )
+        reserved = {spec.sample_id_col, spec.target_col, *(spec.metadata_cols or ())}
+        if spec.group_col:
+            reserved.add(spec.group_col)
+        numeric_cols = [
+            c
+            for c in df.columns
+            if c not in reserved and pd.api.types.is_numeric_dtype(df[c])
+        ]
+        if not numeric_cols:
+            raise ValueError(
+                "No numeric abundance columns found after excluding metadata columns."
+            )
+        return df[numeric_cols].to_numpy(dtype=np.float32), [
+            str(c) for c in numeric_cols
+        ]
+    dataset = load_dataset(sweep.data, TAXONOMIC_LEVELS)
+    if "all" in dataset.X_by_level:
+        return dataset.X_by_level["all"], dataset.feature_names_by_level.get("all", [])
+    blocks = list(dataset.X_by_level.values())
+    names = [name for lv in dataset.feature_names_by_level.values() for name in lv]
+    return np.concatenate(blocks, axis=1), names

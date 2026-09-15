@@ -8,14 +8,21 @@ from typing import Any, Callable
 import numpy as np
 from sklearn.base import BaseEstimator, clone
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.discriminant_analysis import (LinearDiscriminantAnalysis,
-                                           QuadraticDiscriminantAnalysis)
-from sklearn.ensemble import (ExtraTreesClassifier,
-                              HistGradientBoostingClassifier,
-                              RandomForestClassifier)
-from sklearn.linear_model import (LogisticRegression,
-                                  PassiveAggressiveClassifier, RidgeClassifier,
-                                  SGDClassifier)
+from sklearn.discriminant_analysis import (
+    LinearDiscriminantAnalysis,
+    QuadraticDiscriminantAnalysis,
+)
+from sklearn.ensemble import (
+    ExtraTreesClassifier,
+    HistGradientBoostingClassifier,
+    RandomForestClassifier,
+)
+from sklearn.linear_model import (
+    LogisticRegression,
+    PassiveAggressiveClassifier,
+    RidgeClassifier,
+    SGDClassifier,
+)
 from sklearn.naive_bayes import BernoulliNB, GaussianNB, MultinomialNB
 from sklearn.neighbors import KNeighborsClassifier, NearestCentroid
 from sklearn.svm import SVC, LinearSVC

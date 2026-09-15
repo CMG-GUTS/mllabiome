@@ -16,23 +16,25 @@ from sklearn.base import BaseEstimator
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import balanced_accuracy_score, roc_auc_score
 
-from .configs_sweep import (Sweep, _groups_from_metadata, _outer_splits,
-                            _strata_from_metadata)
+from .configs_sweep import (
+    Sweep,
+    _groups_from_metadata,
+    _outer_splits,
+    _strata_from_metadata,
+)
 from .console import console, info, path_table, stage, success, summary_table
 from .data import load_dataset
-from .explainability_visuals import \
-    plot_feature_support as _plot_feature_support_visual
-from .explainability_visuals import \
-    plot_interaction_network as _plot_interaction_network_visual
+from .explainability_visuals import plot_feature_support as _plot_feature_support_visual
+from .explainability_visuals import (
+    plot_interaction_network as _plot_interaction_network_visual,
+)
 from .learners import _learner_factory
 from .metrics import _estimator_call, _predict_proba_aligned
 from .resolutions import materialize_mpdr
-from .style import (ACC_D, ACC_L, BG, COL_W_2, DIM, INK, MID, TRACK, UC_CASE,
-                    UC_CTRL)
+from .style import ACC_D, ACC_L, BG, COL_W_2, DIM, INK, MID, TRACK, UC_CASE, UC_CTRL
 from .style import apply as apply_style
 from .style import save_all
-from .transformations import (CountTransformationAdapter,
-                              _count_transformation_factory)
+from .transformations import CountTransformationAdapter, _count_transformation_factory
 from .utils import _as_float_matrix, dump_json_standard
 
 # Keep third-party diagnostics from breaking the rich progress display.

@@ -5,12 +5,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mllabiome.selection import (_eligible_config_ids, mpma_b_fold_metrics,
-                                 select_final_mpma_candidate,
-                                 select_mpma_b_by_outer_fold,
-                                 selected_mpma_b_outer_predictions,
-                                 summarize_mpma_b_strategy,
-                                 write_mpma_b_selection_outputs)
+from mllabiome.selection import (
+    _eligible_config_ids,
+    mpma_b_fold_metrics,
+    select_final_mpma_candidate,
+    select_mpma_b_by_outer_fold,
+    selected_mpma_b_outer_predictions,
+    summarize_mpma_b_strategy,
+    write_mpma_b_selection_outputs,
+)
 
 
 def _configs():

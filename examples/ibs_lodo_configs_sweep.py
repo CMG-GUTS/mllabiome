@@ -146,7 +146,7 @@ _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
 def _build_count_transformations():
     T = mll.Transformation
     return [
-        T("raw"),  # RA
+        T("identity"),
     ]
 
 
@@ -185,7 +185,6 @@ def _build_models():
 
 EVALUATION = mll.Evaluation(
     protocol="lodo",
-    inner_folds=3,
     repeats=1,
     optimize_metric="nMCC",
     random_state=42,
@@ -193,7 +192,9 @@ EVALUATION = mll.Evaluation(
 )
 
 GATE = mll.QualificationGate(enabled=False, metric="nMCC", threshold=0.51)
-ENSEMBLE = mll.Ensemble(sizes=(3,), optimize_metric="nMCC")
+ENSEMBLE = mll.Ensemble(
+    sizes=(3,), optimize_metric="nMCC", exclude_learners=("SIAMCAT",)
+)
 EXPLAINABILITY = mll.Explainability(
     targets="auto",
     top_k=30,

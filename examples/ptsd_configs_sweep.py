@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sklearn.ensemble import (ExtraTreesClassifier,
-                              HistGradientBoostingClassifier,
-                              RandomForestClassifier)
+from sklearn.ensemble import (
+    ExtraTreesClassifier,
+    HistGradientBoostingClassifier,
+    RandomForestClassifier,
+)
 from sklearn.linear_model import LogisticRegression, RidgeClassifier
 from sklearn.naive_bayes import BernoulliNB, GaussianNB
 from sklearn.neighbors import KNeighborsClassifier, NearestCentroid
@@ -163,9 +165,9 @@ ENSEMBLE = mll.Ensemble(sizes=(3,), optimize_metric="nMCC")
 # )
 
 EXPLAINABILITY = mll.Explainability(
-    targets=("mpma_b",),
+    targets=("mpma_b", "mpma_e"),
     methods=("permutation",),
-    n_repeats=3,
+    n_repeats=1,
     top_k=15,
     representative_instances=False,
 )

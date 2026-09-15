@@ -24,8 +24,11 @@ from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from scipy.stats import rankdata
 
 try:
-    from sklearn.preprocessing import (PowerTransformer, QuantileTransformer,
-                                       RobustScaler)
+    from sklearn.preprocessing import (
+        PowerTransformer,
+        QuantileTransformer,
+        RobustScaler,
+    )
 except Exception:  # pragma: no cover - optional transformation support
     PowerTransformer = None
     QuantileTransformer = None

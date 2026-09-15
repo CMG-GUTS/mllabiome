@@ -5,11 +5,20 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mllabiome.data import (Data, Dataset, _dataset_from_feature_matrix,
-                            _taxonomic_rank, load_dataset)
-from mllabiome.resolutions import (_manual_range, _parse_resolution,
-                                   _range_levels, _resolution_from_name,
-                                   materialize_mpdr)
+from mllabiome.data import (
+    Data,
+    Dataset,
+    _dataset_from_feature_matrix,
+    _taxonomic_rank,
+    load_dataset,
+)
+from mllabiome.resolutions import (
+    _manual_range,
+    _parse_resolution,
+    _range_levels,
+    _resolution_from_name,
+    materialize_mpdr,
+)
 from mllabiome.utils import TAXONOMIC_LEVELS
 
 ROOT = Path(__file__).resolve().parents[1]

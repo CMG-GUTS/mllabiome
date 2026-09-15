@@ -11,25 +11,35 @@ import numpy as np
 import pandas as pd
 from scipy.special import expit, softmax
 from sklearn.base import BaseEstimator
-from sklearn.metrics import (accuracy_score, average_precision_score,
-                             balanced_accuracy_score, f1_score,
-                             matthews_corrcoef, precision_score, recall_score,
-                             roc_auc_score)
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    balanced_accuracy_score,
+    f1_score,
+    matthews_corrcoef,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 from sklearn.model_selection import StratifiedKFold
 
-from .console import info, path_table, progress, stage, success, summary_table
 from .data import Data, Dataset, load_dataset
+from .console import info, path_table, progress, stage, success, summary_table
 from .figures import _write_representation_impact_figure
 from .learners import _learner_factory, _learner_name
-from .metrics import _predict_proba_aligned as _metrics_predict_proba_aligned
-from .metrics import compute_metrics
+from .metrics import (
+    _predict_proba_aligned as _metrics_predict_proba_aligned,
+    compute_metrics,
+)
 from .resolutions import _parse_resolution, materialize_mpdr
-from .selection import write_mpma_b_selection_outputs
-from .transformations import (TRANSFORMATION_LABELS,
-                              _count_transformation_factory,
-                              _count_transformation_name,
-                              _count_transformation_spec)
 from .utils import METRIC_COLUMNS, dump_json_standard
+from .transformations import (
+    TRANSFORMATION_LABELS,
+    _count_transformation_factory,
+    _count_transformation_name,
+    _count_transformation_spec,
+)
+from .selection import write_mpma_b_selection_outputs
 
 
 def _default_transformations():
@@ -244,7 +254,7 @@ def build_sweep_from_module(mod: Any) -> Sweep:
     )
 
 
-_MPDR_SEMANTICS = "select_then_transform_v1"
+_MPDR_SEMANTICS = "select_then_transform_fold_local_lodo_v2"
 
 
 def _mpdr_id(count_transformation: str, resolution: str) -> str:
@@ -283,6 +293,27 @@ def build_sweep_configs(
                     }
                 )
     return pd.DataFrame(rows)
+
+
+def _lodo_feature_pair(
+    X: np.ndarray, train_idx: np.ndarray, test_idx: np.ndarray, protocol: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    X_train = np.asarray(X[train_idx])
+    X_test = np.asarray(X[test_idx])
+    if str(protocol).lower() not in {"lodo", "leave_one_dataset_out"}:
+        return X_train, X_test, np.ones(X.shape[1], dtype=bool)
+    mask = np.any(np.isfinite(X_train) & (X_train != 0), axis=0)
+    if not np.any(mask):
+        raise ValueError(
+            "LODO training partition contains no nonzero features at the selected resolution."
+        )
+    return X_train[:, mask], X_test[:, mask], mask
+
+
+def _inner_validation_label(plan: Evaluation) -> str | int:
+    if str(plan.protocol).lower() in {"lodo", "leave_one_dataset_out"}:
+        return "leave-one-group-out across outer training groups"
+    return plan.inner_folds
 
 
 def evaluate(sweep: Sweep) -> dict[str, Path]:
@@ -361,7 +392,7 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
             if not sweep.data.stratify_col
             else f"target + {sweep.data.stratify_col}",
             "outer splits": f"{len(outer_splits):,}",
-            "inner folds": sweep.evaluation.inner_folds,
+            "inner folds": _inner_validation_label(sweep.evaluation),
             "gate": "on" if sweep.gate.enabled else "off",
             "completed MPMA/split pairs": f"{completed_pairs:,}/{expected_pairs:,}",
             "experiment dir": root,
@@ -503,7 +534,10 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
                             )
                         )
                         fitted = inner_ct_factory()
-                        X_tr, X_va = fitted.apply_pair(X_base[tr_idx], X_base[va_idx])
+                        X_inner_train, X_inner_val, _ = _lodo_feature_pair(
+                            X_base, tr_idx, va_idx, sweep.evaluation.protocol
+                        )
+                        X_tr, X_va = fitted.apply_pair(X_inner_train, X_inner_val)
                         for learner_name, factory in missing_learners:
                             cid = _config_id(str(ct_name), res_name, learner_name)
                             try:
@@ -568,8 +602,11 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
                         continue
 
                     fitted_outer = ct_factory()
+                    X_outer_train, X_outer_test, _ = _lodo_feature_pair(
+                        X_base, train_idx, test_idx, sweep.evaluation.protocol
+                    )
                     X_train, X_test = fitted_outer.apply_pair(
-                        X_base[train_idx], X_base[test_idx]
+                        X_outer_train, X_outer_test
                     )
 
                     for learner_name, factory in learners_needing_outer:

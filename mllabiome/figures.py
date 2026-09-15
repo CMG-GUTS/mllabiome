@@ -130,8 +130,15 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
     import matplotlib.pyplot as plt
     import matplotlib.ticker as mticker
 
-    from .style import (C_DARK, C_HILITE, C_MID, C_SKY, COL_W_2, HMAP_CMAP,
-                        REPRESENTATION_RC)
+    from .style import (
+        C_DARK,
+        C_HILITE,
+        C_MID,
+        C_SKY,
+        COL_W_2,
+        HMAP_CMAP,
+        REPRESENTATION_RC,
+    )
 
     mpl.rcParams.update(REPRESENTATION_RC)
 
