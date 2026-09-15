@@ -42,7 +42,9 @@ def _as_float_matrix(X: np.ndarray) -> np.ndarray:
 
 
 def _finite(X: np.ndarray) -> np.ndarray:
-    return np.nan_to_num(np.asarray(X, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    return np.nan_to_num(
+        np.asarray(X, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0
+    )
 
 
 def _relative(X: np.ndarray) -> np.ndarray:
@@ -58,7 +60,6 @@ def _clr(X: np.ndarray, pseudo_count: float) -> np.ndarray:
     R = R / R.sum(axis=1, keepdims=True)
     L = np.log(R)
     return L - L.mean(axis=1, keepdims=True)
-
 
 
 def _json_clean(obj: Any) -> Any:

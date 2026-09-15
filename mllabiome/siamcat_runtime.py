@@ -42,7 +42,9 @@ def _cache_root() -> Path:
     return Path.home() / ".cache" / "mllabiome"
 
 
-def _run(cmd: list[str], *, env: dict[str, str] | None = None, timeout: int | None = None) -> subprocess.CompletedProcess:
+def _run(
+    cmd: list[str], *, env: dict[str, str] | None = None, timeout: int | None = None
+) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(
             cmd,
@@ -59,7 +61,10 @@ def _run(cmd: list[str], *, env: dict[str, str] | None = None, timeout: int | No
 
 
 def _r_version(rscript: Path) -> str:
-    result = _run([str(rscript), "--vanilla", "-e", "cat(as.character(getRversion()))"], timeout=30)
+    result = _run(
+        [str(rscript), "--vanilla", "-e", "cat(as.character(getRversion()))"],
+        timeout=30,
+    )
     return result.stdout.strip()
 
 
@@ -120,7 +125,9 @@ def _managed_archive() -> tuple[str, str]:
         elif machine in {"x86_64", "amd64"}:
             arch = "x86_64"
         else:
-            raise RuntimeError(f"Unsupported macOS architecture for managed R: {machine}")
+            raise RuntimeError(
+                f"Unsupported macOS architecture for managed R: {machine}"
+            )
         name = f"portable-r-{R_VERSION}-macos-{arch}.tar.gz"
         return (
             f"https://github.com/portable-r/portable-r-macos/releases/download/v{R_VERSION}/{name}",
@@ -129,7 +136,9 @@ def _managed_archive() -> tuple[str, str]:
 
     if system == "linux":
         if machine not in {"x86_64", "amd64", "aarch64", "arm64"}:
-            raise RuntimeError(f"Unsupported Linux architecture for managed R: {machine}")
+            raise RuntimeError(
+                f"Unsupported Linux architecture for managed R: {machine}"
+            )
         glibc = _glibc_version()
         if glibc is None or glibc < (2, 34):
             raise RuntimeError(
@@ -168,9 +177,14 @@ def _safe_extract_zip(archive: Path, destination: Path) -> None:
 
 
 def _download(url: str, destination: Path) -> None:
-    request = urllib.request.Request(url, headers={"User-Agent": "mllabiome-siamcat-runtime"})
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "mllabiome-siamcat-runtime"}
+    )
     try:
-        with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as out:
+        with (
+            urllib.request.urlopen(request, timeout=120) as response,
+            destination.open("wb") as out,
+        ):
             shutil.copyfileobj(response, out)
     except urllib.error.URLError as exc:
         raise RuntimeError(
@@ -187,7 +201,9 @@ def _find_rscript(root: Path) -> Path:
             if os.name != "nt":
                 candidate.chmod(candidate.stat().st_mode | 0o111)
             return candidate
-    raise RuntimeError(f"R runtime was extracted, but {name} could not be found under {root}.")
+    raise RuntimeError(
+        f"R runtime was extracted, but {name} could not be found under {root}."
+    )
 
 
 @contextlib.contextmanager
@@ -201,7 +217,9 @@ def _installation_lock(path: Path, timeout: float = 1800.0):
             os.write(fd, f"pid={os.getpid()}\n".encode())
         except FileExistsError:
             if time.monotonic() - start > timeout:
-                raise TimeoutError(f"Timed out waiting for SIAMCAT runtime installation lock: {path}")
+                raise TimeoutError(
+                    f"Timed out waiting for SIAMCAT runtime installation lock: {path}"
+                )
             time.sleep(1.0)
     try:
         yield
@@ -256,22 +274,31 @@ def _managed_rscript() -> Path:
             version = _r_version(rscript)
             if not _compatible_r(version):
                 shutil.rmtree(root, ignore_errors=True)
-                raise RuntimeError(f"Downloaded R {version}, but mllabiome requires R 4.6.x for Bioconductor {BIOCONDUCTOR_VERSION}.")
+                raise RuntimeError(
+                    f"Downloaded R {version}, but mllabiome requires R 4.6.x for Bioconductor {BIOCONDUCTOR_VERSION}."
+                )
             marker.write_text(
-                json.dumps({"rscript": str(relative), "r_version": version, "source_url": url}, indent=2),
+                json.dumps(
+                    {"rscript": str(relative), "r_version": version, "source_url": url},
+                    indent=2,
+                ),
                 encoding="utf-8",
             )
             return rscript
 
 
-def _choose_rscript(mode: str = "auto", explicit: str | os.PathLike[str] | None = None) -> Path:
+def _choose_rscript(
+    mode: str = "auto", explicit: str | os.PathLike[str] | None = None
+) -> Path:
     if explicit is not None:
         path = Path(explicit).expanduser().resolve()
         if not path.exists():
             raise FileNotFoundError(f"Rscript does not exist: {path}")
         version = _r_version(path)
         if not _compatible_r(version):
-            raise RuntimeError(f"SIAMCAT backend requires R 4.6.x; found R {version} at {path}.")
+            raise RuntimeError(
+                f"SIAMCAT backend requires R 4.6.x; found R {version} at {path}."
+            )
         return path
 
     mode = str(mode).strip().lower()
@@ -301,7 +328,9 @@ def _installed_siamcat_version(rscript: Path, library: Path) -> str | None:
         "if (requireNamespace('SIAMCAT', quietly=TRUE)) cat(as.character(packageVersion('SIAMCAT')))"
     )
     try:
-        result = _run([str(rscript), "--vanilla", "-e", expr], env=_r_env(library), timeout=60)
+        result = _run(
+            [str(rscript), "--vanilla", "-e", expr], env=_r_env(library), timeout=60
+        )
     except Exception:
         return None
     text = result.stdout.strip()
@@ -325,7 +354,9 @@ if (!requireNamespace('SIAMCAT', quietly=TRUE) || as.character(packageVersion('S
 if (!requireNamespace('SIAMCAT', quietly=TRUE)) stop('SIAMCAT installation failed')
 cat(as.character(packageVersion('SIAMCAT')))
 """
-    result = _run([str(rscript), "--vanilla", "-e", expr], env=_r_env(library), timeout=3600)
+    result = _run(
+        [str(rscript), "--vanilla", "-e", expr], env=_r_env(library), timeout=3600
+    )
     version = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ""
     if version != SIAMCAT_VERSION:
         raise RuntimeError(
@@ -354,7 +385,9 @@ def ensure_siamcat_runtime(
                 installed = _installed_siamcat_version(chosen, library)
 
     if installed != SIAMCAT_VERSION:
-        raise RuntimeError(f"SIAMCAT {SIAMCAT_VERSION} could not be prepared; found {installed!r}.")
+        raise RuntimeError(
+            f"SIAMCAT {SIAMCAT_VERSION} could not be prepared; found {installed!r}."
+        )
 
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(

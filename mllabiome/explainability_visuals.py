@@ -32,7 +32,9 @@ ACC_L = "#dbeafe"
 CLASS_CTRL = "#64748b"
 CLASS_CASE = "#2563eb"
 NET_NEUT = "#F7F7F7"
-NET_EDGE_CMAP = LinearSegmentedColormap.from_list("net_edge", ["#f7f9fc", "#DBE2E9"], N=256)
+NET_EDGE_CMAP = LinearSegmentedColormap.from_list(
+    "net_edge", ["#f7f9fc", "#DBE2E9"], N=256
+)
 SUPPORT_CMAP = LinearSegmentedColormap.from_list(
     "support", ["#ffffff", "#eff6ff", "#bfdbfe", "#60a5fa", "#1d4ed8"], N=256
 )
@@ -49,9 +51,16 @@ def _support_text_color(value: float) -> str:
     lum = 0.2126 * rgba[0] + 0.7152 * rgba[1] + 0.0722 * rgba[2]
     return "#ffffff" if lum < 0.48 else INK
 
+
 RC = {
     "font.family": "sans-serif",
-    "font.sans-serif": ["Inter", "Arial", "Helvetica", "Liberation Sans", "DejaVu Sans"],
+    "font.sans-serif": [
+        "Inter",
+        "Arial",
+        "Helvetica",
+        "Liberation Sans",
+        "DejaVu Sans",
+    ],
     "font.size": 7.8,
     "axes.linewidth": 0.45,
     "axes.edgecolor": INK,
@@ -89,7 +98,9 @@ def save_all(fig: plt.Figure, stem: Path) -> None:
         fig.savefig(stem.with_suffix(f".{ext}"), dpi=300)
 
 
-def _bbox(panel: Sequence[float], x: float, y: float, w: float, h: float) -> list[float]:
+def _bbox(
+    panel: Sequence[float], x: float, y: float, w: float, h: float
+) -> list[float]:
     px, py, pw, ph = panel
     return [px + x * pw, py + y * ph, w * pw, h * ph]
 
@@ -99,27 +110,104 @@ def _xy(panel: Sequence[float], x: float, y: float) -> tuple[float, float]:
     return px + x * pw, py + y * ph
 
 
-def _txt(fig: plt.Figure, panel: Sequence[float], x: float, y: float, text: str, *, size=7, color=INK, weight="normal", ha="left", va="center", rotation=0, linespacing=1.05, **kwargs):
+def _txt(
+    fig: plt.Figure,
+    panel: Sequence[float],
+    x: float,
+    y: float,
+    text: str,
+    *,
+    size=7,
+    color=INK,
+    weight="normal",
+    ha="left",
+    va="center",
+    rotation=0,
+    linespacing=1.05,
+    **kwargs,
+):
     fx, fy = _xy(panel, x, y)
-    return fig.text(fx, fy, text, fontsize=size, color=color, weight=weight, ha=ha, va=va, rotation=rotation, linespacing=linespacing, **kwargs)
+    return fig.text(
+        fx,
+        fy,
+        text,
+        fontsize=size,
+        color=color,
+        weight=weight,
+        ha=ha,
+        va=va,
+        rotation=rotation,
+        linespacing=linespacing,
+        **kwargs,
+    )
 
 
-def _line(fig: plt.Figure, panel: Sequence[float], xs, ys, *, color=DIM, lw=0.5, zorder=3, **kwargs) -> None:
-    fig.add_artist(mlines.Line2D(
-        [_xy(panel, x, 0)[0] for x in xs],
-        [_xy(panel, 0, y)[1] for y in ys],
-        transform=fig.transFigure, color=color, lw=lw, clip_on=False, zorder=zorder, **kwargs,
-    ))
+def _line(
+    fig: plt.Figure,
+    panel: Sequence[float],
+    xs,
+    ys,
+    *,
+    color=DIM,
+    lw=0.5,
+    zorder=3,
+    **kwargs,
+) -> None:
+    fig.add_artist(
+        mlines.Line2D(
+            [_xy(panel, x, 0)[0] for x in xs],
+            [_xy(panel, 0, y)[1] for y in ys],
+            transform=fig.transFigure,
+            color=color,
+            lw=lw,
+            clip_on=False,
+            zorder=zorder,
+            **kwargs,
+        )
+    )
 
 
-def _bracket(fig: plt.Figure, panel: Sequence[float], x0: float, x1: float, y: float, label: str, *, tick=0.010, label_pad=0.006, color=MID, lw=0.6) -> None:
+def _bracket(
+    fig: plt.Figure,
+    panel: Sequence[float],
+    x0: float,
+    x1: float,
+    y: float,
+    label: str,
+    *,
+    tick=0.010,
+    label_pad=0.006,
+    color=MID,
+    lw=0.6,
+) -> None:
     _line(fig, panel, [x0, x0, x1, x1], [y - tick, y, y, y - tick], color=color, lw=lw)
-    _txt(fig, panel, (x0 + x1) / 2, y + label_pad, label, size=5.6, color=color, ha="center", va="bottom")
+    _txt(
+        fig,
+        panel,
+        (x0 + x1) / 2,
+        y + label_pad,
+        label,
+        size=5.6,
+        color=color,
+        ha="center",
+        va="bottom",
+    )
 
 
 def _soft_missing(ax: plt.Axes, message: str) -> None:
-    ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis("off")
-    ax.text(0.5, 0.5, message, ha="center", va="center", fontsize=6.2, color=DIM, linespacing=1.15)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+    ax.text(
+        0.5,
+        0.5,
+        message,
+        ha="center",
+        va="center",
+        fontsize=6.2,
+        color=DIM,
+        linespacing=1.15,
+    )
 
 
 def _style_black_bottom_axis(ax: plt.Axes, *, show_left: bool = False) -> None:
@@ -133,7 +221,9 @@ def _style_black_bottom_axis(ax: plt.Axes, *, show_left: bool = False) -> None:
     if show_left:
         ax.spines["left"].set_color(axis_black)
         ax.spines["left"].set_linewidth(0.45)
-    ax.tick_params(axis="x", length=2.2, width=0.45, color=axis_black, labelcolor=axis_black, pad=1)
+    ax.tick_params(
+        axis="x", length=2.2, width=0.45, color=axis_black, labelcolor=axis_black, pad=1
+    )
     ax.tick_params(axis="y", length=0, color=axis_black, labelcolor=axis_black)
 
 
@@ -144,7 +234,7 @@ def _plain_taxon_label(feature_name: str, max_len: int = 32) -> str:
     for pfx in ("s__", "g__", "f__", "o__", "c__", "p__", "d__", "t__"):
         if last.startswith(pfx):
             rank = pfx[0] + ". "
-            last = last[len(pfx):]
+            last = last[len(pfx) :]
             break
     last = last.replace("_", " ").strip() or s.replace("_", " ")
     out = f"{rank}{last}"
@@ -157,7 +247,7 @@ def _net_short_label(feature_name: str) -> str:
     last = str(feature_name).split("___")[-1]
     for pfx in ("s__", "g__", "f__", "o__", "c__", "p__", "d__", "t__"):
         if last.startswith(pfx):
-            name = last[len(pfx):].replace("_", " ").strip()
+            name = last[len(pfx) :].replace("_", " ").strip()
             return f"{pfx[0]}. {name}"
     return last.replace("_", " ").strip()
 
@@ -179,11 +269,21 @@ def _feature_label(feature_name: str) -> str:
 
 def _mean_support_column(top: pd.DataFrame) -> np.ndarray:
     if "consensus" in top.columns:
-        return pd.to_numeric(top["consensus"], errors="coerce").fillna(0).to_numpy(float)
-    method_cols = [c for c in ("SHAP", "LIME", "Permutation", "ALE") if c in top.columns]
+        return (
+            pd.to_numeric(top["consensus"], errors="coerce").fillna(0).to_numpy(float)
+        )
+    method_cols = [
+        c for c in ("SHAP", "LIME", "Permutation", "ALE") if c in top.columns
+    ]
     if not method_cols:
         return np.zeros(len(top), dtype=float)
-    return top[method_cols].apply(pd.to_numeric, errors="coerce").fillna(0).mean(axis=1).to_numpy(float)
+    return (
+        top[method_cols]
+        .apply(pd.to_numeric, errors="coerce")
+        .fillna(0)
+        .mean(axis=1)
+        .to_numpy(float)
+    )
 
 
 def _deduplicate_top_features(top: pd.DataFrame, max_features: int) -> pd.DataFrame:
@@ -194,7 +294,13 @@ def _deduplicate_top_features(top: pd.DataFrame, max_features: int) -> pd.DataFr
     return top
 
 
-def plot_feature_support(top_features: pd.DataFrame, stats: pd.DataFrame, out_stem: Path, top_k: int, class_labels: Sequence[str] | None = None) -> bool:
+def plot_feature_support(
+    top_features: pd.DataFrame,
+    stats: pd.DataFrame,
+    out_stem: Path,
+    top_k: int,
+    class_labels: Sequence[str] | None = None,
+) -> bool:
     apply_style()
     raw_top = top_features.copy()
     if raw_top.empty or "feature" not in raw_top.columns:
@@ -203,9 +309,15 @@ def plot_feature_support(top_features: pd.DataFrame, stats: pd.DataFrame, out_st
     n = len(top)
     if n == 0:
         return False
-    stat_map = stats.drop_duplicates("feature").set_index("feature").to_dict("index") if stats is not None and "feature" in stats.columns else {}
+    stat_map = (
+        stats.drop_duplicates("feature").set_index("feature").to_dict("index")
+        if stats is not None and "feature" in stats.columns
+        else {}
+    )
     features = top["feature"].astype(str).tolist()
-    method_cols = [m for m in ("SHAP", "LIME", "Permutation", "ALE") if m in top.columns]
+    method_cols = [
+        m for m in ("SHAP", "LIME", "Permutation", "ALE") if m in top.columns
+    ]
     solo_method = len(method_cols) == 1
     mean_support = np.clip(_mean_support_column(top), 0, 1)
 
@@ -237,7 +349,9 @@ def plot_feature_support(top_features: pd.DataFrame, stats: pd.DataFrame, out_st
         bracket_hm = (0.635, 0.830)
 
     y = np.arange(n)
-    axes_to_style = (ax_lab, ax_dir, ax_hm) if ax_bar is None else (ax_lab, ax_dir, ax_hm, ax_bar)
+    axes_to_style = (
+        (ax_lab, ax_dir, ax_hm) if ax_bar is None else (ax_lab, ax_dir, ax_hm, ax_bar)
+    )
     for ax in axes_to_style:
         ax.set_facecolor(BG)
         ax.set_ylim(n - 0.5, -0.5)
@@ -251,10 +365,26 @@ def plot_feature_support(top_features: pd.DataFrame, stats: pd.DataFrame, out_st
     ax_lab.set_xticks([])
     for i, feat in enumerate(features):
         rank_val = int(top.iloc[i]["rank"])
-        ax_lab.text(0.010, i, str(rank_val), ha="left", va="center", fontsize=4.65, color=DIM, clip_on=False)
         ax_lab.text(
-            0.120, i, _feature_label(feat), ha="left", va="center", fontsize=4.95, color=INK,
-            path_effects=[mpe.withStroke(linewidth=1.65, foreground="white")], clip_on=False,
+            0.010,
+            i,
+            str(rank_val),
+            ha="left",
+            va="center",
+            fontsize=4.65,
+            color=DIM,
+            clip_on=False,
+        )
+        ax_lab.text(
+            0.120,
+            i,
+            _feature_label(feat),
+            ha="left",
+            va="center",
+            fontsize=4.95,
+            color=INK,
+            path_effects=[mpe.withStroke(linewidth=1.65, foreground="white")],
+            clip_on=False,
         )
 
     lfc = []
@@ -270,8 +400,18 @@ def plot_feature_support(top_features: pd.DataFrame, stats: pd.DataFrame, out_st
     ax_dir.axvline(0, color="#000000", lw=0.38, zorder=1, alpha=0.75)
     for i, v in enumerate(lfc_clip):
         col = CLASS_CASE if v >= 0 else CLASS_CTRL
-        ax_dir.plot([0, v], [i, i], color=col, lw=1.0, solid_capstyle="round", alpha=0.86, clip_on=False)
-        ax_dir.scatter([v], [i], s=9, color=col, edgecolors="none", zorder=3, clip_on=False)
+        ax_dir.plot(
+            [0, v],
+            [i, i],
+            color=col,
+            lw=1.0,
+            solid_capstyle="round",
+            alpha=0.86,
+            clip_on=False,
+        )
+        ax_dir.scatter(
+            [v], [i], s=9, color=col, edgecolors="none", zorder=3, clip_on=False
+        )
     ax_dir.set_xticks([-2.0, 0.0, 2.0])
     ax_dir.set_xticklabels(["Control", "0", "Case"], fontsize=3.35, color="#000000")
     for lab in ax_dir.get_xticklabels():
@@ -279,9 +419,16 @@ def plot_feature_support(top_features: pd.DataFrame, stats: pd.DataFrame, out_st
     _style_black_bottom_axis(ax_dir, show_left=False)
 
     if method_cols:
-        M = top[method_cols].apply(pd.to_numeric, errors="coerce").fillna(0).to_numpy(float)
+        M = (
+            top[method_cols]
+            .apply(pd.to_numeric, errors="coerce")
+            .fillna(0)
+            .to_numpy(float)
+        )
         M = np.clip(M, 0, 1)
-        ax_hm.imshow(M, aspect="auto", interpolation="nearest", cmap=SUPPORT_CMAP, vmin=0, vmax=1)
+        ax_hm.imshow(
+            M, aspect="auto", interpolation="nearest", cmap=SUPPORT_CMAP, vmin=0, vmax=1
+        )
         ax_hm.set_xticks(np.arange(len(method_cols)))
         labels = [m.replace("Permutation", "Perm.") for m in method_cols]
         ax_hm.set_xticklabels(labels, fontsize=4.05, color="#000000", rotation=0)
@@ -295,8 +442,16 @@ def plot_feature_support(top_features: pd.DataFrame, stats: pd.DataFrame, out_st
         if solo_method:
             for yi in range(n):
                 val = float(M[yi, 0]) if M.shape[1] else 0.0
-                ax_hm.text(0, yi, f"{val:.2f}", ha="center", va="center",
-                           fontsize=4.65, color=_support_text_color(val), zorder=5)
+                ax_hm.text(
+                    0,
+                    yi,
+                    f"{val:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=4.65,
+                    color=_support_text_color(val),
+                    zorder=5,
+                )
     else:
         _soft_missing(ax_hm, "no method\nscores")
 
@@ -306,9 +461,20 @@ def plot_feature_support(top_features: pd.DataFrame, stats: pd.DataFrame, out_st
         ax_bar.set_xticklabels(["0", "1"], fontsize=4.25, color="#000000")
         _style_black_bottom_axis(ax_bar, show_left=False)
         for i, v in enumerate(mean_support):
-            ax_bar.plot([0, 1], [i, i], color=TRACK, lw=3.0, solid_capstyle="round", zorder=1)
-            ax_bar.plot([0, v], [i, i], color=ACC_L, lw=3.0, solid_capstyle="round", zorder=2)
-            ax_bar.plot([v, v], [i - 0.16, i + 0.16], color=ACC_D, lw=0.55, zorder=3, clip_on=False)
+            ax_bar.plot(
+                [0, 1], [i, i], color=TRACK, lw=3.0, solid_capstyle="round", zorder=1
+            )
+            ax_bar.plot(
+                [0, v], [i, i], color=ACC_L, lw=3.0, solid_capstyle="round", zorder=2
+            )
+            ax_bar.plot(
+                [v, v],
+                [i - 0.16, i + 0.16],
+                color=ACC_D,
+                lw=0.55,
+                zorder=3,
+                clip_on=False,
+            )
 
     _bracket(fig, panel, bracket_lab[0], bracket_lab[1], 0.765, "Ranked feature")
     _bracket(fig, panel, bracket_dir[0], bracket_dir[1], 0.765, "Class shift")
@@ -322,22 +488,29 @@ def plot_feature_support(top_features: pd.DataFrame, stats: pd.DataFrame, out_st
 
 def _interp_col_net(t: float, col0: str, col_mid: str, col1: str):
     t = float(np.clip(t, 0, 1))
-    a = np.array(mcolors.to_rgba(col0)); b = np.array(mcolors.to_rgba(col_mid)); c = np.array(mcolors.to_rgba(col1))
+    a = np.array(mcolors.to_rgba(col0))
+    b = np.array(mcolors.to_rgba(col_mid))
+    c = np.array(mcolors.to_rgba(col1))
     if t < 0.5:
-        u = t / 0.5; out = (1 - u) * a + u * b
+        u = t / 0.5
+        out = (1 - u) * a + u * b
     else:
-        u = (t - 0.5) / 0.5; out = (1 - u) * b + u * c
+        u = (t - 0.5) / 0.5
+        out = (1 - u) * b + u * c
     return tuple(out)
 
 
 def _net_node_color(c_ctrl: float, c_case: float):
-    pseudo = 1e-3; lfc_max = 2.0
+    pseudo = 1e-3
+    lfc_max = 2.0
     lfc = np.log2((float(c_case) + pseudo) / (float(c_ctrl) + pseudo))
     neut = np.array(mcolors.to_rgba(NET_NEUT))
     if lfc >= 0:
-        t = min(lfc / lfc_max, 1.0); target = np.array(mcolors.to_rgba(CLASS_CASE))
+        t = min(lfc / lfc_max, 1.0)
+        target = np.array(mcolors.to_rgba(CLASS_CASE))
     else:
-        t = min(-lfc / lfc_max, 1.0); target = np.array(mcolors.to_rgba(CLASS_CTRL))
+        t = min(-lfc / lfc_max, 1.0)
+        target = np.array(mcolors.to_rgba(CLASS_CTRL))
     return tuple((1.0 - t) * neut + t * target)
 
 
@@ -352,23 +525,27 @@ def _net_node_radius(c_ctrl: float, c_case: float, is_hub: bool = False) -> floa
 
 
 def _net_bezier(p1, p2, curv: float = 0.10):
-    p1 = np.asarray(p1, dtype=float); p2 = np.asarray(p2, dtype=float)
+    p1 = np.asarray(p1, dtype=float)
+    p2 = np.asarray(p2, dtype=float)
     mx, my = (p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2
     dx, dy = p2[0] - p1[0], p2[1] - p1[1]
     cpx, cpy = mx - curv * dy, my + curv * dx
     t = np.linspace(0, 1, 80)
-    x = (1 - t) ** 2 * p1[0] + 2 * (1 - t) * t * cpx + t ** 2 * p2[0]
-    y = (1 - t) ** 2 * p1[1] + 2 * (1 - t) * t * cpy + t ** 2 * p2[1]
+    x = (1 - t) ** 2 * p1[0] + 2 * (1 - t) * t * cpx + t**2 * p2[0]
+    y = (1 - t) ** 2 * p1[1] + 2 * (1 - t) * t * cpy + t**2 * p2[1]
     m = 0.5
-    mx2 = (1 - m) ** 2 * p1[0] + 2 * (1 - m) * m * cpx + m ** 2 * p2[0]
-    my2 = (1 - m) ** 2 * p1[1] + 2 * (1 - m) * m * cpy + m ** 2 * p2[1]
+    mx2 = (1 - m) ** 2 * p1[0] + 2 * (1 - m) * m * cpx + m**2 * p2[0]
+    my2 = (1 - m) ** 2 * p1[1] + 2 * (1 - m) * m * cpy + m**2 * p2[1]
     return x, y, float(mx2), float(my2)
 
 
-def _get_abundance(stat_map: dict[str, dict], feature: str, key: str, default: float = 0.5) -> float:
+def _get_abundance(
+    stat_map: dict[str, dict], feature: str, key: str, default: float = 0.5
+) -> float:
     row = stat_map.get(feature, {})
     try:
-        v = float(row.get(key, default)); return v if np.isfinite(v) else default
+        v = float(row.get(key, default))
+        return v if np.isfinite(v) else default
     except Exception:
         return default
 
@@ -377,17 +554,35 @@ def _build_network_graph(interactions: pd.DataFrame, stats: pd.DataFrame | None)
     if nx is None:
         raise RuntimeError("networkx is not installed")
     cols = set(interactions.columns)
-    f1_col = "feature1" if "feature1" in cols else ("feature_1" if "feature_1" in cols else None)
-    f2_col = "feature2" if "feature2" in cols else ("feature_2" if "feature_2" in cols else None)
+    f1_col = (
+        "feature1"
+        if "feature1" in cols
+        else ("feature_1" if "feature_1" in cols else None)
+    )
+    f2_col = (
+        "feature2"
+        if "feature2" in cols
+        else ("feature_2" if "feature_2" in cols else None)
+    )
     if f1_col is None or f2_col is None or "interaction_strength" not in cols:
-        raise RuntimeError("interaction table is missing feature columns or interaction_strength")
+        raise RuntimeError(
+            "interaction table is missing feature columns or interaction_strength"
+        )
     d = interactions.copy()
-    d["interaction_strength"] = pd.to_numeric(d["interaction_strength"], errors="coerce")
-    d = d.replace([np.inf, -np.inf], np.nan).dropna(subset=[f1_col, f2_col, "interaction_strength"])
+    d["interaction_strength"] = pd.to_numeric(
+        d["interaction_strength"], errors="coerce"
+    )
+    d = d.replace([np.inf, -np.inf], np.nan).dropna(
+        subset=[f1_col, f2_col, "interaction_strength"]
+    )
     d = d[d["interaction_strength"].notna()]
     if d.empty:
         raise RuntimeError("no finite interaction strengths")
-    stat_map = stats.drop_duplicates("feature").set_index("feature").to_dict("index") if stats is not None and "feature" in stats.columns else {}
+    stat_map = (
+        stats.drop_duplicates("feature").set_index("feature").to_dict("index")
+        if stats is not None and "feature" in stats.columns
+        else {}
+    )
     G = nx.Graph()
     for row_i, row in d.reset_index(drop=True).iterrows():
         f1, f2 = str(row[f1_col]), str(row[f2_col])
@@ -428,7 +623,9 @@ def _net_layout_component(subG, seed=42):
         source = endpoints[0] if endpoints else list(subG.nodes())[0]
         ordered = list(nx.dfs_preorder_nodes(subG, source=source))
         angles = np.linspace(0, 2 * np.pi, len(ordered), endpoint=False)
-        return {node: np.array([np.cos(a), np.sin(a)]) for node, a in zip(ordered, angles)}
+        return {
+            node: np.array([np.cos(a), np.sin(a)]) for node, a in zip(ordered, angles)
+        }
     try:
         return nx.kamada_kawai_layout(subG, weight="weight")
     except Exception:
@@ -479,7 +676,15 @@ def _net_compute_layout(G, seed=42):
     components = list(nx.connected_components(G))
     if hub_deg >= 4:
         seed_pos = {hub: np.array([0.0, 0.0])}
-        pos = nx.spring_layout(G, pos=seed_pos, fixed=[hub], weight="weight", k=4.5, seed=seed, iterations=400)
+        pos = nx.spring_layout(
+            G,
+            pos=seed_pos,
+            fixed=[hub],
+            weight="weight",
+            k=4.5,
+            seed=seed,
+            iterations=400,
+        )
         target = 4.0
     elif len(components) > 1:
         pos = _net_grid_layout(G, seed=seed)
@@ -507,7 +712,13 @@ def _net_edge_linewidth(norm_strength: float) -> float:
     return 0.9 + float(norm_strength) * 4.2
 
 
-def _draw_network(ax: plt.Axes, interactions: pd.DataFrame, stats: pd.DataFrame | None, top_k: int, layout: str = "default") -> tuple[float, float]:
+def _draw_network(
+    ax: plt.Axes,
+    interactions: pd.DataFrame,
+    stats: pd.DataFrame | None,
+    top_k: int,
+    layout: str = "default",
+) -> tuple[float, float]:
     G = _build_network_graph(interactions.head(int(top_k)), stats)
     if len(G.nodes()) == 0:
         raise RuntimeError("No nodes in graph")
@@ -534,7 +745,15 @@ def _draw_network(ax: plt.Axes, interactions: pd.DataFrame, stats: pd.DataFrame 
         xe, ye, _, _ = _net_bezier(p1, p2, curv=curv)
         lw = _net_edge_linewidth(n)
         col = NET_EDGE_CMAP(0.12 + n * 0.88)
-        ax.plot(xe, ye, color=col, linewidth=lw, alpha=0.82, zorder=1, solid_capstyle="round")
+        ax.plot(
+            xe,
+            ye,
+            color=col,
+            linewidth=lw,
+            alpha=0.82,
+            zorder=1,
+            solid_capstyle="round",
+        )
     badge_np = np.array(badge_xy) if badge_xy else np.zeros((0, 2))
 
     for node in G.nodes():
@@ -543,7 +762,17 @@ def _draw_network(ax: plt.Axes, interactions: pd.DataFrame, stats: pd.DataFrame 
         c = _net_node_color(nd["c0"], nd["c1"])
         r = _net_node_radius(nd["c0"], nd["c1"], is_hub=is_hub)
         x, y = pos[node]
-        ax.add_patch(plt.Circle((x, y), r, facecolor=c, edgecolor=INK, linewidth=0.8, zorder=3, alpha=0.96))
+        ax.add_patch(
+            plt.Circle(
+                (x, y),
+                r,
+                facecolor=c,
+                edgecolor=INK,
+                linewidth=0.8,
+                zorder=3,
+                alpha=0.96,
+            )
+        )
 
     # The supplied renderer places labels by relaxing them around nodes, rather
     # than pushing all labels to fixed rails.  Keep the same force-based layout.
@@ -552,10 +781,15 @@ def _draw_network(ax: plt.Axes, interactions: pd.DataFrame, stats: pd.DataFrame 
     node_list = list(G.nodes())
     nl = len(node_list)
     node_xy = np.array([pos[n] for n in node_list], dtype=float)
-    node_r_arr = np.array([
-        _net_node_radius(G.nodes[n]["c0"], G.nodes[n]["c1"], is_hub=(n == hub and hub_deg >= 4))
-        for n in node_list
-    ], dtype=float)
+    node_r_arr = np.array(
+        [
+            _net_node_radius(
+                G.nodes[n]["c0"], G.nodes[n]["c1"], is_hub=(n == hub and hub_deg >= 4)
+            )
+            for n in node_list
+        ],
+        dtype=float,
+    )
     lbl_pos = np.zeros((nl, 2), dtype=float)
     lbl_ideal = np.zeros((nl, 2), dtype=float)
     lbl_anch = np.zeros((nl, 2), dtype=float)
@@ -585,7 +819,9 @@ def _draw_network(ax: plt.Axes, interactions: pd.DataFrame, stats: pd.DataFrame 
             nat_angle = np.pi / 2
         else:
             dv = np.array([x, y]) - hub_pos
-            nat_angle = np.arctan2(dv[1], dv[0]) if np.linalg.norm(dv) > 0.01 else np.pi / 2
+            nat_angle = (
+                np.arctan2(dv[1], dv[0]) if np.linalg.norm(dv) > 0.01 else np.pi / 2
+            )
         pad = r + (0.65 if is_hub else 0.52)
         best_score, best_angle = 1e9, nat_angle
         for angle in np.linspace(0, 2 * np.pi, 13)[:-1]:
@@ -609,7 +845,10 @@ def _draw_network(ax: plt.Axes, interactions: pd.DataFrame, stats: pd.DataFrame 
         ly0 = y + np.sin(best_angle) * pad
         lbl_pos[ni] = [lx0, ly0]
         lbl_ideal[ni] = [lx0, ly0]
-        lbl_anch[ni] = [x + np.cos(best_angle) * (r + 0.05), y + np.sin(best_angle) * (r + 0.05)]
+        lbl_anch[ni] = [
+            x + np.cos(best_angle) * (r + 0.05),
+            y + np.sin(best_angle) * (r + 0.05),
+        ]
 
     k_s, k_l, k_n, k_b = 0.18, 0.70, 0.45, 0.35
     badge_r, dt, lims = 0.18, 0.06, 4.85
@@ -674,7 +913,9 @@ def _draw_network(ax: plt.Axes, interactions: pd.DataFrame, stats: pd.DataFrame 
     return float(s_min), float(s_max)
 
 
-def _legend_size_colour_net(ax: plt.Axes, ctrl_text="Control", case_text="Case") -> None:
+def _legend_size_colour_net(
+    ax: plt.Axes, ctrl_text="Control", case_text="Case"
+) -> None:
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
@@ -683,7 +924,9 @@ def _legend_size_colour_net(ax: plt.Axes, ctrl_text="Control", case_text="Case")
     gys = [0.75, 0.61, 0.47, 0.33]
     abs_vals = [0.1, 1.0, 5.0, 15.0]
     abs_lbl = ["0.1%", "1%", "5%", "15%"]
-    ax_width_pt = max(ax.get_position().width * ax.figure.get_size_inches()[0] * 72.0, 1e-6)
+    ax_width_pt = max(
+        ax.get_position().width * ax.figure.get_size_inches()[0] * 72.0, 1e-6
+    )
     pts_per_data = ax_width_pt / 10.0
 
     def _grid_s(ab):
@@ -691,14 +934,23 @@ def _legend_size_colour_net(ax: plt.Axes, ctrl_text="Control", case_text="Case")
         norm = np.clip((np.log10(mean) - lo_r) / (hi_r - lo_r), 0, 1)
         r_data = 0.08 + norm * 0.12
         r_pt = r_data * pts_per_data
-        return np.pi * (r_pt ** 2)
+        return np.pi * (r_pt**2)
 
     for cx, al in zip(gxs, abs_lbl):
         ax.text(cx, 0.82, al, ha="center", va="center", fontsize=6.4, color="black")
     for ry, t in zip(gys, [0.0, 1 / 3, 2 / 3, 1.0]):
         col = _interp_col_net(t, CLASS_CTRL, NET_NEUT, CLASS_CASE)
         for cx, ab in zip(gxs, abs_vals):
-            ax.scatter([cx], [ry], s=_grid_s(ab), facecolor=col, edgecolors=INK, linewidths=0.28, zorder=3, clip_on=False)
+            ax.scatter(
+                [cx],
+                [ry],
+                s=_grid_s(ab),
+                facecolor=col,
+                edgecolors=INK,
+                linewidths=0.28,
+                zorder=3,
+                clip_on=False,
+            )
 
     sx0, sx1 = 0.08, 0.13
     sxc = (sx0 + sx1) / 2
@@ -709,14 +961,63 @@ def _legend_size_colour_net(ax: plt.Axes, ctrl_text="Control", case_text="Case")
     for i in range(n_s):
         t = (st[i] + st[i + 1]) / 2
         c = _interp_col_net(t, CLASS_CTRL, NET_NEUT, CLASS_CASE)
-        ax.fill([sx0, sx1, sx1, sx0], [sy[i], sy[i], sy[i + 1], sy[i + 1]], color=c, linewidth=0, zorder=2)
+        ax.fill(
+            [sx0, sx1, sx1, sx0],
+            [sy[i], sy[i], sy[i + 1], sy[i + 1]],
+            color=c,
+            linewidth=0,
+            zorder=2,
+        )
     ext = 0.05
-    ax.annotate("", xy=(sxc, sy1 + ext), xytext=(sxc, sy1), arrowprops=dict(arrowstyle="-|>", color="black", lw=0.5, mutation_scale=4.5))
-    ax.annotate("", xy=(sxc, sy0 - ext), xytext=(sxc, sy0), arrowprops=dict(arrowstyle="-|>", color="black", lw=0.5, mutation_scale=4.5))
-    ax.text(sxc, sy1 + ext + 0.01, f"Relatively more abundant in {ctrl_text}", ha="center", va="bottom", fontsize=5.9, color="black", rotation=90, clip_on=False)
-    ax.text(sxc, sy0 - ext - 0.01, f"Relatively more abundant in {case_text}", ha="center", va="top", fontsize=5.9, color="black", rotation=90, clip_on=False)
-    ax.annotate("", xy=(gxs[-1] + 0.06, 0.20), xytext=(gxs[0] - 0.06, 0.20), arrowprops=dict(arrowstyle="-|>", color="black", lw=0.5, mutation_scale=4.5))
-    ax.text((gxs[0] + gxs[-1]) / 2, 0.11, "Mean relative abundance", ha="center", va="center", fontsize=6.4, color="black")
+    ax.annotate(
+        "",
+        xy=(sxc, sy1 + ext),
+        xytext=(sxc, sy1),
+        arrowprops=dict(arrowstyle="-|>", color="black", lw=0.5, mutation_scale=4.5),
+    )
+    ax.annotate(
+        "",
+        xy=(sxc, sy0 - ext),
+        xytext=(sxc, sy0),
+        arrowprops=dict(arrowstyle="-|>", color="black", lw=0.5, mutation_scale=4.5),
+    )
+    ax.text(
+        sxc,
+        sy1 + ext + 0.01,
+        f"Relatively more abundant in {ctrl_text}",
+        ha="center",
+        va="bottom",
+        fontsize=5.9,
+        color="black",
+        rotation=90,
+        clip_on=False,
+    )
+    ax.text(
+        sxc,
+        sy0 - ext - 0.01,
+        f"Relatively more abundant in {case_text}",
+        ha="center",
+        va="top",
+        fontsize=5.9,
+        color="black",
+        rotation=90,
+        clip_on=False,
+    )
+    ax.annotate(
+        "",
+        xy=(gxs[-1] + 0.06, 0.20),
+        xytext=(gxs[0] - 0.06, 0.20),
+        arrowprops=dict(arrowstyle="-|>", color="black", lw=0.5, mutation_scale=4.5),
+    )
+    ax.text(
+        (gxs[0] + gxs[-1]) / 2,
+        0.11,
+        "Mean relative abundance",
+        ha="center",
+        va="center",
+        fontsize=6.4,
+        color="black",
+    )
 
 
 def _legend_edge_net(ax: plt.Axes, s_min: float, s_max: float) -> None:
@@ -727,7 +1028,9 @@ def _legend_edge_net(ax: plt.Axes, s_min: float, s_max: float) -> None:
     n_f = 180
     fy = np.linspace(fy0, fy1, n_f + 1)
     ts = np.linspace(0, 1, n_f + 1)
-    ax_width_pt = max(ax.get_position().width * ax.figure.get_size_inches()[0] * 72.0, 1e-6)
+    ax_width_pt = max(
+        ax.get_position().width * ax.figure.get_size_inches()[0] * 72.0, 1e-6
+    )
 
     def _half_width_axes(t):
         return 0.5 * _net_edge_linewidth(float(t)) / ax_width_pt
@@ -740,12 +1043,45 @@ def _legend_edge_net(ax: plt.Axes, s_min: float, s_max: float) -> None:
         xs = [xc - hw[i], xc + hw[i], xc + hw[i + 1], xc - hw[i + 1]]
         ys = [fy[i], fy[i], fy[i + 1], fy[i + 1]]
         ax.fill(xs, ys, color=col, linewidth=0, zorder=2)
-    ax.text(xc, fy1 + 0.040, f"{s_max:.3g}", ha="center", va="bottom", fontsize=6.5, color="black")
-    ax.text(xc, fy0 - 0.040, f"{s_min:.3g}", ha="center", va="top", fontsize=6.5, color="black")
-    ax.text(0.66, (fy0 + fy1) / 2, "Interaction strength", ha="center", va="center", fontsize=6.6, color="black", rotation=90, clip_on=False)
+    ax.text(
+        xc,
+        fy1 + 0.040,
+        f"{s_max:.3g}",
+        ha="center",
+        va="bottom",
+        fontsize=6.5,
+        color="black",
+    )
+    ax.text(
+        xc,
+        fy0 - 0.040,
+        f"{s_min:.3g}",
+        ha="center",
+        va="top",
+        fontsize=6.5,
+        color="black",
+    )
+    ax.text(
+        0.66,
+        (fy0 + fy1) / 2,
+        "Interaction strength",
+        ha="center",
+        va="center",
+        fontsize=6.6,
+        color="black",
+        rotation=90,
+        clip_on=False,
+    )
 
 
-def plot_interaction_network(tab: pd.DataFrame, stats: pd.DataFrame, out_stem: Path, top_k: int, class_labels: Sequence[str] | None = None, layout: str = "default") -> bool:
+def plot_interaction_network(
+    tab: pd.DataFrame,
+    stats: pd.DataFrame,
+    out_stem: Path,
+    top_k: int,
+    class_labels: Sequence[str] | None = None,
+    layout: str = "default",
+) -> bool:
     apply_style()
     fig = plt.figure(figsize=(COL_W_2, 125 * MM))
     fig.patch.set_facecolor(BG)

@@ -10,7 +10,6 @@ import pandas as pd
 from .utils import TAXONOMIC_LEVELS
 
 
-
 @dataclass
 class Data:
     abundance_path: Path | str
@@ -24,6 +23,7 @@ class Data:
     label_map: Mapping[Any, int] | None = None
     class_labels: tuple[str, ...] | None = None
     positive_class: int | str = 1
+
 
 @dataclass
 class Dataset:
@@ -45,12 +45,18 @@ def load_dataset(spec: Data, levels_needed: Iterable[str] | None = None) -> Data
     abundance_path = Path(spec.abundance_path)
     metadata_path = Path(spec.metadata_path) if spec.metadata_path is not None else None
     if fmt == "auto":
-        fmt = "metaphlan_tsv" if abundance_path.suffix.lower() in {".tsv", ".txt"} and metadata_path else "wide_csv"
+        fmt = (
+            "metaphlan_tsv"
+            if abundance_path.suffix.lower() in {".tsv", ".txt"} and metadata_path
+            else "wide_csv"
+        )
     if fmt in {"csv", "wide_csv"}:
         return _load_csv_dataset(spec, levels_needed)
     if fmt in {"matrix_tsv", "metaphlan_tsv", "profile_tsv"}:
         if metadata_path is None:
-            raise ValueError("Data.metadata_path is required for MetaPhlAn-style TSV input.")
+            raise ValueError(
+                "Data.metadata_path is required for MetaPhlAn-style TSV input."
+            )
         return _load_matrix_tsv_dataset(spec, levels_needed)
     raise ValueError(
         f"Unsupported data format {fmt!r}. Supported formats are 'auto', 'wide_csv', and 'metaphlan_tsv'."
@@ -95,8 +101,13 @@ def _load_csv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
     df = pd.read_csv(abundance_path)
     if spec.metadata_path is not None:
         meta = pd.read_csv(Path(spec.metadata_path), sep=None, engine="python")
-        if spec.sample_id_col not in df.columns or spec.sample_id_col not in meta.columns:
-            raise ValueError(f"sample_id_col={spec.sample_id_col!r} must exist in both CSV files.")
+        if (
+            spec.sample_id_col not in df.columns
+            or spec.sample_id_col not in meta.columns
+        ):
+            raise ValueError(
+                f"sample_id_col={spec.sample_id_col!r} must exist in both CSV files."
+            )
         df = df.merge(meta, on=spec.sample_id_col, how="inner", suffixes=("", "__meta"))
     if spec.target_col not in df.columns:
         raise ValueError(f"Target column {spec.target_col!r} not found.")
@@ -104,7 +115,9 @@ def _load_csv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
         sample_ids = df[spec.sample_id_col].astype(str).tolist()
     else:
         sample_ids = [str(i) for i in range(len(df))]
-    y, class_labels = _encode_y(df[spec.target_col].tolist(), spec.label_map, spec.class_labels)
+    y, class_labels = _encode_y(
+        df[spec.target_col].tolist(), spec.label_map, spec.class_labels
+    )
     keep = y >= 0
     df = df.loc[keep].reset_index(drop=True)
     y = y[keep]
@@ -118,12 +131,20 @@ def _load_csv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
             reserved.add(spec.stratify_col)
         else:
             reserved.update(str(c) for c in spec.stratify_col)
-    numeric_cols = [c for c in df.columns if c not in reserved and pd.api.types.is_numeric_dtype(df[c])]
+    numeric_cols = [
+        c
+        for c in df.columns
+        if c not in reserved and pd.api.types.is_numeric_dtype(df[c])
+    ]
     if not numeric_cols:
-        raise ValueError("No numeric abundance columns found after excluding metadata columns.")
+        raise ValueError(
+            "No numeric abundance columns found after excluding metadata columns."
+        )
     feature_names = [str(c) for c in numeric_cols]
     X_all = df[numeric_cols].to_numpy(dtype=np.float32)
-    return _dataset_from_feature_matrix(X_all, feature_names, y, sample_ids, df, class_labels, levels_needed)
+    return _dataset_from_feature_matrix(
+        X_all, feature_names, y, sample_ids, df, class_labels, levels_needed
+    )
 
 
 def _load_matrix_tsv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
@@ -138,18 +159,29 @@ def _load_matrix_tsv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Data
     bio.index = bio.index.astype(str).str.strip()
     bio.columns = bio.columns.astype(str).str.strip()
     meta[spec.sample_id_col] = meta[spec.sample_id_col].astype(str).str.strip()
-    common = [sid for sid in meta[spec.sample_id_col].tolist() if sid in set(bio.columns)]
+    common = [
+        sid for sid in meta[spec.sample_id_col].tolist() if sid in set(bio.columns)
+    ]
     if not common:
         raise ValueError("No sample IDs overlap between metadata and abundance matrix.")
-    meta = meta.drop_duplicates(subset=[spec.sample_id_col]).set_index(spec.sample_id_col).loc[common].reset_index()
-    y, class_labels = _encode_y(meta[spec.target_col].tolist(), spec.label_map, spec.class_labels)
+    meta = (
+        meta.drop_duplicates(subset=[spec.sample_id_col])
+        .set_index(spec.sample_id_col)
+        .loc[common]
+        .reset_index()
+    )
+    y, class_labels = _encode_y(
+        meta[spec.target_col].tolist(), spec.label_map, spec.class_labels
+    )
     keep = y >= 0
     common = [sid for sid, ok in zip(common, keep) if ok]
     meta = meta.loc[keep].reset_index(drop=True)
     y = y[keep]
     X = bio[common].T.to_numpy(dtype=np.float32)
     feature_names = bio.index.tolist()
-    return _dataset_from_feature_matrix(X, feature_names, y, common, meta, class_labels, levels_needed)
+    return _dataset_from_feature_matrix(
+        X, feature_names, y, common, meta, class_labels, levels_needed
+    )
 
 
 def _dataset_from_feature_matrix(
@@ -169,9 +201,6 @@ def _dataset_from_feature_matrix(
     X_by_level: dict[str, np.ndarray] = {}
     names_by_level: dict[str, list[str]] = {}
 
-
-
-
     X_by_level["all"] = X_all.astype(np.float32, copy=False)
     names_by_level["all"] = list(feature_names)
 
@@ -188,12 +217,22 @@ def _dataset_from_feature_matrix(
             X_by_level.setdefault(lv, X_all.astype(np.float32, copy=False))
             names_by_level.setdefault(lv, feature_names)
     else:
-        missing = [lv for lv in levels_needed if lv not in X_by_level and lv not in {"all", "features", "asis", "raw"}]
+        missing = [
+            lv
+            for lv in levels_needed
+            if lv not in X_by_level and lv not in {"all", "features", "asis", "raw"}
+        ]
         if missing:
-
             X_by_level["all"] = X_all.astype(np.float32, copy=False)
             names_by_level["all"] = feature_names
-    return Dataset(X_by_level=X_by_level, feature_names_by_level=names_by_level, y=y, sample_ids=sample_ids, metadata=meta, class_labels=class_labels)
+    return Dataset(
+        X_by_level=X_by_level,
+        feature_names_by_level=names_by_level,
+        y=y,
+        sample_ids=sample_ids,
+        metadata=meta,
+        class_labels=class_labels,
+    )
 
 
 def _taxonomic_rank(name: str) -> str | None:
@@ -212,5 +251,3 @@ def _taxonomic_rank(name: str) -> str | None:
         if any(m in s or s.startswith(m.strip("|; ")) for m in markers):
             return level
     return None
-
-

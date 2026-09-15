@@ -17,6 +17,7 @@ from .data import load_dataset
 from .utils import TAXONOMIC_LEVELS
 from .mpma_e_figure import write_single_task_mpma_e_figure
 
+
 def _load_manifest(root: Path) -> dict[str, Any]:
     with open(root / "manifest.json", "r", encoding="utf-8") as fh:
         return json.load(fh)
@@ -50,7 +51,9 @@ def _excluded_config_ids(configs: pd.DataFrame, ensemble: Ensemble) -> set[str]:
 
     _match("learner", tuple(getattr(ensemble, "exclude_learners", ())))
     _match("resolution", tuple(getattr(ensemble, "exclude_resolutions", ())))
-    _match("count_transformation", tuple(getattr(ensemble, "exclude_transformations", ())))
+    _match(
+        "count_transformation", tuple(getattr(ensemble, "exclude_transformations", ()))
+    )
 
     return set(configs.loc[mask, "config_id"].astype(str))
 
@@ -74,7 +77,11 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
 
     metric = sweep.ensemble.optimize_metric
     if metric not in inner.columns:
-        metric = sweep.evaluation.optimize_metric if sweep.evaluation.optimize_metric in inner.columns else "nMCC"
+        metric = (
+            sweep.evaluation.optimize_metric
+            if sweep.evaluation.optimize_metric in inner.columns
+            else "nMCC"
+        )
 
     all_candidate_rows: list[dict[str, Any]] = []
     all_fold_predictions: list[dict[str, Any]] = []
@@ -90,41 +97,65 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
             "ensemble sizes": sweep.ensemble.sizes,
             "excluded learners": sweep.ensemble.exclude_learners or "none",
             "excluded resolutions": sweep.ensemble.exclude_resolutions or "none",
-            "excluded transformations": sweep.ensemble.exclude_transformations or "none",
+            "excluded transformations": sweep.ensemble.exclude_transformations
+            or "none",
             "optimize metric": metric,
         },
     )
 
     excluded_ids = _excluded_config_ids(configs, sweep.ensemble)
     complete_ids = (
-        set(configs["config_id"].astype(str))
-        & set(preds["config_id"].astype(str))
+        set(configs["config_id"].astype(str)) & set(preds["config_id"].astype(str))
     ) - excluded_ids
     preds = preds[preds["config_id"].astype(str).isin(complete_ids)].copy()
-    inner = inner[inner["config_id"].astype(str).isin(complete_ids) & inner["ok"].eq(1)].copy()
+    inner = inner[
+        inner["config_id"].astype(str).isin(complete_ids) & inner["ok"].eq(1)
+    ].copy()
     if preds.empty or inner.empty:
-        raise RuntimeError("No complete MPMA predictions are available for ensemble search.")
+        raise RuntimeError(
+            "No complete MPMA predictions are available for ensemble search."
+        )
 
     with progress() as prog:
-        candidate_task = prog.add_task("Ensemble candidates", total=len(candidate_specs))
+        candidate_task = prog.add_task(
+            "Ensemble candidates", total=len(candidate_specs)
+        )
         for spec in candidate_specs:
-            prog.update(candidate_task, description=f"Ensemble {spec['selection_strategy']} + {spec['aggregation_strategy']}")
+            prog.update(
+                candidate_task,
+                description=f"Ensemble {spec['selection_strategy']} + {spec['aggregation_strategy']}",
+            )
             fold_metrics: list[dict[str, float]] = []
             fold_member_sets: list[list[str]] = []
             for outer_split, fold_pred in preds.groupby("outer_split_key", sort=False):
-                inner_subset = inner[inner["split_key"].astype(str).eq(str(outer_split))]
+                inner_subset = inner[
+                    inner["split_key"].astype(str).eq(str(outer_split))
+                ]
                 if inner_subset.empty:
                     inner_subset = inner
-                scores = inner_subset.groupby("config_id")[metric].mean().dropna().sort_values(ascending=False)
+                scores = (
+                    inner_subset.groupby("config_id")[metric]
+                    .mean()
+                    .dropna()
+                    .sort_values(ascending=False)
+                )
                 scores = scores[scores.index.astype(str).isin(complete_ids)]
                 members = _select_members(scores, configs, spec, sweep.ensemble)
                 if len(members) < 2:
                     continue
-                ordered_samples = fold_pred[["sample_id", "y_true"]].drop_duplicates("sample_id").sort_values("sample_id")
+                ordered_samples = (
+                    fold_pred[["sample_id", "y_true"]]
+                    .drop_duplicates("sample_id")
+                    .sort_values("sample_id")
+                )
                 stack, weights = [], []
                 valid = True
                 for cid in members:
-                    sub = fold_pred[fold_pred["config_id"].astype(str).eq(str(cid))].set_index("sample_id").reindex(ordered_samples["sample_id"])
+                    sub = (
+                        fold_pred[fold_pred["config_id"].astype(str).eq(str(cid))]
+                        .set_index("sample_id")
+                        .reindex(ordered_samples["sample_id"])
+                    )
                     if sub[pcols].isna().any().any():
                         valid = False
                         break
@@ -132,7 +163,11 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
                     weights.append(float(scores.get(cid, np.nan)))
                 if not valid or len(stack) < 2:
                     continue
-                proba = _aggregate_proba(np.stack(stack, axis=0), np.asarray(weights, dtype=float), spec["aggregation_strategy"])
+                proba = _aggregate_proba(
+                    np.stack(stack, axis=0),
+                    np.asarray(weights, dtype=float),
+                    spec["aggregation_strategy"],
+                )
                 classes = np.arange(proba.shape[1], dtype=int)
                 y_true = ordered_samples["y_true"].to_numpy(dtype=int)
                 y_pred = classes[proba.argmax(axis=1)]
@@ -157,7 +192,11 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
             means = fold_tab.mean(numeric_only=True).to_dict()
             stds = fold_tab.std(numeric_only=True, ddof=1).fillna(0.0).to_dict()
             counts = fold_tab.count(numeric_only=True).to_dict()
-            row = {**spec, **{f"{k}_mean": float(v) for k, v in means.items()}, "n_folds": len(fold_metrics)}
+            row = {
+                **spec,
+                **{f"{k}_mean": float(v) for k, v in means.items()},
+                "n_folds": len(fold_metrics),
+            }
             row.update({f"{k}_std": float(v) for k, v in stds.items()})
             row.update({f"{k}_count": int(v) for k, v in counts.items()})
             row["members"] = json.dumps(_mode_member_set(fold_member_sets))
@@ -171,7 +210,9 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
         score_col = "nMCC_mean"
     cand = cand.sort_values(score_col, ascending=False)
     cand.to_csv(ensemble_dir / "ensemble_candidate_scores.tsv", sep="\t", index=False)
-    pd.DataFrame(all_fold_predictions).to_csv(ensemble_dir / "ensemble_predictions.tsv", sep="\t", index=False)
+    pd.DataFrame(all_fold_predictions).to_csv(
+        ensemble_dir / "ensemble_predictions.tsv", sep="\t", index=False
+    )
 
     rankings = pd.read_csv(root / "tables" / "mpma_rankings.tsv", sep="\t")
     best_mpma = _inner_val_best_mpma(inner, rankings, metric)
@@ -207,7 +248,9 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
         seed=sweep.evaluation.random_state,
     )
 
-    success(f"Ensemble sweep completed · best={best_ensemble['ensemble_config_id']} · {score_col}={best_ensemble[score_col]:.4f}")
+    success(
+        f"Ensemble sweep completed · best={best_ensemble['ensemble_config_id']} · {score_col}={best_ensemble[score_col]:.4f}"
+    )
     outputs = {
         "ensemble_dir": ensemble_dir,
         "selected_unit": ensemble_dir / "selected_unit.json",
@@ -227,7 +270,9 @@ def _matrix_for_mpma_e_figure(sweep: Sweep) -> tuple[np.ndarray, list[str], str]
     """
     X, feature_names = _raw_input_matrix_for_figure(sweep)
     if X.size == 0 or len(feature_names) == 0:
-        raise RuntimeError("No raw abundance matrix is available for MPMA-E visualisation.")
+        raise RuntimeError(
+            "No raw abundance matrix is available for MPMA-E visualisation."
+        )
     return X, feature_names, "raw input abundance matrix"
 
 
@@ -237,19 +282,29 @@ def _raw_input_matrix_for_figure(sweep: Sweep) -> tuple[np.ndarray, list[str]]:
     metadata_path = Path(spec.metadata_path) if spec.metadata_path is not None else None
     fmt = spec.format
     if fmt == "auto":
-        fmt = "metaphlan_tsv" if abundance_path.suffix.lower() in {".tsv", ".txt"} and metadata_path else "wide_csv"
+        fmt = (
+            "metaphlan_tsv"
+            if abundance_path.suffix.lower() in {".tsv", ".txt"} and metadata_path
+            else "wide_csv"
+        )
 
     if fmt in {"matrix_tsv", "metaphlan_tsv", "profile_tsv"}:
         if metadata_path is None:
-            raise ValueError("Data.metadata_path is required for MetaPhlAn-style TSV input.")
+            raise ValueError(
+                "Data.metadata_path is required for MetaPhlAn-style TSV input."
+            )
         meta = pd.read_csv(metadata_path, sep=None, engine="python", dtype=str)
         bio = pd.read_csv(abundance_path, sep="\t", index_col=0, low_memory=False)
         bio.index = bio.index.astype(str).str.strip()
         bio.columns = bio.columns.astype(str).str.strip()
         meta[spec.sample_id_col] = meta[spec.sample_id_col].astype(str).str.strip()
-        common = [sid for sid in meta[spec.sample_id_col].tolist() if sid in set(bio.columns)]
+        common = [
+            sid for sid in meta[spec.sample_id_col].tolist() if sid in set(bio.columns)
+        ]
         if not common:
-            raise ValueError("No sample IDs overlap between metadata and abundance matrix.")
+            raise ValueError(
+                "No sample IDs overlap between metadata and abundance matrix."
+            )
         X = bio[common].T.to_numpy(dtype=np.float32)
         return X, bio.index.tolist()
 
@@ -257,16 +312,31 @@ def _raw_input_matrix_for_figure(sweep: Sweep) -> tuple[np.ndarray, list[str]]:
         df = pd.read_csv(abundance_path)
         if metadata_path is not None:
             meta = pd.read_csv(metadata_path, sep=None, engine="python")
-            if spec.sample_id_col not in df.columns or spec.sample_id_col not in meta.columns:
-                raise ValueError(f"sample_id_col={spec.sample_id_col!r} must exist in both CSV files.")
-            df = df.merge(meta, on=spec.sample_id_col, how="inner", suffixes=("", "__meta"))
+            if (
+                spec.sample_id_col not in df.columns
+                or spec.sample_id_col not in meta.columns
+            ):
+                raise ValueError(
+                    f"sample_id_col={spec.sample_id_col!r} must exist in both CSV files."
+                )
+            df = df.merge(
+                meta, on=spec.sample_id_col, how="inner", suffixes=("", "__meta")
+            )
         reserved = {spec.sample_id_col, spec.target_col, *(spec.metadata_cols or ())}
         if spec.group_col:
             reserved.add(spec.group_col)
-        numeric_cols = [c for c in df.columns if c not in reserved and pd.api.types.is_numeric_dtype(df[c])]
+        numeric_cols = [
+            c
+            for c in df.columns
+            if c not in reserved and pd.api.types.is_numeric_dtype(df[c])
+        ]
         if not numeric_cols:
-            raise ValueError("No numeric abundance columns found after excluding metadata columns.")
-        return df[numeric_cols].to_numpy(dtype=np.float32), [str(c) for c in numeric_cols]
+            raise ValueError(
+                "No numeric abundance columns found after excluding metadata columns."
+            )
+        return df[numeric_cols].to_numpy(dtype=np.float32), [
+            str(c) for c in numeric_cols
+        ]
 
     dataset = load_dataset(sweep.data, TAXONOMIC_LEVELS)
     if "all" in dataset.X_by_level:
@@ -285,11 +355,15 @@ def _ensemble_configs(plan: Ensemble) -> list[dict[str, Any]]:
                 uid = f"{plan.optimize_metric}__{sel}_{size}__{agg}"
                 rows.append(
                     {
-                        "ensemble_config_id": hashlib.sha1(uid.encode()).hexdigest()[:12],
+                        "ensemble_config_id": hashlib.sha1(uid.encode()).hexdigest()[
+                            :12
+                        ],
                         "optimize_metric": plan.optimize_metric,
                         "selection_strategy": sel,
                         "ensemble_size": int(size),
-                        "threshold_score": plan.threshold_score if sel == "threshold" else np.nan,
+                        "threshold_score": plan.threshold_score
+                        if sel == "threshold"
+                        else np.nan,
                         "aggregation_strategy": agg,
                     }
                 )
@@ -314,7 +388,9 @@ def _model_family(name: str) -> str:
     return mn.split("_")[0]
 
 
-def _select_members(scores: pd.Series, configs: pd.DataFrame, spec: dict[str, Any], plan: Ensemble) -> list[str]:
+def _select_members(
+    scores: pd.Series, configs: pd.DataFrame, spec: dict[str, Any], plan: Ensemble
+) -> list[str]:
     size = int(spec["ensemble_size"])
     sel = str(spec["selection_strategy"])
     ordered = [str(x) for x in scores.index.tolist()]
@@ -322,7 +398,9 @@ def _select_members(scores: pd.Series, configs: pd.DataFrame, spec: dict[str, An
     if sel == "top_k":
         return ordered[:size]
     if sel == "threshold":
-        return [cid for cid in ordered if float(scores[cid]) >= plan.threshold_score][:size]
+        return [cid for cid in ordered if float(scores[cid]) >= plan.threshold_score][
+            :size
+        ]
     if sel == "best_per_family":
         out, seen = [], set()
         for cid in ordered:
@@ -344,7 +422,9 @@ def _select_members(scores: pd.Series, configs: pd.DataFrame, spec: dict[str, An
                 break
         return out
     if sel == "diverse_top_k":
-        out = _select_members(scores, configs, {**spec, "selection_strategy": "best_per_family"}, plan)
+        out = _select_members(
+            scores, configs, {**spec, "selection_strategy": "best_per_family"}, plan
+        )
         for cid in ordered:
             if len(out) >= size:
                 break
@@ -395,28 +475,66 @@ def _mode_member_set(member_sets: list[list[str]]) -> list[str]:
         for cid in members:
             counts[cid] = counts.get(cid, 0) + 1
     first = member_sets[0]
-    return sorted(counts, key=lambda c: (-counts[c], first.index(c) if c in first else 9999))[: len(first)]
+    return sorted(
+        counts, key=lambda c: (-counts[c], first.index(c) if c in first else 9999)
+    )[: len(first)]
 
 
-def _inner_val_best_mpma(inner: pd.DataFrame, outer_rankings: pd.DataFrame, metric: str) -> dict[str, Any]:
+def _inner_val_best_mpma(
+    inner: pd.DataFrame, outer_rankings: pd.DataFrame, metric: str
+) -> dict[str, Any]:
     """Return the MPMA-B row selected by inner validation, augmented with outer estimates."""
     if inner is None or inner.empty or "config_id" not in inner.columns:
-        return outer_rankings.iloc[0].to_dict() if outer_rankings is not None and not outer_rankings.empty else {}
-    score_metric = metric if metric in inner.columns else ("nMCC" if "nMCC" in inner.columns else None)
+        return (
+            outer_rankings.iloc[0].to_dict()
+            if outer_rankings is not None and not outer_rankings.empty
+            else {}
+        )
+    score_metric = (
+        metric
+        if metric in inner.columns
+        else ("nMCC" if "nMCC" in inner.columns else None)
+    )
     if score_metric is None:
-        return outer_rankings.iloc[0].to_dict() if outer_rankings is not None and not outer_rankings.empty else {}
+        return (
+            outer_rankings.iloc[0].to_dict()
+            if outer_rankings is not None and not outer_rankings.empty
+            else {}
+        )
     ok = inner.copy()
     if "ok" in ok.columns:
         ok = ok[pd.to_numeric(ok["ok"], errors="coerce").fillna(0).eq(1)]
     if ok.empty:
-        return outer_rankings.iloc[0].to_dict() if outer_rankings is not None and not outer_rankings.empty else {}
-    id_cols = [c for c in ["config_id", "mpdr_id", "count_transformation", "transformation_abbreviation", "resolution", "levels", "learner"] if c in ok.columns]
-    metrics = [c for c in ["nMCC", "AUC", "BalAcc", "Accuracy", "F1w"] if c in ok.columns]
+        return (
+            outer_rankings.iloc[0].to_dict()
+            if outer_rankings is not None and not outer_rankings.empty
+            else {}
+        )
+    id_cols = [
+        c
+        for c in [
+            "config_id",
+            "mpdr_id",
+            "count_transformation",
+            "transformation_abbreviation",
+            "resolution",
+            "levels",
+            "learner",
+        ]
+        if c in ok.columns
+    ]
+    metrics = [
+        c for c in ["nMCC", "AUC", "BalAcc", "Accuracy", "F1w"] if c in ok.columns
+    ]
     agg = ok.groupby(id_cols, dropna=False)[metrics].agg(["mean", "std", "count"])
     agg.columns = [f"inner_{m}_{stat}" for m, stat in agg.columns]
     rank = agg.reset_index().sort_values(f"inner_{score_metric}_mean", ascending=False)
     best = rank.iloc[0].to_dict()
-    if outer_rankings is not None and not outer_rankings.empty and "config_id" in outer_rankings.columns:
+    if (
+        outer_rankings is not None
+        and not outer_rankings.empty
+        and "config_id" in outer_rankings.columns
+    ):
         cid = str(best.get("config_id", ""))
         match = outer_rankings[outer_rankings["config_id"].astype(str).eq(cid)]
         if not match.empty:
@@ -431,14 +549,19 @@ def _inner_val_best_mpma(inner: pd.DataFrame, outer_rankings: pd.DataFrame, metr
     return best
 
 
-def _final_model_comparison(best_mpma: dict[str, Any], best_ensemble: dict[str, Any], score_col: str) -> pd.DataFrame:
+def _final_model_comparison(
+    best_mpma: dict[str, Any], best_ensemble: dict[str, Any], score_col: str
+) -> pd.DataFrame:
     rows = []
     if best_mpma:
         rows.append(
             {
                 "unit": "MPMA-B",
                 "config_id": best_mpma.get("config_id", ""),
-                "score": best_mpma.get("score", best_mpma.get(score_col, best_mpma.get("nMCC_mean", np.nan))),
+                "score": best_mpma.get(
+                    "score",
+                    best_mpma.get(score_col, best_mpma.get("nMCC_mean", np.nan)),
+                ),
                 "count_transformation": best_mpma.get("count_transformation", ""),
                 "resolution": best_mpma.get("resolution", ""),
                 "learner": best_mpma.get("learner", ""),
@@ -459,13 +582,17 @@ def _final_model_comparison(best_mpma: dict[str, Any], best_ensemble: dict[str, 
     return pd.DataFrame(rows)
 
 
-def _plot_ensemble_candidates(cand: pd.DataFrame, score_col: str, out: Path, top_n: int = 20) -> None:
+def _plot_ensemble_candidates(
+    cand: pd.DataFrame, score_col: str, out: Path, top_n: int = 20
+) -> None:
     if cand.empty:
         return
     import matplotlib.pyplot as plt
 
     top = cand.head(top_n).copy()
-    labels = top.apply(lambda r: f"{r['selection_strategy']}\n{r['aggregation_strategy']}", axis=1)
+    labels = top.apply(
+        lambda r: f"{r['selection_strategy']}\n{r['aggregation_strategy']}", axis=1
+    )
     fig, ax = plt.subplots(figsize=(9, max(3, 0.35 * len(top))))
     ax.barh(np.arange(len(top)), top[score_col].astype(float))
     ax.set_yticks(np.arange(len(top)), labels)
@@ -474,4 +601,3 @@ def _plot_ensemble_candidates(cand: pd.DataFrame, score_col: str, out: Path, top
     fig.tight_layout()
     fig.savefig(out, dpi=220)
     plt.close(fig)
-

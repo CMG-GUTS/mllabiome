@@ -40,7 +40,9 @@ def main(argv: list[str] | None = None) -> None:
         default="all",
         help="Entry point for full execution or stage-level restart.",
     )
-    parser.add_argument("--redo", action="store_true", help="Recompute completed evaluation outputs.")
+    parser.add_argument(
+        "--redo", action="store_true", help="Recompute completed evaluation outputs."
+    )
     args = parser.parse_args(argv)
 
     try:

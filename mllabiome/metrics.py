@@ -41,7 +41,9 @@ def _estimator_call(clf: BaseEstimator, method: str, X):
     return getattr(clf, method)(_coerce_X_for_estimator(clf, X))
 
 
-def _predict_proba_aligned(clf: BaseEstimator, X: np.ndarray, classes: np.ndarray) -> np.ndarray:
+def _predict_proba_aligned(
+    clf: BaseEstimator, X: np.ndarray, classes: np.ndarray
+) -> np.ndarray:
     if hasattr(clf, "predict_proba"):
         raw = np.asarray(_estimator_call(clf, "predict_proba", X), dtype=float)
         if raw.ndim == 1:
@@ -77,7 +79,9 @@ def _renormalize_proba(p: np.ndarray, n_classes: int) -> np.ndarray:
         width = min(n_classes, p.shape[1])
         q[:, :width] = p[:, :width]
         p = q
-    p = np.nan_to_num(p, nan=1.0 / n_classes, posinf=1.0 / n_classes, neginf=1.0 / n_classes)
+    p = np.nan_to_num(
+        p, nan=1.0 / n_classes, posinf=1.0 / n_classes, neginf=1.0 / n_classes
+    )
     p = np.clip(p, 0.0, None)
     s = p.sum(axis=1, keepdims=True)
     empty = s.squeeze() <= 1e-12
@@ -88,7 +92,9 @@ def _renormalize_proba(p: np.ndarray, n_classes: int) -> np.ndarray:
     return p
 
 
-def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray, classes: np.ndarray) -> dict[str, float]:
+def compute_metrics(
+    y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray, classes: np.ndarray
+) -> dict[str, float]:
     y_true = np.asarray(y_true, dtype=int)
     y_pred = np.asarray(y_pred, dtype=int)
     y_proba = _renormalize_proba(y_proba, len(classes))
@@ -99,8 +105,12 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray,
     out["BalAcc"] = float(balanced_accuracy_score(y_true, y_pred))
     out["F1w"] = float(f1_score(y_true, y_pred, average="weighted", zero_division=0))
     out["F1_macro"] = float(f1_score(y_true, y_pred, average="macro", zero_division=0))
-    out["Precision"] = float(precision_score(y_true, y_pred, average="macro", zero_division=0))
-    out["Recall"] = float(recall_score(y_true, y_pred, average="macro", zero_division=0))
+    out["Precision"] = float(
+        precision_score(y_true, y_pred, average="macro", zero_division=0)
+    )
+    out["Recall"] = float(
+        recall_score(y_true, y_pred, average="macro", zero_division=0)
+    )
     out["nMCC"] = float((matthews_corrcoef(y_true, y_pred) + 1.0) / 2.0)
     present = np.array([c for c in classes if c in set(y_true.tolist())], dtype=int)
     try:
@@ -114,11 +124,34 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray,
         elif len(present) >= 2:
             cols = [int(np.where(classes == c)[0][0]) for c in present]
             pp = _renormalize_proba(y_proba[:, cols], len(cols))
-            out["AUC_macro"] = float(roc_auc_score(y_true, pp, labels=present.tolist(), multi_class="ovr", average="macro"))
-            out["AUC_weighted"] = float(roc_auc_score(y_true, pp, labels=present.tolist(), multi_class="ovr", average="weighted"))
+            out["AUC_macro"] = float(
+                roc_auc_score(
+                    y_true,
+                    pp,
+                    labels=present.tolist(),
+                    multi_class="ovr",
+                    average="macro",
+                )
+            )
+            out["AUC_weighted"] = float(
+                roc_auc_score(
+                    y_true,
+                    pp,
+                    labels=present.tolist(),
+                    multi_class="ovr",
+                    average="weighted",
+                )
+            )
             out["AUC"] = out["AUC_macro"]
-            out["PR_AUC_macro"] = float(average_precision_score(pd.get_dummies(y_true).reindex(columns=present, fill_value=0), pp, average="macro"))
+            out["PR_AUC_macro"] = float(
+                average_precision_score(
+                    pd.get_dummies(y_true).reindex(columns=present, fill_value=0),
+                    pp,
+                    average="macro",
+                )
+            )
     except Exception:
         pass
-    return {k: (round(v, 6) if np.isfinite(v) else float("nan")) for k, v in out.items()}
-
+    return {
+        k: (round(v, 6) if np.isfinite(v) else float("nan")) for k, v in out.items()
+    }

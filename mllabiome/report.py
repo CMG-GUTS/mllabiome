@@ -14,6 +14,7 @@ from .configs_sweep import Sweep
 from .console import console, path_table, stage, success
 from .utils import dump_json_standard
 from .metrics import compute_metrics
+from .transformations import transformation_label
 
 _METRICS = [
     ("AUC", "ROC-AUC"),
@@ -42,7 +43,9 @@ def _pick_deepest_single_rank(sub: pd.DataFrame, *, sort_col: str) -> dict[str, 
         return {}
     candidates = []
     for rank in _BASELINE_RANK_PRIORITY:
-        rr = sub[sub.apply(lambda r, rank=rank: _single_rank_label(r) == rank, axis=1)].copy()
+        rr = sub[
+            sub.apply(lambda r, rank=rank: _single_rank_label(r) == rank, axis=1)
+        ].copy()
         if rr.empty:
             continue
         if sort_col in rr.columns:
@@ -61,9 +64,9 @@ def _rel(path: Path, start: Path) -> str:
         return path.as_posix()
 
 
-
 def _normalise_svg_for_report(svg: str) -> str:
     return svg
+
 
 def _fig(stem_or_path: Path, report_dir: Path, caption: str = "") -> str:
     path = stem_or_path
@@ -88,7 +91,6 @@ def _fig(stem_or_path: Path, report_dir: Path, caption: str = "") -> str:
         data = base64.b64encode(path.read_bytes()).decode("ascii")
         return f'<figure><img src="data:image/png;base64,{data}" alt="{alt}">{cap}</figure>'
     return f'<figure><p><a href="{html.escape(_rel(path, report_dir))}">{alt}</a></p>{cap}</figure>'
-
 
 
 def _strip_svg_preamble(svg: str) -> str:
@@ -140,23 +142,27 @@ def _safe_float(x: Any) -> float:
         return float("nan")
 
 
-def _pct_cell(mean: Any, std: Any, *, bold: bool = False, html_mode: bool = False) -> str:
+def _pct_cell(
+    mean: Any, std: Any, *, bold: bool = False, html_mode: bool = False
+) -> str:
     m = _safe_float(mean)
     s = _safe_float(std)
     if not np.isfinite(m):
         body = "—" if html_mode else r"--"
         return body
 
-    body = f"{100*m:.2f}"
+    body = f"{100 * m:.2f}"
     if np.isfinite(s):
-        sd = f"{100*s:.2f}" if html_mode else f"{100*s:05.2f}"
+        sd = f"{100 * s:.2f}" if html_mode else f"{100 * s:05.2f}"
         body += (" ± " if html_mode else r"$\pm$") + sd
     if bold:
         return f"<strong>{body}</strong>" if html_mode else rf"\textbf{{{body}}}"
     return body
 
 
-def _mean_std_from_cols(row: pd.Series | dict[str, Any], prefix: str, metric: str) -> tuple[float, float]:
+def _mean_std_from_cols(
+    row: pd.Series | dict[str, Any], prefix: str, metric: str
+) -> tuple[float, float]:
     if isinstance(row, dict):
         get = row.get
     else:
@@ -169,6 +175,16 @@ def _mean_std_from_cols(row: pd.Series | dict[str, Any], prefix: str, metric: st
     return _safe_float(mean), _safe_float(std)
 
 
+def _canonical_transformation_name(value: Any) -> str:
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return ""
+    try:
+        return transformation_label(text).key
+    except KeyError:
+        return text
+
+
 def _agg_metrics(path: Path, prefix: str) -> pd.DataFrame:
     df = _read_tsv(path)
     if df.empty or "config_id" not in df.columns:
@@ -177,7 +193,15 @@ def _agg_metrics(path: Path, prefix: str) -> pd.DataFrame:
         df = df[pd.to_numeric(df["ok"], errors="coerce").fillna(0).eq(1)]
     if df.empty:
         return pd.DataFrame()
-    id_cols = [c for c in ["config_id", "count_transformation", "transformation_abbreviation", "resolution", "learner"] if c in df.columns]
+    if "count_transformation" in df.columns:
+        df["count_transformation"] = df["count_transformation"].map(
+            _canonical_transformation_name
+        )
+    id_cols = [
+        c
+        for c in ["config_id", "count_transformation", "resolution", "learner"]
+        if c in df.columns
+    ]
     metric_cols = [c for c, _ in _METRICS if c in df.columns]
     if not metric_cols:
         return df[id_cols].drop_duplicates("config_id") if id_cols else pd.DataFrame()
@@ -194,11 +218,17 @@ def _top_mpma_raw(root: Path, n: int = 10) -> pd.DataFrame:
     if not inner.empty:
         base = inner
         if not outer.empty:
-            outer_metrics = outer[[c for c in outer.columns if c == "config_id" or c.startswith("outer_")]].copy()
+            outer_metrics = outer[
+                [c for c in outer.columns if c == "config_id" or c.startswith("outer_")]
+            ].copy()
             base = base.merge(outer_metrics, on="config_id", how="left")
     else:
         base = outer
-    sort_col = "inner_nMCC_mean" if "inner_nMCC_mean" in base.columns else ("outer_nMCC_mean" if "outer_nMCC_mean" in base.columns else None)
+    sort_col = (
+        "inner_nMCC_mean"
+        if "inner_nMCC_mean" in base.columns
+        else ("outer_nMCC_mean" if "outer_nMCC_mean" in base.columns else None)
+    )
     if sort_col:
         base = base.sort_values(sort_col, ascending=False)
     base = base.head(int(n)).copy()
@@ -214,13 +244,23 @@ def _top_mpma_display(df: pd.DataFrame, *, html_mode: bool = False) -> pd.DataFr
         row = {
             "Rank": int(r.get("rank", len(rows) + 1)),
             "Resolution": str(r.get("resolution", "")),
-            "MPDR transformation": str(r.get("transformation_abbreviation", r.get("count_transformation", ""))),
+            "Transformation": _canonical_transformation_name(
+                r.get("count_transformation", "")
+            ),
             "Learner": str(r.get("learner", "")),
         }
-        for metric, label_latex, label_html in [("nMCC", "nMCC", "nMCC"), ("AUC", "ROC-AUC", "ROC-AUC"), ("F1w", "F1$_w$", "F1w")]:
+        for metric, label_latex, label_html in [
+            ("nMCC", "nMCC", "nMCC"),
+            ("AUC", "ROC-AUC", "ROC-AUC"),
+            ("F1w", "F1$_w$", "F1w"),
+        ]:
             label = label_html if html_mode else label_latex
-            row[f"Inner {label}"] = _pct_cell(*_mean_std_from_cols(r, "inner", metric), html_mode=html_mode)
-            row[f"Outer {label}"] = _pct_cell(*_mean_std_from_cols(r, "outer", metric), html_mode=html_mode)
+            row[f"Inner {label}"] = _pct_cell(
+                *_mean_std_from_cols(r, "inner", metric), html_mode=html_mode
+            )
+            row[f"Outer {label}"] = _pct_cell(
+                *_mean_std_from_cols(r, "outer", metric), html_mode=html_mode
+            )
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -231,16 +271,26 @@ def _selected_json(root: Path) -> dict[str, Any]:
 
 def _best_mpma_row(root: Path) -> dict[str, Any]:
     selected = _selected_json(root)
-    best = selected.get("inner_val_best_mpma") or selected.get("inner_val_best_individual") or {}
+    best = (
+        selected.get("inner_val_best_mpma")
+        or selected.get("inner_val_best_individual")
+        or {}
+    )
     return best if isinstance(best, dict) else {}
 
 
-def _ensemble_outer_metrics_from_predictions(root: Path, ensemble_config_id: str) -> dict[str, Any]:
+def _ensemble_outer_metrics_from_predictions(
+    root: Path, ensemble_config_id: str
+) -> dict[str, Any]:
     path = root / "ensembling" / "ensemble_predictions.tsv"
     if not path.exists() or not str(ensemble_config_id):
         return {}
     df = _read_tsv(path)
-    if df.empty or "ensemble_config_id" not in df.columns or "outer_split_key" not in df.columns:
+    if (
+        df.empty
+        or "ensemble_config_id" not in df.columns
+        or "outer_split_key" not in df.columns
+    ):
         return {}
     df = df[df["ensemble_config_id"].astype(str).eq(str(ensemble_config_id))].copy()
     if df.empty:
@@ -254,8 +304,17 @@ def _ensemble_outer_metrics_from_predictions(root: Path, ensemble_config_id: str
         yy = pd.to_numeric(sub["y_true"], errors="coerce")
         mask = yy.notna()
         y_true = yy.loc[mask].astype(int).to_numpy()
-        y_pred = pd.to_numeric(sub.loc[mask, "y_pred"], errors="coerce").fillna(0).astype(int).to_numpy()
-        proba = sub.loc[mask, pcols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+        y_pred = (
+            pd.to_numeric(sub.loc[mask, "y_pred"], errors="coerce")
+            .fillna(0)
+            .astype(int)
+            .to_numpy()
+        )
+        proba = (
+            sub.loc[mask, pcols]
+            .apply(pd.to_numeric, errors="coerce")
+            .to_numpy(dtype=float)
+        )
         if len(y_true) == 0 or proba.shape[0] != len(y_true):
             continue
         fold_rows.append(compute_metrics(y_true, y_pred, proba, classes))
@@ -264,7 +323,11 @@ def _ensemble_outer_metrics_from_predictions(root: Path, ensemble_config_id: str
     tab = pd.DataFrame(fold_rows)
     out: dict[str, Any] = {}
     for col in tab.columns:
-        vals = pd.to_numeric(tab[col], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+        vals = (
+            pd.to_numeric(tab[col], errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna()
+        )
         if vals.empty:
             continue
         out[f"outer_{col}_mean"] = float(vals.mean())
@@ -278,7 +341,11 @@ def _ensemble_outer_metrics_from_predictions(root: Path, ensemble_config_id: str
 
 def _ensemble_row(root: Path) -> dict[str, Any]:
     selected = _selected_json(root)
-    ens = selected.get("inner_val_best_mpmas_ensemble") or selected.get("inner_val_best_ensemble") or {}
+    ens = (
+        selected.get("inner_val_best_mpmas_ensemble")
+        or selected.get("inner_val_best_ensemble")
+        or {}
+    )
     if not isinstance(ens, dict):
         return {}
     row = dict(ens)
@@ -292,40 +359,60 @@ def _ensemble_row(root: Path) -> dict[str, Any]:
 def _strategy_rows(root: Path) -> list[dict[str, Any]]:
     by_strategy: dict[str, dict[str, Any]] = {}
     ens = _ensemble_row(root)
-    by_strategy["MPMA-E"] = {"Strategy": "MPMA-E", "source": "ensemble", **ens} if ens else {"Strategy": "MPMA-E", "source": "ensemble"}
+    by_strategy["MPMA-E"] = (
+        {"Strategy": "MPMA-E", "source": "ensemble", **ens}
+        if ens
+        else {"Strategy": "MPMA-E", "source": "ensemble"}
+    )
     best = _best_mpma_row(root)
-    by_strategy["MPMA-B"] = {"Strategy": "MPMA-B", "source": "mpma", **best} if best else {"Strategy": "MPMA-B", "source": "mpma"}
+    by_strategy["MPMA-B"] = (
+        {"Strategy": "MPMA-B", "source": "mpma", **best}
+        if best
+        else {"Strategy": "MPMA-B", "source": "mpma"}
+    )
 
     outer = _agg_metrics(root / "results" / "outer_results.tsv", "outer")
     inner = _agg_metrics(root / "inner_results" / "inner_results.tsv", "inner")
     if not outer.empty:
         base = outer.copy()
         if not inner.empty:
-            inner_cols = [c for c in inner.columns if c == "config_id" or c.startswith("inner_")]
+            inner_cols = [
+                c for c in inner.columns if c == "config_id" or c.startswith("inner_")
+            ]
             base = base.merge(inner[inner_cols], on="config_id", how="left")
 
         def _pick(mask: pd.Series) -> dict[str, Any]:
             sub = base[mask.fillna(False)].copy()
             if sub.empty:
                 return {}
-            sort_col = "inner_nMCC_mean" if "inner_nMCC_mean" in sub.columns else "outer_nMCC_mean"
+            sort_col = (
+                "inner_nMCC_mean"
+                if "inner_nMCC_mean" in sub.columns
+                else "outer_nMCC_mean"
+            )
             if sort_col in sub.columns:
                 sub = sub.sort_values(sort_col, ascending=False)
             return sub.iloc[0].to_dict()
 
-        sort_col = "inner_nMCC_mean" if "inner_nMCC_mean" in base.columns else "outer_nMCC_mean"
-        learner = base.get("learner", pd.Series("", index=base.index, dtype=str)).astype(str)
-        transform = base.get("count_transformation", pd.Series("", index=base.index, dtype=str)).astype(str)
-        resolution = base.get("resolution", pd.Series("", index=base.index, dtype=str)).astype(str)
+        sort_col = (
+            "inner_nMCC_mean"
+            if "inner_nMCC_mean" in base.columns
+            else "outer_nMCC_mean"
+        )
+        learner = base.get(
+            "learner", pd.Series("", index=base.index, dtype=str)
+        ).astype(str)
+        transform = base.get(
+            "count_transformation", pd.Series("", index=base.index, dtype=str)
+        ).astype(str)
+        resolution = base.get(
+            "resolution", pd.Series("", index=base.index, dtype=str)
+        ).astype(str)
 
         automl_pool = base[
             learner.str.contains("FLAML|AutoML", case=False, regex=True).fillna(False)
             & transform.str.fullmatch("relative_abundance", case=False).fillna(False)
         ].copy()
-
-
-
-
 
         automl = _pick_deepest_single_rank(automl_pool, sort_col=sort_col)
         if automl:
@@ -333,11 +420,15 @@ def _strategy_rows(root: Path) -> list[dict[str, Any]]:
 
         baseline_pool = base[
             learner.str.fullmatch("RF_1000_msl5", case=False).fillna(False)
-            & transform.str.fullmatch("arcsin_sqrt", case=False).fillna(False)
+            & transform.str.fullmatch("arcsine_sqrt", case=False).fillna(False)
         ].copy()
         baseline = _pick_deepest_single_rank(baseline_pool, sort_col=sort_col)
         if baseline:
-            by_strategy["Baseline RF"] = {"Strategy": "Baseline RF", "source": "mpma", **baseline}
+            by_strategy["Baseline RF"] = {
+                "Strategy": "Baseline RF",
+                "source": "mpma",
+                **baseline,
+            }
 
         siamcat = _pick(
             learner.str.fullmatch("SIAMCAT", case=False).fillna(False)
@@ -345,15 +436,23 @@ def _strategy_rows(root: Path) -> list[dict[str, Any]]:
             & resolution.str.fullmatch("raw", case=False).fillna(False)
         )
         if siamcat:
-            by_strategy["SIAMCAT"] = {"Strategy": "SIAMCAT", "source": "mpma", **siamcat}
+            by_strategy["SIAMCAT"] = {
+                "Strategy": "SIAMCAT",
+                "source": "mpma",
+                **siamcat,
+            }
 
     by_strategy.setdefault("AutoML", {"Strategy": "AutoML", "source": "mpma"})
     by_strategy.setdefault("Baseline RF", {"Strategy": "Baseline RF", "source": "mpma"})
     by_strategy.setdefault("SIAMCAT", {"Strategy": "SIAMCAT", "source": "mpma"})
-    return [by_strategy[k] for k in ("MPMA-E", "MPMA-B", "AutoML", "Baseline RF", "SIAMCAT")]
+    return [
+        by_strategy[k] for k in ("MPMA-E", "MPMA-B", "AutoML", "Baseline RF", "SIAMCAT")
+    ]
 
 
-def _strategy_performance_display(root: Path, *, html_mode: bool = False) -> pd.DataFrame:
+def _strategy_performance_display(
+    root: Path, *, html_mode: bool = False
+) -> pd.DataFrame:
     rows = _strategy_rows(root)
     if not rows:
         return pd.DataFrame()
@@ -401,17 +500,27 @@ def _ensemble_members_table(root: Path) -> pd.DataFrame:
         p = root / "figures" / "mpma_e_members.tsv"
     if p.exists():
         df = pd.read_csv(p, sep="\t")
-        rename = {
-            "member_order": "Member",
-            "ranks": "Resolution",
-            "transformation": "MPDR transformation",
-            "classifier_family": "Learner family",
-            "raw_transform": "count_transformation",
-            "raw_model": "learner",
-        }
-        cols = [c for c in ["member_order", "ranks", "transformation", "classifier_family", "raw_transform", "raw_model"] if c in df.columns]
-        out = df[cols].rename(columns=rename).copy() if cols else df.copy()
-        return out
+        transform_col = (
+            "raw_transform"
+            if "raw_transform" in df.columns
+            else "transformation"
+            if "transformation" in df.columns
+            else None
+        )
+        out = pd.DataFrame(index=df.index)
+        if "member_order" in df.columns:
+            out["Member"] = df["member_order"]
+        if "ranks" in df.columns:
+            out["Resolution"] = df["ranks"]
+        if transform_col is not None:
+            out["Transformation"] = df[transform_col].map(
+                _canonical_transformation_name
+            )
+        if "classifier_family" in df.columns:
+            out["Learner family"] = df["classifier_family"]
+        if "raw_model" in df.columns:
+            out["Learner"] = df["raw_model"]
+        return out.reset_index(drop=True)
     ens = _ensemble_row(root)
     members = ens.get("members", [])
     if isinstance(members, str):
@@ -430,36 +539,75 @@ def _procedure_table(sweep: Sweep, root: Path) -> pd.DataFrame:
     manifest = _manifest(root)
     ev = sweep.evaluation
     gate = sweep.gate
-    data = manifest.get("sweep", {}).get("data", {}) if isinstance(manifest.get("sweep"), dict) else {}
+    data = (
+        manifest.get("sweep", {}).get("data", {})
+        if isinstance(manifest.get("sweep"), dict)
+        else {}
+    )
     classes = manifest.get("class_labels", getattr(sweep.data, "class_labels", ()))
-    return pd.DataFrame([
-        ["Task", sweep.title],
-        ["Experiment directory", str(root)],
-        ["Data format", str(getattr(sweep.data, "format", data.get("format", "")))],
-        ["Samples", str(manifest.get("n_samples", ""))],
-        ["Classes", ", ".join(map(str, classes)) if classes else ""],
-        ["Procedure", ev.protocol],
-        ["Stratification", "target" if not getattr(sweep.data, "stratify_col", None) else f"target + {getattr(sweep.data, 'stratify_col')}"],
-        ["Outer folds", ev.outer_folds if ev.protocol not in {"lodo", "leave_one_dataset_out"} else "held-out datasets"],
-        ["Inner folds", ev.inner_folds],
-        ["Repeats", ev.repeats],
-        ["Selection metric", ev.optimize_metric],
-        ["Random seed", ev.random_state],
-        ["Qualification gate", f"on ({gate.metric} ≥ {gate.threshold})" if gate.enabled else "off"],
-        ["Selection rule", "MPMA-B and MPMA-E selected by inner-validation score; outer folds are reserved for final held-out performance estimation."],
-    ], columns=["Field", "Value"])
+    return pd.DataFrame(
+        [
+            ["Task", sweep.title],
+            ["Experiment directory", str(root)],
+            ["Data format", str(getattr(sweep.data, "format", data.get("format", "")))],
+            ["Samples", str(manifest.get("n_samples", ""))],
+            ["Classes", ", ".join(map(str, classes)) if classes else ""],
+            ["Procedure", ev.protocol],
+            [
+                "Stratification",
+                "target"
+                if not getattr(sweep.data, "stratify_col", None)
+                else f"target + {getattr(sweep.data, 'stratify_col')}",
+            ],
+            [
+                "Outer folds",
+                ev.outer_folds
+                if ev.protocol not in {"lodo", "leave_one_dataset_out"}
+                else "held-out datasets",
+            ],
+            ["Inner folds", ev.inner_folds],
+            ["Repeats", ev.repeats],
+            ["Selection metric", ev.optimize_metric],
+            ["Random seed", ev.random_state],
+            [
+                "Qualification gate",
+                f"on ({gate.metric} ≥ {gate.threshold})" if gate.enabled else "off",
+            ],
+            [
+                "Selection rule",
+                "MPMA-B and MPMA-E selected by inner-validation score; outer folds are reserved for final held-out performance estimation.",
+            ],
+        ],
+        columns=["Field", "Value"],
+    )
 
 
 def _latex_escape(s: Any) -> str:
     s = str(s)
     repl = {
-        "\\": r"\textbackslash{}", "&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#", "_": r"\_",
-        "{": r"\{", "}": r"\}", "~": r"\textasciitilde{}", "^": r"\textasciicircum{}",
+        "\\": r"\textbackslash{}",
+        "&": r"\&",
+        "%": r"\%",
+        "$": r"\$",
+        "#": r"\#",
+        "_": r"\_",
+        "{": r"\{",
+        "}": r"\}",
+        "~": r"\textasciitilde{}",
+        "^": r"\textasciicircum{}",
     }
     return "".join(repl.get(ch, ch) for ch in s)
 
 
-def _latex_tabular(df: pd.DataFrame, path: Path, *, caption: str, label: str, align: str | None = None, already_latex_cols: set[str] | None = None) -> None:
+def _latex_tabular(
+    df: pd.DataFrame,
+    path: Path,
+    *,
+    caption: str,
+    label: str,
+    align: str | None = None,
+    already_latex_cols: set[str] | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     already_latex_cols = already_latex_cols or set()
     if df.empty:
@@ -498,7 +646,9 @@ def _latex_tabular(df: pd.DataFrame, path: Path, *, caption: str, label: str, al
 def _latex_task_name(title: str) -> str:
     title = str(title).replace("MPMA sweep", "").strip()
     parts = [x.strip() for x in title.split(" · ") if x.strip()]
-    return r"\\".join(_latex_escape(x) for x in parts) if parts else _latex_escape(title)
+    return (
+        r"\\".join(_latex_escape(x) for x in parts) if parts else _latex_escape(title)
+    )
 
 
 def _strategy_latex_table(root: Path, path: Path, task_title: str) -> pd.DataFrame:
@@ -619,16 +769,24 @@ def _strategy_latex_table(root: Path, path: Path, task_title: str) -> pd.DataFra
 def _top10_latex_table(root: Path, path: Path, task_title: str) -> pd.DataFrame:
     raw = _top_mpma_raw(root, 10)
     disp = _top_mpma_display(raw, html_mode=False)
-    latex_cols = {c for c in disp.columns if c.startswith("Inner") or c.startswith("Outer")}
+    latex_cols = {
+        c for c in disp.columns if c.startswith("Inner") or c.startswith("Outer")
+    }
     caption = (
         f"Top 10 {task_title} MPMA configurations ranked by inner-validation nMCC. "
         "Inner-validation scores are used for model selection; outer-fold scores are reported only for final held-out performance estimation. "
         "All metric values are percentages and reported as mean $\\pm$ standard deviation."
     )
     align = "r" + "l" * max(0, len(disp.columns) - 1)
-    _latex_tabular(disp, path, caption=caption, label="tab:mllabiome-top10-mpma", align=align[:len(disp.columns)], already_latex_cols=latex_cols)
+    _latex_tabular(
+        disp,
+        path,
+        caption=caption,
+        label="tab:mllabiome-top10-mpma",
+        align=align[: len(disp.columns)],
+        already_latex_cols=latex_cols,
+    )
     return disp
-
 
 
 def _html_inline(value: Any) -> str:
@@ -657,12 +815,13 @@ def _html_inline(value: Any) -> str:
     text = text.replace("$", "")
     return text
 
+
 def _html_table(df: pd.DataFrame, *, raw_html_cols: set[str] | None = None) -> str:
     if df.empty:
         return "<p>No rows available.</p>"
     raw_html_cols = raw_html_cols or set()
     cols = list(df.columns)
-    parts = ["<div class=\"table-wrap\"><table><thead><tr>"]
+    parts = ['<div class="table-wrap"><table><thead><tr>']
     parts.extend(f"<th>{html.escape(str(c))}</th>" for c in cols)
     parts.append("</tr></thead><tbody>")
     for _, r in df.iterrows():
@@ -679,7 +838,6 @@ def _html_table(df: pd.DataFrame, *, raw_html_cols: set[str] | None = None) -> s
         parts.append("</tr>")
     parts.append("</tbody></table></div>")
     return "".join(parts)
-
 
 
 def _available_strategy_labels(root: Path) -> list[str]:
@@ -720,15 +878,23 @@ def _target_dirs_by_label(root: Path) -> dict[str, Path]:
 
 def _has_target_figure(target_dir: Path, stem: str) -> bool:
     fdir = target_dir / "figures"
-    return any((fdir / stem).with_suffix(ext).exists() for ext in (".svg", ".png", ".pdf"))
+    return any(
+        (fdir / stem).with_suffix(ext).exists() for ext in (".svg", ".png", ".pdf")
+    )
 
 
-def _side_by_side_explainability_blocks(root: Path, report_dir: Path) -> tuple[str, int]:
+def _side_by_side_explainability_blocks(
+    root: Path, report_dir: Path
+) -> tuple[str, int]:
     target_dirs = _target_dirs_by_label(root)
     available_labels = _available_strategy_labels(root)
-    preferred_order = [x for x in ("MPMA-E", "MPMA-B", "Baseline RF") if x in available_labels]
+    preferred_order = [
+        x for x in ("MPMA-E", "MPMA-B", "Baseline RF") if x in available_labels
+    ]
     if len(preferred_order) < 2:
-        preferred_order = [x for x in ("MPMA-E", "MPMA-B", "Baseline RF") if x in target_dirs]
+        preferred_order = [
+            x for x in ("MPMA-E", "MPMA-B", "Baseline RF") if x in target_dirs
+        ]
     if len(preferred_order) < 2:
         return "", 0
     figure_sets = (
@@ -744,19 +910,30 @@ def _side_by_side_explainability_blocks(root: Path, report_dir: Path) -> tuple[s
     blocks: list[str] = []
     n_blocks = 0
     for stem, title in figure_sets:
-        if not any(label in target_dirs and _has_target_figure(target_dirs[label], stem) for label in preferred_order):
+        if not any(
+            label in target_dirs and _has_target_figure(target_dirs[label], stem)
+            for label in preferred_order
+        ):
             continue
         cells: list[str] = []
         for label in preferred_order:
             target_dir = target_dirs.get(label)
-            fig_html = _fig((target_dir / "figures" / stem), report_dir, "") if target_dir is not None else ""
+            fig_html = (
+                _fig((target_dir / "figures" / stem), report_dir, "")
+                if target_dir is not None
+                else ""
+            )
             if fig_html:
                 body = fig_html
             else:
                 body = '<div class="missing-figure">Not computed</div>'
-            cells.append(f'<div class="compare-cell"><h3>{html.escape(label)}</h3>{body}</div>')
+            cells.append(
+                f'<div class="compare-cell"><h3>{html.escape(label)}</h3>{body}</div>'
+            )
         n_blocks += 1
-        blocks.append(f'<section class="compare-block"><h3>{html.escape(title)}</h3><div class="compare-grid" style="--compare-columns:{len(preferred_order)}">{"".join(cells)}</div></section>')
+        blocks.append(
+            f'<section class="compare-block"><h3>{html.escape(title)}</h3><div class="compare-grid" style="--compare-columns:{len(preferred_order)}">{"".join(cells)}</div></section>'
+        )
     if not blocks:
         return "", 0
     return "".join(blocks), n_blocks
@@ -771,7 +948,9 @@ def _strip_cell_markup(value: Any) -> str:
     return text
 
 
-def _terminal_table(title: str, df: pd.DataFrame, *, max_rows: int | None = None) -> None:
+def _terminal_table(
+    title: str, df: pd.DataFrame, *, max_rows: int | None = None
+) -> None:
     if df.empty:
         return
     from rich.table import Table
@@ -788,9 +967,34 @@ def _terminal_table(title: str, df: pd.DataFrame, *, max_rows: int | None = None
 def _compact_procedure_for_terminal(procedure: pd.DataFrame) -> pd.DataFrame:
     if procedure.empty:
         return procedure
-    keep = {"Task", "Procedure", "Samples", "Classes", "Outer folds", "Inner folds", "Repeats", "Selection metric", "Qualification gate"}
+    keep = {
+        "Task",
+        "Procedure",
+        "Samples",
+        "Classes",
+        "Outer folds",
+        "Inner folds",
+        "Repeats",
+        "Selection metric",
+        "Qualification gate",
+    }
     out = procedure[procedure["Field"].isin(keep)].copy()
-    order = {k: i for i, k in enumerate(["Task", "Procedure", "Samples", "Classes", "Outer folds", "Inner folds", "Repeats", "Selection metric", "Qualification gate"])}
+    order = {
+        k: i
+        for i, k in enumerate(
+            [
+                "Task",
+                "Procedure",
+                "Samples",
+                "Classes",
+                "Outer folds",
+                "Inner folds",
+                "Repeats",
+                "Selection metric",
+                "Qualification gate",
+            ]
+        )
+    }
     out["_order"] = out["Field"].map(order).fillna(999)
     return out.sort_values("_order").drop(columns="_order")
 
@@ -800,7 +1004,7 @@ def _short_feature_label(feature: Any, max_len: int = 46) -> str:
     last = text.split("___")[-1]
     for pfx in ("s__", "g__", "f__", "o__", "c__", "p__", "d__", "t__"):
         if last.startswith(pfx):
-            last = f"{pfx[0]}. " + last[len(pfx):]
+            last = f"{pfx[0]}. " + last[len(pfx) :]
             break
     last = last.replace("_", " ").strip() or text
     return last if len(last) <= max_len else last[: max_len - 1].rstrip() + "…"
@@ -808,7 +1012,11 @@ def _short_feature_label(feature: Any, max_len: int = 46) -> str:
 
 def _target_dirs_for_terminal(root: Path) -> list[tuple[str, Path]]:
     dirs = _target_dirs_by_label(root)
-    return [(label, dirs[label]) for label in ("MPMA-E", "MPMA-B", "Baseline RF") if label in dirs]
+    return [
+        (label, dirs[label])
+        for label in ("MPMA-E", "MPMA-B", "Baseline RF")
+        if label in dirs
+    ]
 
 
 def _feature_support_terminal(root: Path, *, top_n: int = 8) -> None:
@@ -822,21 +1030,40 @@ def _feature_support_terminal(root: Path, *, top_n: int = 8) -> None:
             continue
         if "rank" in tab.columns:
             tab = tab.sort_values("rank", ascending=True)
-        methods = [c for c in ("SHAP", "LIME", "Permutation", "ALE", "consensus", "importance_mean") if c in tab.columns]
+        methods = [
+            c
+            for c in (
+                "SHAP",
+                "LIME",
+                "Permutation",
+                "ALE",
+                "consensus",
+                "importance_mean",
+            )
+            if c in tab.columns
+        ]
         for i, r in tab.head(top_n).iterrows():
             support = ""
             if methods:
-                vals = pd.to_numeric(pd.Series([r.get(c) for c in methods]), errors="coerce").dropna()
+                vals = pd.to_numeric(
+                    pd.Series([r.get(c) for c in methods]), errors="coerce"
+                ).dropna()
                 if not vals.empty:
                     support = f"{float(vals.mean()):.2f}"
-            rows.append({
-                "Subject": label,
-                "Rank": int(r.get("rank", len(rows) + 1)) if str(r.get("rank", "")).strip() else len(rows) + 1,
-                "Feature": _short_feature_label(r.get("feature", "")),
-                "Support": support,
-            })
+            rows.append(
+                {
+                    "Strategy": label,
+                    "Rank": int(r.get("rank", len(rows) + 1))
+                    if str(r.get("rank", "")).strip()
+                    else len(rows) + 1,
+                    "Feature": _short_feature_label(r.get("feature", "")),
+                    "Support": support,
+                }
+            )
     if rows:
-        _terminal_table("Top explainability features", pd.DataFrame(rows), max_rows=len(rows))
+        _terminal_table(
+            "Top explainability features", pd.DataFrame(rows), max_rows=len(rows)
+        )
 
 
 def _print_report_summary(
@@ -852,12 +1079,41 @@ def _print_report_summary(
     _terminal_table("Evaluation procedure", _compact_procedure_for_terminal(procedure))
     _terminal_table("Task performance", strategy_html)
     if not top10_html.empty:
-        cols = [c for c in ["Rank", "Resolution", "MPDR transformation", "Learner", "Inner nMCC", "Outer nMCC", "Inner ROC-AUC", "Outer ROC-AUC"] if c in top10_html.columns]
-        _terminal_table("Top MPMA-B configurations", top10_html[cols] if cols else top10_html, max_rows=10)
+        cols = [
+            c
+            for c in [
+                "Rank",
+                "Resolution",
+                "Transformation",
+                "Learner",
+                "Inner nMCC",
+                "Outer nMCC",
+                "Inner ROC-AUC",
+                "Outer ROC-AUC",
+            ]
+            if c in top10_html.columns
+        ]
+        _terminal_table(
+            "Top MPMA-B configurations",
+            top10_html[cols] if cols else top10_html,
+            max_rows=10,
+        )
     _terminal_table("Selected MPMA-E", ensemble_summary)
     if not ensemble_members.empty:
-        cols = [c for c in ["Member", "Resolution", "MPDR transformation", "Learner family", "count_transformation", "learner"] if c in ensemble_members.columns]
-        _terminal_table("MPMA-E members", ensemble_members[cols] if cols else ensemble_members)
+        cols = [
+            c
+            for c in [
+                "Member",
+                "Resolution",
+                "Transformation",
+                "Learner family",
+                "Learner",
+            ]
+            if c in ensemble_members.columns
+        ]
+        _terminal_table(
+            "MPMA-E members", ensemble_members[cols] if cols else ensemble_members
+        )
     _feature_support_terminal(root, top_n=8)
 
 
@@ -876,42 +1132,75 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
     stage("Report", str(report_dir))
 
     procedure = _procedure_table(sweep, root)
-    _strategy_latex_table(root, tables_dir / "task_strategy_performance.tex", sweep.title)
+    _strategy_latex_table(
+        root, tables_dir / "task_strategy_performance.tex", sweep.title
+    )
     top10_html = _top_mpma_display(_top_mpma_raw(root, 10), html_mode=True)
     strategy_html = _strategy_performance_display(root, html_mode=True)
     ensemble_summary = _ensemble_summary_table(root)
     ensemble_members = _ensemble_members_table(root)
 
     procedure.to_csv(tables_dir / "evaluation_procedure.tsv", sep="\t", index=False)
-    top10_html.to_csv(tables_dir / "top10_mpma_inner_outer_performance.tsv", sep="\t", index=False)
-    strategy_html.to_csv(tables_dir / "task_strategy_performance.tsv", sep="\t", index=False)
+    top10_html.to_csv(
+        tables_dir / "top10_mpma_inner_outer_performance.tsv", sep="\t", index=False
+    )
+    strategy_html.to_csv(
+        tables_dir / "task_strategy_performance.tsv", sep="\t", index=False
+    )
     ensemble_summary.to_csv(tables_dir / "mpma_e_selection.tsv", sep="\t", index=False)
     ensemble_members.to_csv(tables_dir / "mpma_e_members.tsv", sep="\t", index=False)
 
     figs = []
-    figs.append(_fig(root / "figures" / "representation_impact", report_dir, "MPDR representation impact overview"))
-    figs.append(_fig(root / "figures" / "mpma_e", report_dir, "Selected MPMA-E schematic"))
-    side_by_side_figs, side_by_side_count = _side_by_side_explainability_blocks(root, report_dir)
+    figs.append(
+        _fig(
+            root / "figures" / "representation_impact",
+            report_dir,
+            "MPDR representation impact overview",
+        )
+    )
+    figs.append(
+        _fig(root / "figures" / "mpma_e", report_dir, "Selected MPMA-E schematic")
+    )
+    side_by_side_figs, side_by_side_count = _side_by_side_explainability_blocks(
+        root, report_dir
+    )
     exp_root = root / "explainability"
     if side_by_side_count == 0:
         for target_dir in sorted(exp_root.glob("*")):
             if not target_dir.is_dir():
                 continue
-            label = "MPMA-B" if target_dir.name in {"mpma_b", "best_individual"} else target_dir.name
+            label = (
+                "MPMA-B"
+                if target_dir.name in {"mpma_b", "best_individual"}
+                else target_dir.name
+            )
             fdir = target_dir / "figures"
             for stem, cap in [
                 ("feature_support", f"{label}: feature support"),
                 ("feature_support_shap", f"{label}: SHAP feature support"),
                 ("feature_support_lime", f"{label}: LIME feature support"),
                 ("feature_support_ale", f"{label}: ALE feature support"),
-                ("feature_support_permutation", f"{label}: permutation feature support"),
+                (
+                    "feature_support_permutation",
+                    f"{label}: permutation feature support",
+                ),
                 ("ale_curves", f"{label}: ALE curves"),
                 ("interaction_network_current", f"{label}: 2D ALE interaction network"),
-                ("instance_explanations_shap", f"{label}: instance-level SHAP explanations"),
+                (
+                    "instance_explanations_shap",
+                    f"{label}: instance-level SHAP explanations",
+                ),
             ] + (
                 [
-                    ("interaction_network_current_kamada_kawai", f"{label}: 2D ALE interaction network (Kamada-Kawai)"),
-                ] if bool(getattr(sweep.explainability, "interaction_kamada_kawai", False)) else []
+                    (
+                        "interaction_network_current_kamada_kawai",
+                        f"{label}: 2D ALE interaction network (Kamada-Kawai)",
+                    ),
+                ]
+                if bool(
+                    getattr(sweep.explainability, "interaction_kamada_kawai", False)
+                )
+                else []
             ):
                 block = _fig(fdir / stem, report_dir, cap)
                 if block:
@@ -990,7 +1279,9 @@ code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consol
   .compare-cell .embedded-svg svg { min-width:360px; }
 }
 """
-    top_metric_cols = {c for c in top10_html.columns if c.startswith("Inner") or c.startswith("Outer")}
+    top_metric_cols = {
+        c for c in top10_html.columns if c.startswith("Inner") or c.startswith("Outer")
+    }
     strat_metric_cols = {c for c in strategy_html.columns if c != "Strategy"}
     html_text = f"""<!doctype html>
 <html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
@@ -1010,7 +1301,7 @@ code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consol
 {_html_table(procedure)}
 <h2 id="performance">Task performance summary</h2>
 {_html_table(strategy_html, raw_html_cols=strat_metric_cols)}
-{_tex_link(tables_dir / 'task_strategy_performance.tex', report_dir, 'task_strategy_performance.tex')}
+{_tex_link(tables_dir / "task_strategy_performance.tex", report_dir, "task_strategy_performance.tex")}
 <h2 id="top-mpmas">Top 10 MPMA-B configurations</h2>
 {_html_table(top10_html, raw_html_cols=top_metric_cols)}
 
@@ -1021,16 +1312,31 @@ code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consol
 {_html_table(ensemble_members)}
 
 <h2 id="explainability-comparison">Explainability comparison</h2>
-{side_by_side_figs if side_by_side_figs else '<p>No side-by-side explainability comparison is available yet.</p>'}
+{side_by_side_figs if side_by_side_figs else "<p>No side-by-side explainability comparison is available yet.</p>"}
 
 <h2 id="figures">Global figures</h2>
-{''.join(figs) if figs else '<p>No figure artefacts found yet.</p>'}
+{"".join(figs) if figs else "<p>No figure artefacts found yet.</p>"}
 <p class="report-footer">mllabiome · generated report</p>
 </main></div></body></html>
 """
     (report_dir / "index.html").write_text(html_text, encoding="utf-8")
-    dump_json_standard({"report_dir": report_dir, "figures_embedded": len([f for f in figs if f]), "side_by_side_explainability_blocks": side_by_side_count}, report_dir / "report_manifest.json")
-    _print_report_summary(sweep, root, procedure, strategy_html, top10_html, ensemble_summary, ensemble_members)
+    dump_json_standard(
+        {
+            "report_dir": report_dir,
+            "figures_embedded": len([f for f in figs if f]),
+            "side_by_side_explainability_blocks": side_by_side_count,
+        },
+        report_dir / "report_manifest.json",
+    )
+    _print_report_summary(
+        sweep,
+        root,
+        procedure,
+        strategy_html,
+        top10_html,
+        ensemble_summary,
+        ensemble_members,
+    )
     success("Report completed")
     outputs = {
         "html_report": report_dir / "index.html",

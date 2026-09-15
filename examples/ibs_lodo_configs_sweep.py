@@ -36,7 +36,9 @@ TARGET_COL = "host_disease"
 POSITIVE_LABEL = "IBS"
 
 
-def _prepare_ibs_lodo_csv(data_dir: Path = DATA_DIR, out_path: Path = PREPARED_CSV) -> Path:
+def _prepare_ibs_lodo_csv(
+    data_dir: Path = DATA_DIR, out_path: Path = PREPARED_CSV
+) -> Path:
     frames = []
     rank_prefixes = ("d__", "k__", "p__", "c__", "o__", "f__", "g__", "s__", "t__")
 
@@ -63,7 +65,9 @@ def _prepare_ibs_lodo_csv(data_dir: Path = DATA_DIR, out_path: Path = PREPARED_C
                 f"{metadata_path} is missing {TARGET_COL!r}. Available columns: {list(metadata.columns)}"
             )
         metadata[SAMPLE_ID_COL] = metadata[SAMPLE_ID_COL].astype(str).str.strip()
-        metadata = metadata.drop_duplicates(subset=[SAMPLE_ID_COL]).set_index(SAMPLE_ID_COL)
+        metadata = metadata.drop_duplicates(subset=[SAMPLE_ID_COL]).set_index(
+            SAMPLE_ID_COL
+        )
 
         common = profiles.index.intersection(metadata.index)
         if len(common) == 0:
@@ -76,7 +80,9 @@ def _prepare_ibs_lodo_csv(data_dir: Path = DATA_DIR, out_path: Path = PREPARED_C
         frame = X.copy()
         frame.insert(0, "study_id", study_id)
         frame.insert(0, "label", y.to_numpy(dtype=object))
-        frame.insert(0, "sample_id", [f"{study_id}::{sid}" for sid in common.astype(str)])
+        frame.insert(
+            0, "sample_id", [f"{study_id}::{sid}" for sid in common.astype(str)]
+        )
         frames.append(frame.reset_index(drop=True))
 
     out = pd.concat(frames, axis=0, join="outer", ignore_index=True).fillna(0.0)
@@ -107,7 +113,6 @@ _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
     ("order", ("order",)),
     # ("family", ("family",)),
     # ("genus", ("genus",)),
-
     # Continuous ranges up to genus
     # ("domain-phylum", ("domain", "phylum")),
     # ("domain-class", ("domain", "phylum", "class")),
@@ -124,7 +129,6 @@ _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
     # ("order-family", ("order", "family")),
     # ("order-genus", ("order", "family", "genus")),
     # ("family-genus", ("family", "genus")),
-
     # Non-adjacent two-rank selections
     # ("domain+class", ("domain", "class")),
     # ("domain+order", ("domain", "order")),
@@ -142,17 +146,7 @@ _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
 def _build_count_transformations():
     T = mll.Transformation
     return [
-        T("none"),          # RA
-        # T("arcsin_sqrt"), # arcsin-sqrt
-        # T("binary"),      # P/A
-        # T("hellinger"),   # Hellinger
-        # T("rank_col"),    # ECDF-rank
-        # T("zi_log"),      # ZI-log
-        # T("prev_weighted"),
-        # T("pairwise_logratio"),
-        # T("scikit-bio_clr"),
-        # T("scikit-bio_alr"),
-        # T("scikit-bio_ilr"),
+        T("raw"),  # RA
     ]
 
 

@@ -47,16 +47,26 @@ HMAP_CMAP = LinearSegmentedColormap.from_list(
     "blue_hmap", [C_LIGHT, C_PALE, C_SKY, C_BRIGHT, C_MID, C_DARK, C_NAVY], N=256
 )
 CORR_CMAP = LinearSegmentedColormap.from_list(
-    "silver_blue", ["#F0F4F8", "#C8D8E8", "#8BAFC8", "#4E7FA8", "#1D5288", "#0C3260"], N=256
+    "silver_blue",
+    ["#F0F4F8", "#C8D8E8", "#8BAFC8", "#4E7FA8", "#1D5288", "#0C3260"],
+    N=256,
 )
-NET_EDGE_CMAP = LinearSegmentedColormap.from_list("net_edge", ["#f7f9fc", "#DBE2E9"], N=256)
+NET_EDGE_CMAP = LinearSegmentedColormap.from_list(
+    "net_edge", ["#f7f9fc", "#DBE2E9"], N=256
+)
 SUPPORT_CMAP = LinearSegmentedColormap.from_list(
     "support", ["#ffffff", "#eff6ff", "#bfdbfe", "#60a5fa", "#1d4ed8"], N=256
 )
 
 RC = {
     "font.family": "sans-serif",
-    "font.sans-serif": ["Inter", "Arial", "Helvetica", "Liberation Sans", "DejaVu Sans"],
+    "font.sans-serif": [
+        "Inter",
+        "Arial",
+        "Helvetica",
+        "Liberation Sans",
+        "DejaVu Sans",
+    ],
     "font.size": 7.8,
     "axes.linewidth": 0.45,
     "axes.edgecolor": INK,
@@ -85,19 +95,21 @@ RC = {
 }
 
 REPRESENTATION_RC = dict(RC)
-REPRESENTATION_RC.update({
-    "axes.facecolor": PANEL_BG,
-    "axes.edgecolor": "#000000",
-    "axes.labelcolor": "#000000",
-    "xtick.color": "#000000",
-    "ytick.color": "#000000",
-    "font.size": 7.8,
-    "axes.titlesize": 8.0,
-    "axes.labelsize": 7.6,
-    "xtick.labelsize": 6.9,
-    "ytick.labelsize": 6.9,
-    "legend.fontsize": 6.9,
-})
+REPRESENTATION_RC.update(
+    {
+        "axes.facecolor": PANEL_BG,
+        "axes.edgecolor": "#000000",
+        "axes.labelcolor": "#000000",
+        "xtick.color": "#000000",
+        "ytick.color": "#000000",
+        "font.size": 7.8,
+        "axes.titlesize": 8.0,
+        "axes.labelsize": 7.6,
+        "xtick.labelsize": 6.9,
+        "ytick.labelsize": 6.9,
+        "legend.fontsize": 6.9,
+    }
+)
 
 
 def apply() -> None:

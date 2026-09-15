@@ -91,25 +91,33 @@ _RESOLUTION_SETS = [
     # ("family+species", ("family", "species")),
 ]
 
+
 def _build_count_transformations():
     T = mll.Transformation
     return [
         # T("none"),             # RA
-        T("arcsin_sqrt"),        # $\arcsin\sqrt{x}$
-        # T("scikit-bio_clr"),   # CLR-mult
-        # T("robust"),           # Robust
-        # T("rank_col"),         # ECDF-rank
+        T("arcsin_sqrt"),  # $\arcsin\sqrt{x}$
     ]
+
 
 def _build_models():
     M = []
-    M.append(("RF_1000_msl5", RandomForestClassifier(
-        n_estimators=1000, min_samples_leaf=5, n_jobs=1, random_state=42,
-    )))
+    M.append(
+        (
+            "RF_1000_msl5",
+            RandomForestClassifier(
+                n_estimators=1000,
+                min_samples_leaf=5,
+                n_jobs=1,
+                random_state=42,
+            ),
+        )
+    )
     # M.append(("RF_500_msl3", RandomForestClassifier(
     #     n_estimators=500, min_samples_leaf=3, n_jobs=1, random_state=42,
     # )))
     return M
+
 
 TITLE = "example mllabiome sweep"
 EXPERIMENT_DIR = Path("examples/runs/EXAMPLE")

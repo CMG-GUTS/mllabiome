@@ -9,13 +9,21 @@ import pandas as pd
 from .transformations import TRANSFORMATION_SPACE, transformation_label
 from .utils import TAXONOMIC_LEVELS
 
-def _plot_metric_bars(rank: pd.DataFrame, metric_col: str, out: Path, top_n: int = 20) -> None:
+
+def _plot_metric_bars(
+    rank: pd.DataFrame, metric_col: str, out: Path, top_n: int = 20
+) -> None:
     if rank.empty or metric_col not in rank.columns:
         return
     import matplotlib.pyplot as plt
 
     top = rank.head(top_n).copy()
-    labels = top.apply(lambda r: f"{r['learner']}\n{r['resolution']} | {r.get('transformation_abbreviation', r['count_transformation'])}", axis=1)
+    labels = top.apply(
+        lambda r: (
+            f"{r['learner']}\n{r['resolution']} | {r.get('transformation_abbreviation', r['count_transformation'])}"
+        ),
+        axis=1,
+    )
     fig_h = max(3.5, 0.34 * len(top))
     fig, ax = plt.subplots(figsize=(9, fig_h))
     ax.barh(np.arange(len(top)), top[metric_col].astype(float))
@@ -36,7 +44,9 @@ def _representation_metric_name(metric_col: str, df: pd.DataFrame) -> str:
     for candidate in ("nMCC", "AUC", "AUC_macro", "BalAcc", "Accuracy"):
         if candidate in df.columns:
             return candidate
-    raise ValueError("No supported metric column is available for the representation-impact figure.")
+    raise ValueError(
+        "No supported metric column is available for the representation-impact figure."
+    )
 
 
 def _resolution_order_key(x: Any) -> tuple[int, int, int, str]:
@@ -97,37 +107,67 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
         return
 
     if "transformation_abbreviation" not in df.columns:
-        df["transformation_abbreviation"] = df["count_transformation"].map(lambda x: transformation_label(x).abbreviation)
+        df["transformation_abbreviation"] = df["count_transformation"].map(
+            lambda x: transformation_label(x).abbreviation
+        )
 
     cells = (
-        df.groupby(["resolution", "count_transformation", "transformation_abbreviation"], dropna=False)[metric]
+        df.groupby(
+            ["resolution", "count_transformation", "transformation_abbreviation"],
+            dropna=False,
+        )[metric]
         .mean()
         .reset_index()
         .rename(columns={metric: f"{metric}_mean"})
     )
     (root / "tables").mkdir(parents=True, exist_ok=True)
-    cells.to_csv(root / "tables" / "representation_impact_cells.tsv", sep="\t", index=False)
+    cells.to_csv(
+        root / "tables" / "representation_impact_cells.tsv", sep="\t", index=False
+    )
 
     import matplotlib as mpl
     import matplotlib.pyplot as plt
     import matplotlib.gridspec as gridspec
     import matplotlib.ticker as mticker
     from .style import (
-        COL_W_2, HMAP_CMAP, C_DARK, C_MID, C_SKY, C_HILITE,
+        COL_W_2,
+        HMAP_CMAP,
+        C_DARK,
+        C_MID,
+        C_SKY,
+        C_HILITE,
         REPRESENTATION_RC,
     )
 
     mpl.rcParams.update(REPRESENTATION_RC)
 
-    heat = df.groupby(["resolution", "count_transformation"], dropna=False)[metric].mean().reset_index()
-    res_order = sorted(heat["resolution"].astype(str).unique(), key=_resolution_order_key)
+    heat = (
+        df.groupby(["resolution", "count_transformation"], dropna=False)[metric]
+        .mean()
+        .reset_index()
+    )
+    res_order = sorted(
+        heat["resolution"].astype(str).unique(), key=_resolution_order_key
+    )
     tr_ref = [info.key for info in TRANSFORMATION_SPACE]
     present = set(heat["count_transformation"].astype(str))
     tr_order = [x for x in tr_ref if x in present] + sorted(present - set(tr_ref))
-    pivot = heat.pivot_table(index="resolution", columns="count_transformation", values=metric, aggfunc="mean")
+    pivot = heat.pivot_table(
+        index="resolution",
+        columns="count_transformation",
+        values=metric,
+        aggfunc="mean",
+    )
     pivot = pivot.reindex(index=res_order, columns=tr_order)
-    label_map = df.drop_duplicates("count_transformation").set_index("count_transformation")["transformation_abbreviation"].to_dict()
-    tr_labels = [str(label_map.get(c, transformation_label(c).abbreviation)) for c in pivot.columns]
+    label_map = (
+        df.drop_duplicates("count_transformation")
+        .set_index("count_transformation")["transformation_abbreviation"]
+        .to_dict()
+    )
+    tr_labels = [
+        str(label_map.get(c, transformation_label(c).abbreviation))
+        for c in pivot.columns
+    ]
 
     mat = pivot.to_numpy(dtype=float)
     vals = mat[np.isfinite(mat)]
@@ -142,7 +182,8 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
 
     fig = plt.figure(figsize=(COL_W_2, 122 / 25.4), facecolor="white")
     gs = gridspec.GridSpec(
-        2, 2,
+        2,
+        2,
         height_ratios=[0.78, 1.68],
         width_ratios=[1.12, 0.95],
         hspace=0.52,
@@ -154,17 +195,32 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
     ax_c = fig.add_subplot(gs[1, :])
 
     def tag(ax, label, x=-0.13, y=1.08):
-        ax.text(x, y, label, transform=ax.transAxes, fontsize=9, fontweight="bold", va="top", ha="left")
+        ax.text(
+            x,
+            y,
+            label,
+            transform=ax.transAxes,
+            fontsize=9,
+            fontweight="bold",
+            va="top",
+            ha="left",
+        )
 
     def trim(ax):
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
 
     # a: resolution marginal performance
-    res_summary = df.groupby("resolution", dropna=False)[metric].agg(["mean", "std", "count"]).reindex(res_order)
+    res_summary = (
+        df.groupby("resolution", dropna=False)[metric]
+        .agg(["mean", "std", "count"])
+        .reindex(res_order)
+    )
     xs = np.arange(len(res_summary))
     yv = res_summary["mean"].to_numpy(dtype=float)
-    se = res_summary["std"].fillna(0).to_numpy(dtype=float) / np.sqrt(np.maximum(res_summary["count"].to_numpy(dtype=float), 1.0))
+    se = res_summary["std"].fillna(0).to_numpy(dtype=float) / np.sqrt(
+        np.maximum(res_summary["count"].to_numpy(dtype=float), 1.0)
+    )
     ax_a.fill_between(xs, yv - se, yv + se, color=C_MID, alpha=0.16, linewidth=0)
     ax_a.plot(xs, yv, color=C_DARK, marker="o", markersize=3.5, linewidth=1.0)
     ax_a.set_xticks(xs)
@@ -175,7 +231,10 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
     trim(ax_a)
 
     # b: variance decomposition
-    factors = [("Feature representation", "count_transformation"), ("Taxonomic resolution", "resolution")]
+    factors = [
+        ("Feature representation", "count_transformation"),
+        ("Taxonomic resolution", "resolution"),
+    ]
     if "learner" in df.columns and df["learner"].astype(str).nunique(dropna=True) > 1:
         factors.append(("Classifier", "learner"))
     eta_vals = [_eta2_one_way(df, col, metric) for _, col in factors]
@@ -186,20 +245,40 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
     ax_b.set_yticklabels([label for label, _ in factors])
     ax_b.set_xlim(0, max(1.0, max(eta_vals) * 1.05 if eta_vals else 1.0))
     ax_b.xaxis.set_major_locator(mticker.MultipleLocator(0.25))
-    ax_b.set_xlabel(f"Proportion of {metric.replace('_', '-')} variance (η²)", labelpad=3)
+    ax_b.set_xlabel(
+        f"Proportion of {metric.replace('_', '-')} variance (η²)", labelpad=3
+    )
     ax_b.invert_yaxis()
     tag(ax_b, "b")
     trim(ax_b)
 
     # c: resolution × feature-representation heatmap
-    im = ax_c.imshow(mat, cmap=HMAP_CMAP, aspect="auto", vmin=vmin, vmax=vmax, interpolation="nearest")
+    im = ax_c.imshow(
+        mat,
+        cmap=HMAP_CMAP,
+        aspect="auto",
+        vmin=vmin,
+        vmax=vmax,
+        interpolation="nearest",
+    )
     for ri in range(mat.shape[0]):
         finite_idx = np.flatnonzero(np.isfinite(mat[ri]))
         if finite_idx.size:
             k = max(1, int(np.ceil(0.10 * finite_idx.size)))
-            thr = np.partition(mat[ri, finite_idx], finite_idx.size - k)[finite_idx.size - k]
+            thr = np.partition(mat[ri, finite_idx], finite_idx.size - k)[
+                finite_idx.size - k
+            ]
             for ci in finite_idx[mat[ri, finite_idx] >= thr]:
-                ax_c.add_patch(plt.Rectangle((ci - 0.5, ri - 0.5), 1.0, 1.0, fill=False, edgecolor=C_HILITE, linewidth=0.42))
+                ax_c.add_patch(
+                    plt.Rectangle(
+                        (ci - 0.5, ri - 0.5),
+                        1.0,
+                        1.0,
+                        fill=False,
+                        edgecolor=C_HILITE,
+                        linewidth=0.42,
+                    )
+                )
     ax_c.set_yticks(np.arange(len(res_order)))
     ax_c.set_yticklabels(res_order)
     ax_c.set_xticks(np.arange(len(tr_labels)))
@@ -224,18 +303,22 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
         fig.savefig(out_base.with_suffix(f".{ext}"), dpi=300)
     plt.close(fig)
 
+
 def _plot_feature_importance(imp: pd.DataFrame, out: Path, top_k: int) -> None:
     import matplotlib.pyplot as plt
 
     top = imp.head(top_k).iloc[::-1]
     fig, ax = plt.subplots(figsize=(8, max(3.5, 0.25 * len(top))))
-    ax.barh(np.arange(len(top)), top["importance_mean"].astype(float), xerr=top["importance_sd"].astype(float))
+    ax.barh(
+        np.arange(len(top)),
+        top["importance_mean"].astype(float),
+        xerr=top["importance_sd"].astype(float),
+    )
     ax.set_yticks(np.arange(len(top)), [_short_taxon(x) for x in top["feature"]])
     ax.set_xlabel("Permutation importance")
     fig.tight_layout()
     fig.savefig(out, dpi=220)
     plt.close(fig)
-
 
 
 def _plot_interaction_network(tab: pd.DataFrame, out: Path, top_k: int) -> None:
@@ -249,7 +332,9 @@ def _plot_interaction_network(tab: pd.DataFrame, out: Path, top_k: int) -> None:
 
     d = tab.dropna(subset=["interaction_strength"]).head(int(top_k)).copy()
     if d.empty:
-        raise ExplainabilityConfigurationError("Interaction network was requested, but no finite interaction strengths were available. No fallback figure will be used.")
+        raise ExplainabilityConfigurationError(
+            "Interaction network was requested, but no finite interaction strengths were available. No fallback figure will be used."
+        )
     G = nx.Graph()
     for _, r in d.iterrows():
         f1, f2 = str(r["feature_1"]), str(r["feature_2"])
@@ -258,34 +343,49 @@ def _plot_interaction_network(tab: pd.DataFrame, out: Path, top_k: int) -> None:
     pos = nx.spring_layout(G, seed=42, weight="weight")
     weights = np.asarray([G[u][v]["weight"] for u, v in G.edges()], dtype=float)
     if len(weights) == 0:
-        raise ExplainabilityConfigurationError("Interaction network had no edges after filtering. No fallback figure will be used.")
+        raise ExplainabilityConfigurationError(
+            "Interaction network had no edges after filtering. No fallback figure will be used."
+        )
     scale = weights / max(float(weights.max()), 1e-12)
     fig, ax = plt.subplots(figsize=(8, 6))
     nx.draw_networkx_edges(G, pos, ax=ax, width=0.5 + 3.0 * scale, alpha=0.65)
     nx.draw_networkx_nodes(G, pos, ax=ax, node_size=130)
-    nx.draw_networkx_labels(G, pos, ax=ax, labels={n: _short_taxon(n, 28) for n in G.nodes()}, font_size=6)
+    nx.draw_networkx_labels(
+        G, pos, ax=ax, labels={n: _short_taxon(n, 28) for n in G.nodes()}, font_size=6
+    )
     ax.axis("off")
     fig.tight_layout()
     fig.savefig(out, dpi=220)
     plt.close(fig)
+
 
 def _short_taxon(name: str, max_len: int = 70) -> str:
     s = str(name).split("|")[-1].split("___")[-1]
     return s if len(s) <= max_len else s[: max_len - 1] + "…"
 
 
-def _feature_distribution_stats(features: list[str], feature_names: list[str], X: np.ndarray, y: np.ndarray, labels: list[str]) -> pd.DataFrame:
+def _feature_distribution_stats(
+    features: list[str],
+    feature_names: list[str],
+    X: np.ndarray,
+    y: np.ndarray,
+    labels: list[str],
+) -> pd.DataFrame:
     idx = {f: i for i, f in enumerate(feature_names)}
     rows = []
     for feat in features:
         if feat not in idx:
             continue
         vals = X[:, idx[feat]].astype(float)
-        row = {"feature": feat, "overall_mean": float(np.mean(vals)), "overall_median": float(np.median(vals)), "prevalence": float(np.mean(vals > 0))}
+        row = {
+            "feature": feat,
+            "overall_mean": float(np.mean(vals)),
+            "overall_median": float(np.median(vals)),
+            "prevalence": float(np.mean(vals > 0)),
+        }
         for c, label in enumerate(labels):
             sub = vals[y == c]
             row[f"mean_{label}"] = float(np.mean(sub)) if len(sub) else np.nan
             row[f"prevalence_{label}"] = float(np.mean(sub > 0)) if len(sub) else np.nan
         rows.append(row)
     return pd.DataFrame(rows)
-

@@ -40,7 +40,7 @@ dependencies = [
   "lime>=0.2.0.1",
   "PyALE>=1.2.0",
   "networkx>=3",
-  "scikit-bio>=0.6",
+  "scikit-bio>=0.7.0",
   "rich>=13",
   "flaml>=2",
   "tqdm>=4.66",
@@ -54,6 +54,7 @@ Issues = "https://github.com/CMG-GUTS/mllabiome/issues"
 [project.optional-dependencies]
 dev = [
   "pytest>=8",
+  "ruff>=0.16.7",
 ]
 
 [project.scripts]

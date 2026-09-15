@@ -42,7 +42,9 @@ def error(message: str) -> None:
     console.print(f"[red]✗[/red] {message}")
 
 
-def summary_table(title: str, rows: Mapping[str, object] | Sequence[tuple[str, object]]) -> None:
+def summary_table(
+    title: str, rows: Mapping[str, object] | Sequence[tuple[str, object]]
+) -> None:
     table = Table(title=title, box=None, show_header=False, pad_edge=False)
     table.add_column("Field", style="bold", no_wrap=True)
     table.add_column("Value")
@@ -52,7 +54,9 @@ def summary_table(title: str, rows: Mapping[str, object] | Sequence[tuple[str, o
     console.print(table)
 
 
-def path_table(title: str, rows: Mapping[str, object] | Sequence[tuple[str, object]]) -> None:
+def path_table(
+    title: str, rows: Mapping[str, object] | Sequence[tuple[str, object]]
+) -> None:
     table = Table(title=title, show_lines=False)
     table.add_column("Output", style="bold")
     table.add_column("Path", overflow="fold")

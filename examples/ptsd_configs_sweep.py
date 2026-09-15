@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.ensemble import (
+    ExtraTreesClassifier,
+    HistGradientBoostingClassifier,
+    RandomForestClassifier,
+)
 from sklearn.linear_model import LogisticRegression, RidgeClassifier
 from sklearn.naive_bayes import BernoulliNB, GaussianNB
 from sklearn.neighbors import KNeighborsClassifier, NearestCentroid
@@ -41,10 +45,9 @@ _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
     # # ("domain", ("domain",)),
     # ("phylum", ("phylum",)),
     # ("class", ("class",)),
-    # ("order", ("order",)),
+    ("order", ("order",)),
     # ("family", ("family",)),
     # ("genus", ("genus",)),
-
     # # Continuous ranges
     # ("domain-phylum", ("domain", "phylum")),
     # ("domain-class", ("domain", "phylum", "class")),
@@ -52,7 +55,6 @@ _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
     # ("domain-family", ("domain", "phylum", "class", "order", "family")),
     # ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
     # ("domain-species", ("domain", "phylum", "class", "order", "family", "genus", "species")),
-
     # ("phylum-class", ("phylum", "class")),
     # ("phylum-order", ("phylum", "class", "order")),
     # # ("phylum-family", ("phylum", "class", "order", "family")),
@@ -63,7 +65,6 @@ _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
     # ("order-family", ("order", "family")),
     # ("order-genus", ("order", "family", "genus")),
     # ("family-genus", ("family", "genus")),
-
     # # Non-adjacent two-rank selections
     # ("domain+class", ("domain", "class")),
     # ("domain+order", ("domain", "order")),
@@ -83,49 +84,24 @@ def _build_count_transformations():
     T = mll.Transformation
     return [
         T("identity"),
-
-        # T("relative_abundance"), # RA
-        # T("binary"),             # P/A
-        # T("hellinger"),          # Hellinger
-        # T("arcsin_sqrt"),        # arcsin-sqrt
-        # T("log"),                # ln(1+x)
-        # T("log_std"),            # row-log-z
-        # T("log_unit"),           # row-log-L2
-        # T("zscore"),             # row-z
-        # T("clr"),                # CLR-epsilon
-        # T("alr"),                # ALR-last
-        # T("ilr"),                # ILR-seq
-        # T("rclr"),               # RCLR
-        # T("bclr"),               # BCLR
-        # T("clr_std"),            # CLR-epsilon+z
-        # T("ilr_std"),            # ILR-seq+z
-        # T("power"),              # Yeo-J
-        # T("robust"),             # Robust
-        # T("quantile"),           # QNorm
-        # T("log_tss_floor"),      # log-TSS
-        # T("rank_frac"),          # row-rank
-        # T("rank_std"),           # row-rank-z
-        # T("rank_unit"),          # row-rank-unit
-        # T("rank_col"),           # ECDF-rank
-        # T("zi_log"),             # ZI-log
-        # T("prev_weighted"),      # Prev-wt
-        # T("symlog"),             # symlog
-        # T("pairwise_logratio"),  # Pair-logR-500
-        # T("scikit-bio_clr"),     # CLR-mult
-        # T("scikit-bio_alr"),     # ALR-first
-        # T("scikit-bio_ilr"),     # ILR-Egoz.
+        T("relative_abundance"),  # RA
     ]
 
 
 def _build_models():
     M = []
 
-    # M.append(("RF_1000_msl5", RandomForestClassifier(
-    #     n_estimators=1000,
-    #     min_samples_leaf=5,
-    #     n_jobs=1,
-    #     random_state=42,
-    # )))
+    M.append(
+        (
+            "RF_1000_msl5",
+            RandomForestClassifier(
+                n_estimators=1000,
+                min_samples_leaf=5,
+                n_jobs=1,
+                random_state=42,
+            ),
+        )
+    )
 
     # # Uncomment additional learners as needed.
     # # M.append(("RF_default", RandomForestClassifier(n_jobs=1, random_state=42)))
@@ -162,9 +138,9 @@ def _build_models():
     #     ),
     # ))
 
-    M.append(
-        "SIAMCAT",
-    )
+    # M.append(
+    #     "SIAMCAT",
+    # )
 
     return M
 

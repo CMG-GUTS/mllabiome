@@ -25,7 +25,11 @@ from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from scipy.stats import rankdata
 
 try:
-    from sklearn.preprocessing import PowerTransformer, QuantileTransformer, RobustScaler
+    from sklearn.preprocessing import (
+        PowerTransformer,
+        QuantileTransformer,
+        RobustScaler,
+    )
 except Exception:  # pragma: no cover - optional transformation support
     PowerTransformer = None
     QuantileTransformer = None
@@ -55,7 +59,13 @@ RANK_CMAP = LinearSegmentedColormap.from_list("rank", ["#f8fafc", "#475569"], N=
 mpl.rcParams.update(
     {
         "font.family": "sans-serif",
-        "font.sans-serif": ["Inter", "Arial", "Helvetica", "Liberation Sans", "DejaVu Sans"],
+        "font.sans-serif": [
+            "Inter",
+            "Arial",
+            "Helvetica",
+            "Liberation Sans",
+            "DejaVu Sans",
+        ],
         "font.size": 7.8,
         "axes.linewidth": 0.4,
         "svg.fonttype": "none",
@@ -142,6 +152,7 @@ TRANSFORM_DISPLAY = {
     "rilr": "ILR-seq",
 }
 
+
 # Task descriptor used by the package renderer.
 @dataclass(frozen=True)
 class TaskSpec:
@@ -187,18 +198,25 @@ class EnsembleTask:
 # Config/selected-unit readers
 # ---------------------------------------------------------------------------
 
+
 def read_selected_unit(experiment_dir: Path) -> dict[str, Any]:
     path = experiment_dir / "ensembling" / "selected_unit.json"
     with path.open("r", encoding="utf-8") as fh:
         return json.load(fh)
 
 
-def read_config_meta(experiment_dir: Path, include_inactive: bool = False) -> pd.DataFrame:
+def read_config_meta(
+    experiment_dir: Path, include_inactive: bool = False
+) -> pd.DataFrame:
     db_path = experiment_dir / "configs.db"
     tsv_path = experiment_dir / "configs.tsv"
     if db_path.exists():
         conn = sqlite3.connect(str(db_path))
-        query = "SELECT * FROM configs" if include_inactive else "SELECT * FROM configs WHERE active=1"
+        query = (
+            "SELECT * FROM configs"
+            if include_inactive
+            else "SELECT * FROM configs WHERE active=1"
+        )
         df = pd.read_sql(query, conn)
         conn.close()
     elif tsv_path.exists():
@@ -269,7 +287,9 @@ def ranks_display(levels: Iterable[str], resolution: Any = None) -> str:
     if len(uniq) == 1:
         return uniq[0]
     idx = [LEVELS.index(x) for x in uniq]
-    contiguous = sorted(idx) == list(range(min(idx), max(idx) + 1)) and len(set(idx)) == len(idx)
+    contiguous = sorted(idx) == list(range(min(idx), max(idx) + 1)) and len(
+        set(idx)
+    ) == len(idx)
     if contiguous:
         return f"{LEVELS[min(idx)]}→{LEVELS[max(idx)]}"
     return "+".join(uniq)
@@ -382,7 +402,9 @@ def cap_members(members: list[MemberRecord], max_members: int) -> list[MemberRec
     return members[:n_first] + [ell] + members[-n_last:]
 
 
-def build_members(selected: dict[str, Any], config_meta: pd.DataFrame, max_members: int) -> tuple[list[MemberRecord], list[MemberRecord]]:
+def build_members(
+    selected: dict[str, Any], config_meta: pd.DataFrame, max_members: int
+) -> tuple[list[MemberRecord], list[MemberRecord]]:
     best = selected.get("inner_val_best_ensemble", selected)
     raw_members = best.get("members", [])
     if isinstance(raw_members, str):
@@ -406,10 +428,16 @@ def build_members(selected: dict[str, Any], config_meta: pd.DataFrame, max_membe
         if cid in meta.index:
             return meta.loc[cid]
         # Be tolerant of JSON files that contain shortened or stringified IDs.
-        matches = config_meta[config_meta["config_id"].astype(str).str.startswith(str(cid))]
+        matches = config_meta[
+            config_meta["config_id"].astype(str).str.startswith(str(cid))
+        ]
         if len(matches) == 1:
             return matches.iloc[0]
-        matches = config_meta[config_meta["config_id"].astype(str).str.contains(str(cid), regex=False, na=False)]
+        matches = config_meta[
+            config_meta["config_id"]
+            .astype(str)
+            .str.contains(str(cid), regex=False, na=False)
+        ]
         if len(matches) == 1:
             return matches.iloc[0]
         return None
@@ -445,6 +473,7 @@ def build_members(selected: dict[str, Any], config_meta: pd.DataFrame, max_membe
 # ---------------------------------------------------------------------------
 # Demo data loaders and taxonomic aggregation
 # ---------------------------------------------------------------------------
+
 
 def clean_taxon_name(name: Any) -> str:
     s = str(name).strip()
@@ -487,7 +516,9 @@ def _exact_rank_of_taxon(taxon: str) -> str | None:
     return None
 
 
-def aggregate_to_levels(X: np.ndarray, taxa: list[str], levels: tuple[str, ...]) -> tuple[np.ndarray, list[str]]:
+def aggregate_to_levels(
+    X: np.ndarray, taxa: list[str], levels: tuple[str, ...]
+) -> tuple[np.ndarray, list[str]]:
     if not levels:
         return X.astype(float, copy=True), taxa[:]
     blocks = []
@@ -529,7 +560,9 @@ def row_normalise(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     return X / s
 
 
-def synthetic_taxa_matrix(seed: int = 42, n_samples: int = 36) -> tuple[np.ndarray, list[str], str]:
+def synthetic_taxa_matrix(
+    seed: int = 42, n_samples: int = 36
+) -> tuple[np.ndarray, list[str], str]:
     rng = np.random.default_rng(seed)
     taxa: list[str] = []
     # Structured hierarchy: 2 phyla, 3 classes each, ... enough features for all ranks.
@@ -598,7 +631,9 @@ def _ilr(X: np.ndarray) -> np.ndarray:
     return np.sqrt(k / (k + 1.0)) * (cum / k - L[:, 1:])
 
 
-def apply_transform(X: np.ndarray, raw_transform: Any, seed: int = 42) -> tuple[np.ndarray, mpl.colors.Colormap, float, float]:
+def apply_transform(
+    X: np.ndarray, raw_transform: Any, seed: int = 42
+) -> tuple[np.ndarray, mpl.colors.Colormap, float, float]:
     key = canonical_transform(raw_transform)
     # old relative_* names map to same operation on row-normalised data
     key = {
@@ -709,7 +744,7 @@ def apply_transform(X: np.ndarray, raw_transform: Any, seed: int = 42) -> tuple[
         return Z / lim, CLR_CMAP, -1.0, 1.0
     if key == "log_unit":
         L = np.log1p(R)
-        norm = np.sqrt((L ** 2).sum(axis=1, keepdims=True))
+        norm = np.sqrt((L**2).sum(axis=1, keepdims=True))
         norm[norm < 1e-10] = 1.0
         Z = L / norm
         return Z, LOG_CMAP, 0.0, max(float(np.nanmax(Z)), 0.01)
@@ -720,7 +755,7 @@ def apply_transform(X: np.ndarray, raw_transform: Any, seed: int = 42) -> tuple[
         return Z / lim, RANK_CMAP, -1.0, 1.0
     if key == "rank_unit":
         ranks = np.apply_along_axis(rankdata, 1, R).astype(float)
-        norm = np.sqrt((ranks ** 2).sum(axis=1, keepdims=True))
+        norm = np.sqrt((ranks**2).sum(axis=1, keepdims=True))
         norm[norm < 1e-10] = 1.0
         Z = ranks / norm
         return Z, RANK_CMAP, 0.0, max(float(np.nanmax(Z)), 0.01)
@@ -754,7 +789,9 @@ def apply_transform(X: np.ndarray, raw_transform: Any, seed: int = 42) -> tuple[
             return Z / lim, CLR_CMAP, -1.0, 1.0
         if PowerTransformer is not None:
             try:
-                Z = PowerTransformer(method="yeo-johnson", standardize=True).fit_transform(R)
+                Z = PowerTransformer(
+                    method="yeo-johnson", standardize=True
+                ).fit_transform(R)
                 lim = max(float(np.nanmax(np.abs(Z))), 0.1)
                 return Z / lim, CLR_CMAP, -1.0, 1.0
             except Exception:
@@ -779,7 +816,9 @@ def apply_transform(X: np.ndarray, raw_transform: Any, seed: int = 42) -> tuple[
             return Z / lim, CLR_CMAP, -1.0, 1.0
         if RobustScaler is not None:
             try:
-                Z = RobustScaler(with_centering=True, with_scaling=True, quantile_range=(25.0, 75.0)).fit_transform(R)
+                Z = RobustScaler(
+                    with_centering=True, with_scaling=True, quantile_range=(25.0, 75.0)
+                ).fit_transform(R)
                 lim = max(float(np.nanmax(np.abs(Z))), 0.1)
                 return Z / lim, CLR_CMAP, -1.0, 1.0
             except Exception:
@@ -856,23 +895,90 @@ def compress_features_for_display(Z: np.ndarray, max_features: int) -> np.ndarra
 # Figure drawing
 # ---------------------------------------------------------------------------
 
-def draw_heatmap(ax: plt.Axes, Z: np.ndarray, x0: float, y0: float, w: float, h: float, cmap, vmin: float, vmax: float) -> None:
+
+def draw_heatmap(
+    ax: plt.Axes,
+    Z: np.ndarray,
+    x0: float,
+    y0: float,
+    w: float,
+    h: float,
+    cmap,
+    vmin: float,
+    vmax: float,
+) -> None:
     if Z.size == 0:
         Z = np.zeros((1, 1))
-    ax.imshow(Z, extent=(x0, x0 + w, y0 + h, y0), aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest", zorder=10)
-    ax.add_patch(mpl.patches.Rectangle((x0, y0), w, h, fill=False, ec="#e2e8f0", lw=0.25, zorder=11))
+    ax.imshow(
+        Z,
+        extent=(x0, x0 + w, y0 + h, y0),
+        aspect="auto",
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        interpolation="nearest",
+        zorder=10,
+    )
+    ax.add_patch(
+        mpl.patches.Rectangle(
+            (x0, y0), w, h, fill=False, ec="#e2e8f0", lw=0.25, zorder=11
+        )
+    )
 
 
-def text_box(ax: plt.Axes, x: float, y: float, w: float, h: float, text: str, fc: str = ACC_L, ec: str = ACC, color: str = ACC, fs: float = 6.3, weight: str | None = None, wrap_width: int = 20) -> None:
+def text_box(
+    ax: plt.Axes,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    text: str,
+    fc: str = ACC_L,
+    ec: str = ACC,
+    color: str = ACC,
+    fs: float = 6.3,
+    weight: str | None = None,
+    wrap_width: int = 20,
+) -> None:
     label = str(text)
     if "\n" not in label:
-        label = "\n".join(textwrap.wrap(label, width=wrap_width, break_long_words=False, break_on_hyphens=False))
-    ax.add_patch(mpl.patches.FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.04,rounding_size=0.7", fc=fc, ec=ec, lw=0.35, zorder=8))
-    ax.text(x + 1.2, y + h / 2, label, ha="left", va="center", fontsize=fs, color=color, weight=weight, linespacing=1.02, zorder=9)
+        label = "\n".join(
+            textwrap.wrap(
+                label, width=wrap_width, break_long_words=False, break_on_hyphens=False
+            )
+        )
+    ax.add_patch(
+        mpl.patches.FancyBboxPatch(
+            (x, y),
+            w,
+            h,
+            boxstyle="round,pad=0.04,rounding_size=0.7",
+            fc=fc,
+            ec=ec,
+            lw=0.35,
+            zorder=8,
+        )
+    )
+    ax.text(
+        x + 1.2,
+        y + h / 2,
+        label,
+        ha="left",
+        va="center",
+        fontsize=fs,
+        color=color,
+        weight=weight,
+        linespacing=1.02,
+        zorder=9,
+    )
 
 
 def wrap_plain(text: str, width: int) -> str:
-    return "\n".join(textwrap.wrap(str(text), width=width, break_long_words=False, break_on_hyphens=False))
+    return "\n".join(
+        textwrap.wrap(
+            str(text), width=width, break_long_words=False, break_on_hyphens=False
+        )
+    )
 
 
 def panel_height(n_units: int, unit_h: float = 8.4, gap: float = 1.4) -> float:
@@ -922,7 +1028,10 @@ def aggregation_endpoint_label(agg: Any) -> str:
         "superlearner__ridge": "fitted ridge\nmeta-learner",
         "superlearner__rf": "fitted RF\nmeta-learner",
     }
-    return mapping.get(a, "\n".join(textwrap.wrap(a.replace("_", " "), width=14, break_long_words=False)))
+    return mapping.get(
+        a,
+        "\n".join(textwrap.wrap(a.replace("_", " "), width=14, break_long_words=False)),
+    )
 
 
 def visual_abundance_profile(n_features: int, seed: int = 42) -> np.ndarray:
@@ -948,6 +1057,7 @@ def stable_member_seed(member: MemberRecord, base_seed: int) -> int:
     key = f"{member.config_id or ''}|{member.raw_resolution or ''}|{member.raw_transform or ''}|{member.raw_model or ''}|{member.order or 0}"
     # Python's built-in hash is intentionally randomized by process; use a stable checksum.
     import hashlib
+
     return (base_seed + int(hashlib.sha1(key.encode()).hexdigest()[:8], 16)) % (2**31)
 
 
@@ -1003,65 +1113,207 @@ def draw_panel(
     # particular biological sample.
     raw_y = 12.5
     X_raw_vis = visual_abundance_profile(task.X.shape[1], seed=7)
-    X_raw_vis = compress_features_for_display(row_normalise(X_raw_vis), max_features=max_features)
-    draw_heatmap(ax, X_raw_vis, strip_x, raw_y, strip_w, strip_h, ABUND_CMAP, 0.0, max(float(np.nanmax(X_raw_vis)), 0.01))
-    ax.text(strip_x + strip_w + 2.0, raw_y + strip_h / 2, r"$\mathbf{x}$", ha="left", va="center", fontsize=12, color=INK)
-    ax.text(strip_x, raw_y + strip_h + 3.0, f"raw abundance  p={task.X.shape[1]:,}", ha="left", va="top", fontsize=6.6, color=MID)
+    X_raw_vis = compress_features_for_display(
+        row_normalise(X_raw_vis), max_features=max_features
+    )
+    draw_heatmap(
+        ax,
+        X_raw_vis,
+        strip_x,
+        raw_y,
+        strip_w,
+        strip_h,
+        ABUND_CMAP,
+        0.0,
+        max(float(np.nanmax(X_raw_vis)), 0.01),
+    )
+    ax.text(
+        strip_x + strip_w + 2.0,
+        raw_y + strip_h / 2,
+        r"$\mathbf{x}$",
+        ha="left",
+        va="center",
+        fontsize=12,
+        color=INK,
+    )
+    ax.text(
+        strip_x,
+        raw_y + strip_h + 3.0,
+        f"raw abundance  p={task.X.shape[1]:,}",
+        ha="left",
+        va="top",
+        fontsize=6.6,
+        color=MID,
+    )
 
     # Dashed input trunk. The raw abundance profile is the input, so no arrowhead points into it.
     y0 = 27.5
     first_y = y0 + strip_h / 2
-    last_member_y = y0 + (n_units - 1) * (unit_h + gap) + strip_h / 2 if n_units else first_y
-    ax.plot([trunk_x, trunk_x], [raw_y + strip_h / 2, last_member_y], color=TRACK, lw=0.65, ls=(0, (4, 3)), zorder=1)
+    last_member_y = (
+        y0 + (n_units - 1) * (unit_h + gap) + strip_h / 2 if n_units else first_y
+    )
+    ax.plot(
+        [trunk_x, trunk_x],
+        [raw_y + strip_h / 2, last_member_y],
+        color=TRACK,
+        lw=0.65,
+        ls=(0, (4, 3)),
+        zorder=1,
+    )
     # No arrowhead into the raw abundance vector: x is the input.  The dashed
     # trunk shows that this input profile is propagated to the transformed
     # member-specific profiles below.
-    ax.plot([trunk_x, strip_x - 0.5], [raw_y + strip_h / 2, raw_y + strip_h / 2], color=TRACK, lw=0.65, ls=(0, (4, 3)), zorder=1)
+    ax.plot(
+        [trunk_x, strip_x - 0.5],
+        [raw_y + strip_h / 2, raw_y + strip_h / 2],
+        color=TRACK,
+        lw=0.65,
+        ls=(0, (4, 3)),
+        zorder=1,
+    )
 
     # Ensemble members.
     for row_i, member in enumerate(task.shown_members):
         y = y0 + row_i * (unit_h + gap)
         cy = y + strip_h / 2
         if member.is_ellipsis:
-            ax.add_patch(mpl.patches.Rectangle((strip_x, y - 0.35), merge_x - strip_x, 4.9, fc=ELLIPSIS_BG, ec="#e2e8f0", lw=0.25, zorder=2))
-            ax.text((strip_x + merge_x) / 2, y + 2.05, "...", ha="center", va="center", fontsize=8.5, color=MID, style="italic", zorder=3)
+            ax.add_patch(
+                mpl.patches.Rectangle(
+                    (strip_x, y - 0.35),
+                    merge_x - strip_x,
+                    4.9,
+                    fc=ELLIPSIS_BG,
+                    ec="#e2e8f0",
+                    lw=0.25,
+                    zorder=2,
+                )
+            )
+            ax.text(
+                (strip_x + merge_x) / 2,
+                y + 2.05,
+                "...",
+                ha="center",
+                va="center",
+                fontsize=8.5,
+                color=MID,
+                style="italic",
+                zorder=3,
+            )
             continue
 
         X_rank, features = aggregate_to_levels(task.X, task.taxa, member.levels)
         member.n_features = X_rank.shape[1]
         # One profile with true p for this rank set; then apply the real stored transform.
-        X_demo = visual_abundance_profile(X_rank.shape[1], seed=stable_member_seed(member, seed))
-        Z, cmap, vmin, vmax = apply_transform(X_demo, member.raw_transform, seed=seed + int(member.order or 0))
+        X_demo = visual_abundance_profile(
+            X_rank.shape[1], seed=stable_member_seed(member, seed)
+        )
+        Z, cmap, vmin, vmax = apply_transform(
+            X_demo, member.raw_transform, seed=seed + int(member.order or 0)
+        )
         Z = compress_features_for_display(Z, max_features=max_features)
         draw_heatmap(ax, Z, strip_x, y, strip_w, strip_h, cmap, vmin, vmax)
-        ax.annotate("", xy=(strip_x - 0.5, cy), xytext=(trunk_x, cy), arrowprops=dict(arrowstyle="-|>", lw=0.55, color=TRACK, linestyle=(0, (4, 3)), mutation_scale=5.5), zorder=1)
+        ax.annotate(
+            "",
+            xy=(strip_x - 0.5, cy),
+            xytext=(trunk_x, cy),
+            arrowprops=dict(
+                arrowstyle="-|>",
+                lw=0.55,
+                color=TRACK,
+                linestyle=(0, (4, 3)),
+                mutation_scale=5.5,
+            ),
+            zorder=1,
+        )
 
         # Operation labels below each profile, with enough vertical space before the next strip.
-        ax.text(strip_x, y + strip_h + 0.9, f"{member.ranks_display}  p={X_rank.shape[1]:,}", ha="left", va="top", fontsize=6.2, color=MID)
-        ax.text(strip_x, y + strip_h + 3.25, member.transform_display, ha="left", va="top", fontsize=6.2, color=MID)
+        ax.text(
+            strip_x,
+            y + strip_h + 0.9,
+            f"{member.ranks_display}  p={X_rank.shape[1]:,}",
+            ha="left",
+            va="top",
+            fontsize=6.2,
+            color=MID,
+        )
+        ax.text(
+            strip_x,
+            y + strip_h + 3.25,
+            member.transform_display,
+            ha="left",
+            va="top",
+            fontsize=6.2,
+            color=MID,
+        )
 
         # Learner card and member prediction line.  The card size is fixed for all tasks.
         card_h = 6.4
-        text_box(ax, learner_x, y - 1.7, learner_w, card_h, member.classifier_display, fs=5.85, wrap_width=17)
-        ax.annotate("", xy=(learner_x - 0.6, cy), xytext=(strip_x + strip_w + 0.8, cy), arrowprops=dict(arrowstyle="-|>", lw=0.55, color=DIM, mutation_scale=5.5), zorder=3)
-        ax.plot([learner_x + learner_w, merge_x], [cy, cy], color=TRACK, lw=0.65, zorder=2)
+        text_box(
+            ax,
+            learner_x,
+            y - 1.7,
+            learner_w,
+            card_h,
+            member.classifier_display,
+            fs=5.85,
+            wrap_width=17,
+        )
+        ax.annotate(
+            "",
+            xy=(learner_x - 0.6, cy),
+            xytext=(strip_x + strip_w + 0.8, cy),
+            arrowprops=dict(arrowstyle="-|>", lw=0.55, color=DIM, mutation_scale=5.5),
+            zorder=3,
+        )
+        ax.plot(
+            [learner_x + learner_w, merge_x], [cy, cy], color=TRACK, lw=0.65, zorder=2
+        )
 
     # Merge spine and fitted aggregation-rule endpoint.  The aggregation rule is
     # shown directly below the final displayed member, while the output label is
     # vertically aligned with the input vector label x above.
     if n_units:
-        ax.plot([merge_x, merge_x], [first_y, last_member_y], color=TRACK, lw=0.65, zorder=1)
+        ax.plot(
+            [merge_x, merge_x], [first_y, last_member_y], color=TRACK, lw=0.65, zorder=1
+        )
         agg_y = y0 + n_units * (unit_h + gap) + 2.6
         agg_h = 7.2
         arrow_y = agg_y + agg_h / 2
         agg_x = learner_x
         # route the merged member predictions down to the fitted aggregation rule
-        ax.plot([merge_x, merge_x], [last_member_y, arrow_y], color=TRACK, lw=0.65, zorder=1)
-        ax.annotate("", xy=(agg_x + agg_w + 0.6, arrow_y), xytext=(merge_x, arrow_y), arrowprops=dict(arrowstyle="-|>", lw=0.65, color=TRACK, mutation_scale=6), zorder=2)
+        ax.plot(
+            [merge_x, merge_x], [last_member_y, arrow_y], color=TRACK, lw=0.65, zorder=1
+        )
+        ax.annotate(
+            "",
+            xy=(agg_x + agg_w + 0.6, arrow_y),
+            xytext=(merge_x, arrow_y),
+            arrowprops=dict(arrowstyle="-|>", lw=0.65, color=TRACK, mutation_scale=6),
+            zorder=2,
+        )
         endpoint = aggregation_endpoint_label(best.get("aggregation_strategy"))
-        text_box(ax, agg_x, agg_y, agg_w, agg_h, endpoint, fc="#ffffff", ec=TRACK, color=INK, fs=5.9, weight=None, wrap_width=14)
+        text_box(
+            ax,
+            agg_x,
+            agg_y,
+            agg_w,
+            agg_h,
+            endpoint,
+            fc="#ffffff",
+            ec=TRACK,
+            color=INK,
+            fs=5.9,
+            weight=None,
+            wrap_width=14,
+        )
         # compact return arm to the final prediction, aligned with the input x symbol
-        ax.annotate("", xy=(yhat_x + 4.0, arrow_y), xytext=(agg_x - 0.8, arrow_y), arrowprops=dict(arrowstyle="-|>", lw=0.65, color=TRACK, mutation_scale=6), zorder=2)
+        ax.annotate(
+            "",
+            xy=(yhat_x + 4.0, arrow_y),
+            xytext=(agg_x - 0.8, arrow_y),
+            arrowprops=dict(arrowstyle="-|>", lw=0.65, color=TRACK, mutation_scale=6),
+            zorder=2,
+        )
         # Avoid SVG text-mode decomposition of mathtext ``\hat{y}`` into a
         # separate combining accent plus ``y``.  Browsers can place that accent
         # incorrectly even though PNG/PDF render correctly.  Use the precomposed
@@ -1104,8 +1356,18 @@ def render_figure(
             if idx >= len(tasks):
                 continue
             x = c * (panel_w + panel_gap)
-            ax = fig.add_axes([x / fig_w, y_top / fig_h, panel_w / fig_w, row_h / fig_h])
-            draw_panel(ax, tasks[idx], max_demo_rows=max_demo_rows, max_features=max_features, seed=seed + idx, panel_h=row_h, panel_w=panel_w)
+            ax = fig.add_axes(
+                [x / fig_w, y_top / fig_h, panel_w / fig_w, row_h / fig_h]
+            )
+            draw_panel(
+                ax,
+                tasks[idx],
+                max_demo_rows=max_demo_rows,
+                max_features=max_features,
+                seed=seed + idx,
+                panel_h=row_h,
+                panel_w=panel_w,
+            )
         y_top -= 8.0
 
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
@@ -1170,7 +1432,9 @@ def write_single_task_mpma_e_figure(
     experiment_dir = Path(experiment_dir)
     out_dir = Path(out_dir) if out_dir is not None else experiment_dir / "figures"
     selected = _normalise_selected_unit_for_figure(read_selected_unit(experiment_dir))
-    config_meta = read_config_meta(experiment_dir, include_inactive=include_inactive_configs)
+    config_meta = read_config_meta(
+        experiment_dir, include_inactive=include_inactive_configs
+    )
     members, shown = build_members(selected, config_meta, max_members=max_members)
     if X is None or taxa is None:
         X, taxa, source = synthetic_taxa_matrix(seed=seed)
@@ -1190,11 +1454,20 @@ def write_single_task_mpma_e_figure(
             "n_members_total": len(members),
             "n_members_shown": sum(1 for m in shown if not m.is_ellipsis),
             "demo_source": source,
-            "selected_inner_val_best_ensemble": selected.get("inner_val_best_ensemble", {}),
+            "selected_inner_val_best_ensemble": selected.get(
+                "inner_val_best_ensemble", {}
+            ),
         },
     )
     out_prefix = out_dir / out_name
-    render_figure([task], out_prefix=out_prefix, ncols=1, max_demo_rows=1, max_features=max_features, seed=seed)
+    render_figure(
+        [task],
+        out_prefix=out_prefix,
+        ncols=1,
+        max_demo_rows=1,
+        max_features=max_features,
+        seed=seed,
+    )
 
     tables_dir = experiment_dir / "tables"
     metadata_dir = experiment_dir / "metadata"
@@ -1213,7 +1486,13 @@ def write_single_task_mpma_e_figure(
 
     write_members_tsv([task], members_tsv)
     with diagnostics_json.open("w", encoding="utf-8") as fh:
-        json.dump({"tasks": {task_key: task.diagnostics}}, fh, indent=2, default=str, allow_nan=False)
+        json.dump(
+            {"tasks": {task_key: task.diagnostics}},
+            fh,
+            indent=2,
+            default=str,
+            allow_nan=False,
+        )
     return {
         "mpma_e_svg": out_prefix.with_suffix(".svg"),
         "mpma_e_pdf": out_prefix.with_suffix(".pdf"),

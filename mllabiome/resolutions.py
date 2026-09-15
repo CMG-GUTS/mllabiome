@@ -7,6 +7,7 @@ import numpy as np
 from .data import Dataset
 from .utils import TAXONOMIC_LEVELS
 
+
 def _manual_range(lo: str, hi: str) -> tuple[str, ...]:
     a, b = TAXONOMIC_LEVELS.index(lo), TAXONOMIC_LEVELS.index(hi)
     if a > b:
@@ -47,32 +48,40 @@ def _parse_resolution(item: Any) -> tuple[str, tuple[str, ...]]:
         name, levels = item
         name = str(name).strip()
         levels = tuple(str(x).strip() for x in levels)
-        if name in {"raw", "all", "features", "asis"} or any(x in {"raw", "all", "features", "asis"} for x in levels):
+        if name in {"raw", "all", "features", "asis"} or any(
+            x in {"raw", "all", "features", "asis"} for x in levels
+        ):
             return "raw", ("all",)
         return name, levels
     if hasattr(item, "name") and hasattr(item, "levels"):
         name = str(getattr(item, "name")).strip()
         levels = tuple(str(x).strip() for x in getattr(item, "levels"))
-        if name in {"raw", "all", "features", "asis"} or any(x in {"raw", "all", "features", "asis"} for x in levels):
+        if name in {"raw", "all", "features", "asis"} or any(
+            x in {"raw", "all", "features", "asis"} for x in levels
+        ):
             return "raw", ("all",)
         return name, levels
     return _resolution_from_name(str(item))
 
 
-def materialize_mpdr(dataset: Dataset, levels: Sequence[str]) -> tuple[np.ndarray, list[str]]:
+def materialize_mpdr(
+    dataset: Dataset, levels: Sequence[str]
+) -> tuple[np.ndarray, list[str]]:
     requested = tuple(levels)
     if not requested or any(x in {"raw", "all", "features", "asis"} for x in requested):
         if "all" in dataset.X_by_level:
             return dataset.X_by_level["all"], dataset.feature_names_by_level["all"]
         requested = tuple(k for k in TAXONOMIC_LEVELS if k in dataset.X_by_level)
-    blocks, names = [], []
+    matrices: list[np.ndarray] = []
+    names: list[str] = []
     for lv in requested:
         if lv in dataset.X_by_level:
-            blocks.append(dataset.X_by_level[lv])
+            matrices.append(dataset.X_by_level[lv])
             names.extend(dataset.feature_names_by_level[lv])
-    if not blocks and "all" in dataset.X_by_level:
+    if not matrices and "all" in dataset.X_by_level:
         return dataset.X_by_level["all"], dataset.feature_names_by_level["all"]
-    if not blocks:
+    if not matrices:
         raise ValueError(f"No features available for levels {requested!r}.")
-    return np.concatenate(blocks, axis=1), names
-
+    if len(matrices) == 1:
+        return matrices[0], names
+    return np.concatenate(matrices, axis=1), names

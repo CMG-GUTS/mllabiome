@@ -44,7 +44,9 @@ def _as_2d_float(X: Any) -> np.ndarray:
     if arr.ndim == 1:
         arr = arr.reshape(1, -1)
     if arr.ndim != 2:
-        raise ValueError(f"SIAMCATClassifier expects a 2D feature matrix; got shape {arr.shape}.")
+        raise ValueError(
+            f"SIAMCATClassifier expects a 2D feature matrix; got shape {arr.shape}."
+        )
     if not np.all(np.isfinite(arr)):
         raise ValueError("SIAMCATClassifier received NaN or infinite feature values.")
     return arr
@@ -144,7 +146,9 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
     @staticmethod
     def _write_binary_labels(path: Path, y_binary: np.ndarray) -> None:
         sample_ids = [f"sample_{i:08d}" for i in range(len(y_binary))]
-        frame = pd.DataFrame({"label": np.asarray(y_binary, dtype=int)}, index=sample_ids)
+        frame = pd.DataFrame(
+            {"label": np.asarray(y_binary, dtype=int)}, index=sample_ids
+        )
         frame.index.name = "sample_id"
         frame.to_csv(path, sep="\t")
 
@@ -167,13 +171,17 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
             if self.verbose >= 2 and result.stdout.strip():
                 print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
 
-    def _fit_binary_model(self, X_path: Path, y_binary: np.ndarray, model_path: Path) -> None:
+    def _fit_binary_model(
+        self, X_path: Path, y_binary: np.ndarray, model_path: Path
+    ) -> None:
         labels_path = model_path.with_suffix(".labels.tsv")
         self._write_binary_labels(labels_path, y_binary)
         min_class = int(np.bincount(y_binary, minlength=2).min())
         folds = min(int(self.num_folds), min_class)
         if folds < 2:
-            raise ValueError("SIAMCAT requires at least two training samples in each binary class.")
+            raise ValueError(
+                "SIAMCAT requires at least two training samples in each binary class."
+            )
         self._run_r(
             [
                 "fit",
@@ -218,7 +226,9 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
         # Binary SIAMCAT natively models one case group against one control group.
         # For multiclass mllabiome tasks, use SIAMCAT's documented one-vs-rest
         # semantics once per class and normalize the resulting class scores.
-        target_classes = [self.classes_[-1]] if len(self.classes_) == 2 else list(self.classes_)
+        target_classes = (
+            [self.classes_[-1]] if len(self.classes_) == 2 else list(self.classes_)
+        )
         for index, klass in enumerate(target_classes):
             y_binary = (y_arr == klass).astype(int)
             model_path = self._workdir_ / f"model_{index:03d}.rds"
@@ -228,12 +238,24 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
         self._binary_target_classes_ = np.asarray(target_classes, dtype=object)
         return self
 
-    def _predict_binary_score(self, model_path: Path, X_path: Path, index: int) -> np.ndarray:
+    def _predict_binary_score(
+        self, model_path: Path, X_path: Path, index: int
+    ) -> np.ndarray:
         output_path = self._workdir_ / f"prediction_{index:03d}.tsv"
-        self._run_r(["predict", str(model_path), str(X_path), str(output_path), str(int(self.verbose))])
+        self._run_r(
+            [
+                "predict",
+                str(model_path),
+                str(X_path),
+                str(output_path),
+                str(int(self.verbose)),
+            ]
+        )
         out = pd.read_csv(output_path, sep="\t")
         if "score" not in out.columns:
-            raise RuntimeError("SIAMCAT prediction output did not contain a 'score' column.")
+            raise RuntimeError(
+                "SIAMCAT prediction output did not contain a 'score' column."
+            )
         score = pd.to_numeric(out["score"], errors="coerce").to_numpy(dtype=float)
         if not np.all(np.isfinite(score)):
             raise RuntimeError("SIAMCAT returned non-finite prediction scores.")
@@ -249,7 +271,10 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
             )
         X_path = self._workdir_ / "holdout.tsv"
         self._write_features(X_path, X, fitted=True)
-        scores = [self._predict_binary_score(path, X_path, i) for i, path in enumerate(self._model_paths_)]
+        scores = [
+            self._predict_binary_score(path, X_path, i)
+            for i, path in enumerate(self._model_paths_)
+        ]
 
         if len(self.classes_) == 2:
             p1 = _score_to_probability(scores[0])
