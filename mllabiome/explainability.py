@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
 import math
-import io
 import shutil
-from contextlib import contextmanager, redirect_stdout, redirect_stderr
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -16,38 +16,24 @@ from sklearn.base import BaseEstimator
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import balanced_accuracy_score, roc_auc_score
 
-from .data import load_dataset
+from .configs_sweep import (Sweep, _groups_from_metadata, _outer_splits,
+                            _strata_from_metadata)
 from .console import console, info, path_table, stage, success, summary_table
+from .data import load_dataset
+from .explainability_visuals import \
+    plot_feature_support as _plot_feature_support_visual
+from .explainability_visuals import \
+    plot_interaction_network as _plot_interaction_network_visual
 from .learners import _learner_factory
 from .metrics import _estimator_call, _predict_proba_aligned
-from .configs_sweep import (
-    Sweep,
-    _groups_from_metadata,
-    _outer_splits,
-    _strata_from_metadata,
-)
 from .resolutions import materialize_mpdr
-from .transformations import CountTransformationAdapter, _count_transformation_factory
+from .style import (ACC_D, ACC_L, BG, COL_W_2, DIM, INK, MID, TRACK, UC_CASE,
+                    UC_CTRL)
+from .style import apply as apply_style
+from .style import save_all
+from .transformations import (CountTransformationAdapter,
+                              _count_transformation_factory)
 from .utils import _as_float_matrix, dump_json_standard
-from .style import (
-    ACC_D,
-    ACC_L,
-    BG,
-    COL_W_2,
-    DIM,
-    INK,
-    MID,
-    TRACK,
-    UC_CASE,
-    UC_CTRL,
-    apply as apply_style,
-    save_all,
-)
-from .explainability_visuals import (
-    plot_feature_support as _plot_feature_support_visual,
-    plot_interaction_network as _plot_interaction_network_visual,
-)
-
 
 # Keep third-party diagnostics from breaking the rich progress display.
 for _logger_name in ("PyALE", "PyALE._ALE_generic"):
@@ -1200,9 +1186,11 @@ def _plot_ale_curves(
     """Create small-multiple ALE curves for top features."""
     apply_style()
     import math as _math
-    import matplotlib.pyplot as plt
+
     import matplotlib.patheffects as mpe
-    from .style import MM, BG, INK, MID, TRACK, ACC_D, ACC_L, save_all
+    import matplotlib.pyplot as plt
+
+    from .style import ACC_D, ACC_L, BG, INK, MID, MM, TRACK, save_all
 
     if (
         curves is None
@@ -1323,9 +1311,10 @@ def _plot_instance_explanations(
     occurs on a full 180 mm canvas.
     """
     apply_style()
-    import matplotlib.pyplot as plt
     import matplotlib.patheffects as mpe
-    from .style import MM, BG, INK, MID, TRACK, ACC_L, save_all
+    import matplotlib.pyplot as plt
+
+    from .style import ACC_L, BG, INK, MID, MM, TRACK, save_all
 
     if inst_top is None or inst_top.empty:
         fig = plt.figure(figsize=(112 * MM, 58 * MM))

@@ -8,18 +8,14 @@ import numpy as np
 import pandas as pd
 from scipy.stats import rankdata
 from skbio.stats.composition import alr as skbio_alr
-from skbio.stats.composition import clr as skbio_clr
 from skbio.stats.composition import closure as skbio_closure
+from skbio.stats.composition import clr as skbio_clr
 from skbio.stats.composition import ilr as skbio_ilr
 from skbio.stats.composition import multi_replace as skbio_multi_replace
 from skbio.stats.composition import rclr as skbio_rclr
 from sklearn.base import BaseEstimator, clone
-from sklearn.preprocessing import (
-    PowerTransformer,
-    QuantileTransformer,
-    RobustScaler,
-    StandardScaler,
-)
+from sklearn.preprocessing import (PowerTransformer, QuantileTransformer,
+                                   RobustScaler, StandardScaler)
 
 from .utils import _as_float_matrix
 

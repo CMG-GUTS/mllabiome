@@ -2,18 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sklearn.ensemble import (
-    ExtraTreesClassifier,
-    HistGradientBoostingClassifier,
-    RandomForestClassifier,
-)
+from sklearn.ensemble import (ExtraTreesClassifier,
+                              HistGradientBoostingClassifier,
+                              RandomForestClassifier)
 from sklearn.linear_model import LogisticRegression, RidgeClassifier
 from sklearn.naive_bayes import BernoulliNB, GaussianNB
 from sklearn.neighbors import KNeighborsClassifier, NearestCentroid
 from sklearn.svm import SVC
 
 from mllabiome import mll
-
 
 # PTSD within-dataset repeated nested-CV sweep.
 # Data layout:

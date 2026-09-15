@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from pathlib import Path
 
 import pandas as pd
@@ -9,7 +10,6 @@ from sklearn.neighbors import KNeighborsClassifier, NearestCentroid
 from sklearn.svm import SVC
 
 from mllabiome import mll
-
 
 # IBS leave-one-dataset-out sweep.
 # Input directory contains one pair per cohort:

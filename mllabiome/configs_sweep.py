@@ -11,34 +11,25 @@ import numpy as np
 import pandas as pd
 from scipy.special import expit, softmax
 from sklearn.base import BaseEstimator
-from sklearn.metrics import (
-    accuracy_score,
-    average_precision_score,
-    balanced_accuracy_score,
-    f1_score,
-    matthews_corrcoef,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
+from sklearn.metrics import (accuracy_score, average_precision_score,
+                             balanced_accuracy_score, f1_score,
+                             matthews_corrcoef, precision_score, recall_score,
+                             roc_auc_score)
 from sklearn.model_selection import StratifiedKFold
 
-from .data import Data, Dataset, load_dataset
 from .console import info, path_table, progress, stage, success, summary_table
+from .data import Data, Dataset, load_dataset
 from .figures import _write_representation_impact_figure
 from .learners import _learner_factory, _learner_name
-from .metrics import (
-    _predict_proba_aligned as _metrics_predict_proba_aligned,
-    compute_metrics,
-)
+from .metrics import _predict_proba_aligned as _metrics_predict_proba_aligned
+from .metrics import compute_metrics
 from .resolutions import _parse_resolution, materialize_mpdr
+from .selection import write_mpma_b_selection_outputs
+from .transformations import (TRANSFORMATION_LABELS,
+                              _count_transformation_factory,
+                              _count_transformation_name,
+                              _count_transformation_spec)
 from .utils import METRIC_COLUMNS, dump_json_standard
-from .transformations import (
-    TRANSFORMATION_LABELS,
-    _count_transformation_factory,
-    _count_transformation_name,
-    _count_transformation_spec,
-)
 
 
 def _default_transformations():
@@ -394,6 +385,9 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
             existing=existing,
             gate_enabled=sweep.gate.enabled,
         )
+        write_mpma_b_selection_outputs(
+            root, sweep.evaluation.optimize_metric, plan=sweep.ensemble
+        )
         _write_rankings_and_figures(
             root, dataset.class_labels, sweep.evaluation.optimize_metric
         )
@@ -501,12 +495,11 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
                         _, inner_ct_factory = (
                             _count_transformation_factory(
                                 (ct_name, ct_spec),
-                                random_state=sweep.evaluation.random_state + inner_no,
+                                random_state=sweep.evaluation.random_state,
                             )
                             if ct_spec is not None
                             else _count_transformation_factory(
-                                ct_name,
-                                random_state=sweep.evaluation.random_state + inner_no,
+                                ct_name, random_state=sweep.evaluation.random_state
                             )
                         )
                         fitted = inner_ct_factory()
@@ -672,6 +665,9 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
         existing=existing,
         gate_enabled=sweep.gate.enabled,
     )
+    write_mpma_b_selection_outputs(
+        root, sweep.evaluation.optimize_metric, plan=sweep.ensemble
+    )
     _write_rankings_and_figures(
         root, dataset.class_labels, sweep.evaluation.optimize_metric
     )
@@ -718,6 +714,11 @@ def _existing_outputs(root: Path) -> dict[str, Path]:
         "outer_results": root / "results" / "outer_results.tsv",
         "inner_results": root / "inner_results" / "inner_results.tsv",
         "outer_predictions": root / "predictions" / "outer_predictions.tsv",
+        "mpma_b_selection": root / "tables" / "mpma_b_outer_selection.tsv",
+        "mpma_b_predictions": root / "predictions" / "mpma_b_outer_predictions.tsv",
+        "mpma_b_outer_results": root / "results" / "mpma_b_outer_results.tsv",
+        "mpma_b_summary": root / "tables" / "mpma_b_strategy_summary.json",
+        "mpma_b_final_candidate": root / "tables" / "mpma_b_final_candidate.json",
     }
 
 

@@ -3,13 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Sequence
 
-import numpy as np
-import pandas as pd
 import matplotlib as mpl
-import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import matplotlib.lines as mlines
 import matplotlib.patheffects as mpe
-import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap
 
 try:

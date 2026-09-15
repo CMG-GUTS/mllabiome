@@ -5,15 +5,9 @@ from typing import Mapping, Sequence
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-)
+from rich.progress import (BarColumn, MofNCompleteColumn, Progress,
+                           SpinnerColumn, TextColumn, TimeElapsedColumn,
+                           TimeRemainingColumn)
 from rich.table import Table
 
 console = Console(highlight=False)

@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import sys
 from pathlib import Path
+
 from rich.traceback import install as install_rich_traceback
 
 from .configs_sweep import Sweep, build_sweep_from_module, evaluate

@@ -5,10 +5,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mllabiome.data import Data, Dataset, _dataset_from_feature_matrix, _taxonomic_rank, load_dataset
-from mllabiome.resolutions import _manual_range, _parse_resolution, _range_levels, _resolution_from_name, materialize_mpdr
+from mllabiome.data import (Data, Dataset, _dataset_from_feature_matrix,
+                            _taxonomic_rank, load_dataset)
+from mllabiome.resolutions import (_manual_range, _parse_resolution,
+                                   _range_levels, _resolution_from_name,
+                                   materialize_mpdr)
 from mllabiome.utils import TAXONOMIC_LEVELS
-
 
 ROOT = Path(__file__).resolve().parents[1]
 PTSD_PROFILE = ROOT / "examples" / "data" / "PTSD" / "PTSD_profiles.tsv"
@@ -29,7 +31,11 @@ EXPECTED_LEVELS = (
 
 
 def _require_example_data():
-    missing = [path for path in (PTSD_PROFILE, PTSD_METADATA, AGP_PROFILE, AGP_METADATA) if not path.exists()]
+    missing = [
+        path
+        for path in (PTSD_PROFILE, PTSD_METADATA, AGP_PROFILE, AGP_METADATA)
+        if not path.exists()
+    ]
     assert not missing, f"Missing repository example data: {missing}"
 
 
@@ -70,7 +76,11 @@ def _direct_ptsd_matrix():
     meta["sampleId"] = meta["sampleId"].astype(str).str.strip()
     bio.columns = bio.columns.astype(str).str.strip()
     ids = [sid for sid in meta["sampleId"].tolist() if sid in set(bio.columns)]
-    return bio[ids].T.to_numpy(dtype=np.float32), bio.index.astype(str).str.strip().tolist(), ids
+    return (
+        bio[ids].T.to_numpy(dtype=np.float32),
+        bio.index.astype(str).str.strip().tolist(),
+        ids,
+    )
 
 
 def _direct_agp_matrix():
@@ -85,7 +95,9 @@ def _direct_agp_matrix():
         return bio[selected].T.to_numpy(dtype=np.float32), bio.index.tolist(), selected
     bio = pd.read_csv(AGP_PROFILE, sep="\t", header=None, index_col=0, low_memory=False)
     if bio.shape[1] != len(ids):
-        raise ValueError("Headerless AGP profile width does not match metadata row count.")
+        raise ValueError(
+            "Headerless AGP profile width does not match metadata row count."
+        )
     bio.index = bio.index.astype(str).str.strip()
     return bio.to_numpy(dtype=np.float32).T, bio.index.tolist(), ids
 
@@ -118,11 +130,26 @@ def test_taxonomic_level_order_is_stable():
         ("d__Bacteria___p__Firmicutes", "phylum"),
         ("d__Bacteria___p__Firmicutes___c__Clostridia", "class"),
         ("d__Bacteria___p__Firmicutes___c__Clostridia___o__Oscillospirales", "order"),
-        ("d__Bacteria___p__Firmicutes___c__Clostridia___o__Oscillospirales___f__Ruminococcaceae", "family"),
-        ("d__Bacteria___p__Firmicutes___c__Clostridia___o__Oscillospirales___f__Ruminococcaceae___g__Faecalibacterium", "genus"),
-        ("d__Bacteria___p__Firmicutes___c__Clostridia___o__Oscillospirales___f__Ruminococcaceae___g__Faecalibacterium___s__Faecalibacterium_prausnitzii", "species"),
-        ("d__Bacteria___p__Firmicutes___c__Clostridia___o__Oscillospirales___f__Ruminococcaceae___g__Faecalibacterium___s__Faecalibacterium_prausnitzii___t__SGB15342", "strain"),
-        ("k__Bacteria|p__Firmicutes|c__Clostridia|o__Oscillospirales|f__Ruminococcaceae|g__Faecalibacterium", "genus"),
+        (
+            "d__Bacteria___p__Firmicutes___c__Clostridia___o__Oscillospirales___f__Ruminococcaceae",
+            "family",
+        ),
+        (
+            "d__Bacteria___p__Firmicutes___c__Clostridia___o__Oscillospirales___f__Ruminococcaceae___g__Faecalibacterium",
+            "genus",
+        ),
+        (
+            "d__Bacteria___p__Firmicutes___c__Clostridia___o__Oscillospirales___f__Ruminococcaceae___g__Faecalibacterium___s__Faecalibacterium_prausnitzii",
+            "species",
+        ),
+        (
+            "d__Bacteria___p__Firmicutes___c__Clostridia___o__Oscillospirales___f__Ruminococcaceae___g__Faecalibacterium___s__Faecalibacterium_prausnitzii___t__SGB15342",
+            "strain",
+        ),
+        (
+            "k__Bacteria|p__Firmicutes|c__Clostridia|o__Oscillospirales|f__Ruminococcaceae|g__Faecalibacterium",
+            "genus",
+        ),
         ("unclassified_feature", None),
     ],
 )
@@ -136,7 +163,11 @@ def test_taxonomic_rank_detects_deepest_lineage(feature, expected):
         ("genus", "genus", ("genus",)),
         ("domain", "domain", ("domain",)),
         ("kingdom", "domain", ("domain",)),
-        ("kingdom-genus", "domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
+        (
+            "kingdom-genus",
+            "domain-genus",
+            ("domain", "phylum", "class", "order", "family", "genus"),
+        ),
         ("kingdom+genus", "domain+genus", ("domain", "genus")),
         ("kingdom,genus", "domain+genus", ("domain", "genus")),
         ("phylum-family", "phylum-family", ("phylum", "class", "order", "family")),
@@ -162,7 +193,16 @@ def test_ranges_use_canonical_taxonomic_order():
     assert _range_levels("genus", "phylum") == expected
 
 
-@pytest.mark.parametrize("value", ["", "superkingdom", "phylum-superkingdom", "phylum+superkingdom", "phylum,superkingdom"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "superkingdom",
+        "phylum-superkingdom",
+        "phylum+superkingdom",
+        "phylum,superkingdom",
+    ],
+)
 def test_invalid_named_resolutions_are_rejected(value):
     with pytest.raises(ValueError):
         _resolution_from_name(value)
@@ -186,14 +226,16 @@ def test_invalid_structured_resolutions_are_rejected(value):
         _parse_resolution(value)
 
 
-
 def test_domain_and_kingdom_resolution_inputs_materialize_the_same_features():
     dataset = Dataset(
         X_by_level={
             "domain": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
             "all": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
         },
-        feature_names_by_level={"domain": ["d__Bacteria", "k__Archaea"], "all": ["d__Bacteria", "k__Archaea"]},
+        feature_names_by_level={
+            "domain": ["d__Bacteria", "k__Archaea"],
+            "all": ["d__Bacteria", "k__Archaea"],
+        },
         y=np.array([0, 1]),
         sample_ids=["s1", "s2"],
         metadata=pd.DataFrame({"sample_id": ["s1", "s2"]}),
@@ -207,11 +249,15 @@ def test_domain_and_kingdom_resolution_inputs_materialize_the_same_features():
 
 def test_structured_kingdom_aliases_canonicalize_to_domain():
     assert _parse_resolution(("kingdom", ("kingdom",))) == ("domain", ("domain",))
-    assert _parse_resolution(("kingdom-genus", ("kingdom", "phylum", "class", "order", "family", "genus"))) == (
+    assert _parse_resolution(
+        ("kingdom-genus", ("kingdom", "phylum", "class", "order", "family", "genus"))
+    ) == (
         "domain-genus",
         ("domain", "phylum", "class", "order", "family", "genus"),
     )
-    assert _parse_resolution(SimpleNamespace(name="kingdom+genus", levels=("kingdom", "genus"))) == (
+    assert _parse_resolution(
+        SimpleNamespace(name="kingdom+genus", levels=("kingdom", "genus"))
+    ) == (
         "domain+genus",
         ("domain", "genus"),
     )
@@ -220,6 +266,7 @@ def test_structured_kingdom_aliases_canonicalize_to_domain():
 def test_domain_and_kingdom_aliases_cannot_create_duplicate_top_rank():
     with pytest.raises(ValueError, match="Duplicate"):
         _parse_resolution(("domain+kingdom", ("domain", "kingdom")))
+
 
 def test_ptsd_real_profile_is_headered():
     _require_example_data()
@@ -266,13 +313,17 @@ def test_agp_real_rank_partition_is_selection_only_without_aggregation(agp_datas
 
 
 @pytest.mark.parametrize("level", EXPECTED_LEVELS)
-def test_real_parser_rank_values_are_exact_subsets_of_raw(level, ptsd_dataset, agp_dataset):
+def test_real_parser_rank_values_are_exact_subsets_of_raw(
+    level, ptsd_dataset, agp_dataset
+):
     for dataset in (ptsd_dataset, agp_dataset):
         names = dataset.feature_names_by_level["all"]
         idx = [i for i, name in enumerate(names) if _taxonomic_rank(name) == level]
         if not idx:
             continue
-        np.testing.assert_array_equal(dataset.X_by_level[level], dataset.X_by_level["all"][:, idx])
+        np.testing.assert_array_equal(
+            dataset.X_by_level[level], dataset.X_by_level["all"][:, idx]
+        )
 
 
 def test_real_raw_resolution_returns_complete_original_ptsd_matrix(ptsd_dataset):
@@ -287,11 +338,19 @@ def test_real_raw_resolution_returns_complete_original_agp_matrix(agp_dataset):
     assert names == agp_dataset.feature_names_by_level["all"]
 
 
-def test_real_multirank_resolution_concatenates_existing_rows_without_aggregation(ptsd_dataset):
-    available = [level for level in ("order", "family", "genus") if level in ptsd_dataset.X_by_level]
+def test_real_multirank_resolution_concatenates_existing_rows_without_aggregation(
+    ptsd_dataset,
+):
+    available = [
+        level
+        for level in ("order", "family", "genus")
+        if level in ptsd_dataset.X_by_level
+    ]
     assert len(available) >= 2
     X, names = materialize_mpdr(ptsd_dataset, available)
-    expected_X = np.concatenate([ptsd_dataset.X_by_level[level] for level in available], axis=1)
+    expected_X = np.concatenate(
+        [ptsd_dataset.X_by_level[level] for level in available], axis=1
+    )
     expected_names = [
         name
         for level in available
@@ -324,15 +383,18 @@ def test_already_relative_headered_matrix_is_preserved_exactly(tmp_path):
     expected = np.array([[0.25, 0.75], [0.50, 0.50]], dtype=np.float32)
     np.testing.assert_array_equal(dataset.X_by_level["all"], expected)
     np.testing.assert_array_equal(dataset.X_by_level["genus"], expected)
-    np.testing.assert_array_equal(dataset.X_by_level["all"].sum(axis=1), np.ones(2, dtype=np.float32))
+    np.testing.assert_array_equal(
+        dataset.X_by_level["all"].sum(axis=1), np.ones(2, dtype=np.float32)
+    )
 
 
-def test_headerless_matrix_uses_metadata_order_only_when_width_matches_exactly(tmp_path):
+def test_headerless_matrix_uses_metadata_order_only_when_width_matches_exactly(
+    tmp_path,
+):
     profile = tmp_path / "headerless.tsv"
     metadata = tmp_path / "metadata.tsv"
     profile.write_text(
-        "d__Bacteria___p__Firmicutes\t10\t20\n"
-        "d__Bacteria___p__Bacteroidota\t30\t40\n",
+        "d__Bacteria___p__Firmicutes\t10\t20\nd__Bacteria___p__Bacteroidota\t30\t40\n",
         encoding="utf-8",
     )
     metadata.write_text("sample_id\tlabel\nb\tcase\na\tcontrol\n", encoding="utf-8")
@@ -357,11 +419,12 @@ def test_headerless_matrix_with_metadata_width_mismatch_is_rejected(tmp_path):
     profile = tmp_path / "headerless.tsv"
     metadata = tmp_path / "metadata.tsv"
     profile.write_text(
-        "d__Bacteria___p__Firmicutes\t10\t20\n"
-        "d__Bacteria___p__Bacteroidota\t30\t40\n",
+        "d__Bacteria___p__Firmicutes\t10\t20\nd__Bacteria___p__Bacteroidota\t30\t40\n",
         encoding="utf-8",
     )
-    metadata.write_text("sample_id\tlabel\na\tcontrol\nb\tcase\nc\tcontrol\n", encoding="utf-8")
+    metadata.write_text(
+        "sample_id\tlabel\na\tcontrol\nb\tcase\nc\tcontrol\n", encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="headered or headerless"):
         load_dataset(
             Data(

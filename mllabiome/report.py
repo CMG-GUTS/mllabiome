@@ -12,9 +12,9 @@ import pandas as pd
 
 from .configs_sweep import Sweep
 from .console import console, path_table, stage, success
-from .utils import dump_json_standard
 from .metrics import compute_metrics
 from .transformations import transformation_label
+from .utils import dump_json_standard
 
 _METRICS = [
     ("AUC", "ROC-AUC"),

@@ -4,28 +4,20 @@ import numpy as np
 import pytest
 from scipy.stats import rankdata
 from skbio.stats.composition import alr as skbio_alr
-from skbio.stats.composition import clr as skbio_clr
 from skbio.stats.composition import closure as skbio_closure
+from skbio.stats.composition import clr as skbio_clr
 from skbio.stats.composition import ilr as skbio_ilr
 from skbio.stats.composition import multi_replace as skbio_multi_replace
 from skbio.stats.composition import rclr as skbio_rclr
-from sklearn.preprocessing import (
-    PowerTransformer,
-    QuantileTransformer,
-    RobustScaler,
-    StandardScaler,
-)
+from sklearn.preprocessing import (PowerTransformer, QuantileTransformer,
+                                   RobustScaler, StandardScaler)
 
 from mllabiome.configs_sweep import build_sweep_configs
 from mllabiome.data import Dataset
 from mllabiome.resolutions import _parse_resolution, materialize_mpdr
-from mllabiome.transformations import (
-    CountTransformation,
-    Transformation,
-    TRANSFORMATION_LABELS,
-    transformation_space_table,
-)
-
+from mllabiome.transformations import (TRANSFORMATION_LABELS,
+                                       CountTransformation, Transformation,
+                                       transformation_space_table)
 
 CANONICAL_TRANSFORMATIONS = {
     "identity",

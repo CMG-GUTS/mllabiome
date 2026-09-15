@@ -9,13 +9,12 @@ import numpy as np
 import pandas as pd
 from scipy.stats import rankdata
 
-from .metrics import compute_metrics, _renormalize_proba
-from .utils import dump_json_standard
-from .configs_sweep import Sweep, Ensemble
+from .configs_sweep import Ensemble, Sweep
 from .console import path_table, progress, stage, success, summary_table
 from .data import load_dataset
-from .utils import TAXONOMIC_LEVELS
+from .metrics import _renormalize_proba, compute_metrics
 from .mpma_e_figure import write_single_task_mpma_e_figure
+from .utils import TAXONOMIC_LEVELS, dump_json_standard
 
 
 def _load_manifest(root: Path) -> dict[str, Any]:

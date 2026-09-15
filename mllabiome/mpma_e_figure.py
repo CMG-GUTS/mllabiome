@@ -16,20 +16,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-import numpy as np
-import pandas as pd
-
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from scipy.stats import rankdata
 
 try:
-    from sklearn.preprocessing import (
-        PowerTransformer,
-        QuantileTransformer,
-        RobustScaler,
-    )
+    from sklearn.preprocessing import (PowerTransformer, QuantileTransformer,
+                                       RobustScaler)
 except Exception:  # pragma: no cover - optional transformation support
     PowerTransformer = None
     QuantileTransformer = None

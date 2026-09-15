@@ -7,7 +7,6 @@ import numpy as np
 from .data import Dataset
 from .utils import TAXONOMIC_LEVELS
 
-
 _RAW_ALIASES = {"raw", "all", "features", "asis"}
 _LEVEL_ALIASES = {"kingdom": "domain"}
 
@@ -31,7 +30,9 @@ def _canonical_name(name: str) -> str:
         if sep in value:
             parts = tuple(part.strip() for part in value.split(sep) if part.strip())
             canonical = _canonical_levels(parts)
-            if parts and all(part in TAXONOMIC_LEVELS or part in _LEVEL_ALIASES for part in parts):
+            if parts and all(
+                part in TAXONOMIC_LEVELS or part in _LEVEL_ALIASES for part in parts
+            ):
                 return ("+" if sep == "," else sep).join(canonical)
     return value
 
@@ -57,7 +58,9 @@ def _validate_explicit_levels(levels: tuple[str, ...]) -> tuple[str, ...]:
     raw = [x for x in levels if x in _RAW_ALIASES]
     if raw:
         if len(levels) != 1:
-            raise ValueError("The raw resolution cannot be combined with explicit taxonomic ranks.")
+            raise ValueError(
+                "The raw resolution cannot be combined with explicit taxonomic ranks."
+            )
         return ("all",)
     unknown = [x for x in levels if x not in TAXONOMIC_LEVELS]
     if unknown:
@@ -79,7 +82,9 @@ def _resolution_from_name(name: str) -> tuple[str, tuple[str, ...]]:
         if left in TAXONOMIC_LEVELS and right in TAXONOMIC_LEVELS:
             return name, _manual_range(left, right)
     if "+" in name:
-        levels = _validate_explicit_levels(tuple(x.strip() for x in name.split("+") if x.strip()))
+        levels = _validate_explicit_levels(
+            tuple(x.strip() for x in name.split("+") if x.strip())
+        )
         return name, levels
     raise ValueError(f"Cannot parse taxonomic resolution {raw_name!r}.")
 
@@ -107,14 +112,18 @@ def _parse_resolution(item: Any) -> tuple[str, tuple[str, ...]]:
     raw_levels = [x for x in levels if x in _RAW_ALIASES]
     if name_is_raw or raw_levels:
         if not name_is_raw or len(levels) != 1 or levels[0] not in _RAW_ALIASES:
-            raise ValueError("The raw resolution cannot be combined with explicit taxonomic ranks.")
+            raise ValueError(
+                "The raw resolution cannot be combined with explicit taxonomic ranks."
+            )
         return "raw", ("all",)
     return name, _validate_explicit_levels(levels)
 
 
 def _validated_block(dataset: Dataset, level: str) -> tuple[np.ndarray, list[str]]:
     if level not in dataset.X_by_level or level not in dataset.feature_names_by_level:
-        raise ValueError(f"Requested taxonomic level {level!r} is not available in the dataset.")
+        raise ValueError(
+            f"Requested taxonomic level {level!r} is not available in the dataset."
+        )
     matrix = np.asarray(dataset.X_by_level[level])
     names = list(dataset.feature_names_by_level[level])
     if matrix.ndim != 2:
@@ -126,17 +135,23 @@ def _validated_block(dataset: Dataset, level: str) -> tuple[np.ndarray, list[str
     return matrix, names
 
 
-def materialize_mpdr(dataset: Dataset, levels: Sequence[str]) -> tuple[np.ndarray, list[str]]:
+def materialize_mpdr(
+    dataset: Dataset, levels: Sequence[str]
+) -> tuple[np.ndarray, list[str]]:
     requested = _canonical_levels(tuple(str(x).strip() for x in levels))
     if not requested:
         requested = ("all",)
     raw = [x for x in requested if x in _RAW_ALIASES]
     if raw:
         if len(requested) != 1:
-            raise ValueError("The raw resolution cannot be combined with explicit taxonomic ranks.")
+            raise ValueError(
+                "The raw resolution cannot be combined with explicit taxonomic ranks."
+            )
         if "all" in dataset.X_by_level:
             return _validated_block(dataset, "all")
-        requested = tuple(level for level in TAXONOMIC_LEVELS if level in dataset.X_by_level)
+        requested = tuple(
+            level for level in TAXONOMIC_LEVELS if level in dataset.X_by_level
+        )
         if not requested:
             raise ValueError("No feature matrix is available for the raw resolution.")
     else:
@@ -144,7 +159,9 @@ def materialize_mpdr(dataset: Dataset, levels: Sequence[str]) -> tuple[np.ndarra
     blocks = [_validated_block(dataset, level) for level in requested]
     sample_counts = {matrix.shape[0] for matrix, _ in blocks}
     if len(sample_counts) != 1:
-        raise ValueError(f"Selected taxonomic ranks have inconsistent sample counts: {sorted(sample_counts)}.")
+        raise ValueError(
+            f"Selected taxonomic ranks have inconsistent sample counts: {sorted(sample_counts)}."
+        )
     if len(blocks) == 1:
         return blocks[0]
     matrices = [matrix for matrix, _ in blocks]
