@@ -17,7 +17,7 @@ DATA = mll.Data(
 )
 _RESOLUTION_SETS = [
     ("genus", ("genus",)),
-    ("domain-family", ("domain", "phylum", "class", "order", "family")),
+    # ("domain-family", ("domain", "phylum", "class", "order", "family")),
     ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
     ("raw", ("all",)),
 ]
@@ -26,7 +26,7 @@ _RESOLUTION_SETS = [
 def _build_count_transformations():
     T = mll.Transformation
     return [
-        T("relative_abundance"),
+        # T("relative_abundance"),
         T("identity"),
         # T("presence_absence"),
         # T("hellinger"),

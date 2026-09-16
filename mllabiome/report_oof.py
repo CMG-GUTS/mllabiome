@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Any
 import numpy as np
 import pandas as pd
+from . import report as _report_module
 from .console import console, path_table, stage, success
 from .final_models import build_final_models, load_final_models
-from .report import write_report as _write_base_report
 
 _PERCENT_METRICS = {
     "AUC",
@@ -100,6 +100,66 @@ def _safe_float(value: Any) -> float:
     return out if np.isfinite(out) else float("nan")
 
 
+def _parse_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return []
+        if isinstance(parsed, list):
+            return parsed
+    return []
+
+
+def _ensemble_summary_from_selected(root: Path) -> pd.DataFrame:
+    selected = _read_json(root / "ensembling" / "selected_unit.json")
+    ens = (
+        selected.get("inner_val_best_mpmas_ensemble")
+        or selected.get("inner_val_best_ensemble")
+        or {}
+    )
+    if not isinstance(ens, dict) or not ens:
+        return pd.DataFrame()
+    members = _parse_list(ens.get("members", ens.get("member_config_ids")))
+    weights = _parse_list(ens.get("weights"))
+    effective = 0
+    if weights and len(weights) == len(members):
+        for weight in weights:
+            value = _safe_float(weight)
+            if np.isfinite(value) and value > 1e-12:
+                effective += 1
+    if effective == 0:
+        value = _safe_float(ens.get("effective_member_count"))
+        if np.isfinite(value) and value > 0:
+            effective = int(value)
+    if effective == 0:
+        value = _safe_float(ens.get("member_count"))
+        if np.isfinite(value) and value > 0:
+            effective = int(value)
+    if effective == 0:
+        value = _safe_float(ens.get("ensemble_size"))
+        if np.isfinite(value) and value > 0:
+            effective = int(value)
+    if effective == 0:
+        effective = len(members)
+    metric = str(ens.get("selection_metric", ens.get("optimize_metric", ""))).strip()
+    row = {
+        "Strategy": "MPMA-E",
+        "Selection": str(ens.get("selection_strategy", ens.get("method", ""))).strip(),
+        "Aggregation": str(ens.get("aggregation_strategy", "")).strip(),
+        "Members": int(effective),
+        "Selection metric": metric,
+    }
+    return pd.DataFrame([row])
+
+
 def _format_ci_cell(row: pd.Series, metric: str) -> str:
     estimate = _safe_float(row.get("estimate"))
     low = _safe_float(row.get("ci_low"))
@@ -134,18 +194,16 @@ def _wide_metric_table(
     ]
     show_estimand = len(set(estimands)) > 1
     rows: list[dict[str, Any]] = []
-    group_cols = ["Strategy", "estimand"]
-    for (strategy, estimand), group in performance.groupby(group_cols, sort=False):
+    for (strategy, estimand), group in performance.groupby(
+        ["Strategy", "estimand"], sort=False
+    ):
         row: dict[str, Any] = {"Strategy": str(strategy)}
         if show_estimand:
             row["Estimand"] = _ESTIMAND_LABELS.get(str(estimand), str(estimand))
         for metric in metrics:
             sub = group[group["metric"].astype(str).eq(metric)]
-            if sub.empty:
-                row[_METRIC_LABELS.get(metric, metric)] = "—"
-                continue
             label = _METRIC_LABELS.get(metric, metric)
-            row[label] = _format_ci_cell(sub.iloc[0], metric)
+            row[label] = "—" if sub.empty else _format_ci_cell(sub.iloc[0], metric)
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -163,55 +221,12 @@ def _calibration_display(performance: pd.DataFrame) -> pd.DataFrame:
     return _wide_metric_table(calibration, _CALIBRATION_METRIC_ORDER)
 
 
-def _coverage_display(coverage: pd.DataFrame) -> pd.DataFrame:
-    if coverage.empty or "Strategy" not in coverage.columns:
-        return pd.DataFrame()
-    rows: list[dict[str, Any]] = []
-    for _, row in coverage.iterrows():
-        item: dict[str, Any] = {"Strategy": str(row.get("Strategy", ""))}
-        n_complete = _safe_float(row.get("n_samples_complete_repeats"))
-        n_unique = _safe_float(row.get("n_unique_samples"))
-        n_samples = n_complete if np.isfinite(n_complete) else n_unique
-        item["Subjects"] = int(n_samples) if np.isfinite(n_samples) else "—"
-        n_repeats = _safe_float(row.get("n_repeats"))
-        if np.isfinite(n_repeats) and n_repeats > 0:
-            item["Repeats"] = int(n_repeats)
-        n_cohorts = _safe_float(row.get("n_cohorts"))
-        if np.isfinite(n_cohorts) and n_cohorts > 0:
-            item["Held-out cohorts"] = int(n_cohorts)
-        coverage_fraction = _safe_float(row.get("complete_repeat_coverage_fraction"))
-        if np.isfinite(coverage_fraction):
-            item["Complete OOF coverage"] = f"{100.0 * coverage_fraction:.1f}%"
-        inference_population = str(row.get("inference_population", "")).strip()
-        if inference_population:
-            item["Inference population"] = inference_population.replace("_", " ")
-        status = str(row.get("status", "")).strip()
-        if status:
-            item["Status"] = status
-        reason = str(row.get("reason", "")).strip()
-        if reason and reason.lower() != "nan":
-            item["Reason"] = reason
-        rows.append(item)
-    order = [
-        "Strategy",
-        "Subjects",
-        "Repeats",
-        "Held-out cohorts",
-        "Complete OOF coverage",
-        "Inference population",
-        "Status",
-        "Reason",
-    ]
-    out = pd.DataFrame(rows)
-    return out[[c for c in order if c in out.columns]]
-
-
 def _html_table(df: pd.DataFrame) -> str:
     if df.empty:
         return "<p>No rows available.</p>"
     cols = list(df.columns)
     parts = ['<div class="table-wrap"><table><thead><tr>']
-    parts.extend((f"<th>{html.escape(str(c))}</th>" for c in cols))
+    parts.extend(f"<th>{html.escape(str(c))}</th>" for c in cols)
     parts.append("</tr></thead><tbody>")
     for _, row in df.iterrows():
         parts.append("<tr>")
@@ -262,7 +277,7 @@ def _probability_semantics_html(manifest: dict[str, Any]) -> str:
         reason = str(info.get("reason", "")).lower()
         if isinstance(aggregations, list) and aggregations:
             detail = "outer-fold aggregation: " + ", ".join(
-                (str(x) for x in aggregations)
+                str(x) for x in aggregations
             )
         elif "rank_mean" in reason:
             detail = "rank_mean aggregation"
@@ -338,7 +353,10 @@ def _contrast_display(contrasts: pd.DataFrame) -> pd.DataFrame:
         high = _safe_float(row.get("advantage_ci_high"))
         advantage_text = _format_contrast_value(advantage, metric)
         if np.isfinite(low) and np.isfinite(high):
-            advantage_text += f" [{_format_contrast_value(low, metric)}, {_format_contrast_value(high, metric)}]"
+            advantage_text += (
+                f" [{_format_contrast_value(low, metric)}, "
+                f"{_format_contrast_value(high, metric)}]"
+            )
         if np.isfinite(low) and low > 0:
             interpretation = "A favored"
         elif np.isfinite(high) and high < 0:
@@ -429,12 +447,15 @@ def _human_token(value: Any) -> str:
 def _mpma_b_composition(root: Path) -> pd.DataFrame:
     final = load_final_models(root)["MPMA-B"]
     representation = final.get("resolution", final.get("levels", ""))
-    row = {
-        "Data representation": _human_token(representation),
-        "Transformation": _human_token(final.get("count_transformation", "")),
-        "Learner": str(final.get("learner", "")).strip() or "—",
-    }
-    return pd.DataFrame([row])
+    return pd.DataFrame(
+        [
+            {
+                "Data representation": _human_token(representation),
+                "Transformation": _human_token(final.get("count_transformation", "")),
+                "Learner": str(final.get("learner", "")).strip() or "—",
+            }
+        ]
+    )
 
 
 def _remove_mpma_b_section(text: str) -> str:
@@ -576,7 +597,7 @@ def _section_html(report_dir: Path) -> str:
         )
     parts.append(_links_html(tables_dir))
     parts.append(_SECTION_END)
-    return "\n".join((part for part in parts if part))
+    return "\n".join(part for part in parts if part)
 
 
 def _remove_existing_section(text: str) -> str:
@@ -622,7 +643,7 @@ def _extract_compute_block(text: str) -> tuple[str, str]:
     candidates = [x for x in (next_h2, footer) if x != -1]
     end = min(candidates) if candidates else len(text)
     block = text[start:end].strip()
-    return (text[:start] + text[end:], block)
+    return text[:start] + text[end:], block
 
 
 def enhance_html_report(report_dir: Path | str) -> bool:
@@ -688,9 +709,15 @@ def _terminal_oof_summary(report_dir: Path) -> None:
 
 
 def write_report(sweep: Any) -> dict[str, Path]:
-    build_final_models(Path(sweep.root()))
-    outputs = dict(_write_base_report(sweep))
-    report_dir = Path(sweep.root()) / "report"
+    root = Path(sweep.root())
+    build_final_models(root)
+    original_summary = _report_module._ensemble_summary_table
+    _report_module._ensemble_summary_table = _ensemble_summary_from_selected
+    try:
+        outputs = dict(_report_module.write_report(sweep))
+    finally:
+        _report_module._ensemble_summary_table = original_summary
+    report_dir = root / "report"
     tables_dir = report_dir / "tables"
     inserted = enhance_html_report(report_dir)
     if not inserted:

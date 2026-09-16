@@ -10,7 +10,7 @@ from .ensemble_sweep import sweep_ensemble
 from .final_explainability import explain
 from .final_models import build_final_models
 from .pipeline import run_all
-from .report import write_report
+from .report_oof import write_report
 
 
 def _load_sweep(path: Path) -> Sweep:
@@ -60,7 +60,6 @@ def main(argv: list[str] | None = None) -> None:
     elif args.stage == "explain":
         explain(sweep)
     elif args.stage == "report":
-        build_final_models(sweep.root())
         write_report(sweep)
 
 

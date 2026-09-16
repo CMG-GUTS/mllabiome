@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mllabiome"
 version = "0.1.0rc2"
-description = "Machine learning and explainable AI sweeps for microbiota data"
+description = "Machine learning, ensemble learning, explainable AI for microbiota data"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"

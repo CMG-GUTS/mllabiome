@@ -3,7 +3,7 @@ from .configs_sweep import Sweep, evaluate
 from .ensemble_sweep import sweep_ensemble
 from .final_explainability import explain
 from .final_models import build_final_models
-from .report import write_report
+from .report_oof import write_report
 
 
 def run_all(sweep: Sweep) -> dict:
