@@ -1,10 +1,3 @@
-"""Selected MPMA-E ensemble schematic rendering.
-
-This module contains the package renderer used by the ensemble stage to
-produce SVG, PDF, PNG, and member-metadata outputs for a single mllabiome
-experiment.
-"""
-
 from __future__ import annotations
 
 import json
@@ -29,7 +22,7 @@ try:
         QuantileTransformer,
         RobustScaler,
     )
-except Exception:  # pragma: no cover - optional transformation support
+except Exception:
     PowerTransformer = None
     QuantileTransformer = None
     RobustScaler = None
@@ -89,7 +82,7 @@ LEVEL_MARKERS = {
     "strain": "t__",
 }
 
-# Compact publication-facing transformation labels.  These match the MPMA-B / MPMA-E
+
 TR_ALIASES = {
     "skbio_clr": "scikit-bio_clr",
     "skbio_alr": "scikit-bio_alr",
@@ -137,7 +130,6 @@ TRANSFORM_DISPLAY = {
     "robust": "Robust",
     "quantile": "QNorm",
     "pairwise_logratio": "Pair-logR-500",
-    # Relative-namespace transformation labels.
     "relative_none": "RA",
     "relative_binary": "P/A",
     "relative_sqrt": r"$\sqrt{x}$",
@@ -152,7 +144,6 @@ TRANSFORM_DISPLAY = {
 }
 
 
-# Task descriptor used by the package renderer.
 @dataclass(frozen=True)
 class TaskSpec:
     key: str
@@ -193,11 +184,6 @@ class EnsembleTask:
     diagnostics: dict[str, Any]
 
 
-# ---------------------------------------------------------------------------
-# Config/selected-unit readers
-# ---------------------------------------------------------------------------
-
-
 def read_selected_unit(experiment_dir: Path) -> dict[str, Any]:
     path = experiment_dir / "ensembling" / "selected_unit.json"
     with path.open("r", encoding="utf-8") as fh:
@@ -225,10 +211,7 @@ def read_config_meta(
             df = df.loc[active.eq(1)].copy()
     else:
         raise FileNotFoundError(f"No configs.db/configs.tsv found in {experiment_dir}")
-    # mllabiome stores the executable MPMA table with package-native column
-    # names (count_transformation, learner). Some selected-unit files use
-    # transform/model. Normalise here so the figure reads the selected MPMA
-    # members instead of showing "Unknown classifier".
+
     if "transform" not in df.columns and "count_transformation" in df.columns:
         df["transform"] = df["count_transformation"]
     if "model" not in df.columns and "learner" in df.columns:
@@ -278,7 +261,7 @@ def ranks_display(levels: Iterable[str], resolution: Any = None) -> str:
     vals = [x for x in levels if x in LEVELS]
     if not vals:
         return str(resolution or "?").replace("-", "→")
-    # remove duplicates preserving order
+
     uniq: list[str] = []
     for v in vals:
         if v not in uniq:
@@ -340,10 +323,10 @@ def selection_display(sel: Any, selected: dict[str, Any]) -> str:
     s = str(sel or "?")
     metric = str(selected.get("optimize_metric") or "nMCC")
     threshold = selected.get("threshold_score")
-    # Some candidate rows include threshold_score even when selected_unit does not.
+
     if threshold is None and s == "threshold":
         threshold = 0.30
-    max_members = selected.get("ensemble_size")
+    max_members = selected.get("max_size", selected.get("ensemble_size"))
     if s == "threshold":
         return f"Selection: inner-validation threshold ({metric} ≥ {float(threshold):.2f}, max {int(max_members)})"
     mapping = {
@@ -354,6 +337,8 @@ def selection_display(sel: Any, selected: dict[str, Any]) -> str:
         "best_per_resolution": "Selection: inner-validation best per rank set",
         "resolution_diverse": "Selection: inner-validation rank-diverse",
         "caruana": "Selection: inner-validation Caruana ensemble selection",
+        "super_learner": "Selection: inner-validation Super Learner",
+        "best_per_learner_type": "Selection: inner-validation best per learner type",
         "greedy_diverse": "Selection: inner-validation greedy diverse search",
         "hillclimb": "Selection: inner-validation hill-climbing search",
     }
@@ -364,7 +349,7 @@ def aggregation_display(agg: Any) -> str:
     a = str(agg or "?")
     mapping = {
         "mean_proba": "Aggregation: mean probability",
-        "weighted_mean_proba": "Aggregation: inner-score weighted mean probability",
+        "weighted_mean_proba": "Aggregation: learned-weight mean probability",
         "median_proba": "Aggregation: median probability",
         "trimmed_mean": "Aggregation: trimmed mean probability",
         "geometric_mean": "Aggregation: geometric mean probability",
@@ -426,7 +411,7 @@ def build_members(
     def _lookup_member(cid: str):
         if cid in meta.index:
             return meta.loc[cid]
-        # Be tolerant of JSON files that contain shortened or stringified IDs.
+
         matches = config_meta[
             config_meta["config_id"].astype(str).str.startswith(str(cid))
         ]
@@ -467,11 +452,6 @@ def build_members(
             )
         )
     return records, cap_members(records, max_members=max_members)
-
-
-# ---------------------------------------------------------------------------
-# Demo data loaders and taxonomic aggregation
-# ---------------------------------------------------------------------------
 
 
 def clean_taxon_name(name: Any) -> str:
@@ -524,10 +504,6 @@ def aggregate_to_levels(
     names_out: list[str] = []
     exact_rank = [_exact_rank_of_taxon(t) for t in taxa]
     for level in levels:
-        # When the sweep matrix already contains exact rank-specific feature
-        # blocks, use those exact columns.  Only aggregate descendants when an
-        # exact block is not available.  This avoids double-counting ancestor
-        # rows in the MPMA-E schematic.
         exact_idx = [j for j, r in enumerate(exact_rank) if r == level]
         if exact_idx:
             blocks.append(np.asarray(X[:, exact_idx], dtype=float))
@@ -564,7 +540,7 @@ def synthetic_taxa_matrix(
 ) -> tuple[np.ndarray, list[str], str]:
     rng = np.random.default_rng(seed)
     taxa: list[str] = []
-    # Structured hierarchy: 2 phyla, 3 classes each, ... enough features for all ranks.
+
     for p in range(1, 4):
         for c in range(1, 4):
             for o in range(1, 3):
@@ -578,7 +554,7 @@ def synthetic_taxa_matrix(
                             )
     alpha = rng.uniform(0.05, 1.5, size=len(taxa))
     X = rng.dirichlet(alpha, size=n_samples)
-    # Add sparse zero inflation for microbiome-like appearance.
+
     mask = rng.random(X.shape) < 0.30
     X[mask] = 0.0
     X = row_normalise(X)
@@ -634,7 +610,7 @@ def apply_transform(
     X: np.ndarray, raw_transform: Any, seed: int = 42
 ) -> tuple[np.ndarray, mpl.colors.Colormap, float, float]:
     key = canonical_transform(raw_transform)
-    # old relative_* names map to same operation on row-normalised data
+
     key = {
         "relative_none": "none",
         "relative_binary": "binary",
@@ -717,18 +693,11 @@ def apply_transform(
         lim = max(float(np.nanmax(np.abs(Z))), 0.1)
         return Z / lim, CLR_CMAP, -1.0, 1.0
     if key == "clr_std":
-        # In the real pipeline this is column-standardised using the training fold.
-        # The figure is an inference schematic showing a single abundance profile,
-        # so column standardisation on one row would collapse to a constant strip.
-        # For display only, preserve the log-ratio structure and use row-wise
-        # contrast scaling when only one profile is drawn.
         Z0 = _clr(R)
         Z = _row_z(Z0) if Z0.shape[0] == 1 else _col_z(Z0)
         lim = max(float(np.nanmax(np.abs(Z))), 0.1)
         return Z / lim, CLR_CMAP, -1.0, 1.0
     if key == "ilr_std":
-        # Same display logic as CLR+z: avoid an all-zero one-row strip while
-        # retaining the fact that this member uses standardised ILR coordinates.
         Z0 = _ilr(R)
         Z = _row_z(Z0) if Z0.shape[0] == 1 else _col_z(Z0)
         lim = max(float(np.nanmax(np.abs(Z))), 0.1)
@@ -777,11 +746,6 @@ def apply_transform(
         Z = R / W
         return Z, TSS_CMAP, 0.0, max(float(np.nanmax(Z)), 0.01)
     if key == "power":
-        # In the real pipeline this is fit on the training fold.  The schematic can
-        # be asked to draw a single transformed abundance profile, and fitting a
-        # column-standardised transformer on one row collapses every displayed
-        # feature to zero.  For display-only one-row strips, preserve the intended
-        # signed/standardised contrast by scaling across features within the row.
         if R.shape[0] == 1:
             Z = _row_z(np.log1p(R))
             lim = max(float(np.nanmax(np.abs(Z))), 0.1)
@@ -795,15 +759,12 @@ def apply_transform(
                 return Z / lim, CLR_CMAP, -1.0, 1.0
             except Exception:
                 pass
-        # Fallback when sklearn is unavailable or the transform cannot be fit.
+
         Z = _col_z(np.log1p(R)) if R.shape[0] > 1 else _row_z(np.log1p(R))
         lim = max(float(np.nanmax(np.abs(Z))), 0.1)
         return Z / lim, CLR_CMAP, -1.0, 1.0
 
     if key == "robust":
-        # Same one-row display issue as Yeo-Johnson: RobustScaler centers each
-        # feature column, so a single row becomes all zeros.  Use a within-profile
-        # robust contrast only for one-row schematic strips.
         if R.shape[0] == 1:
             med = np.nanmedian(R, axis=1, keepdims=True)
             q75 = np.nanpercentile(R, 75, axis=1, keepdims=True)
@@ -832,9 +793,6 @@ def apply_transform(
         return Z / lim, CLR_CMAP, -1.0, 1.0
 
     if key == "quantile":
-        # QuantileTransformer with one sample has no distribution to learn and
-        # visually collapses.  For a one-profile schematic, show feature ranks
-        # within the profile so QNorm/quantile members still have a gradient.
         if R.shape[0] == 1:
             ranks = np.apply_along_axis(rankdata, 1, R).astype(float)
             Z = _row_z(ranks)
@@ -871,14 +829,13 @@ def apply_transform(
         lim = max(float(np.nanmax(np.abs(Z))), 0.1)
         return Z / lim, CLR_CMAP, -1.0, 1.0
 
-    # Conservative fallback: row-normalised abundance.
     return R, ABUND_CMAP, 0.0, max(float(np.nanmax(R)), 0.01)
 
 
 def select_demo_rows(X: np.ndarray, max_rows: int, seed: int = 42) -> np.ndarray:
     if X.shape[0] <= max_rows:
         return X
-    # Deterministic evenly spaced sampling keeps case/control ordering if cases are first.
+
     idx = np.linspace(0, X.shape[0] - 1, max_rows, dtype=int)
     return X[idx]
 
@@ -888,11 +845,6 @@ def compress_features_for_display(Z: np.ndarray, max_features: int) -> np.ndarra
         return Z
     idx = np.linspace(0, Z.shape[1] - 1, max_features, dtype=int)
     return Z[:, idx]
-
-
-# ---------------------------------------------------------------------------
-# Figure drawing
-# ---------------------------------------------------------------------------
 
 
 def draw_heatmap(
@@ -981,12 +933,7 @@ def wrap_plain(text: str, width: int) -> str:
 
 
 def panel_height(n_units: int, unit_h: float = 8.4, gap: float = 1.4) -> float:
-    """Panel height in pseudo-mm units.
-
-    The height is driven by the number of shown ensemble rows, but all panels in
-    the same row of the final figure are rendered at the same data scale.  That
-    avoids the visual bug where shorter ensembles had larger classifier boxes.
-    """
+    pass
     title_h = 10.0
     raw_h = 11.0
     units_h = n_units * unit_h + max(0, n_units - 1) * gap
@@ -995,11 +942,7 @@ def panel_height(n_units: int, unit_h: float = 8.4, gap: float = 1.4) -> float:
 
 
 def aggregation_endpoint_label(agg: Any) -> str:
-    """Label for the fitted inference-time aggregation rule.
-
-    Super learners are not trained in this schematic; the figure depicts applying
-    the fitted aggregation rule/meta-learner learned during model selection.
-    """
+    pass
     a = str(agg or "?")
     mapping = {
         "mean_proba": "mean\nprobability",
@@ -1034,19 +977,14 @@ def aggregation_endpoint_label(agg: Any) -> str:
 
 
 def visual_abundance_profile(n_features: int, seed: int = 42) -> np.ndarray:
-    """Create one stylised abundance profile for the ensemble schematic.
-
-    One input profile is propagated through each selected MPMA-E member. The
-    dimensionality p is real for the rank set, while the display profile is
-    deterministic and high-contrast so transformed strips remain visible.
-    """
+    pass
     n = max(int(n_features), 1)
     rng = np.random.default_rng(seed % (2**31))
     row = np.zeros(n, dtype=float)
     mask = rng.random(n) >= 0.50
     vals = rng.random(n) ** 1.8
     row[mask] = vals[mask]
-    # Ensure that very small p still has visible structure.
+
     if n <= 3 and row.sum() == 0:
         row[rng.integers(0, n)] = 1.0
     return row.reshape(1, -1)
@@ -1054,7 +992,7 @@ def visual_abundance_profile(n_features: int, seed: int = 42) -> np.ndarray:
 
 def stable_member_seed(member: MemberRecord, base_seed: int) -> int:
     key = f"{member.config_id or ''}|{member.raw_resolution or ''}|{member.raw_transform or ''}|{member.raw_model or ''}|{member.order or 0}"
-    # Python's built-in hash is intentionally randomized by process; use a stable checksum.
+
     import hashlib
 
     return (base_seed + int(hashlib.sha1(key.encode()).hexdigest()[:8], 16)) % (2**31)
@@ -1069,20 +1007,17 @@ def draw_panel(
     panel_h: float | None = None,
     panel_w: float = 90.0,
 ) -> None:
-    # Inference schematic: show one abundance profile propagated through the selected ensemble.
+
     n_units = len(task.shown_members)
     unit_h = 8.4
     gap = 1.4
-    # Keep the panel canvas close to the actually used schematic width.
-    # v6 used 120 mm, which left large empty right margins inside each panel;
+
     W = float(panel_w)
     H = panel_h if panel_h is not None else panel_height(n_units, unit_h, gap)
     ax.set_xlim(0, W)
     ax.set_ylim(H, 0)
     ax.axis("off")
 
-    # Geometry uses a compact heatmap strip, labels below the strip, fixed-size
-    # classifier cards, and a final aggregation endpoint inside the panel.
     trunk_x = 4.0
     strip_x = 8.0
     strip_w = 33.0
@@ -1090,7 +1025,7 @@ def draw_panel(
     learner_w = 25.0
     merge_x = 82.5
     agg_w = learner_w
-    yhat_x = strip_x + strip_w + 2.0  # align output with the input x symbol
+    yhat_x = strip_x + strip_w + 2.0
     strip_h = 2.0
 
     title_y = 1.5
@@ -1107,9 +1042,6 @@ def draw_panel(
     )
     best = task.selected.get("inner_val_best_ensemble", task.selected)
 
-    # Raw abundance profile x.  Use the same high-contrast one-profile visual
-    # visual language for the panel rather than a nearly blank row from a
-    # particular biological sample.
     raw_y = 12.5
     X_raw_vis = visual_abundance_profile(task.X.shape[1], seed=7)
     X_raw_vis = compress_features_for_display(
@@ -1145,7 +1077,6 @@ def draw_panel(
         color=MID,
     )
 
-    # Dashed input trunk. The raw abundance profile is the input, so no arrowhead points into it.
     y0 = 27.5
     first_y = y0 + strip_h / 2
     last_member_y = (
@@ -1159,9 +1090,7 @@ def draw_panel(
         ls=(0, (4, 3)),
         zorder=1,
     )
-    # No arrowhead into the raw abundance vector: x is the input.  The dashed
-    # trunk shows that this input profile is propagated to the transformed
-    # member-specific profiles below.
+
     ax.plot(
         [trunk_x, strip_x - 0.5],
         [raw_y + strip_h / 2, raw_y + strip_h / 2],
@@ -1171,7 +1100,6 @@ def draw_panel(
         zorder=1,
     )
 
-    # Ensemble members.
     for row_i, member in enumerate(task.shown_members):
         y = y0 + row_i * (unit_h + gap)
         cy = y + strip_h / 2
@@ -1202,7 +1130,7 @@ def draw_panel(
 
         X_rank, features = aggregate_to_levels(task.X, task.taxa, member.levels)
         member.n_features = X_rank.shape[1]
-        # One profile with true p for this rank set; then apply the real stored transform.
+
         X_demo = visual_abundance_profile(
             X_rank.shape[1], seed=stable_member_seed(member, seed)
         )
@@ -1225,7 +1153,6 @@ def draw_panel(
             zorder=1,
         )
 
-        # Operation labels below each profile, with enough vertical space before the next strip.
         ax.text(
             strip_x,
             y + strip_h + 0.9,
@@ -1245,7 +1172,6 @@ def draw_panel(
             color=MID,
         )
 
-        # Learner card and member prediction line.  The card size is fixed for all tasks.
         card_h = 6.4
         text_box(
             ax,
@@ -1268,9 +1194,6 @@ def draw_panel(
             [learner_x + learner_w, merge_x], [cy, cy], color=TRACK, lw=0.65, zorder=2
         )
 
-    # Merge spine and fitted aggregation-rule endpoint.  The aggregation rule is
-    # shown directly below the final displayed member, while the output label is
-    # vertically aligned with the input vector label x above.
     if n_units:
         ax.plot(
             [merge_x, merge_x], [first_y, last_member_y], color=TRACK, lw=0.65, zorder=1
@@ -1279,7 +1202,7 @@ def draw_panel(
         agg_h = 7.2
         arrow_y = agg_y + agg_h / 2
         agg_x = learner_x
-        # route the merged member predictions down to the fitted aggregation rule
+
         ax.plot(
             [merge_x, merge_x], [last_member_y, arrow_y], color=TRACK, lw=0.65, zorder=1
         )
@@ -1305,7 +1228,7 @@ def draw_panel(
             weight=None,
             wrap_width=14,
         )
-        # compact return arm to the final prediction, aligned with the input x symbol
+
         ax.annotate(
             "",
             xy=(yhat_x + 4.0, arrow_y),
@@ -1313,10 +1236,7 @@ def draw_panel(
             arrowprops=dict(arrowstyle="-|>", lw=0.65, color=TRACK, mutation_scale=6),
             zorder=2,
         )
-        # Avoid SVG text-mode decomposition of mathtext ``\hat{y}`` into a
-        # separate combining accent plus ``y``.  Browsers can place that accent
-        # incorrectly even though PNG/PDF render correctly.  Use the precomposed
-        # Unicode glyph so SVG, PDF, and PNG agree while keeping SVG text live.
+
         ax.text(yhat_x, arrow_y, "ŷ", ha="left", va="center", fontsize=12.0, color=INK)
 
 
@@ -1344,8 +1264,6 @@ def render_figure(
     fig_h = sum(row_heights) + (nrows - 1) * 8.0
     fig = plt.figure(figsize=(fig_w * MM, fig_h * MM))
 
-    # Manual axes positions in figure fractions.  Each panel in a row receives
-    # the same data-height and therefore the same visual scale.
     y_top = fig_h
     for r in range(nrows):
         row_h = row_heights[r]
@@ -1403,7 +1321,7 @@ def write_members_tsv(tasks: list[EnsembleTask], out_path: Path) -> None:
 
 
 def _normalise_selected_unit_for_figure(selected: dict[str, Any]) -> dict[str, Any]:
-    """Normalise selected-unit metadata for schematic rendering."""
+    pass
     if "inner_val_best_ensemble" in selected:
         return selected
     out = dict(selected)
@@ -1427,7 +1345,7 @@ def write_single_task_mpma_e_figure(
     max_features: int = 80,
     seed: int = 42,
 ) -> dict[str, Path]:
-    """Render the selected MPMA-E schematic for one sweep."""
+    pass
     experiment_dir = Path(experiment_dir)
     out_dir = Path(out_dir) if out_dir is not None else experiment_dir / "figures"
     selected = _normalise_selected_unit_for_figure(read_selected_unit(experiment_dir))

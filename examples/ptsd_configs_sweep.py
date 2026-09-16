@@ -55,20 +55,27 @@ EVALUATION = mll.Evaluation(
     outer_folds=5,
     inner_folds=3,
     repeats=1,
-    optimize_metric="nMCC",
+    optimize_metric="log_loss",
     random_state=42,
     n_jobs="auto",
 )
 GATE = mll.QualificationGate(enabled=False, metric="nMCC", threshold=0.51)
 ENSEMBLE = mll.Ensemble(
-    sizes=(3,),
+    max_sizes=(3,),
     selection_strategies=(
         "top_k",
+        "best_per_resolution",
         "best_per_learner_type",
         "caruana",
         "super_learner",
     ),
-    aggregation_strategies=("mean_proba",),
+    aggregation_strategies=(
+        "mean_proba",
+        "weighted_mean_proba",
+        "median_proba",
+        "rank_mean",
+        "majority_vote",
+    ),
     optimize_metric="log_loss",
 )
 EXPLAINABILITY = mll.Explainability(

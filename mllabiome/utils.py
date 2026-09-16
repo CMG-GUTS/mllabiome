@@ -31,6 +31,8 @@ METRIC_COLUMNS = [
     "Accuracy",
     "PR_AUC",
     "PR_AUC_macro",
+    "log_loss",
+    "brier",
 ]
 
 
@@ -63,7 +65,7 @@ def _clr(X: np.ndarray, pseudo_count: float) -> np.ndarray:
 
 
 def _json_clean(obj: Any) -> Any:
-    """Return JSON-standard data: NaN/Inf become None recursively."""
+    pass
     if is_dataclass(obj):
         return _json_clean(asdict(obj))
     if isinstance(obj, dict):
@@ -92,7 +94,7 @@ def _json_clean(obj: Any) -> Any:
 
 
 def dump_json_standard(obj: Any, path: Path, *, indent: int = 2) -> None:
-    """Write strict standards-compliant JSON. Python NaN/Inf are not emitted."""
+    pass
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(_json_clean(obj), fh, indent=indent, allow_nan=False)

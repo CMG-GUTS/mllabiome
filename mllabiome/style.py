@@ -19,7 +19,7 @@ ACC = "#2563eb"
 ACC_D = "#1d4ed8"
 ACC_L = "#dbeafe"
 
-# Blue family used by the representation-impact panels.
+
 C_NAVY = "#0C4A6E"
 C_DARK = "#1565A8"
 C_MID = "#2E9DC8"

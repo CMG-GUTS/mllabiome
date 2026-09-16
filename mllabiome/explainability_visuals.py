@@ -14,10 +14,10 @@ from matplotlib.colors import LinearSegmentedColormap
 
 try:
     import networkx as nx
-except Exception:  # pragma: no cover
+except Exception:
     nx = None
 
-# Shared visual grammar for explainability-result figures.
+
 MM = 1.0 / 25.4
 COL_W_2 = 180 * MM
 INK = "#0f172a"
@@ -41,13 +41,13 @@ SUPPORT_CMAP = LinearSegmentedColormap.from_list(
 
 
 def _support_text_color(value: float) -> str:
-    """Readable numeric-label colour for the support heatmap."""
+    pass
     try:
         v = float(value)
     except Exception:
         return INK
     rgba = SUPPORT_CMAP(float(np.clip(v, 0.0, 1.0)))
-    # WCAG-style relative luminance approximation.
+
     lum = 0.2126 * rgba[0] + 0.7152 * rgba[1] + 0.0722 * rgba[2]
     return "#ffffff" if lum < 0.48 else INK
 
@@ -322,10 +322,7 @@ def plot_feature_support(
     mean_support = np.clip(_mean_support_column(top), 0, 1)
 
     fig_h_mm = max(62.0, 3.85 * n + 27.0)
-    # Single-method panels should read as a compact table, not as a full-width
-    # multi-method comparison with a large empty right side.  The geometry is
-    # intentionally tighter than the combined figure and keeps the feature names
-    # close to the class-shift axis.
+
     fig_w = (108.0 * MM) if solo_method else COL_W_2
     fig = plt.figure(figsize=(fig_w, fig_h_mm * MM))
     fig.patch.set_facecolor(BG)
@@ -774,8 +771,6 @@ def _draw_network(
             )
         )
 
-    # The supplied renderer places labels by relaxing them around nodes, rather
-    # than pushing all labels to fixed rails.  Keep the same force-based layout.
     char_w = 0.058
     line_h = 0.26
     node_list = list(G.nodes())

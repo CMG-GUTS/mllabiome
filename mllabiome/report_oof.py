@@ -187,6 +187,9 @@ def _ensemble_summary_from_selected(root: Path) -> pd.DataFrame:
         "Strategy": "MPMA-E",
         "Selection": str(ens.get("selection_strategy", ens.get("method", ""))).strip(),
         "Aggregation": str(ens.get("aggregation_strategy", "")).strip(),
+        "Max size": int(_safe_float(ens.get("max_size")))
+        if np.isfinite(_safe_float(ens.get("max_size")))
+        else int(effective),
         "Members": int(effective),
         "Selection metric": metric,
     }

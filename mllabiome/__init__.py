@@ -1,5 +1,3 @@
-"""mllabiome: MPDR/MPMA sweeps, ensemble sweeps, and explainability."""
-
 import sys
 
 from .threading import configure_thread_limits
@@ -24,8 +22,8 @@ from .ensemble_sweep import sweep_ensemble
 from .explainability import (
     ExplainabilityConfigurationError,
     ExplainabilityDependencyError,
-    explain,
 )
+from .final_explainability import explain
 from .learners import FLAMLClassifier, build_learner
 from .metrics import compute_metrics
 from .pipeline import run_all
@@ -85,6 +83,5 @@ __all__ = [
     "transformation_space_table",
 ]
 
-# Compact public namespace alias for configuration files:
-#     from mllabiome import mll
+
 mll = sys.modules[__name__]

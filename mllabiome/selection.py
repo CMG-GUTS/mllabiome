@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .metrics import compute_metrics
+from .metrics import compute_metrics, metric_is_loss
 from .utils import dump_json_standard
 
 
@@ -139,7 +139,7 @@ def select_mpma_b_by_outer_fold(
         winner = (
             group.sort_values(
                 ["inner_score", "config_id"],
-                ascending=[False, True],
+                ascending=[metric_is_loss(metric), True],
                 kind="mergesort",
             )
             .iloc[0]
@@ -213,7 +213,7 @@ def select_final_mpma_candidate(
         return {}
     ranked = pd.DataFrame(rows).sort_values(
         ["inner_score", "config_id"],
-        ascending=[False, True],
+        ascending=[metric_is_loss(metric), True],
         kind="mergesort",
     )
     best = ranked.iloc[0].to_dict()

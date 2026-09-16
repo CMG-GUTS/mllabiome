@@ -595,6 +595,7 @@ def _ensemble_summary_table(root: Path) -> pd.DataFrame:
         "Strategy": "MPMA-E",
         "Selection": ens.get("selection_strategy", ""),
         "Aggregation": ens.get("aggregation_strategy", ""),
+        "Max size": ens.get("max_size", members),
         "Members": members,
         "Selection metric": ens.get(
             "selection_metric",

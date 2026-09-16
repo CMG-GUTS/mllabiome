@@ -13,7 +13,7 @@ import pandas as pd
 from scipy.stats import t as student_t
 
 from .final_models import build_final_models, fixed_strategy_predictions
-from .metrics import _renormalize_proba, compute_metrics
+from .metrics import _renormalize_proba, compute_metrics, metric_is_loss
 from .utils import dump_json_standard
 
 DISPLAY_METRICS = ("AUC", "PR_AUC", "nMCC", "F1w", "Precision", "Recall")
@@ -54,7 +54,6 @@ _OOF_CONTRAST_METRICS = (
     "Brier_multiclass",
     "LogLoss",
 )
-_LOWER_IS_BETTER = {"Brier", "Brier_multiclass", "LogLoss"}
 METRIC_LABELS = {
     "AUC": "ROC-AUC",
     "PR_AUC": "PR-AUC (AP)",
@@ -167,7 +166,7 @@ def _candidate_from_table(root: Path) -> dict[str, Any]:
             selected = _candidate_from_selected_unit(root)
             if selected:
                 metric = str(selected.get("selection_metric", "")).strip().lower()
-            ascending = metric in {"log_loss", "logloss", "brier", "brier_multiclass"}
+            ascending = metric_is_loss(metric)
             valid["_score"] = pd.to_numeric(valid["inner_score"], errors="coerce")
             table = valid.sort_values("_score", ascending=ascending, kind="mergesort")
     return table.iloc[0].to_dict() if not table.empty else {}
@@ -1460,7 +1459,7 @@ def _paired_bootstrap_advantages(
                 if not np.isfinite(a) or not np.isfinite(b):
                     continue
                 storage[estimand][metric][bootstrap_index] = (
-                    b - a if metric in _LOWER_IS_BETTER else a - b
+                    b - a if metric_is_loss(metric) else a - b
                 )
     return storage
 
@@ -1508,7 +1507,7 @@ def _paired_contrast_rows(
                 if not np.isfinite(a) or not np.isfinite(b):
                     continue
                 difference = a - b
-                advantage = b - a if metric in _LOWER_IS_BETTER else difference
+                advantage = b - a if metric_is_loss(metric) else difference
                 samples = np.asarray(boot[estimand][metric], dtype=float)
                 samples = samples[np.isfinite(samples)]
                 low = high = np.nan
@@ -1883,7 +1882,7 @@ def run_report_statistics(
         ),
         "paired_contrasts": "matched held-out observations with shared bootstrap draws",
         "metric_direction": {
-            metric: ("lower" if metric in _LOWER_IS_BETTER else "higher")
+            metric: ("lower" if metric_is_loss(metric) else "higher")
             for metric in _OOF_CONTRAST_METRICS
         },
         "scope": "displayed report strategies only",

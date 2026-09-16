@@ -81,14 +81,7 @@ def _eta2_one_way(df: pd.DataFrame, factor: str, metric: str) -> float:
 
 
 def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") -> None:
-    """Write the sweep-end MPDR representation-impact overview.
-
-    Single-task sweeps use the package visual language without the cross-task
-    rank-consistency panel, because no cross-task comparison is defined for one
-    configured sweep.  The panels are therefore: resolution marginal performance,
-    one-way variance decomposition, and the resolution × feature-representation
-    heatmap.
-    """
+    pass
     result_path = root / "results" / "outer_results.tsv"
     if not result_path.exists() or result_path.stat().st_size == 0:
         return
@@ -211,7 +204,6 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
 
-    # a: resolution marginal performance
     res_summary = (
         df.groupby("resolution", dropna=False)[metric]
         .agg(["mean", "std", "count"])
@@ -231,7 +223,6 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
     tag(ax_a, "a")
     trim(ax_a)
 
-    # b: variance decomposition
     factors = [
         ("Feature representation", "count_transformation"),
         ("Taxonomic resolution", "resolution"),
@@ -253,7 +244,6 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
     tag(ax_b, "b")
     trim(ax_b)
 
-    # c: resolution × feature-representation heatmap
     im = ax_c.imshow(
         mat,
         cmap=HMAP_CMAP,
@@ -324,8 +314,8 @@ def _plot_feature_importance(imp: pd.DataFrame, out: Path, top_k: int) -> None:
 
 def _plot_interaction_network(tab: pd.DataFrame, out: Path, top_k: int) -> None:
     try:
-        import networkx as nx  # type: ignore
-    except Exception as exc:  # pragma: no cover
+        import networkx as nx
+    except Exception as exc:
         raise ExplainabilityDependencyError(
             "Interaction-network plotting requires networkx. No fallback figure will be used."
         ) from exc

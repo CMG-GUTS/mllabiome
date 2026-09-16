@@ -67,9 +67,9 @@ if (mode == "fit") {
 
     labels <- labels[colnames(feat), "label", drop = TRUE]
 
-    # Use SIAMCAT's native named-vector label interface. Avoid constructing
-    # a one-column metadata table because consuming the label column can leave
-    # an empty phyloseq sample_data object.
+    
+    
+    
     group <- ifelse(as.integer(labels) == 1L, "case", "control")
     names(group) <- colnames(feat)
 

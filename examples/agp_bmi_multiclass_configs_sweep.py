@@ -22,7 +22,7 @@ _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
     # ("phylum", ("phylum",)),
     # ("class", ("class",)),
     # ("order", ("order",)),
-    ("family", ("family",)),
+    # ("family", ("family",)),
     ("genus", ("genus",)),
     ("raw", ("all",)),
 ]
@@ -32,18 +32,18 @@ def _build_count_transformations():
     T = mll.Transformation
     return [
         T("identity"),
-        T("relative_abundance"),
-        T("presence_absence"),
-        T("hellinger"),
+        # T("relative_abundance"),
+        # T("presence_absence"),
+        # T("hellinger"),
         T("arcsine_sqrt"),
         # T("log10_relative_abundance_half_min_pseudocount"),
         # T("centered_log_ratio_multiplicative_replacement"),
         # T("standardized_centered_log_ratio_multiplicative_replacement"),
-        # T("yeo_johnson_relative_abundance"),
+        T("yeo_johnson_relative_abundance"),
         # T("quantile_normal_relative_abundance"),
         # T("robust_scaled_relative_abundance"),
         # T("within_sample_fractional_rank"),
-        # T("training_ecdf_rank"),
+        T("training_ecdf_rank"),
         # T("prevalence_weighted_relative_abundance"),
     ]
 
@@ -79,7 +79,7 @@ GATE = mll.QualificationGate(
 )
 
 ENSEMBLE = mll.Ensemble(
-    sizes=(3,),
+    max_sizes=(5,),
     selection_strategies=(
         "top_k",
         "best_per_resolution",
@@ -87,7 +87,13 @@ ENSEMBLE = mll.Ensemble(
         "caruana",
         "super_learner",
     ),
-    aggregation_strategies=("mean_proba",),
+    aggregation_strategies=(
+        "mean_proba",
+        "weighted_mean_proba",
+        "median_proba",
+        "rank_mean",
+        "majority_vote",
+    ),
     optimize_metric="log_loss",
 )
 

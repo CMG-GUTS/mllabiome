@@ -37,7 +37,7 @@ from .style import save_all
 from .transformations import CountTransformationAdapter, _count_transformation_factory
 from .utils import _as_float_matrix, dump_json_standard
 
-# Keep third-party diagnostics from breaking the rich progress display.
+
 for _logger_name in ("PyALE", "PyALE._ALE_generic"):
     logging.getLogger(_logger_name).setLevel(logging.WARNING)
     logging.getLogger(_logger_name).propagate = False
@@ -55,15 +55,7 @@ def _quiet_pyale_info():
 
 @contextmanager
 def _quiet_external_progress():
-    """Suppress third-party tqdm/progress chatter while preserving exceptions.
-
-    SHAP can instantiate tqdm progress bars from several import locations and,
-    may ignore ``silent=True`` for model-agnostic
-    explainers.  Redirecting stdout/stderr alone is not always enough because
-    tqdm may keep a cached file handle.  This context therefore also patches the
-    common tqdm constructors so third-party progress bars are disabled while the
-    rich mllabiome status line remains the only terminal progress indicator.
-    """
+    pass
     buf_out = io.StringIO()
     buf_err = io.StringIO()
     patches: list[tuple[Any, str, Any]] = []
@@ -73,27 +65,27 @@ def _quiet_external_progress():
         return _ORIG_TQDM(*args, **kwargs)
 
     try:
-        import tqdm as _tqdm_mod  # type: ignore
+        import tqdm as _tqdm_mod
 
         _ORIG_TQDM = _tqdm_mod.tqdm
         patches.append((_tqdm_mod, "tqdm", _ORIG_TQDM))
         _tqdm_mod.tqdm = _disabled_tqdm
         try:
-            import tqdm.auto as _tqdm_auto  # type: ignore
+            import tqdm.auto as _tqdm_auto
 
             patches.append((_tqdm_auto, "tqdm", _tqdm_auto.tqdm))
             _tqdm_auto.tqdm = _disabled_tqdm
         except Exception:
             pass
         try:
-            import tqdm.std as _tqdm_std  # type: ignore
+            import tqdm.std as _tqdm_std
 
             patches.append((_tqdm_std, "tqdm", _tqdm_std.tqdm))
             _tqdm_std.tqdm = _disabled_tqdm
         except Exception:
             pass
     except Exception:
-        _ORIG_TQDM = None  # type: ignore[assignment]
+        _ORIG_TQDM = None
 
     try:
         with redirect_stdout(buf_out), redirect_stderr(buf_err):
@@ -107,11 +99,11 @@ def _quiet_external_progress():
 
 
 class ExplainabilityConfigurationError(RuntimeError):
-    """Raised when explainability cannot run exactly as configured."""
+    pass
 
 
 class ExplainabilityDependencyError(RuntimeError):
-    """Raised when a configured explainability method lacks a dependency."""
+    pass
 
 
 _EXPLAINABILITY_METHODS = {"shap", "lime", "ale", "permutation", "interactions"}
@@ -148,27 +140,27 @@ def _normalise_explainability_methods(methods: Sequence[str]) -> tuple[str, ...]
 
 
 def _preflight_explainability_dependencies(methods: Sequence[str]) -> None:
-    """Fail before fitting/explaining if any requested strict method lacks its package."""
+    pass
     missing: list[str] = []
     if "shap" in methods:
         try:
-            import shap  # noqa: F401
-        except Exception as exc:  # pragma: no cover
+            import shap
+        except Exception as exc:
             missing.append(f"shap ({exc})")
     if "lime" in methods:
         try:
-            from lime.lime_tabular import LimeTabularExplainer  # noqa: F401
-        except Exception as exc:  # pragma: no cover
+            from lime.lime_tabular import LimeTabularExplainer
+        except Exception as exc:
             missing.append(f"lime ({exc})")
     if "ale" in methods or "interactions" in methods:
         try:
-            from PyALE import ale as _pyale_preflight  # noqa: F401
-        except Exception as exc:  # pragma: no cover
+            from PyALE import ale as _pyale_preflight
+        except Exception as exc:
             missing.append(f"PyALE ({exc})")
     if "interactions" in methods:
         try:
-            import networkx as nx  # noqa: F401
-        except Exception as exc:  # pragma: no cover
+            import networkx as nx
+        except Exception as exc:
             missing.append(f"networkx ({exc})")
     if missing:
         raise ExplainabilityDependencyError(
@@ -340,7 +332,7 @@ def _permutation_feature_importance(
             random_state=random_state,
             scoring=scoring,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise ExplainabilityConfigurationError(
             "Permutation explainability failed for the selected MPMA. No fallback method will be used."
         ) from exc
@@ -366,8 +358,8 @@ def _shap_feature_importance(
     max_explain: int,
 ) -> pd.DataFrame:
     try:
-        import shap  # type: ignore
-    except Exception as exc:  # pragma: no cover - depends on external package
+        import shap
+    except Exception as exc:
         raise ExplainabilityDependencyError(
             "Explainability.methods includes 'shap', but the 'shap' package is not importable. "
             "Install shap or remove 'shap' from Explainability.methods. No fallback method will be used."
@@ -406,7 +398,7 @@ def _shap_feature_importance(
                         values = explainer(X_explain, silent=True)
                     except TypeError:
                         values = explainer(X_explain)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise ExplainabilityConfigurationError(
             "SHAP failed for the selected MPMA. Explainability is strict, so execution stops "
             "instead of replacing SHAP with another method."
@@ -448,8 +440,8 @@ def _lime_feature_importance(
     max_explain: int,
 ) -> pd.DataFrame:
     try:
-        from lime.lime_tabular import LimeTabularExplainer  # type: ignore
-    except Exception as exc:  # pragma: no cover - depends on external package
+        from lime.lime_tabular import LimeTabularExplainer
+    except Exception as exc:
         raise ExplainabilityDependencyError(
             "Explainability.methods includes 'lime', but the 'lime' package is not importable. "
             "Install lime or remove 'lime' from Explainability.methods. No fallback method will be used."
@@ -482,7 +474,7 @@ def _lime_feature_importance(
             for fi, coef in exp.local_exp[label]:
                 if 0 <= int(fi) < len(feature_names):
                     coeffs[i, int(fi)] = float(coef)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise ExplainabilityConfigurationError(
             "LIME failed for the selected MPMA. Explainability is strict, so execution stops "
             "instead of replacing LIME with another method."
@@ -513,8 +505,8 @@ class _AleModelWrapper:
 
 def _require_pyale():
     try:
-        from PyALE import ale as pyale  # type: ignore
-    except Exception as exc:  # pragma: no cover - depends on external package
+        from PyALE import ale as pyale
+    except Exception as exc:
         raise ExplainabilityDependencyError(
             "Explainability.methods includes 'ale' or 'interactions', but the 'PyALE' package is not importable. "
             "Install PyALE or remove ALE-based methods from Explainability.methods. No fallback method will be used."
@@ -525,14 +517,7 @@ def _require_pyale():
 def _ale_result_values(
     result: Any,
 ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
-    """Extract finite ALE effect values and optional aligned coordinates.
-
-    For 2D PyALE surfaces, coordinates are returned only when PyALE exposes a
-    MultiIndex aligned one-to-one with the flattened effect vector.  Matrix-like
-    2D outputs are still valid for the uncorrected RMS score, but their marginal
-    correction is marked unavailable instead of trying to broadcast row/column
-    axes against the flattened surface.
-    """
+    pass
     x1 = x2 = None
     if isinstance(result, pd.DataFrame):
         df = result.copy()
@@ -553,7 +538,6 @@ def _ale_result_values(
             x1 = np.asarray([idx[0] for idx in df.index], dtype=float)
             x2 = np.asarray([idx[1] for idx in df.index], dtype=float)
         elif not isinstance(df.index, pd.MultiIndex) and len(df.index) == len(vals):
-            # 1D ALE result.
             try:
                 x1 = df.index.to_numpy(dtype=float)
             except Exception:
@@ -632,7 +616,7 @@ def _ale_feature_importance(
                     plot=False,
                 )
             vals, grid, _ = _ale_result_values(result)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             skipped.append(
                 {
                     "feature": fname,
@@ -710,7 +694,7 @@ def _candidate_pairs_from_scores(
         ),
         reverse=True,
     )
-    # take a modest frontier and then form pair candidates
+
     frontier = order[
         : min(len(order), max(4, int(math.ceil(math.sqrt(max_pairs * 2))) + 6))
     ]
@@ -819,9 +803,7 @@ def _ale_interactions(
                 comp = comp - float(np.mean(comp))
                 corrected = float(np.sqrt(np.mean(comp**2)))
                 correction_applied = True
-            except Exception as exc:  # noqa: BLE001
-                # This is not a fallback: corrected methods are reported as NaN when the correction cannot be defined,
-                # no substitute score is reported for corrected ALE interactions.
+            except Exception as exc:
                 correction_error = str(exc)[:240]
         raw_rows.append(
             {
@@ -862,7 +844,7 @@ def _ale_interactions(
 
 
 def _collapse_duplicate_feature_importance(frame: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate duplicate feature rows before ranking/support lookups."""
+    pass
     if (
         frame.empty
         or "feature" not in frame.columns
@@ -956,13 +938,7 @@ def _combine_feature_importance(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
 
 
 def _single_method_support_table(frame: pd.DataFrame, top_k: int) -> pd.DataFrame:
-    """Top-feature table for one completed explainability method.
-
-    This is intentionally method-local: the method figure is written immediately
-    after that method finishes, without waiting for the full explainability suite.
-    The combined support table is still built at the end from all completed
-    methods.
-    """
+    pass
     frame = _collapse_duplicate_feature_importance(frame)
     method = _method_display(str(frame["method"].iloc[0]))
     top = frame.sort_values("importance_mean", ascending=False).head(int(top_k)).copy()
@@ -993,7 +969,7 @@ def _write_method_outputs(
     class_labels: list[str],
     top_k: int,
 ) -> dict[str, Path]:
-    """Persist method-specific outputs immediately after a method completes."""
+    pass
     method = str(frame["method"].iloc[0]).strip().lower()
     table_path = target_dir / f"feature_importance_{method}.tsv"
     frame.to_csv(table_path, sep="\t", index=False)
@@ -1033,7 +1009,7 @@ def _select_instance_indices(
     sample_ids: Sequence[str],
     representative: bool,
 ) -> list[tuple[int, str]]:
-    """Return (row_index, role) pairs for instance-level explanation."""
+    pass
     selected: list[tuple[int, str]] = []
     sid_to_idx = {str(sid): i for i, sid in enumerate(dataset.sample_ids)}
     for sid in sample_ids:
@@ -1060,7 +1036,7 @@ def _select_instance_indices(
             role = "representative_case" if cls == 1 else "representative_control"
             if local not in [i for i, _ in selected]:
                 selected.append((local, role))
-    # preserve order, unique indices
+
     out: list[tuple[int, str]] = []
     seen: set[int] = set()
     for idx, role in selected:
@@ -1081,12 +1057,12 @@ def _shap_instance_explanations(
     top_features_per_direction: int,
     random_state: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Compute local SHAP rows for requested/representative samples."""
+    pass
     if not selected:
         return pd.DataFrame(), pd.DataFrame()
     try:
-        import shap  # type: ignore
-    except Exception as exc:  # pragma: no cover
+        import shap
+    except Exception as exc:
         raise ExplainabilityDependencyError(
             "SHAP instance explanations require shap. No fallback method will be used."
         ) from exc
@@ -1119,7 +1095,7 @@ def _shap_instance_explanations(
                         values = explainer(X_sel, silent=True)
                     except TypeError:
                         values = explainer(X_sel)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise ExplainabilityConfigurationError(
             "SHAP instance explanations failed. No fallback method will be used."
         ) from exc
@@ -1185,7 +1161,7 @@ def _plot_ale_curves(
     *,
     max_panels: int = 12,
 ) -> None:
-    """Create small-multiple ALE curves for top features."""
+    pass
     apply_style()
     import math as _math
 
@@ -1305,13 +1281,7 @@ def _plot_ale_curves(
 def _plot_instance_explanations(
     inst_top: pd.DataFrame, out_stem: Path, *, top_features_per_direction: int
 ) -> None:
-    """Create a compact local SHAP explanation figure.
-
-    The canvas is deliberately narrower than the global feature-support figure:
-    instance-level panels only need feature names and signed local contribution
-    bars, so a two-column layout avoids the stretched/smashed appearance that
-    occurs on a full 180 mm canvas.
-    """
+    pass
     apply_style()
     import matplotlib.patheffects as mpe
     import matplotlib.pyplot as plt
@@ -1345,7 +1315,7 @@ def _plot_instance_explanations(
         sub = inst_top[inst_top["sample_id"].astype(str).eq(sid)].copy()
         sub = sub.sort_values("value", ascending=True)
         y0 = 0.055 + (n_panels - 1 - pi) * panel_h
-        # Tight two-column geometry: labels end close to signed bars.
+
         ax_lab = fig.add_axes([0.055, y0 + 0.085 * panel_h, 0.405, panel_h * 0.67])
         ax_bar = fig.add_axes([0.475, y0 + 0.085 * panel_h, 0.455, panel_h * 0.67])
         role = str(sub["selection_role"].iloc[0]) if len(sub) else "sample"
@@ -1456,7 +1426,6 @@ def _ensure_mpma_member_explanations(
     for i, member in enumerate(members, start=1):
         matches = rankings[rankings["config_id"].astype(str).eq(str(member))]
         if matches.empty:
-            # Tolerate shortened ids stored in older ensemble files.
             matches = rankings[
                 rankings["config_id"]
                 .astype(str)
@@ -1518,10 +1487,10 @@ def _shap_values_for_data(
     max_explain: int,
     force_explain_rows: Sequence[int] = (),
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return SHAP values for held-out rows and their local row indices."""
+    pass
     try:
-        import shap  # type: ignore
-    except Exception as exc:  # pragma: no cover - depends on external package
+        import shap
+    except Exception as exc:
         raise ExplainabilityDependencyError(
             "Explainability.methods includes 'shap', but the 'shap' package is not importable. "
             "Install shap or remove 'shap' from Explainability.methods. No fallback method will be used."
@@ -1574,7 +1543,7 @@ def _shap_values_for_data(
                         values = explainer(X_selected, silent=True)
                     except TypeError:
                         values = explainer(X_selected)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise ExplainabilityConfigurationError(
             "SHAP failed for an outer-test fold. Explainability is strict, so execution stops "
             "instead of replacing SHAP with another method."
@@ -1637,8 +1606,8 @@ def _lime_values_for_data(
     max_explain: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     try:
-        from lime.lime_tabular import LimeTabularExplainer  # type: ignore
-    except Exception as exc:  # pragma: no cover - depends on external package
+        from lime.lime_tabular import LimeTabularExplainer
+    except Exception as exc:
         raise ExplainabilityDependencyError(
             "Explainability.methods includes 'lime', but the 'lime' package is not importable. "
             "Install lime or remove 'lime' from Explainability.methods. No fallback method will be used."
@@ -1672,7 +1641,7 @@ def _lime_values_for_data(
             for fi, coef in exp.local_exp[label]:
                 if 0 <= int(fi) < len(feature_names):
                     coeffs[i, int(fi)] = float(coef)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise ExplainabilityConfigurationError(
             "LIME failed for an outer-test fold. Explainability is strict, so execution stops "
             "instead of replacing LIME with another method."
@@ -2052,7 +2021,7 @@ def _select_oof_instance_explanations(
             sub["_dist"] = (sub["p_positive"].astype(float) - centre).abs()
             r = sub.sort_values(["_dist", "sample_index"]).iloc[0]
             candidates.append((int(r["sample_index"]), f"representative_class_{cls}"))
-    # Preserve order and uniqueness.
+
     seen = set()
     selected_pairs: list[tuple[int, str]] = []
     for idx, role in candidates:
@@ -2299,9 +2268,6 @@ def _explain_one(
     oof_pred_path = _write_oof_prediction_summary(dataset, oof_folds, target_dir)
     method_outputs["oof_predictions"] = oof_pred_path
 
-    # All global explanations below are computed from outer-test rows predicted by
-    # models fitted only on the corresponding outer-training fold. This preserves
-    # the out-of-fold explanation contract for nested cross-validation.
     shap_oof_rows: list[dict[str, Any]] = []
     if "shap" in methods:
         info("Running OOF SHAP feature attribution")
@@ -2746,7 +2712,7 @@ def _resolve_baseline_rf_row(rankings: pd.DataFrame) -> pd.Series | None:
         return None
     required = required[
         required["learner"].astype(str).eq("RF_1000_msl5")
-        & required["count_transformation"].astype(str).eq("arcsin_sqrt")
+        & required["count_transformation"].astype(str).eq("arcsine_sqrt")
     ].copy()
     if required.empty:
         return None
@@ -2827,7 +2793,6 @@ def _fit_selected_mpma_e_for_explainability(
     configs["config_id"] = configs["config_id"].astype(str)
     member_rows = configs[configs["config_id"].isin([str(m) for m in members])].copy()
     if member_rows.empty:
-        # tolerate shortened IDs stored in old ensemble JSON files
         keep = []
         for _, r in configs.iterrows():
             cid = str(r.get("config_id", ""))
@@ -2871,12 +2836,7 @@ def _fit_selected_mpma_e_for_explainability(
         clf_member = _configured_learner_factory(sweep, learner_key)()
         clf_member.fit(X_member, dataset.y)
         stop = start + X_member.shape[1]
-        # In MPMA-E explainability each selected MPMA contributes a separate
-        # transformed feature block to the concatenated ensemble input matrix.
-        # Two members may share the same MPDR, for example the same resolution
-        # and transformation with different learners.  The member identity must
-        # therefore be part of the feature label; otherwise downstream support
-        # tables see duplicate feature labels and pandas refuses to reindex them.
+
         label_prefix = (
             f"{str(r.get('resolution', '+'.join(levels)))}"
             f"|{transformation_key}"
@@ -2936,7 +2896,7 @@ def _automatic_explainability_targets(
             targets.append(target)
     if not targets:
         targets.extend(_standard_explainability_targets(sweep, rankings))
-    # Preserve user order while avoiding duplicate work when aliases expand.
+
     return list(dict.fromkeys(targets))
 
 
@@ -2986,18 +2946,9 @@ def _support_from_importance(frame: pd.DataFrame) -> pd.Series:
     if len(vals) == 0:
         return vals
     if not vals.index.is_unique:
-        # Support is looked up by feature label with pandas.reindex/map.  Those
-        # operations require unique index labels.  Duplicate labels can occur in
-        # older MPMA-E outputs where distinct ensemble-member inputs were given
-        # the same display name.  Sum the duplicated importances so one support
-        # value represents the total evidence attached to that label.
         vals = vals.groupby(level=0, sort=False).sum()
     vmin, vmax = float(vals.min()), float(vals.max())
     if vmax <= vmin + 1e-12:
-        # A flat importance profile carries no ranking information.  Rendering
-        # this as 1.00 for every feature is visually and statistically
-        # misleading, especially for permutation importance on weak/flat
-        # models.  Keep the rows, but show zero normalised support.
         return pd.Series(np.zeros(len(vals), dtype=float), index=vals.index)
     return (vals - vmin) / (vmax - vmin)
 
@@ -3081,11 +3032,7 @@ def _plot_feature_importance(
     top_k: int,
     class_labels: Sequence[str],
 ) -> None:
-    """Create a feature-support figure.
-
-    Method-specific and combined figures share the same spacing, brackets,
-    support heatmap, and class-shift encodings.
-    """
+    pass
     _plot_feature_support_visual(top_features, stats, out_stem, top_k, class_labels)
 
 
@@ -3134,25 +3081,14 @@ def _plot_interaction_network(
     class_labels: Sequence[str],
     layout: str = "default",
 ) -> bool:
-    """Write the 2D-ALE interaction network figure.
-
-    An empty or non-finite interaction table means that no interaction network
-    can be drawn from the configured 2D-ALE analysis.  The computed interaction
-    artefact is still written, and a clearly labelled unavailable panel is saved
-    for figure completeness.  No alternative interaction estimator or fabricated
-    edge weights are used.
-    """
+    pass
     try:
         return bool(
             _plot_interaction_network_visual(
                 tab, stats, out_stem, top_k, class_labels, layout=layout
             )
         )
-    except Exception as exc:  # noqa: BLE001
-        # This is deliberately non-fatal: the method has completed and produced
-        # its artefact table, but the table may contain no finite edges for a
-        # network.  Keep strictness about methods while avoiding loss of all
-        # completed explainability outputs.
+    except Exception as exc:
         _write_unavailable_interaction_network(out_stem, str(exc))
         return False
 

@@ -6,16 +6,17 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.stats import rankdata
 
-_SCHEMA_VERSION = 1
-_PROBABILITY_PRESERVING = {"mean_proba", "weighted_mean_proba", "median_proba"}
-_SUPPORTED_ENSEMBLES = _PROBABILITY_PRESERVING | {
-    "rank_mean",
-    "majority_vote",
-    "max_proba",
-    "min_proba",
-}
+from .ensemble_aggregation import (
+    PROBABILITY_PRESERVING_AGGREGATIONS,
+    SUPPORTED_AGGREGATIONS,
+    aggregate_member_predictions as _aggregate_member_predictions,
+    effective_aggregation_weights,
+)
+
+_SCHEMA_VERSION = 2
+_PROBABILITY_PRESERVING = set(PROBABILITY_PRESERVING_AGGREGATIONS)
+_SUPPORTED_ENSEMBLES = set(SUPPORTED_AGGREGATIONS)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -109,15 +110,6 @@ def _member_scores(root: Path, member_ids: list[str], metric: str) -> dict[str, 
     return out
 
 
-def _normalized_weights(scores: list[float]) -> list[float]:
-    arr = np.asarray(scores, dtype=float)
-    if arr.ndim != 1 or len(arr) == 0 or not np.isfinite(arr).all():
-        raise ValueError("MPMA-E weights require finite member scores")
-    shifted = np.clip(arr - float(np.min(arr)), 0.0, None) + 1e-8
-    shifted = shifted / float(np.sum(shifted))
-    return [float(value) for value in shifted]
-
-
 def _build_mpma_b(root: Path, configs: pd.DataFrame) -> dict[str, Any]:
     source = _read_json(root / "tables" / "mpma_b_final_candidate.json")
     config_id = str(source.get("config_id", "")).strip()
@@ -195,38 +187,67 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
             f"Unsupported final MPMA-E aggregation_strategy {aggregation!r}"
         )
     selection_strategy = str(unit.get("selection_strategy", "")).strip()
-    metric = (
-        str(unit.get("optimize_metric", unit.get("selection_metric", "nMCC"))).strip()
+    selection_metric = (
+        str(unit.get("selection_metric", unit.get("optimize_metric", "nMCC"))).strip()
         or "nMCC"
     )
-    score_map = _member_scores(root, member_ids, metric)
-    weights = None
-    if aggregation == "weighted_mean_proba":
-        weights = _stored_weights(unit, member_ids)
-        if weights is None:
-            weights = _normalized_weights(
-                [score_map[config_id] for config_id in member_ids]
+    member_score_metric = (
+        str(
+            unit.get(
+                "member_score_metric", unit.get("optimize_metric", selection_metric)
             )
+        ).strip()
+        or selection_metric
+    )
+    score_map = _member_scores(root, member_ids, member_score_metric)
+
+    stored_weights: list[float] | None = None
+    if aggregation == "weighted_mean_proba":
+        stored_weights = _stored_weights(unit, member_ids)
+        if stored_weights is None:
+            raise ValueError(
+                "Final weighted_mean_proba MPMA-E is missing its learned aggregation weights. "
+                "Weights are no longer reconstructed from member scores."
+            )
+    linear_weights = effective_aggregation_weights(
+        aggregation, len(member_ids), stored_weights
+    )
+
     members: list[dict[str, Any]] = []
     for index, config_id in enumerate(member_ids):
         row = configs[configs["config_id"].astype(str).eq(config_id)].iloc[0]
         member = _core_config(row)
         member["selection_score"] = score_map[config_id]
-        if weights is not None:
-            member["weight"] = weights[index]
+        if linear_weights is not None:
+            member["aggregation_weight"] = float(linear_weights[index])
+
+            member["weight"] = float(linear_weights[index])
         members.append(member)
+
+    realised_size = int(
+        unit.get("member_count", unit.get("ensemble_size", len(member_ids)))
+    )
+    max_size = int(unit.get("max_size", realised_size))
     result: dict[str, Any] = {
         "ensemble_config_id": str(unit.get("ensemble_config_id", "")).strip(),
         "selection_strategy": selection_strategy,
         "aggregation_strategy": aggregation,
-        "selection_metric": metric,
+        "selection_metric": selection_metric,
+        "member_score_metric": member_score_metric,
+        "max_size": max_size,
+        "ensemble_size": len(member_ids),
+        "member_count": len(member_ids),
+        "effective_member_count": int(
+            unit.get("effective_member_count", len(member_ids))
+        ),
         "members": members,
     }
-    if "ensemble_size" in unit:
-        try:
-            result["ensemble_size"] = int(unit["ensemble_size"])
-        except (TypeError, ValueError):
-            pass
+    if "aggregation_weight_source" in unit:
+        result["aggregation_weight_source"] = str(
+            unit.get("aggregation_weight_source", "")
+        )
+    if "selection_weights" in unit:
+        result["selection_weights"] = unit.get("selection_weights")
     if "threshold_score" in unit:
         try:
             threshold = float(unit["threshold_score"])
@@ -327,62 +348,8 @@ def load_final_models(root: Path | str) -> dict[str, Any]:
 def aggregate_member_predictions(
     stack: np.ndarray, aggregation: str, weights: list[float] | None = None
 ) -> np.ndarray:
-    stack = np.asarray(stack, dtype=float)
-    if stack.ndim != 3 or stack.shape[0] == 0:
-        raise ValueError(
-            "Expected member predictions with shape n_members x n_samples x n_classes"
-        )
-    method = str(aggregation).strip()
-    if method == "mean_proba":
-        proba = np.mean(stack, axis=0)
-    elif method == "median_proba":
-        proba = np.median(stack, axis=0)
-    elif method == "weighted_mean_proba":
-        if weights is None or len(weights) != stack.shape[0]:
-            raise ValueError(
-                "weighted_mean_proba requires one stored weight per MPMA-E member"
-            )
-        weight_array = np.asarray(weights, dtype=float)
-        if (
-            not np.isfinite(weight_array).all()
-            or np.any(weight_array < 0)
-            or not np.isclose(weight_array.sum(), 1.0)
-        ):
-            raise ValueError(
-                "Stored MPMA-E weights must be finite, non-negative, and sum to 1"
-            )
-        proba = np.tensordot(weight_array, stack, axes=(0, 0))
-    elif method == "rank_mean":
-        ranked = np.empty_like(stack)
-        for member_index in range(stack.shape[0]):
-            for class_index in range(stack.shape[2]):
-                ranked[member_index, :, class_index] = rankdata(
-                    stack[member_index, :, class_index]
-                )
-        proba = np.mean(ranked, axis=0)
-    elif method == "majority_vote":
-        votes = np.argmax(stack, axis=2)
-        proba = np.zeros(stack.shape[1:], dtype=float)
-        for sample_index in range(stack.shape[1]):
-            counts = np.bincount(
-                votes[:, sample_index], minlength=stack.shape[2]
-            ).astype(float)
-            proba[sample_index] = counts / float(counts.sum())
-    elif method == "max_proba":
-        proba = np.max(stack, axis=0)
-    elif method == "min_proba":
-        proba = np.min(stack, axis=0)
-    else:
-        raise ValueError(f"Unsupported MPMA-E aggregation_strategy {aggregation!r}")
-    proba = np.asarray(proba, dtype=float)
-    if not np.isfinite(proba).all() or np.any(proba < 0):
-        raise ValueError("Aggregated MPMA-E predictions contain invalid values")
-    sums = proba.sum(axis=1, keepdims=True)
-    if np.any(sums <= 0):
-        raise ValueError(
-            "Aggregated MPMA-E predictions contain rows with zero total score"
-        )
-    return proba / sums
+    pass
+    return _aggregate_member_predictions(stack, aggregation, weights)
 
 
 def _outer_predictions(root: Path) -> pd.DataFrame:
@@ -422,7 +389,10 @@ def fixed_strategy_predictions(root: Path | str, strategy: str) -> pd.DataFrame:
     member_ids = [str(member["config_id"]) for member in unit["members"]]
     aggregation = str(unit["aggregation_strategy"])
     weights = (
-        [float(member["weight"]) for member in unit["members"]]
+        [
+            float(member.get("aggregation_weight", member["weight"]))
+            for member in unit["members"]
+        ]
         if aggregation == "weighted_mean_proba"
         else None
     )

@@ -14,16 +14,6 @@ import pandas as pd
 from joblib import Parallel, delayed, parallel_backend
 from scipy.special import expit, softmax
 from sklearn.base import BaseEstimator
-from sklearn.metrics import (
-    accuracy_score,
-    average_precision_score,
-    balanced_accuracy_score,
-    f1_score,
-    matthews_corrcoef,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-)
 from sklearn.model_selection import StratifiedKFold
 from threadpoolctl import threadpool_limits
 
@@ -34,6 +24,8 @@ from .learners import _learner_factory, _learner_name
 from .metrics import (
     _predict_proba_aligned as _metrics_predict_proba_aligned,
     compute_metrics,
+    metric_is_loss,
+    metric_passes_threshold,
 )
 from .resolutions import _parse_resolution, materialize_mpdr
 from .utils import METRIC_COLUMNS, dump_json_standard
@@ -85,7 +77,7 @@ class QualificationGate:
             raise ValueError(
                 "QualificationGate.threshold is required when the gate is enabled."
             )
-        return np.isfinite(score) and float(score) >= float(self.threshold)
+        return metric_passes_threshold(score, float(self.threshold), self.metric)
 
 
 @dataclass
@@ -108,13 +100,14 @@ class Evaluation:
 
 @dataclass
 class Ensemble:
-    sizes: tuple[int, ...] = (3,)
+    max_sizes: tuple[int, ...] = (3,)
+    sizes: tuple[int, ...] | None = None
     selection_strategies: tuple[str, ...] = (
         "top_k",
-        "diverse_top_k",
-        "best_per_family",
         "best_per_resolution",
-        "threshold",
+        "best_per_learner_type",
+        "caruana",
+        "super_learner",
     )
     aggregation_strategies: tuple[str, ...] = (
         "mean_proba",
@@ -124,9 +117,11 @@ class Ensemble:
         "majority_vote",
     )
     optimize_metric: str = "nMCC"
+
+    include_inactive: bool = False
+
     threshold_score: float = 0.30
     threshold_max_members: int = 50
-    include_inactive: bool = False
 
     exclude_config_ids: tuple[str, ...] = ()
     exclude_learners: tuple[str, ...] = ()
@@ -642,6 +637,69 @@ def _clear_evaluation_checkpoints(root: Path) -> None:
         conn.close()
 
 
+def _backfill_metrics_from_predictions(
+    metrics: pd.DataFrame,
+    predictions: pd.DataFrame,
+    classes: np.ndarray,
+    class_labels: Sequence[str],
+    metric_key: str,
+) -> pd.DataFrame:
+    if metrics.empty or predictions.empty:
+        return metrics
+    if metric_key not in metrics.columns or "config_id" not in metrics.columns:
+        return metrics
+    required = {"split_key", "config_id", "y_true", "y_pred"}
+    proba_cols = [f"proba_{label}" for label in class_labels]
+    if not required.issubset(predictions.columns) or not set(proba_cols).issubset(
+        predictions.columns
+    ):
+        return metrics
+    out = metrics.copy()
+    for metric in METRIC_COLUMNS:
+        if metric not in out.columns:
+            out[metric] = np.nan
+    lookup: dict[tuple[str, str], dict[str, float]] = {}
+    for (split_key, config_id), group in predictions.groupby(
+        ["split_key", "config_id"], sort=False
+    ):
+        y_true = pd.to_numeric(group["y_true"], errors="coerce").to_numpy(dtype=float)
+        y_pred = pd.to_numeric(group["y_pred"], errors="coerce").to_numpy(dtype=float)
+        proba = (
+            group[proba_cols]
+            .apply(pd.to_numeric, errors="coerce")
+            .to_numpy(dtype=float)
+        )
+        if (
+            len(y_true) == 0
+            or not np.all(np.isfinite(y_true))
+            or not np.all(np.isfinite(y_pred))
+            or not np.all(np.isfinite(proba))
+        ):
+            continue
+        lookup[(str(split_key), str(config_id))] = compute_metrics(
+            y_true.astype(int), y_pred.astype(int), proba, classes
+        )
+    ok = (
+        pd.to_numeric(out["ok"], errors="coerce").fillna(0).astype(int).eq(1)
+        if "ok" in out.columns
+        else pd.Series(True, index=out.index)
+    )
+    for index in out.index[ok]:
+        key = (str(out.at[index, metric_key]), str(out.at[index, "config_id"]))
+        values = lookup.get(key)
+        if values is None:
+            continue
+        for metric in METRIC_COLUMNS:
+            current = pd.to_numeric(
+                pd.Series([out.at[index, metric]]), errors="coerce"
+            ).iloc[0]
+            if not np.isfinite(current):
+                value = float(values.get(metric, np.nan))
+                if np.isfinite(value):
+                    out.at[index, metric] = value
+    return out
+
+
 def evaluate(sweep: Sweep) -> dict[str, Path]:
     root = sweep.root()
     _prepare_dirs(root)
@@ -679,6 +737,20 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
         current_config_ids,
         current_outer_keys,
         redo=sweep.evaluation.redo,
+    )
+    existing["inner_metrics"] = _backfill_metrics_from_predictions(
+        existing["inner_metrics"],
+        existing["inner_predictions"],
+        dataset.classes,
+        dataset.class_labels,
+        "inner_key",
+    )
+    existing["outer_metrics"] = _backfill_metrics_from_predictions(
+        existing["outer_metrics"],
+        existing["outer_predictions"],
+        dataset.classes,
+        dataset.class_labels,
+        "split_key",
     )
     if not sweep.gate.enabled:
         existing["qualification"] = pd.DataFrame()
@@ -1437,93 +1509,6 @@ def _predict_proba_aligned(
     return _metrics_predict_proba_aligned(clf, X, classes)
 
 
-def _renormalize_proba(p: np.ndarray, n_classes: int) -> np.ndarray:
-    p = np.asarray(p, dtype=float)
-    if p.ndim == 1:
-        p = np.column_stack([1.0 - p, p])
-    if p.shape[1] != n_classes:
-        q = np.zeros((p.shape[0], n_classes), dtype=float)
-        width = min(n_classes, p.shape[1])
-        q[:, :width] = p[:, :width]
-        p = q
-    p = np.nan_to_num(
-        p, nan=1.0 / n_classes, posinf=1.0 / n_classes, neginf=1.0 / n_classes
-    )
-    p = np.clip(p, 0.0, None)
-    s = p.sum(axis=1, keepdims=True)
-    empty = s.squeeze() <= 1e-12
-    s = np.where(s > 1e-12, s, 1.0)
-    p = p / s
-    if np.any(empty):
-        p[empty, :] = 1.0 / n_classes
-    return p
-
-
-def compute_metrics(
-    y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray, classes: np.ndarray
-) -> dict[str, float]:
-    y_true = np.asarray(y_true, dtype=int)
-    y_pred = np.asarray(y_pred, dtype=int)
-    y_proba = _renormalize_proba(y_proba, len(classes))
-    out: dict[str, float] = {k: float("nan") for k in METRIC_COLUMNS}
-    if len(y_true) == 0:
-        return out
-    out["Accuracy"] = float(accuracy_score(y_true, y_pred))
-    out["BalAcc"] = float(balanced_accuracy_score(y_true, y_pred))
-    out["F1w"] = float(f1_score(y_true, y_pred, average="weighted", zero_division=0))
-    out["F1_macro"] = float(f1_score(y_true, y_pred, average="macro", zero_division=0))
-    out["Precision"] = float(
-        precision_score(y_true, y_pred, average="macro", zero_division=0)
-    )
-    out["Recall"] = float(
-        recall_score(y_true, y_pred, average="macro", zero_division=0)
-    )
-    out["nMCC"] = float((matthews_corrcoef(y_true, y_pred) + 1.0) / 2.0)
-    present = np.array([c for c in classes if c in set(y_true.tolist())], dtype=int)
-    try:
-        if len(classes) == 2:
-            pos = classes[-1]
-            pos_col = int(np.where(classes == pos)[0][0])
-            yt = (y_true == pos).astype(int)
-            if len(np.unique(yt)) == 2:
-                out["AUC"] = float(roc_auc_score(yt, y_proba[:, pos_col]))
-                out["PR_AUC"] = float(average_precision_score(yt, y_proba[:, pos_col]))
-        elif len(present) >= 2:
-            cols = [int(np.where(classes == c)[0][0]) for c in present]
-            pp = _renormalize_proba(y_proba[:, cols], len(cols))
-            out["AUC_macro"] = float(
-                roc_auc_score(
-                    y_true,
-                    pp,
-                    labels=present.tolist(),
-                    multi_class="ovr",
-                    average="macro",
-                )
-            )
-            out["AUC_weighted"] = float(
-                roc_auc_score(
-                    y_true,
-                    pp,
-                    labels=present.tolist(),
-                    multi_class="ovr",
-                    average="weighted",
-                )
-            )
-            out["AUC"] = out["AUC_macro"]
-            out["PR_AUC_macro"] = float(
-                average_precision_score(
-                    pd.get_dummies(y_true).reindex(columns=present, fill_value=0),
-                    pp,
-                    average="macro",
-                )
-            )
-    except Exception:
-        pass
-    return {
-        k: (round(v, 6) if np.isfinite(v) else float("nan")) for k, v in out.items()
-    }
-
-
 def _metric_row(
     metrics: dict[str, float],
     split_key: str,
@@ -1761,12 +1746,11 @@ def _write_rankings_and_figures(
     )
     agg.columns = [f"{m}_{stat}" for m, stat in agg.columns]
     rank = agg.reset_index()
-    sort_col = (
-        f"{optimize_metric}_mean"
-        if f"{optimize_metric}_mean" in rank.columns
-        else "nMCC_mean"
+    sort_metric = (
+        optimize_metric if f"{optimize_metric}_mean" in rank.columns else "nMCC"
     )
-    rank = rank.sort_values(sort_col, ascending=False)
+    sort_col = f"{sort_metric}_mean"
+    rank = rank.sort_values(sort_col, ascending=metric_is_loss(sort_metric))
     rank.insert(0, "rank", np.arange(1, len(rank) + 1))
     rank.to_csv(root / "tables" / "mpma_rankings.tsv", sep="\t", index=False)
     stale = root / "figures" / "mpma_top_metric.png"

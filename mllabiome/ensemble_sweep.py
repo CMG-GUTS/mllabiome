@@ -10,10 +10,27 @@ from .compute import ResourceTracker
 from .configs_sweep import Ensemble, Sweep
 from .console import path_table, stage, success, summary_table
 from .data import load_dataset
-from .metrics import _renormalize_proba, compute_metrics
+from .ensemble_aggregation import (
+    SUPPORTED_AGGREGATIONS,
+    aggregate_member_predictions,
+    effective_aggregation_weights,
+)
+from .metrics import (
+    _renormalize_proba,
+    compute_metrics,
+    metric_better as _metric_better,
+    metric_is_loss as _metric_is_loss,
+)
 from .mpma_e_figure import write_single_task_mpma_e_figure
 from .selection import select_final_mpma_candidate
 from .utils import TAXONOMIC_LEVELS, dump_json_standard
+
+
+_ENSEMBLE_SEARCH_SCHEMA = "mpmae_search_v3"
+_SUPER_LEARNER_WEIGHT_TOL = 1e-8
+_SUPER_LEARNER_OPT_MAXITER = 1000
+_SUPER_LEARNER_OPT_FTOL = 1e-12
+_CARUANA_IMPROVEMENT_TOL = 1e-10
 
 
 def _load_manifest(root: Path) -> dict[str, Any]:
@@ -65,27 +82,52 @@ def _plan_methods(plan: Ensemble) -> tuple[str, ...]:
     value = getattr(plan, "methods", None)
     if value is None:
         value = getattr(plan, "selection_strategies", ())
-    return tuple((str(x) for x in value))
+    return tuple(str(x) for x in value)
 
 
-def _plan_library_size(plan: Ensemble) -> int:
-    return int(getattr(plan, "learned_library_size", 50))
+def _plan_aggregations(plan: Ensemble) -> tuple[str, ...]:
+    return tuple(str(x) for x in getattr(plan, "aggregation_strategies", ()))
 
 
-def _plan_caruana_iterations(plan: Ensemble) -> int:
-    return int(getattr(plan, "caruana_max_iterations", 25))
+def _plan_max_sizes(plan: Ensemble) -> tuple[int, ...]:
+    legacy = getattr(plan, "sizes", None)
+    canonical = tuple(int(x) for x in getattr(plan, "max_sizes", ()))
+    if legacy is not None:
+        legacy_sizes = tuple(int(x) for x in legacy)
+
+        if canonical and canonical != (3,) and canonical != legacy_sizes:
+            raise ValueError(
+                "Ensemble.max_sizes and legacy Ensemble.sizes disagree. Use only max_sizes."
+            )
+        return legacy_sizes
+    return canonical
 
 
-def _plan_super_learner_loss(plan: Ensemble) -> str:
-    return str(getattr(plan, "super_learner_loss", "log_loss"))
+def _resolved_super_learner_loss(plan: Ensemble) -> str:
+    pass
+    metric = str(plan.optimize_metric).strip().casefold()
+    if metric in {"brier", "brier_loss"}:
+        return "brier"
+    return "log_loss"
 
 
-def _plan_super_learner_weight_tol(plan: Ensemble) -> float:
-    return float(getattr(plan, "super_learner_weight_tol", 1e-06))
+def _caruana_controls(max_members: int) -> dict[str, int | float]:
+    pass
+    max_members = int(max_members)
+
+    ceiling = min(1000, max(100, 25 * max_members))
+    patience = max(20, 5 * max_members)
+    minimum = min(ceiling, max(20, 5 * max_members))
+    return {
+        "max_iterations": int(ceiling),
+        "patience": int(patience),
+        "min_iterations": int(minimum),
+        "improvement_tol": float(_CARUANA_IMPROVEMENT_TOL),
+    }
 
 
 def _validate_plan(plan: Ensemble) -> None:
-    supported = {
+    supported_selection = {
         "top_k",
         "best_per_resolution",
         "best_per_learner_type",
@@ -95,65 +137,87 @@ def _validate_plan(plan: Ensemble) -> None:
     methods = _plan_methods(plan)
     if not methods:
         raise ValueError(
-            "Ensemble selection strategies must contain at least one supported method."
+            "Ensemble.selection_strategies must contain at least one supported method."
         )
-    unknown = sorted(set(methods) - supported)
+    unknown = sorted(set(methods) - supported_selection)
     if unknown:
         raise ValueError(
-            f"Unknown ensemble method(s): {unknown}. Supported methods: {sorted(supported)}."
+            f"Unknown ensemble selection strategy(s): {unknown}. "
+            f"Supported strategies: {sorted(supported_selection)}."
         )
-    sizes = tuple((int(x) for x in getattr(plan, "sizes", ())))
-    if "top_k" in methods:
-        if not sizes:
-            raise ValueError("Ensemble.sizes must be non-empty when method='top_k'.")
-        if any((x < 2 for x in sizes)):
-            raise ValueError("Every top-k ensemble size must be at least 2.")
-    if {"caruana", "super_learner"} & set(methods):
-        if _plan_library_size(plan) < 2:
-            raise ValueError("Ensemble.learned_library_size must be at least 2.")
-    if "caruana" in methods and _plan_caruana_iterations(plan) < 1:
-        raise ValueError("Ensemble.caruana_max_iterations must be at least 1.")
-    if "super_learner" in methods:
-        loss = _plan_super_learner_loss(plan)
-        if loss not in {"log_loss", "brier"}:
-            raise ValueError(
-                "Ensemble.super_learner_loss must be 'log_loss' or 'brier'."
-            )
-        tol = _plan_super_learner_weight_tol(plan)
-        if not np.isfinite(tol) or tol < 0.0 or tol >= 1.0:
-            raise ValueError("Ensemble.super_learner_weight_tol must be in [0, 1).")
+
+    aggregations = _plan_aggregations(plan)
+    if not aggregations:
+        raise ValueError("Ensemble.aggregation_strategies must be non-empty.")
+    unknown_aggregations = sorted(set(aggregations) - set(SUPPORTED_AGGREGATIONS))
+    if unknown_aggregations:
+        raise ValueError(
+            f"Unknown ensemble aggregation strategy(s): {unknown_aggregations}. "
+            f"Supported strategies: {list(SUPPORTED_AGGREGATIONS)}."
+        )
+
+    max_sizes = _plan_max_sizes(plan)
+    if not max_sizes:
+        raise ValueError("Ensemble.max_sizes must be non-empty.")
+    if any(int(x) < 2 for x in max_sizes):
+        raise ValueError("Every Ensemble.max_sizes entry must be at least 2.")
+
+    learned = set(methods) & {"caruana", "super_learner"}
+    simple = set(methods) - {"caruana", "super_learner"}
+    if learned and "weighted_mean_proba" not in aggregations:
+        raise ValueError(
+            "Caruana and Super Learner are learned-weight ensemble selectors and require "
+            "aggregation_strategies to include 'weighted_mean_proba'. Add that aggregation "
+            "or remove those selection strategies."
+        )
+    nonweighted = [x for x in aggregations if x != "weighted_mean_proba"]
+    if simple and not nonweighted:
+        raise ValueError(
+            "Simple ensemble selectors do not learn member weights, so they require at least "
+            "one non-weighted aggregation strategy (for example 'mean_proba')."
+        )
 
 
 def _ensemble_configs(plan: Ensemble) -> list[dict[str, Any]]:
     _validate_plan(plan)
     rows: list[dict[str, Any]] = []
+    learned_weight_selectors = {"caruana", "super_learner"}
     for method in _plan_methods(plan):
-        requested_sizes = (
-            tuple((int(x) for x in plan.sizes)) if method == "top_k" else (0,)
+        for max_size in _plan_max_sizes(plan):
+            for aggregation in _plan_aggregations(plan):
+                if method in learned_weight_selectors:
+                    if aggregation != "weighted_mean_proba":
+                        continue
+                elif aggregation == "weighted_mean_proba":
+                    continue
+                uid = "__".join(
+                    [
+                        _ENSEMBLE_SEARCH_SCHEMA,
+                        str(plan.optimize_metric),
+                        method,
+                        aggregation,
+                        str(max_size),
+                        _resolved_super_learner_loss(plan)
+                        if method == "super_learner"
+                        else "na",
+                    ]
+                )
+                rows.append(
+                    {
+                        "ensemble_config_id": hashlib.sha1(uid.encode()).hexdigest()[
+                            :12
+                        ],
+                        "search_schema": _ENSEMBLE_SEARCH_SCHEMA,
+                        "optimize_metric": str(plan.optimize_metric),
+                        "selection_strategy": method,
+                        "aggregation_strategy": aggregation,
+                        "max_size": int(max_size),
+                    }
+                )
+    if not rows:
+        raise ValueError(
+            "The requested selection × aggregation search space has no valid combinations."
         )
-        for requested_size in requested_sizes:
-            uid = "__".join(
-                [
-                    str(plan.optimize_metric),
-                    method,
-                    str(requested_size),
-                    str(_plan_library_size(plan)),
-                    str(_plan_caruana_iterations(plan)),
-                    _plan_super_learner_loss(plan),
-                ]
-            )
-            rows.append(
-                {
-                    "ensemble_config_id": hashlib.sha1(uid.encode()).hexdigest()[:12],
-                    "optimize_metric": str(plan.optimize_metric),
-                    "selection_strategy": method,
-                    "aggregation_strategy": "mean_proba"
-                    if method
-                    in {"top_k", "best_per_resolution", "best_per_learner_type"}
-                    else "weighted_mean_proba",
-                    "ensemble_size": int(requested_size),
-                }
-            )
     return rows
 
 
@@ -172,18 +236,6 @@ def _prediction_frame_for_outer(
     frame["outer_split_key"] = frame["outer_split_key"].astype(str)
     frame["config_id"] = frame["config_id"].astype(str)
     return frame
-
-
-def _metric_is_loss(metric: str) -> bool:
-    return str(metric) in {"log_loss", "brier", "brier_loss"}
-
-
-def _metric_better(
-    candidate: float, incumbent: float, metric: str, tol: float = 1e-12
-) -> bool:
-    if _metric_is_loss(metric):
-        return candidate < incumbent - tol
-    return candidate > incumbent + tol
 
 
 def _complete_inner_scores(
@@ -328,20 +380,7 @@ def _metric_value(y_true: np.ndarray, proba: np.ndarray, metric: str) -> float:
 
 
 def _weighted_probability_mean(stack: np.ndarray, weights: np.ndarray) -> np.ndarray:
-    stack = np.asarray(stack, dtype=float)
-    weights = np.asarray(weights, dtype=float)
-    if stack.ndim != 3:
-        raise ValueError("Expected stack shape: n_members × n_samples × n_classes.")
-    if weights.ndim != 1 or len(weights) != stack.shape[0]:
-        raise ValueError("Ensemble weights must have exactly one value per member.")
-    if not np.all(np.isfinite(weights)) or np.any(weights < 0.0):
-        raise ValueError("Ensemble weights must be finite and non-negative.")
-    total = float(weights.sum())
-    if total <= 0.0:
-        raise ValueError("Ensemble weights must have positive total mass.")
-    w = weights / total
-    proba = np.tensordot(w, stack, axes=(0, 0))
-    return _renormalize_proba(proba, stack.shape[2])
+    return aggregate_member_predictions(stack, "weighted_mean_proba", weights)
 
 
 def _uniform_weights(n_members: int) -> np.ndarray:
@@ -367,6 +406,65 @@ def _pad_degenerate_ensemble(
 
 def _select_top_k(scores: pd.Series, size: int) -> list[str]:
     return [str(x) for x in scores.index[: int(size)].tolist()]
+
+
+def _evaluate_selected_members(
+    spec: dict[str, Any],
+    members: list[str],
+    stack: np.ndarray,
+    y_true: np.ndarray,
+    metric: str,
+    *,
+    native_weights: np.ndarray | None = None,
+    native_weight_source: str = "",
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    aggregation = str(spec["aggregation_strategy"])
+    active_weights: np.ndarray | None = None
+    aggregation_weight_source = "not_applicable"
+    if aggregation == "weighted_mean_proba":
+        if native_weights is None:
+            raise ValueError(
+                f"{spec['selection_strategy']} does not define weights required by weighted_mean_proba."
+            )
+        active_weights = np.asarray(native_weights, dtype=float)
+        aggregation_weight_source = native_weight_source or "learned"
+    elif aggregation == "mean_proba":
+        active_weights = effective_aggregation_weights(aggregation, len(members))
+        aggregation_weight_source = "uniform"
+
+    proba = aggregate_member_predictions(stack, aggregation, active_weights)
+    classes = np.arange(proba.shape[1], dtype=int)
+    metrics = compute_metrics(y_true, classes[proba.argmax(axis=1)], proba, classes)
+    metrics[metric] = _metric_value(y_true, proba, metric)
+
+    stored_weights = (
+        [float(x) for x in active_weights] if active_weights is not None else []
+    )
+    selection_weights = (
+        [float(x) for x in np.asarray(native_weights, dtype=float)]
+        if native_weights is not None
+        else []
+    )
+    result: dict[str, Any] = {
+        **spec,
+        "members": json.dumps(members),
+        "weights": json.dumps(stored_weights),
+        "selection_weights": json.dumps(selection_weights),
+        "member_count": int(len(members)),
+        "ensemble_size": int(len(members)),
+        "effective_member_count": int(
+            np.count_nonzero(np.asarray(stored_weights, dtype=float) > 1e-12)
+        )
+        if stored_weights
+        else int(len(members)),
+        "aggregation_weight_source": aggregation_weight_source,
+        "weight_source": aggregation_weight_source,
+        **{f"{key}_mean": float(value) for key, value in metrics.items()},
+    }
+    if extra:
+        result.update(extra)
+    return result
 
 
 def _select_best_per_resolution(scores: pd.Series, configs: pd.DataFrame) -> list[str]:
@@ -451,27 +549,43 @@ def _caruana_select(
     stack: np.ndarray,
     y_true: np.ndarray,
     metric: str,
-    max_iterations: int,
-) -> tuple[list[str], np.ndarray, float, list[float]]:
+    max_members: int,
+) -> tuple[list[str], np.ndarray, float, list[float], dict[str, Any]]:
     if not member_ids or stack.shape[0] != len(member_ids):
         raise ValueError("Caruana library and prediction stack are inconsistent.")
-    if max_iterations < 1:
-        raise ValueError("Caruana max_iterations must be at least 1.")
+    if max_members < 2:
+        raise ValueError("Caruana max_members must be at least 2.")
+
+    controls = _caruana_controls(max_members)
+    max_iterations = int(controls["max_iterations"])
+    patience = int(controls["patience"])
+    min_iterations = int(controls["min_iterations"])
+    improvement_tol = float(controls["improvement_tol"])
+
     running_sum = np.zeros_like(stack[0], dtype=float)
     chosen_indices: list[int] = []
     trajectory: list[float] = []
     best_score = float("inf") if _metric_is_loss(metric) else float("-inf")
     best_prefix = 0
-    for step in range(int(max_iterations)):
+    stale_steps = 0
+    stop_reason = "iteration_ceiling"
+
+    for step in range(max_iterations):
+        distinct = set(chosen_indices)
         candidate_scores: list[tuple[float, float, int, str]] = []
         denom = float(step + 1)
         for j, cid in enumerate(member_ids):
+            if j not in distinct and len(distinct) >= int(max_members):
+                continue
             proba = _renormalize_proba((running_sum + stack[j]) / denom, stack.shape[2])
             score = _metric_value(y_true, proba, metric)
             eps = np.finfo(float).eps
             picked = np.clip(proba[np.arange(len(y_true)), y_true], eps, 1.0)
             tie_loss = float(-np.mean(np.log(picked)))
             candidate_scores.append((score, tie_loss, j, str(cid)))
+        if not candidate_scores:
+            stop_reason = "no_candidates"
+            break
         if _metric_is_loss(metric):
             candidate_scores.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
         else:
@@ -482,9 +596,22 @@ def _caruana_select(
         chosen_indices.append(int(selected_idx))
         running_sum = running_sum + stack[selected_idx]
         trajectory.append(float(score))
-        if best_prefix == 0 or _metric_better(float(score), float(best_score), metric):
+
+        improved = best_prefix == 0 or _metric_better(
+            float(score), float(best_score), metric, tol=improvement_tol
+        )
+        if improved:
             best_score = float(score)
             best_prefix = len(chosen_indices)
+            stale_steps = 0
+        else:
+            stale_steps += 1
+
+        if len(chosen_indices) >= min_iterations and stale_steps >= patience:
+            stop_reason = "converged_patience"
+            break
+
+    executed_iterations = len(chosen_indices)
     chosen_indices = chosen_indices[:best_prefix]
     if not chosen_indices:
         raise RuntimeError("Caruana ensemble selection did not produce a candidate.")
@@ -498,7 +625,22 @@ def _caruana_select(
     members = [member_ids[idx] for idx in order]
     weights = np.asarray([counts[idx] for idx in order], dtype=float)
     weights /= weights.sum()
-    return (members, weights, float(best_score), trajectory[:best_prefix])
+    diagnostics: dict[str, Any] = {
+        "caruana_iterations_executed": int(executed_iterations),
+        "caruana_iterations_selected": int(best_prefix),
+        "caruana_stop_reason": stop_reason,
+        "caruana_internal_iteration_ceiling": int(max_iterations),
+        "caruana_internal_patience": int(patience),
+        "caruana_internal_min_iterations": int(min_iterations),
+        "caruana_internal_improvement_tol": float(improvement_tol),
+    }
+    return (
+        members,
+        weights,
+        float(best_score),
+        trajectory[:best_prefix],
+        diagnostics,
+    )
 
 
 def _super_learner_loss(
@@ -521,34 +663,60 @@ def _fit_super_learner(
     stack: np.ndarray,
     y_true: np.ndarray,
     loss: str,
-    weight_tol: float,
+    max_members: int,
 ) -> tuple[list[str], np.ndarray, float]:
     if not member_ids or stack.shape[0] != len(member_ids):
         raise ValueError("Super Learner library and prediction stack are inconsistent.")
-    n_members = len(member_ids)
-    x0 = _uniform_weights(n_members)
-    result = minimize(
-        _super_learner_loss,
-        x0,
-        args=(stack, y_true, str(loss)),
-        method="SLSQP",
-        bounds=[(0.0, 1.0)] * n_members,
-        constraints=[{"type": "eq", "fun": lambda w: float(np.sum(w) - 1.0)}],
-        options={"maxiter": 1000, "ftol": 1e-12, "disp": False},
-    )
-    if not bool(result.success):
-        raise RuntimeError(f"Super Learner optimization failed: {result.message}")
-    weights = np.clip(np.asarray(result.x, dtype=float), 0.0, None)
-    if not np.all(np.isfinite(weights)) or weights.sum() <= 0.0:
-        raise RuntimeError("Super Learner returned invalid ensemble weights.")
-    weights /= weights.sum()
-    keep = weights > float(weight_tol)
-    if not np.any(keep):
-        keep[int(np.argmax(weights))] = True
-    kept_ids = [cid for cid, flag in zip(member_ids, keep) if bool(flag)]
-    kept_weights = weights[keep]
-    kept_weights /= kept_weights.sum()
-    final_loss = _super_learner_loss(kept_weights, stack[keep], y_true, str(loss))
+    if max_members < 2:
+        raise ValueError("Super Learner max_members must be at least 2.")
+
+    def optimise(local_stack: np.ndarray, x0: np.ndarray | None = None) -> np.ndarray:
+        n_members = local_stack.shape[0]
+        start = (
+            _uniform_weights(n_members) if x0 is None else np.asarray(x0, dtype=float)
+        )
+        start = np.clip(start, 0.0, None)
+        start /= start.sum()
+        result = minimize(
+            _super_learner_loss,
+            start,
+            args=(local_stack, y_true, str(loss)),
+            method="SLSQP",
+            bounds=[(0.0, 1.0)] * n_members,
+            constraints=[{"type": "eq", "fun": lambda w: float(np.sum(w) - 1.0)}],
+            options={
+                "maxiter": _SUPER_LEARNER_OPT_MAXITER,
+                "ftol": _SUPER_LEARNER_OPT_FTOL,
+                "disp": False,
+            },
+        )
+        if not bool(result.success):
+            raise RuntimeError(f"Super Learner optimization failed: {result.message}")
+        values = np.clip(np.asarray(result.x, dtype=float), 0.0, None)
+        if not np.all(np.isfinite(values)) or values.sum() <= 0.0:
+            raise RuntimeError("Super Learner returned invalid ensemble weights.")
+        return values / values.sum()
+
+    full_weights = optimise(stack)
+    keep = np.flatnonzero(full_weights > _SUPER_LEARNER_WEIGHT_TOL).tolist()
+
+    if len(keep) < 2:
+        order = sorted(
+            range(len(member_ids)),
+            key=lambda i: (-float(full_weights[i]), str(member_ids[i])),
+        )
+        keep = order[: min(2, len(order))]
+    if len(keep) > int(max_members):
+        keep = sorted(
+            keep,
+            key=lambda i: (-float(full_weights[i]), str(member_ids[i])),
+        )[: int(max_members)]
+    keep = sorted(keep)
+    kept_stack = stack[keep]
+    initial = full_weights[keep]
+    kept_weights = optimise(kept_stack, initial)
+    kept_ids = [member_ids[i] for i in keep]
+    final_loss = _super_learner_loss(kept_weights, kept_stack, y_true, str(loss))
     return (kept_ids, kept_weights, float(final_loss))
 
 
@@ -561,15 +729,15 @@ def _candidate_from_simple_selector(
     metric: str,
 ) -> dict[str, Any] | None:
     method = str(spec["selection_strategy"])
+    max_size = int(spec["max_size"])
     if method == "top_k":
-        requested = int(spec["ensemble_size"])
-        members = _select_top_k(scores, requested)
-        if len(members) != requested:
+        members = _select_top_k(scores, max_size)
+        if len(members) != max_size:
             return None
     elif method == "best_per_resolution":
-        members = _select_best_per_resolution(scores, configs)
+        members = _select_best_per_resolution(scores, configs)[:max_size]
     elif method == "best_per_learner_type":
-        members = _select_best_per_learner_type(scores, configs)
+        members = _select_best_per_learner_type(scores, configs)[:max_size]
     else:
         raise ValueError(f"Unsupported simple ensemble selector: {method!r}.")
     if len(members) < 2:
@@ -577,25 +745,14 @@ def _candidate_from_simple_selector(
     ordered, stack = _aligned_stack(predictions, members, pcols, inner=True)
     if ordered is None or stack is None:
         return None
-    weights = _uniform_weights(len(members))
-    proba = _weighted_probability_mean(stack, weights)
-    y_true = ordered["y_true"].to_numpy(dtype=int)
-    metrics = compute_metrics(
-        y_true,
-        np.arange(proba.shape[1], dtype=int)[proba.argmax(axis=1)],
-        proba,
-        np.arange(proba.shape[1], dtype=int),
+    return _evaluate_selected_members(
+        spec,
+        members,
+        stack,
+        ordered["y_true"].to_numpy(dtype=int),
+        metric,
+        extra={"inner_oof_rows": int(len(ordered)), "selection_weight_source": "none"},
     )
-    metrics[metric] = _metric_value(y_true, proba, metric)
-    return {
-        **spec,
-        "members": json.dumps(members),
-        "weights": json.dumps(weights.tolist()),
-        "member_count": int(len(members)),
-        "inner_oof_rows": int(len(ordered)),
-        "weight_source": "uniform",
-        **{f"{key}_mean": float(value) for key, value in metrics.items()},
-    }
 
 
 def _candidate_from_caruana(
@@ -603,10 +760,10 @@ def _candidate_from_caruana(
     scores: pd.Series,
     predictions: pd.DataFrame,
     pcols: list[str],
-    plan: Ensemble,
     metric: str,
 ) -> dict[str, Any] | None:
-    library = [str(x) for x in scores.index[: _plan_library_size(plan)].tolist()]
+
+    library = [str(x) for x in scores.index.tolist()]
     if len(library) < 2:
         return None
     ordered, stack = _aligned_stack(predictions, library, pcols, inner=True)
@@ -619,27 +776,40 @@ def _candidate_from_caruana(
     if ordered is None or stack is None:
         return None
     y_true = ordered["y_true"].to_numpy(dtype=int)
-    members, weights, _, trajectory = _caruana_select(
-        library, stack, y_true, metric, _plan_caruana_iterations(plan)
+    members, native_weights, _, trajectory, diagnostics = _caruana_select(
+        library,
+        stack,
+        y_true,
+        metric,
+        int(spec["max_size"]),
     )
+    members, native_weights = _pad_degenerate_ensemble(members, native_weights, library)
+    if len(members) < 2:
+        return None
+    if (
+        str(spec["aggregation_strategy"]) == "weighted_mean_proba"
+        and int(np.count_nonzero(np.asarray(native_weights) > 1e-12)) < 2
+    ):
+        return None
     selected_indices = [library.index(cid) for cid in members]
     selected_stack = stack[selected_indices]
-    proba = _weighted_probability_mean(selected_stack, weights)
-    classes = np.arange(proba.shape[1], dtype=int)
-    metrics = compute_metrics(y_true, classes[proba.argmax(axis=1)], proba, classes)
-    metrics[metric] = _metric_value(y_true, proba, metric)
-    return {
-        **spec,
-        "members": json.dumps(members),
-        "weights": json.dumps(weights.tolist()),
-        "member_count": int(len(members)),
-        "effective_member_count": int(np.count_nonzero(weights > 0.0)),
-        "inner_oof_rows": int(len(ordered)),
-        "weight_source": "caruana_selection_frequency",
-        "caruana_iterations_selected": int(len(trajectory)),
-        "caruana_trajectory": json.dumps([float(x) for x in trajectory]),
-        **{f"{key}_mean": float(value) for key, value in metrics.items()},
-    }
+    return _evaluate_selected_members(
+        spec,
+        members,
+        selected_stack,
+        y_true,
+        metric,
+        native_weights=native_weights,
+        native_weight_source="caruana_selection_frequency",
+        extra={
+            "inner_oof_rows": int(len(ordered)),
+            "candidate_library_policy": "all_complete_inner_oof_mpmas",
+            "candidate_library_size": int(len(library)),
+            "selection_weight_source": "caruana_selection_frequency",
+            "caruana_trajectory": json.dumps([float(x) for x in trajectory]),
+            **diagnostics,
+        },
+    )
 
 
 def _candidate_from_super_learner(
@@ -650,7 +820,8 @@ def _candidate_from_super_learner(
     plan: Ensemble,
     metric: str,
 ) -> dict[str, Any] | None:
-    library = [str(x) for x in scores.index[: _plan_library_size(plan)].tolist()]
+
+    library = [str(x) for x in scores.index.tolist()]
     if len(library) < 2:
         return None
     ordered, stack = _aligned_stack(predictions, library, pcols, inner=True)
@@ -663,34 +834,46 @@ def _candidate_from_super_learner(
     if ordered is None or stack is None:
         return None
     y_true = ordered["y_true"].to_numpy(dtype=int)
-    members, weights, loss_value = _fit_super_learner(
+    super_loss = _resolved_super_learner_loss(plan)
+    members, native_weights, loss_value = _fit_super_learner(
         library,
         stack,
         y_true,
-        _plan_super_learner_loss(plan),
-        _plan_super_learner_weight_tol(plan),
+        super_loss,
+        int(spec["max_size"]),
     )
-    members, weights = _pad_degenerate_ensemble(members, weights, library)
+    members, native_weights = _pad_degenerate_ensemble(members, native_weights, library)
+    if len(members) < 2:
+        return None
+    if (
+        str(spec["aggregation_strategy"]) == "weighted_mean_proba"
+        and int(np.count_nonzero(np.asarray(native_weights) > 1e-12)) < 2
+    ):
+        return None
     selected_indices = [library.index(cid) for cid in members]
     selected_stack = stack[selected_indices]
-    proba = _weighted_probability_mean(selected_stack, weights)
-    classes = np.arange(proba.shape[1], dtype=int)
-    metrics = compute_metrics(y_true, classes[proba.argmax(axis=1)], proba, classes)
-    metrics[metric] = _metric_value(y_true, proba, metric)
-    return {
-        **spec,
-        "members": json.dumps(members),
-        "weights": json.dumps(weights.tolist()),
-        "member_count": int(len(members)),
-        "effective_member_count": int(
-            np.count_nonzero(weights > _plan_super_learner_weight_tol(plan))
-        ),
-        "inner_oof_rows": int(len(ordered)),
-        "weight_source": f"convex_{_plan_super_learner_loss(plan)}",
-        "super_learner_loss": _plan_super_learner_loss(plan),
-        "super_learner_loss_value": float(loss_value),
-        **{f"{key}_mean": float(value) for key, value in metrics.items()},
-    }
+    return _evaluate_selected_members(
+        spec,
+        members,
+        selected_stack,
+        y_true,
+        metric,
+        native_weights=native_weights,
+        native_weight_source=f"convex_{super_loss}",
+        extra={
+            "inner_oof_rows": int(len(ordered)),
+            "candidate_library_policy": "all_complete_inner_oof_mpmas",
+            "candidate_library_size": int(len(library)),
+            "selection_weight_source": f"convex_{super_loss}",
+            "super_learner_loss": super_loss,
+            "super_learner_loss_rule": "brier_if_optimize_metric_is_brier_else_log_loss",
+            "super_learner_loss_value": float(loss_value),
+            "super_learner_internal_weight_tol": float(_SUPER_LEARNER_WEIGHT_TOL),
+            "super_learner_internal_optimizer": "SLSQP",
+            "super_learner_internal_maxiter": int(_SUPER_LEARNER_OPT_MAXITER),
+            "super_learner_internal_ftol": float(_SUPER_LEARNER_OPT_FTOL),
+        },
+    )
 
 
 def _candidate_table_for_inner(
@@ -721,7 +904,7 @@ def _candidate_table_for_inner(
                 spec, scores, pred, configs, pcols, metric
             )
         elif method == "caruana":
-            row = _candidate_from_caruana(spec, scores, pred, pcols, plan, metric)
+            row = _candidate_from_caruana(spec, scores, pred, pcols, metric)
         elif method == "super_learner":
             row = _candidate_from_super_learner(spec, scores, pred, pcols, plan, metric)
         else:
@@ -737,13 +920,8 @@ def _candidate_table_for_inner(
             f"The requested ensemble metric {metric!r} was not produced for candidates."
         )
     out = out[np.isfinite(pd.to_numeric(out[score_col], errors="coerce"))].copy()
-    method_priority = {
-        "top_k": 0,
-        "best_per_resolution": 1,
-        "best_per_learner_type": 2,
-        "caruana": 3,
-        "super_learner": 4,
-    }
+    method_priority = {name: i for i, name in enumerate(_plan_methods(plan))}
+    aggregation_priority = {name: i for i, name in enumerate(_plan_aggregations(plan))}
     out["_method_priority"] = (
         out["selection_strategy"]
         .astype(str)
@@ -751,11 +929,25 @@ def _candidate_table_for_inner(
         .fillna(999)
         .astype(int)
     )
+    out["_aggregation_priority"] = (
+        out["aggregation_strategy"]
+        .astype(str)
+        .map(aggregation_priority)
+        .fillna(999)
+        .astype(int)
+    )
     out = out.sort_values(
-        [score_col, "_method_priority", "member_count", "ensemble_config_id"],
-        ascending=[_metric_is_loss(metric), True, True, True],
+        [
+            score_col,
+            "_method_priority",
+            "_aggregation_priority",
+            "member_count",
+            "max_size",
+            "ensemble_config_id",
+        ],
+        ascending=[_metric_is_loss(metric), True, True, True, True, True],
         kind="mergesort",
-    ).drop(columns=["_method_priority"])
+    ).drop(columns=["_method_priority", "_aggregation_priority"])
     return out.reset_index(drop=True)
 
 
@@ -801,14 +993,16 @@ def select_mpma_e_by_outer_fold(
         score_col = f"{metric}_mean"
         winner = candidates.iloc[0].to_dict()
         members = [str(x) for x in _parse_json_list(winner["members"], "members")]
-        weights = np.asarray(
-            [float(x) for x in _parse_json_list(winner["weights"], "weights")],
-            dtype=float,
-        )
-        if len(members) != len(weights):
+        weights = [
+            float(x) for x in _parse_json_list(winner.get("weights", "[]"), "weights")
+        ]
+        aggregation = str(winner["aggregation_strategy"])
+        if aggregation == "weighted_mean_proba" and len(members) != len(weights):
             raise RuntimeError(
-                f"Selected ensemble for {outer_key!r} has inconsistent members/weights."
+                f"Selected weighted ensemble for {outer_key!r} has inconsistent members/weights."
             )
+        active_weights = weights if aggregation == "weighted_mean_proba" else None
+
         fold_outer = outer[outer["outer_split_key"].astype(str).eq(outer_key)].copy()
         if fold_outer.empty:
             raise RuntimeError(
@@ -820,12 +1014,12 @@ def select_mpma_e_by_outer_fold(
             raise RuntimeError(
                 f"Selected ensemble for outer fold {outer_key!r} cannot be evaluated because selected member predictions are missing: {missing}. The ensemble is not re-selected using outer-test availability."
             )
-        proba = _weighted_probability_mean(stack, weights)
+        proba = aggregate_member_predictions(stack, aggregation, active_weights)
         classes = np.arange(proba.shape[1], dtype=int)
         y_true = ordered["y_true"].to_numpy(dtype=int)
         y_pred = classes[proba.argmax(axis=1)]
         outer_metrics = compute_metrics(y_true, y_pred, proba, classes)
-        weights_json = json.dumps([float(x) for x in weights])
+        weights_json = json.dumps(weights)
         members_json = json.dumps(members)
         selections.append(
             {
@@ -835,12 +1029,20 @@ def select_mpma_e_by_outer_fold(
                 "selection_metric": str(metric),
                 "inner_score": float(winner[score_col]),
                 "selection_strategy": str(winner["selection_strategy"]),
-                "aggregation_strategy": str(winner["aggregation_strategy"]),
-                "ensemble_size": int(winner.get("ensemble_size", 0)),
+                "aggregation_strategy": aggregation,
+                "max_size": int(winner.get("max_size", len(members))),
+                "ensemble_size": int(len(members)),
                 "member_count": int(len(members)),
+                "effective_member_count": int(
+                    winner.get("effective_member_count", len(members))
+                ),
                 "members": members_json,
                 "weights": weights_json,
+                "selection_weights": str(winner.get("selection_weights", "[]")),
                 "weight_source": str(winner.get("weight_source", "")),
+                "aggregation_weight_source": str(
+                    winner.get("aggregation_weight_source", "")
+                ),
             }
         )
         metric_rows.append(
@@ -854,7 +1056,8 @@ def select_mpma_e_by_outer_fold(
         ordered["outer_split_key"] = outer_key
         ordered["ensemble_config_id"] = str(winner["ensemble_config_id"])
         ordered["selection_strategy"] = str(winner["selection_strategy"])
-        ordered["aggregation_strategy"] = str(winner["aggregation_strategy"])
+        ordered["aggregation_strategy"] = aggregation
+        ordered["max_size"] = int(winner.get("max_size", len(members)))
         ordered["members"] = members_json
         ordered["weights"] = weights_json
         ordered["y_pred"] = y_pred.astype(int)
@@ -922,11 +1125,24 @@ def select_final_mpma_e_candidate(
         "inner_score": float(first["inner_score"]),
         "selection_strategy": str(first["selection_strategy"]),
         "aggregation_strategy": str(first["aggregation_strategy"]),
-        "ensemble_size": int(first.get("ensemble_size", 0)),
+        "max_size": int(first.get("max_size", first.get("member_count", 0))),
+        "ensemble_size": int(first["member_count"]),
         "member_count": int(first["member_count"]),
+        "effective_member_count": int(
+            first.get("effective_member_count", first["member_count"])
+        ),
         "members": _parse_json_list(first["members"], "members"),
-        "weights": [float(x) for x in _parse_json_list(first["weights"], "weights")],
+        "weights": [
+            float(x) for x in _parse_json_list(first.get("weights", "[]"), "weights")
+        ],
+        "selection_weights": [
+            float(x)
+            for x in _parse_json_list(
+                first.get("selection_weights", "[]"), "selection_weights"
+            )
+        ],
         "weight_source": str(first.get("weight_source", "")),
+        "aggregation_weight_source": str(first.get("aggregation_weight_source", "")),
     }
     for key, value in first.items():
         if key in best or key == "optimize_metric":
@@ -957,12 +1173,13 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
     summary_table(
         "Ensemble search",
         {
-            "candidate ensemble methods": f"{len(_ensemble_configs(sweep.ensemble)):,}",
-            "methods": _plan_methods(sweep.ensemble),
-            "top-k sizes": sweep.ensemble.sizes,
-            "learned library size": _plan_library_size(sweep.ensemble),
-            "Caruana max iterations": _plan_caruana_iterations(sweep.ensemble),
-            "Super Learner loss": _plan_super_learner_loss(sweep.ensemble),
+            "candidate ensemble configurations": f"{len(_ensemble_configs(sweep.ensemble)):,}",
+            "selection strategies": _plan_methods(sweep.ensemble),
+            "aggregation strategies": _plan_aggregations(sweep.ensemble),
+            "max sizes": _plan_max_sizes(sweep.ensemble),
+            "learned-selector library": "all eligible complete inner-OOF MPMAs",
+            "Caruana stopping": "automatic convergence (internally recorded)",
+            "Super Learner loss": _resolved_super_learner_loss(sweep.ensemble),
             "excluded learners": sweep.ensemble.exclude_learners or "none",
             "excluded resolutions": sweep.ensemble.exclude_resolutions or "none",
             "excluded transformations": sweep.ensemble.exclude_transformations
@@ -1025,10 +1242,10 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
         final_ensemble.get("selection_metric", metric)
     )
     report_final_ensemble["ensemble_size"] = int(
-        final_ensemble.get(
-            "effective_member_count",
-            final_ensemble.get("member_count", final_ensemble.get("ensemble_size", 0)),
-        )
+        final_ensemble.get("member_count", final_ensemble.get("ensemble_size", 0))
+    )
+    report_final_ensemble["max_size"] = int(
+        final_ensemble.get("max_size", report_final_ensemble["ensemble_size"])
     )
     dump_json_standard(report_final_ensemble, final_path)
     selected = {

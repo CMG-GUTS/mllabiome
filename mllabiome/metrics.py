@@ -15,6 +15,36 @@ from sklearn.metrics import (
 from .utils import METRIC_COLUMNS
 
 
+def _metric_key(metric: str) -> str:
+    return str(metric).strip().casefold().replace("-", "_").replace(" ", "_")
+
+
+def metric_is_loss(metric: str) -> bool:
+    return _metric_key(metric) in {
+        "log_loss",
+        "logloss",
+        "brier",
+        "brier_loss",
+        "brier_multiclass",
+    }
+
+
+def metric_better(
+    candidate: float, incumbent: float, metric: str, tol: float = 1e-12
+) -> bool:
+    if metric_is_loss(metric):
+        return float(candidate) < float(incumbent) - float(tol)
+    return float(candidate) > float(incumbent) + float(tol)
+
+
+def metric_passes_threshold(score: float, threshold: float, metric: str) -> bool:
+    if not np.isfinite(score) or not np.isfinite(threshold):
+        return False
+    if metric_is_loss(metric):
+        return float(score) <= float(threshold)
+    return float(score) >= float(threshold)
+
+
 def _coerce_X_for_estimator(clf: BaseEstimator, X):
     names = getattr(clf, "feature_names_in_", None)
     if names is None:
@@ -208,6 +238,16 @@ def compute_metrics(
     )
     mcc = _matthews_corrcoef(y_true, y_pred, classes)
     out["nMCC"] = float((mcc + 1.0) / 2.0) if np.isfinite(mcc) else float("nan")
+
+    class_to_col = {int(klass): j for j, klass in enumerate(classes)}
+    true_cols = np.asarray([class_to_col[int(value)] for value in y_true], dtype=int)
+    probability = _renormalize_proba(score, len(classes))
+    eps = np.finfo(float).eps
+    picked = np.clip(probability[np.arange(len(y_true)), true_cols], eps, 1.0)
+    out["log_loss"] = float(-np.mean(np.log(picked)))
+    target = np.zeros_like(probability)
+    target[np.arange(len(y_true)), true_cols] = 1.0
+    out["brier"] = float(np.mean(np.sum((probability - target) ** 2, axis=1)))
 
     if len(classes) == 2:
         pos = int(classes[-1] if positive_class is None else positive_class)
