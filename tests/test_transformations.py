@@ -10,7 +10,6 @@ from sklearn.preprocessing import (
     RobustScaler,
     StandardScaler,
 )
-
 from mllabiome.configs_sweep import build_sweep_configs
 from mllabiome.data import Dataset
 from mllabiome.resolutions import _parse_resolution, materialize_mpdr
@@ -21,7 +20,6 @@ from mllabiome.transformations import (
     Transformation,
     transformation_space_table,
 )
-
 
 EXPECTED_TRANSFORMATIONS = {
     "identity",
@@ -68,12 +66,7 @@ def _train_matrix():
 
 def _test_matrix():
     return np.array(
-        [
-            [2.0, 1.0, 7.0, 5.0],
-            [1.0, 5.0, 4.0, 2.0],
-            [3.0, 2.0, 1.0, 9.0],
-        ],
-        dtype=float,
+        [[2.0, 1.0, 7.0, 5.0], [1.0, 5.0, 4.0, 2.0], [3.0, 2.0, 1.0, 9.0]], dtype=float
     )
 
 
@@ -138,9 +131,9 @@ def test_relative_abundance_is_exact_and_rows_sum_to_one():
     X = _train_matrix()
     out = CountTransformation("relative_abundance").fit_apply(X)
     expected = _relative(X)
-    np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(out, expected, rtol=1e-06, atol=1e-07)
     np.testing.assert_allclose(
-        out.sum(axis=1), np.ones(X.shape[0]), rtol=1e-6, atol=1e-7
+        out.sum(axis=1), np.ones(X.shape[0]), rtol=1e-06, atol=1e-07
     )
 
 
@@ -154,9 +147,9 @@ def test_hellinger_is_sqrt_relative_abundance_and_squared_rows_sum_to_one():
     X = _train_matrix()
     out = CountTransformation("hellinger").fit_apply(X)
     expected = np.sqrt(_relative(X))
-    np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(out, expected, rtol=1e-06, atol=1e-07)
     np.testing.assert_allclose(
-        np.square(out).sum(axis=1), np.ones(X.shape[0]), rtol=1e-6, atol=1e-7
+        np.square(out).sum(axis=1), np.ones(X.shape[0]), rtol=1e-06, atol=1e-07
     )
 
 
@@ -164,44 +157,32 @@ def test_arcsine_sqrt_is_exact_on_relative_abundance():
     X = _train_matrix()
     out = CountTransformation("arcsine_sqrt").fit_apply(X)
     expected = np.arcsin(np.sqrt(_relative(X)))
-    np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(out, expected, rtol=1e-06, atol=1e-07)
 
 
 def test_log10_relative_abundance_pseudocount_is_fitted_from_training_only():
-    train = np.array(
-        [
-            [1.0, 3.0, 0.0],
-            [2.0, 2.0, 4.0],
-            [4.0, 1.0, 5.0],
-        ],
-        dtype=float,
-    )
-    test = np.array(
-        [
-            [1e-12, 1.0, 0.0],
-            [5.0, 0.0, 5.0],
-        ],
-        dtype=float,
-    )
+    train = np.array([[1.0, 3.0, 0.0], [2.0, 2.0, 4.0], [4.0, 1.0, 5.0]], dtype=float)
+    test = np.array([[1e-12, 1.0, 0.0], [5.0, 0.0, 5.0]], dtype=float)
     train_rel = _relative(train)
     expected_pseudocount = train_rel[train_rel > 0].min() / 2.0
     transform = CountTransformation("log10_relative_abundance_half_min_pseudocount")
     transform.fit(train)
     out = transform.apply(test)
     expected = np.log10(_relative(test) + expected_pseudocount)
-    np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(out, expected, rtol=1e-06, atol=1e-06)
     assert transform._impl is not None
     assert transform._impl.pseudocount_ == pytest.approx(expected_pseudocount)
-
-    contaminated_batch = np.vstack([test[0], [1e-30, 1.0, 0.0], [1e12, 1.0, 1.0]])
+    contaminated_batch = np.vstack(
+        [test[0], [1e-30, 1.0, 0.0], [1000000000000.0, 1.0, 1.0]]
+    )
     contaminated_out = transform.apply(contaminated_batch)
-    np.testing.assert_allclose(contaminated_out[0], out[0], rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(contaminated_out[0], out[0], rtol=1e-06, atol=1e-06)
 
 
 def test_pseudocount_argument_is_not_silently_ignored():
     with pytest.raises(ValueError, match="not configurable"):
         CountTransformation(
-            "log10_relative_abundance_half_min_pseudocount", pseudo_count=1e-6
+            "log10_relative_abundance_half_min_pseudocount", pseudo_count=1e-06
         )
 
 
@@ -211,9 +192,9 @@ def test_clr_matches_scikit_bio_and_has_zero_row_mean():
         "centered_log_ratio_multiplicative_replacement"
     ).fit_apply(X)
     expected = np.asarray(skbio_clr(_positive_composition(X)), dtype=float)
-    np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(out, expected, rtol=1e-06, atol=1e-06)
     np.testing.assert_allclose(
-        out.mean(axis=1), np.zeros(X.shape[0]), rtol=0, atol=1e-6
+        out.mean(axis=1), np.zeros(X.shape[0]), rtol=0, atol=1e-06
     )
 
 
@@ -226,7 +207,7 @@ def test_clr_single_sample_preserves_2d_shape_and_matches_scikit_bio():
     if expected.ndim == 1:
         expected = expected.reshape(1, -1)
     assert out.shape == X.shape
-    np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(out, expected, rtol=1e-06, atol=1e-06)
 
 
 def test_standardized_clr_single_test_sample_preserves_2d_shape():
@@ -249,7 +230,7 @@ def test_log_ratio_transform_is_invariant_to_samplewise_positive_scaling():
     rescaled = CountTransformation(
         "centered_log_ratio_multiplicative_replacement"
     ).fit_apply(scaled)
-    np.testing.assert_allclose(original, rescaled, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(original, rescaled, rtol=1e-05, atol=1e-05)
 
 
 def test_standardized_clr_matches_scikit_bio_then_training_standardization():
@@ -263,9 +244,9 @@ def test_standardized_clr_matches_scikit_bio_then_training_standardization():
     out_train, out_test = CountTransformation(
         "standardized_centered_log_ratio_multiplicative_replacement"
     ).apply_pair(train, test)
-    np.testing.assert_allclose(out_train, expected_train, rtol=1e-5, atol=1e-5)
-    np.testing.assert_allclose(out_test, expected_test, rtol=1e-5, atol=1e-5)
-    np.testing.assert_allclose(out_train.mean(axis=0), 0.0, rtol=0, atol=1e-6)
+    np.testing.assert_allclose(out_train, expected_train, rtol=1e-05, atol=1e-05)
+    np.testing.assert_allclose(out_test, expected_test, rtol=1e-05, atol=1e-05)
+    np.testing.assert_allclose(out_train.mean(axis=0), 0.0, rtol=0, atol=1e-06)
 
 
 def test_yeo_johnson_relative_abundance_matches_training_fitted_sklearn_transform():
@@ -284,8 +265,8 @@ def test_yeo_johnson_relative_abundance_matches_training_fitted_sklearn_transfor
     out_train, out_test = CountTransformation(
         "yeo_johnson_relative_abundance"
     ).apply_pair(train, test)
-    np.testing.assert_allclose(out_train, expected_train, rtol=1e-5, atol=1e-5)
-    np.testing.assert_allclose(out_test, expected_test, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(out_train, expected_train, rtol=1e-05, atol=1e-05)
+    np.testing.assert_allclose(out_test, expected_test, rtol=1e-05, atol=1e-05)
 
 
 def test_quantile_normal_relative_abundance_matches_training_fitted_sklearn_transform():
@@ -304,8 +285,8 @@ def test_quantile_normal_relative_abundance_matches_training_fitted_sklearn_tran
     out_train, out_test = CountTransformation(
         "quantile_normal_relative_abundance", random_state=42
     ).apply_pair(train, test)
-    np.testing.assert_allclose(out_train, expected_train, rtol=1e-5, atol=1e-5)
-    np.testing.assert_allclose(out_test, expected_test, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(out_train, expected_train, rtol=1e-05, atol=1e-05)
+    np.testing.assert_allclose(out_test, expected_test, rtol=1e-05, atol=1e-05)
 
 
 def test_robust_scaled_relative_abundance_matches_training_fitted_sklearn_transform():
@@ -319,55 +300,36 @@ def test_robust_scaled_relative_abundance_matches_training_fitted_sklearn_transf
     out_train, out_test = CountTransformation(
         "robust_scaled_relative_abundance"
     ).apply_pair(train, test)
-    np.testing.assert_allclose(out_train, expected_train, rtol=1e-6, atol=1e-6)
-    np.testing.assert_allclose(out_test, expected_test, rtol=1e-6, atol=1e-6)
-    np.testing.assert_allclose(np.median(out_train, axis=0), 0.0, rtol=0, atol=1e-6)
+    np.testing.assert_allclose(out_train, expected_train, rtol=1e-06, atol=1e-06)
+    np.testing.assert_allclose(out_test, expected_test, rtol=1e-06, atol=1e-06)
+    np.testing.assert_allclose(np.median(out_train, axis=0), 0.0, rtol=0, atol=1e-06)
 
 
 def test_within_sample_fractional_rank_matches_rankdata_definition():
     X = np.array([[4.0, 1.0, 3.0, 2.0], [1.0, 1.0, 4.0, 2.0]], dtype=float)
     out = CountTransformation("within_sample_fractional_rank").fit_apply(X)
     expected = np.apply_along_axis(rankdata, 1, X) / (X.shape[1] + 1.0)
-    np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(out, expected, rtol=1e-06, atol=1e-07)
 
 
 def test_training_ecdf_rank_uses_only_training_distribution():
-    train = np.array(
-        [
-            [1.0, 10.0],
-            [2.0, 40.0],
-            [3.0, 20.0],
-            [4.0, 30.0],
-        ],
-        dtype=float,
-    )
-    test = np.array(
-        [
-            [2.5, 25.0],
-            [0.0, 100.0],
-            [4.0, 10.0],
-        ],
-        dtype=float,
-    )
+    train = np.array([[1.0, 10.0], [2.0, 40.0], [3.0, 20.0], [4.0, 30.0]], dtype=float)
+    test = np.array([[2.5, 25.0], [0.0, 100.0], [4.0, 10.0]], dtype=float)
     transform = CountTransformation("training_ecdf_rank")
     transform.fit(train)
     out = transform.apply(test)
     expected = np.array([[0.5, 0.5], [0.0, 1.0], [1.0, 0.25]], dtype=float)
-    np.testing.assert_allclose(out, expected, rtol=0, atol=1e-7)
-
-    valid_contaminated_batch = np.vstack([test[0], [0.0, 1e9], [1e9, 0.0]])
+    np.testing.assert_allclose(out, expected, rtol=0, atol=1e-07)
+    valid_contaminated_batch = np.vstack(
+        [test[0], [0.0, 1000000000.0], [1000000000.0, 0.0]]
+    )
     contaminated_out = transform.apply(valid_contaminated_batch)
-    np.testing.assert_allclose(contaminated_out[0], out[0], rtol=0, atol=1e-7)
+    np.testing.assert_allclose(contaminated_out[0], out[0], rtol=0, atol=1e-07)
 
 
 def test_prevalence_weighted_relative_abundance_uses_training_prevalence_only():
     train = np.array(
-        [
-            [1.0, 0.0, 1.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 1.0],
-            [1.0, 1.0, 0.0],
-        ],
+        [[1.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 1.0], [1.0, 1.0, 0.0]],
         dtype=float,
     )
     test = np.array([[1.0, 1.0, 1.0], [0.0, 4.0, 1.0]], dtype=float)
@@ -378,8 +340,8 @@ def test_prevalence_weighted_relative_abundance_uses_training_prevalence_only():
     transform = CountTransformation("prevalence_weighted_relative_abundance")
     transform.fit(train)
     out = transform.apply(test)
-    np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-7)
-    np.testing.assert_allclose(out.sum(axis=1), 1.0, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(out, expected, rtol=1e-06, atol=1e-07)
+    np.testing.assert_allclose(out.sum(axis=1), 1.0, rtol=1e-06, atol=1e-07)
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED_TRANSFORMATIONS))
@@ -395,17 +357,11 @@ def test_every_builtin_preserves_sample_and_feature_dimensions(name):
 def test_test_sample_transform_is_invariant_to_other_test_samples(name):
     train = _train_matrix()
     first = _test_matrix()[0:1]
-    batch = np.vstack(
-        [
-            first,
-            [1000.0, 1.0, 1.0, 1.0],
-            [1.0, 1000.0, 2.0, 3.0],
-        ]
-    )
+    batch = np.vstack([first, [1000.0, 1.0, 1.0, 1.0], [1.0, 1000.0, 2.0, 3.0]])
     transform = CountTransformation(name).fit(train)
     alone = transform.apply(first)[0]
     together = transform.apply(batch)[0]
-    np.testing.assert_allclose(alone, together, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(alone, together, rtol=1e-06, atol=1e-06)
 
 
 def test_fitted_transform_rejects_different_feature_count():
@@ -428,8 +384,9 @@ def test_two_array_custom_transform_is_rejected_to_protect_train_test_boundary()
 
 
 def test_adapter_rejects_two_array_callable():
+
     def unsafe(X_train, X_test):
-        return X_train, X_test
+        return (X_train, X_test)
 
     adapter = CountTransformationAdapter("unsafe_custom", unsafe)
     with pytest.raises(TypeError, match="Two-array custom transformation"):
@@ -469,8 +426,10 @@ def test_mpdr_always_selects_and_concatenates_resolution_before_transforming(
     assert names == expected_names
     transformed = CountTransformation("relative_abundance").fit_apply(X)
     expected_transformed = _relative(expected_X)
-    np.testing.assert_allclose(transformed, expected_transformed, rtol=1e-6, atol=1e-7)
-    np.testing.assert_allclose(transformed.sum(axis=1), 1.0, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(
+        transformed, expected_transformed, rtol=1e-06, atol=1e-07
+    )
+    np.testing.assert_allclose(transformed.sum(axis=1), 1.0, rtol=1e-06, atol=1e-07)
 
 
 def test_multi_rank_relative_abundance_is_global_across_the_selected_matrix():
@@ -482,7 +441,7 @@ def test_multi_rank_relative_abundance_is_global_across_the_selected_matrix():
         [dataset.X_by_level["family"], dataset.X_by_level["genus"]], axis=1
     )
     expected = expected_X / expected_X.sum(axis=1, keepdims=True)
-    np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(out, expected, rtol=1e-06, atol=1e-07)
     family_width = dataset.X_by_level["family"].shape[1]
     assert not np.allclose(out[:, :family_width].sum(axis=1), 1.0)
     assert not np.allclose(out[:, family_width:].sum(axis=1), 1.0)
@@ -497,7 +456,7 @@ def test_raw_relative_abundance_uses_exact_complete_original_feature_matrix():
     assert "raw_extra" in names
     out = CountTransformation("relative_abundance").fit_apply(X)
     expected = _relative(dataset.X_by_level["all"])
-    np.testing.assert_allclose(out, expected, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(out, expected, rtol=1e-06, atol=1e-07)
 
 
 def test_compositional_log_transforms_reject_all_zero_samples():
@@ -523,9 +482,7 @@ def test_single_canonical_name_in_outputs():
     table = transformation_space_table()
     assert list(table.columns) == ["count_transformation", "category"]
     configs = build_sweep_configs(
-        [("genus", ("genus",))],
-        [Transformation("none")],
-        ["RF_1000_msl5"],
+        [("genus", ("genus",))], [Transformation("none")], ["RF_1000_msl5"]
     )
     assert configs.loc[0, "count_transformation"] == "relative_abundance"
     assert "transformation_abbreviation" not in configs.columns

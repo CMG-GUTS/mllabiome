@@ -568,16 +568,40 @@ def _strategy_performance_display(
 
 
 def _ensemble_summary_table(root: Path) -> pd.DataFrame:
-    ens = _ensemble_final_candidate(root)
+    ens = _ensemble_row(root)
     if not ens:
         return pd.DataFrame()
+
+    members = ens.get("effective_member_count")
+
+    if members is None:
+        members = ens.get("member_count")
+
+    if members is None:
+        raw_members = ens.get("members", [])
+
+        if isinstance(raw_members, str):
+            try:
+                raw_members = json.loads(raw_members)
+            except Exception:
+                raw_members = []
+
+        if isinstance(raw_members, list):
+            members = len(raw_members)
+        else:
+            members = ens.get("ensemble_size", "")
+
     row = {
         "Strategy": "MPMA-E",
         "Selection": ens.get("selection_strategy", ""),
         "Aggregation": ens.get("aggregation_strategy", ""),
-        "Members": ens.get("ensemble_size", ""),
-        "Selection metric": ens.get("optimize_metric", "nMCC"),
+        "Members": members,
+        "Selection metric": ens.get(
+            "selection_metric",
+            ens.get("optimize_metric", ""),
+        ),
     }
+
     return pd.DataFrame([row])
 
 
@@ -591,7 +615,7 @@ def _ensemble_members_table(root: Path) -> pd.DataFrame:
             "member_order": "Member",
             "ranks": "Resolution",
             "transformation": "MPDR transformation",
-            "classifier_family": "Learner family",
+            "classifier_family": "Learner type",
             "raw_transform": "count_transformation",
             "raw_model": "learner",
         }
@@ -1203,7 +1227,7 @@ def _print_report_summary(
                 "Member",
                 "Resolution",
                 "MPDR transformation",
-                "Learner family",
+                "Learner type",
                 "count_transformation",
                 "learner",
             ]

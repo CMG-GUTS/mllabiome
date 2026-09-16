@@ -1,14 +1,12 @@
 from __future__ import annotations
-
 import hashlib
 import json
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
-from scipy.stats import rankdata
-
+from scipy.optimize import minimize
+from .compute import ResourceTracker
 from .configs_sweep import Ensemble, Sweep
 from .console import path_table, stage, success, summary_table
 from .data import load_dataset
@@ -16,7 +14,6 @@ from .metrics import _renormalize_proba, compute_metrics
 from .mpma_e_figure import write_single_task_mpma_e_figure
 from .selection import select_final_mpma_candidate
 from .utils import TAXONOMIC_LEVELS, dump_json_standard
-from .compute import ResourceTracker
 
 
 def _load_manifest(root: Path) -> dict[str, Any]:
@@ -64,144 +61,139 @@ def _eligible_config_ids(configs: pd.DataFrame, ensemble: Ensemble) -> set[str]:
     return set(frame["config_id"].astype(str)) - excluded
 
 
+def _plan_methods(plan: Ensemble) -> tuple[str, ...]:
+    value = getattr(plan, "methods", None)
+    if value is None:
+        value = getattr(plan, "selection_strategies", ())
+    return tuple((str(x) for x in value))
+
+
+def _plan_library_size(plan: Ensemble) -> int:
+    return int(getattr(plan, "learned_library_size", 50))
+
+
+def _plan_caruana_iterations(plan: Ensemble) -> int:
+    return int(getattr(plan, "caruana_max_iterations", 25))
+
+
+def _plan_super_learner_loss(plan: Ensemble) -> str:
+    return str(getattr(plan, "super_learner_loss", "log_loss"))
+
+
+def _plan_super_learner_weight_tol(plan: Ensemble) -> float:
+    return float(getattr(plan, "super_learner_weight_tol", 1e-06))
+
+
+def _validate_plan(plan: Ensemble) -> None:
+    supported = {
+        "top_k",
+        "best_per_resolution",
+        "best_per_learner_type",
+        "caruana",
+        "super_learner",
+    }
+    methods = _plan_methods(plan)
+    if not methods:
+        raise ValueError(
+            "Ensemble selection strategies must contain at least one supported method."
+        )
+    unknown = sorted(set(methods) - supported)
+    if unknown:
+        raise ValueError(
+            f"Unknown ensemble method(s): {unknown}. Supported methods: {sorted(supported)}."
+        )
+    sizes = tuple((int(x) for x in getattr(plan, "sizes", ())))
+    if "top_k" in methods:
+        if not sizes:
+            raise ValueError("Ensemble.sizes must be non-empty when method='top_k'.")
+        if any((x < 2 for x in sizes)):
+            raise ValueError("Every top-k ensemble size must be at least 2.")
+    if {"caruana", "super_learner"} & set(methods):
+        if _plan_library_size(plan) < 2:
+            raise ValueError("Ensemble.learned_library_size must be at least 2.")
+    if "caruana" in methods and _plan_caruana_iterations(plan) < 1:
+        raise ValueError("Ensemble.caruana_max_iterations must be at least 1.")
+    if "super_learner" in methods:
+        loss = _plan_super_learner_loss(plan)
+        if loss not in {"log_loss", "brier"}:
+            raise ValueError(
+                "Ensemble.super_learner_loss must be 'log_loss' or 'brier'."
+            )
+        tol = _plan_super_learner_weight_tol(plan)
+        if not np.isfinite(tol) or tol < 0.0 or tol >= 1.0:
+            raise ValueError("Ensemble.super_learner_weight_tol must be in [0, 1).")
+
+
 def _ensemble_configs(plan: Ensemble) -> list[dict[str, Any]]:
-    rows = []
-    for sel in plan.selection_strategies:
-        for agg in plan.aggregation_strategies:
-            sizes = (plan.threshold_max_members,) if sel == "threshold" else plan.sizes
-            for size in sizes:
-                uid = f"{plan.optimize_metric}__{sel}_{size}__{agg}"
-                rows.append(
-                    {
-                        "ensemble_config_id": hashlib.sha1(uid.encode()).hexdigest()[
-                            :12
-                        ],
-                        "optimize_metric": plan.optimize_metric,
-                        "selection_strategy": str(sel),
-                        "ensemble_size": int(size),
-                        "threshold_score": plan.threshold_score
-                        if sel == "threshold"
-                        else np.nan,
-                        "aggregation_strategy": str(agg),
-                    }
-                )
+    _validate_plan(plan)
+    rows: list[dict[str, Any]] = []
+    for method in _plan_methods(plan):
+        requested_sizes = (
+            tuple((int(x) for x in plan.sizes)) if method == "top_k" else (0,)
+        )
+        for requested_size in requested_sizes:
+            uid = "__".join(
+                [
+                    str(plan.optimize_metric),
+                    method,
+                    str(requested_size),
+                    str(_plan_library_size(plan)),
+                    str(_plan_caruana_iterations(plan)),
+                    _plan_super_learner_loss(plan),
+                ]
+            )
+            rows.append(
+                {
+                    "ensemble_config_id": hashlib.sha1(uid.encode()).hexdigest()[:12],
+                    "optimize_metric": str(plan.optimize_metric),
+                    "selection_strategy": method,
+                    "aggregation_strategy": "mean_proba"
+                    if method
+                    in {"top_k", "best_per_resolution", "best_per_learner_type"}
+                    else "weighted_mean_proba",
+                    "ensemble_size": int(requested_size),
+                }
+            )
     return rows
 
 
-def _model_family(name: str) -> str:
-    mn = str(name).lower()
-    for fam, keys in {
-        "RF": ["rf", "randomforest"],
-        "ET": ["et", "extra"],
-        "GB": ["gb", "xgb", "lgb", "cat", "hist"],
-        "LR": ["lr", "logistic"],
-        "Ridge": ["ridge"],
-        "SVM": ["svc", "svm", "lsvc"],
-        "NB": ["nb", "gnb", "bnb", "mnb"],
-        "kNN": ["knn", "nearest"],
-        "DA": ["lda", "qda"],
-    }.items():
-        if any(k in mn for k in keys):
-            return fam
-    return mn.split("_")[0]
+def _prediction_frame_for_outer(
+    predictions: pd.DataFrame, outer_split_key: str | None
+) -> pd.DataFrame:
+    frame = predictions.copy()
+    if "outer_split_key" not in frame.columns:
+        if "split_key" not in frame.columns:
+            raise ValueError(
+                "Prediction table must contain outer_split_key or split_key."
+            )
+        frame["outer_split_key"] = frame["split_key"]
+    if outer_split_key is not None:
+        frame = frame[frame["outer_split_key"].astype(str).eq(str(outer_split_key))]
+    frame["outer_split_key"] = frame["outer_split_key"].astype(str)
+    frame["config_id"] = frame["config_id"].astype(str)
+    return frame
 
 
-def _select_members(
-    scores: pd.Series,
-    configs: pd.DataFrame,
-    spec: dict[str, Any],
-    plan: Ensemble,
-) -> list[str]:
-    size = int(spec["ensemble_size"])
-    sel = str(spec["selection_strategy"])
-    ordered = [str(x) for x in scores.index.tolist()]
-    meta = configs.drop_duplicates("config_id").copy()
-    meta["config_id"] = meta["config_id"].astype(str)
-    meta = meta.set_index("config_id")
-    if sel == "top_k":
-        return ordered[:size]
-    if sel == "threshold":
-        return [cid for cid in ordered if float(scores[cid]) >= plan.threshold_score][
-            :size
-        ]
-    if sel == "best_per_family":
-        out = []
-        seen = set()
-        for cid in ordered:
-            fam = _model_family(meta.loc[cid, "learner"] if cid in meta.index else cid)
-            if fam not in seen:
-                out.append(cid)
-                seen.add(fam)
-            if len(out) >= size:
-                break
-        return out
-    if sel == "best_per_resolution":
-        out = []
-        seen = set()
-        for cid in ordered:
-            res = str(meta.loc[cid, "resolution"] if cid in meta.index else "")
-            if res not in seen:
-                out.append(cid)
-                seen.add(res)
-            if len(out) >= size:
-                break
-        return out
-    if sel == "diverse_top_k":
-        out = _select_members(
-            scores,
-            configs,
-            {**spec, "selection_strategy": "best_per_family"},
-            plan,
-        )
-        for cid in ordered:
-            if len(out) >= size:
-                break
-            if cid not in out:
-                out.append(cid)
-        return out
-    return ordered[:size]
+def _metric_is_loss(metric: str) -> bool:
+    return str(metric) in {"log_loss", "brier", "brier_loss"}
 
 
-def _aggregate_proba(stack: np.ndarray, weights: np.ndarray, method: str) -> np.ndarray:
-    stack = np.asarray(stack, dtype=float)
-    weights = np.nan_to_num(np.asarray(weights, dtype=float), nan=0.0)
-    if stack.ndim != 3:
-        raise ValueError("Expected stack shape: n_members × n_samples × n_classes")
-    method = str(method)
-    if method == "median_proba":
-        proba = np.median(stack, axis=0)
-    elif method == "weighted_mean_proba":
-        w = np.clip(weights - np.nanmin(weights), 0, None) + 1e-8
-        w = w / w.sum()
-        proba = np.tensordot(w, stack, axes=(0, 0))
-    elif method == "rank_mean":
-        ranked = np.empty_like(stack)
-        for m in range(stack.shape[0]):
-            for c in range(stack.shape[2]):
-                ranked[m, :, c] = rankdata(stack[m, :, c])
-        proba = ranked.mean(axis=0)
-    elif method == "majority_vote":
-        preds = stack.argmax(axis=2)
-        proba = np.zeros(stack.shape[1:], dtype=float)
-        for i in range(stack.shape[1]):
-            counts = np.bincount(preds[:, i], minlength=stack.shape[2]).astype(float)
-            proba[i, :] = counts / max(1, counts.sum())
-    elif method == "max_proba":
-        proba = stack.max(axis=0)
-    elif method == "min_proba":
-        proba = stack.min(axis=0)
-    else:
-        proba = stack.mean(axis=0)
-    return _renormalize_proba(proba, stack.shape[2])
+def _metric_better(
+    candidate: float, incumbent: float, metric: str, tol: float = 1e-12
+) -> bool:
+    if _metric_is_loss(metric):
+        return candidate < incumbent - tol
+    return candidate > incumbent + tol
 
 
 def _complete_inner_scores(
     inner: pd.DataFrame,
+    predictions: pd.DataFrame,
     outer_split_key: str | None,
     metric: str,
     eligible_ids: set[str],
 ) -> pd.Series:
-    required = {"inner_key", "config_id", metric}
+    required = {"inner_key", "config_id"}
     missing = required - set(inner.columns)
     if missing:
         raise ValueError(
@@ -214,7 +206,6 @@ def _complete_inner_scores(
         frame = frame[frame["split_key"].astype(str).eq(str(outer_split_key))]
     frame["config_id"] = frame["config_id"].astype(str)
     frame["inner_key"] = frame["inner_key"].astype(str)
-    frame[metric] = pd.to_numeric(frame[metric], errors="coerce")
     frame = frame[frame["config_id"].isin(eligible_ids)]
     if "ok" in frame.columns:
         ok = pd.to_numeric(frame["ok"], errors="coerce").fillna(0).astype(int)
@@ -222,59 +213,70 @@ def _complete_inner_scores(
     expected = set(frame["inner_key"].dropna().astype(str))
     if not expected:
         return pd.Series(dtype=float)
-    rows = []
+    complete: list[str] = []
     for config_id, group in frame.groupby("config_id", sort=True):
         group = group.drop_duplicates("inner_key", keep="last")
-        valid = group[np.isfinite(group[metric].to_numpy(dtype=float))]
-        if set(valid["inner_key"].astype(str)) != expected:
+        if set(group["inner_key"].astype(str)) == expected:
+            complete.append(str(config_id))
+    if not complete:
+        return pd.Series(dtype=float)
+    pred = _prediction_frame_for_outer(predictions, outer_split_key)
+    pred = pred[pred["config_id"].isin(set(complete))].copy()
+    pcols = _proba_cols(pred)
+    if not pcols:
+        raise ValueError("Inner predictions do not contain probability columns.")
+    rows: list[tuple[str, float]] = []
+    for config_id in complete:
+        ordered, stack = _aligned_stack(pred, [config_id], pcols, inner=True)
+        if ordered is None or stack is None:
             continue
-        rows.append((str(config_id), float(valid[metric].mean())))
+        y_true = ordered["y_true"].to_numpy(dtype=int)
+        value = _metric_value(y_true, stack[0], metric)
+        if np.isfinite(value):
+            rows.append((str(config_id), float(value)))
     if not rows:
         return pd.Series(dtype=float)
     scores = pd.Series(dict(rows), dtype=float)
-    order = sorted(scores.index, key=lambda cid: (-float(scores[cid]), str(cid)))
+    if _metric_is_loss(metric):
+        order = sorted(scores.index, key=lambda cid: (float(scores[cid]), str(cid)))
+    else:
+        order = sorted(scores.index, key=lambda cid: (-float(scores[cid]), str(cid)))
     return scores.loc[order]
 
 
-def _prediction_frame_for_outer(
-    predictions: pd.DataFrame,
-    outer_split_key: str | None,
-) -> pd.DataFrame:
-    frame = predictions.copy()
-    if "outer_split_key" not in frame.columns:
-        if "split_key" not in frame.columns:
-            raise ValueError(
-                "Prediction table must contain outer_split_key or split_key."
-            )
-        frame["outer_split_key"] = frame["split_key"]
-    if outer_split_key is not None:
-        frame = frame[frame["outer_split_key"].astype(str).eq(str(outer_split_key))]
-    frame["config_id"] = frame["config_id"].astype(str)
-    return frame
-
-
 def _aligned_stack(
-    predictions: pd.DataFrame,
-    members: list[str],
-    pcols: list[str],
-    inner: bool,
+    predictions: pd.DataFrame, members: list[str], pcols: list[str], *, inner: bool
 ) -> tuple[pd.DataFrame, np.ndarray] | tuple[None, None]:
     if not members:
-        return None, None
+        return (None, None)
     if inner:
-        if "split_key" not in predictions.columns:
-            raise ValueError("Inner predictions must contain split_key.")
-        key_cols = ["split_key", "sample_id"]
+        required = {"outer_split_key", "split_key", "sample_id", "y_true", "config_id"}
+        missing = required - set(predictions.columns)
+        if missing:
+            raise ValueError(
+                f"Inner prediction table is missing required columns: {sorted(missing)}"
+            )
+        key_cols = ["outer_split_key", "split_key", "sample_id"]
     else:
+        required = {"sample_id", "y_true", "config_id"}
+        missing = required - set(predictions.columns)
+        if missing:
+            raise ValueError(
+                f"Outer prediction table is missing required columns: {sorted(missing)}"
+            )
         key_cols = ["sample_id"]
-    base_cols = key_cols + ["y_true"]
+    label_counts = predictions.groupby(key_cols, dropna=False)["y_true"].nunique()
+    if (label_counts > 1).any():
+        raise ValueError(
+            "Prediction table contains conflicting y_true values for a sample."
+        )
     ordered = (
-        predictions[base_cols]
-        .drop_duplicates(key_cols)
+        predictions[key_cols + ["y_true"]]
+        .drop_duplicates(key_cols, keep="last")
         .sort_values(key_cols)
         .reset_index(drop=True)
     )
-    stacks = []
+    stacks: list[np.ndarray] = []
     for cid in members:
         sub = predictions[predictions["config_id"].eq(str(cid))].copy()
         sub = sub.drop_duplicates(key_cols, keep="last")
@@ -282,53 +284,413 @@ def _aligned_stack(
             sub[key_cols + pcols], on=key_cols, how="left", validate="one_to_one"
         )
         if sub[pcols].isna().any().any():
-            return None, None
+            return (None, None)
         stacks.append(sub[pcols].to_numpy(dtype=float))
     if len(stacks) != len(members):
-        return None, None
-    return ordered, np.stack(stacks, axis=0)
+        return (None, None)
+    return (ordered, np.stack(stacks, axis=0))
 
 
-def _score_inner_candidate(
+def _missing_members(
+    predictions: pd.DataFrame, members: list[str], pcols: list[str], *, inner: bool
+) -> list[str]:
+    missing: list[str] = []
+    for cid in members:
+        ordered, stack = _aligned_stack(predictions, [cid], pcols, inner=inner)
+        if ordered is None or stack is None:
+            missing.append(str(cid))
+    return missing
+
+
+def _metric_value(y_true: np.ndarray, proba: np.ndarray, metric: str) -> float:
+    proba = _renormalize_proba(
+        np.asarray(proba, dtype=float), np.asarray(proba).shape[1]
+    )
+    if metric == "log_loss":
+        eps = np.finfo(float).eps
+        picked = np.clip(
+            proba[np.arange(len(y_true)), np.asarray(y_true, dtype=int)], eps, 1.0
+        )
+        value = float(-np.mean(np.log(picked)))
+        return value if np.isfinite(value) else float("inf")
+    if metric in {"brier", "brier_loss"}:
+        target = np.zeros_like(proba)
+        target[np.arange(len(y_true)), np.asarray(y_true, dtype=int)] = 1.0
+        value = float(np.mean(np.sum((proba - target) ** 2, axis=1)))
+        return value if np.isfinite(value) else float("inf")
+    classes = np.arange(proba.shape[1], dtype=int)
+    y_pred = classes[proba.argmax(axis=1)]
+    values = compute_metrics(y_true, y_pred, proba, classes)
+    if metric not in values:
+        raise ValueError(f"Unsupported ensemble optimize_metric={metric!r}.")
+    value = float(values[metric])
+    return value if np.isfinite(value) else float("-inf")
+
+
+def _weighted_probability_mean(stack: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    stack = np.asarray(stack, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    if stack.ndim != 3:
+        raise ValueError("Expected stack shape: n_members × n_samples × n_classes.")
+    if weights.ndim != 1 or len(weights) != stack.shape[0]:
+        raise ValueError("Ensemble weights must have exactly one value per member.")
+    if not np.all(np.isfinite(weights)) or np.any(weights < 0.0):
+        raise ValueError("Ensemble weights must be finite and non-negative.")
+    total = float(weights.sum())
+    if total <= 0.0:
+        raise ValueError("Ensemble weights must have positive total mass.")
+    w = weights / total
+    proba = np.tensordot(w, stack, axes=(0, 0))
+    return _renormalize_proba(proba, stack.shape[2])
+
+
+def _uniform_weights(n_members: int) -> np.ndarray:
+    if n_members <= 0:
+        raise ValueError("Cannot create weights for an empty ensemble.")
+    return np.full(n_members, 1.0 / n_members, dtype=float)
+
+
+def _pad_degenerate_ensemble(
+    members: list[str], weights: np.ndarray, library: list[str]
+) -> tuple[list[str], np.ndarray]:
+    if len(members) >= 2:
+        return members, weights
+    if not members:
+        raise ValueError("Cannot pad an empty learned ensemble.")
+    for candidate in library:
+        if candidate not in members:
+            padded_members = [*members, candidate]
+            padded_weights = np.asarray([float(weights[0]), 0.0], dtype=float)
+            return padded_members, padded_weights
+    return members, weights
+
+
+def _select_top_k(scores: pd.Series, size: int) -> list[str]:
+    return [str(x) for x in scores.index[: int(size)].tolist()]
+
+
+def _select_best_per_resolution(scores: pd.Series, configs: pd.DataFrame) -> list[str]:
+    meta = configs.drop_duplicates("config_id").copy()
+    meta["config_id"] = meta["config_id"].astype(str)
+    meta = meta.set_index("config_id")
+    out: list[str] = []
+    seen: set[str] = set()
+    for cid in [str(x) for x in scores.index.tolist()]:
+        if cid not in meta.index:
+            continue
+        resolution = str(meta.loc[cid, "resolution"])
+        if resolution in seen:
+            continue
+        out.append(cid)
+        seen.add(resolution)
+    return out
+
+
+def _learner_type(value: str) -> str:
+    text = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    compact = "".join(ch for ch in text if ch.isalnum() or ch == "_")
+    rules = (
+        (("baseline_rf", "randomforest", "random_forest", "rf"), "random_forest"),
+        (("extratrees", "extra_trees", "et"), "extra_trees"),
+        (
+            ("histgradientboosting", "hist_gradient_boosting", "histgb"),
+            "hist_gradient_boosting",
+        ),
+        (("xgboost", "xgb"), "xgboost"),
+        (("lightgbm", "lgbm", "lgb"), "lightgbm"),
+        (("catboost", "cb", "cat"), "catboost"),
+        (
+            ("logisticregression", "logistic_regression", "logistic", "lr"),
+            "logistic_regression",
+        ),
+        (("ridgeclassifier", "ridge_classifier", "ridge"), "ridge_classifier"),
+        (("calib_lsvc", "linearsvc", "linear_svc", "lsvc"), "linear_svm"),
+        (("svc_rbf", "svm_rbf", "svc"), "rbf_svm"),
+        (("kneighbors", "k_neighbors", "knn"), "knn"),
+        (("nearestcentroid", "nearest_centroid"), "nearest_centroid"),
+        (("gaussiannb", "gaussian_nb", "gnb"), "gaussian_nb"),
+        (("bernoullinb", "bernoulli_nb", "bnb"), "bernoulli_nb"),
+        (("multinomialnb", "multinomial_nb", "mnb"), "multinomial_nb"),
+        (("lda", "lineardiscriminant"), "lda"),
+        (("qda", "quadraticdiscriminant"), "qda"),
+        (("sgd_log", "sgdclassifier", "sgd_classifier", "sgd"), "sgd_classifier"),
+        (("passiveaggressive", "passive_aggressive", "pa"), "passive_aggressive"),
+        (("decisiontree", "decision_tree", "dt"), "decision_tree"),
+        (("flaml", "automl"), "flaml"),
+        (("siamcat",), "siamcat"),
+    )
+    for prefixes, learner_type in rules:
+        if compact in prefixes or any(
+            compact.startswith(prefix + "_") for prefix in prefixes
+        ):
+            return learner_type
+    return compact.split("_", 1)[0] or compact
+
+
+def _select_best_per_learner_type(
+    scores: pd.Series, configs: pd.DataFrame
+) -> list[str]:
+    meta = configs.drop_duplicates("config_id").copy()
+    meta["config_id"] = meta["config_id"].astype(str)
+    meta = meta.set_index("config_id")
+    out: list[str] = []
+    seen: set[str] = set()
+    for cid in [str(x) for x in scores.index.tolist()]:
+        if cid not in meta.index:
+            continue
+        learner_type = _learner_type(str(meta.loc[cid, "learner"]))
+        if learner_type in seen:
+            continue
+        out.append(cid)
+        seen.add(learner_type)
+    return out
+
+
+def _caruana_select(
+    member_ids: list[str],
+    stack: np.ndarray,
+    y_true: np.ndarray,
+    metric: str,
+    max_iterations: int,
+) -> tuple[list[str], np.ndarray, float, list[float]]:
+    if not member_ids or stack.shape[0] != len(member_ids):
+        raise ValueError("Caruana library and prediction stack are inconsistent.")
+    if max_iterations < 1:
+        raise ValueError("Caruana max_iterations must be at least 1.")
+    running_sum = np.zeros_like(stack[0], dtype=float)
+    chosen_indices: list[int] = []
+    trajectory: list[float] = []
+    best_score = float("inf") if _metric_is_loss(metric) else float("-inf")
+    best_prefix = 0
+    for step in range(int(max_iterations)):
+        candidate_scores: list[tuple[float, float, int, str]] = []
+        denom = float(step + 1)
+        for j, cid in enumerate(member_ids):
+            proba = _renormalize_proba((running_sum + stack[j]) / denom, stack.shape[2])
+            score = _metric_value(y_true, proba, metric)
+            eps = np.finfo(float).eps
+            picked = np.clip(proba[np.arange(len(y_true)), y_true], eps, 1.0)
+            tie_loss = float(-np.mean(np.log(picked)))
+            candidate_scores.append((score, tie_loss, j, str(cid)))
+        if _metric_is_loss(metric):
+            candidate_scores.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+        else:
+            candidate_scores.sort(
+                key=lambda item: (-item[0], item[1], item[2], item[3])
+            )
+        score, _, selected_idx, _ = candidate_scores[0]
+        chosen_indices.append(int(selected_idx))
+        running_sum = running_sum + stack[selected_idx]
+        trajectory.append(float(score))
+        if best_prefix == 0 or _metric_better(float(score), float(best_score), metric):
+            best_score = float(score)
+            best_prefix = len(chosen_indices)
+    chosen_indices = chosen_indices[:best_prefix]
+    if not chosen_indices:
+        raise RuntimeError("Caruana ensemble selection did not produce a candidate.")
+    order: list[int] = []
+    counts: dict[int, int] = {}
+    for idx in chosen_indices:
+        if idx not in counts:
+            order.append(idx)
+            counts[idx] = 0
+        counts[idx] += 1
+    members = [member_ids[idx] for idx in order]
+    weights = np.asarray([counts[idx] for idx in order], dtype=float)
+    weights /= weights.sum()
+    return (members, weights, float(best_score), trajectory[:best_prefix])
+
+
+def _super_learner_loss(
+    weights: np.ndarray, stack: np.ndarray, y_true: np.ndarray, loss: str
+) -> float:
+    proba = _weighted_probability_mean(stack, weights)
+    if loss == "log_loss":
+        eps = np.finfo(float).eps
+        picked = np.clip(proba[np.arange(len(y_true)), y_true], eps, 1.0)
+        return float(-np.mean(np.log(picked)))
+    if loss == "brier":
+        target = np.zeros_like(proba)
+        target[np.arange(len(y_true)), y_true] = 1.0
+        return float(np.mean(np.sum((proba - target) ** 2, axis=1)))
+    raise ValueError(f"Unknown Super Learner loss: {loss!r}.")
+
+
+def _fit_super_learner(
+    member_ids: list[str],
+    stack: np.ndarray,
+    y_true: np.ndarray,
+    loss: str,
+    weight_tol: float,
+) -> tuple[list[str], np.ndarray, float]:
+    if not member_ids or stack.shape[0] != len(member_ids):
+        raise ValueError("Super Learner library and prediction stack are inconsistent.")
+    n_members = len(member_ids)
+    x0 = _uniform_weights(n_members)
+    result = minimize(
+        _super_learner_loss,
+        x0,
+        args=(stack, y_true, str(loss)),
+        method="SLSQP",
+        bounds=[(0.0, 1.0)] * n_members,
+        constraints=[{"type": "eq", "fun": lambda w: float(np.sum(w) - 1.0)}],
+        options={"maxiter": 1000, "ftol": 1e-12, "disp": False},
+    )
+    if not bool(result.success):
+        raise RuntimeError(f"Super Learner optimization failed: {result.message}")
+    weights = np.clip(np.asarray(result.x, dtype=float), 0.0, None)
+    if not np.all(np.isfinite(weights)) or weights.sum() <= 0.0:
+        raise RuntimeError("Super Learner returned invalid ensemble weights.")
+    weights /= weights.sum()
+    keep = weights > float(weight_tol)
+    if not np.any(keep):
+        keep[int(np.argmax(weights))] = True
+    kept_ids = [cid for cid, flag in zip(member_ids, keep) if bool(flag)]
+    kept_weights = weights[keep]
+    kept_weights /= kept_weights.sum()
+    final_loss = _super_learner_loss(kept_weights, stack[keep], y_true, str(loss))
+    return (kept_ids, kept_weights, float(final_loss))
+
+
+def _candidate_from_simple_selector(
     spec: dict[str, Any],
     scores: pd.Series,
     predictions: pd.DataFrame,
     configs: pd.DataFrame,
-    plan: Ensemble,
     pcols: list[str],
+    metric: str,
 ) -> dict[str, Any] | None:
-    members = _select_members(scores, configs, spec, plan)
+    method = str(spec["selection_strategy"])
+    if method == "top_k":
+        requested = int(spec["ensemble_size"])
+        members = _select_top_k(scores, requested)
+        if len(members) != requested:
+            return None
+    elif method == "best_per_resolution":
+        members = _select_best_per_resolution(scores, configs)
+    elif method == "best_per_learner_type":
+        members = _select_best_per_learner_type(scores, configs)
+    else:
+        raise ValueError(f"Unsupported simple ensemble selector: {method!r}.")
     if len(members) < 2:
         return None
-    weights = np.asarray(
-        [float(scores.get(cid, np.nan)) for cid in members], dtype=float
-    )
-    fold_metrics = []
-    for inner_key, fold in predictions.groupby("split_key", sort=True):
-        ordered, stack = _aligned_stack(fold, members, pcols, False)
-        if ordered is None or stack is None:
-            return None
-        proba = _aggregate_proba(stack, weights, str(spec["aggregation_strategy"]))
-        classes = np.arange(proba.shape[1], dtype=int)
-        y_true = ordered["y_true"].to_numpy(dtype=int)
-        y_pred = classes[proba.argmax(axis=1)]
-        fold_metrics.append(compute_metrics(y_true, y_pred, proba, classes))
-    if not fold_metrics:
+    ordered, stack = _aligned_stack(predictions, members, pcols, inner=True)
+    if ordered is None or stack is None:
         return None
-    tab = pd.DataFrame(fold_metrics)
-    means = tab.mean(numeric_only=True).to_dict()
-    stds = tab.std(numeric_only=True, ddof=1).fillna(0.0).to_dict()
-    counts = tab.count(numeric_only=True).to_dict()
-    row = {
+    weights = _uniform_weights(len(members))
+    proba = _weighted_probability_mean(stack, weights)
+    y_true = ordered["y_true"].to_numpy(dtype=int)
+    metrics = compute_metrics(
+        y_true,
+        np.arange(proba.shape[1], dtype=int)[proba.argmax(axis=1)],
+        proba,
+        np.arange(proba.shape[1], dtype=int),
+    )
+    metrics[metric] = _metric_value(y_true, proba, metric)
+    return {
         **spec,
         "members": json.dumps(members),
+        "weights": json.dumps(weights.tolist()),
         "member_count": int(len(members)),
-        "n_inner_folds": int(len(fold_metrics)),
+        "inner_oof_rows": int(len(ordered)),
+        "weight_source": "uniform",
+        **{f"{key}_mean": float(value) for key, value in metrics.items()},
     }
-    row.update({f"{key}_mean": float(value) for key, value in means.items()})
-    row.update({f"{key}_std": float(value) for key, value in stds.items()})
-    row.update({f"{key}_count": int(value) for key, value in counts.items()})
-    return row
+
+
+def _candidate_from_caruana(
+    spec: dict[str, Any],
+    scores: pd.Series,
+    predictions: pd.DataFrame,
+    pcols: list[str],
+    plan: Ensemble,
+    metric: str,
+) -> dict[str, Any] | None:
+    library = [str(x) for x in scores.index[: _plan_library_size(plan)].tolist()]
+    if len(library) < 2:
+        return None
+    ordered, stack = _aligned_stack(predictions, library, pcols, inner=True)
+    if ordered is None or stack is None:
+        incomplete = set(_missing_members(predictions, library, pcols, inner=True))
+        library = [cid for cid in library if cid not in incomplete]
+        if len(library) < 2:
+            return None
+        ordered, stack = _aligned_stack(predictions, library, pcols, inner=True)
+    if ordered is None or stack is None:
+        return None
+    y_true = ordered["y_true"].to_numpy(dtype=int)
+    members, weights, _, trajectory = _caruana_select(
+        library, stack, y_true, metric, _plan_caruana_iterations(plan)
+    )
+    selected_indices = [library.index(cid) for cid in members]
+    selected_stack = stack[selected_indices]
+    proba = _weighted_probability_mean(selected_stack, weights)
+    classes = np.arange(proba.shape[1], dtype=int)
+    metrics = compute_metrics(y_true, classes[proba.argmax(axis=1)], proba, classes)
+    metrics[metric] = _metric_value(y_true, proba, metric)
+    return {
+        **spec,
+        "members": json.dumps(members),
+        "weights": json.dumps(weights.tolist()),
+        "member_count": int(len(members)),
+        "effective_member_count": int(np.count_nonzero(weights > 0.0)),
+        "inner_oof_rows": int(len(ordered)),
+        "weight_source": "caruana_selection_frequency",
+        "caruana_iterations_selected": int(len(trajectory)),
+        "caruana_trajectory": json.dumps([float(x) for x in trajectory]),
+        **{f"{key}_mean": float(value) for key, value in metrics.items()},
+    }
+
+
+def _candidate_from_super_learner(
+    spec: dict[str, Any],
+    scores: pd.Series,
+    predictions: pd.DataFrame,
+    pcols: list[str],
+    plan: Ensemble,
+    metric: str,
+) -> dict[str, Any] | None:
+    library = [str(x) for x in scores.index[: _plan_library_size(plan)].tolist()]
+    if len(library) < 2:
+        return None
+    ordered, stack = _aligned_stack(predictions, library, pcols, inner=True)
+    if ordered is None or stack is None:
+        incomplete = set(_missing_members(predictions, library, pcols, inner=True))
+        library = [cid for cid in library if cid not in incomplete]
+        if len(library) < 2:
+            return None
+        ordered, stack = _aligned_stack(predictions, library, pcols, inner=True)
+    if ordered is None or stack is None:
+        return None
+    y_true = ordered["y_true"].to_numpy(dtype=int)
+    members, weights, loss_value = _fit_super_learner(
+        library,
+        stack,
+        y_true,
+        _plan_super_learner_loss(plan),
+        _plan_super_learner_weight_tol(plan),
+    )
+    members, weights = _pad_degenerate_ensemble(members, weights, library)
+    selected_indices = [library.index(cid) for cid in members]
+    selected_stack = stack[selected_indices]
+    proba = _weighted_probability_mean(selected_stack, weights)
+    classes = np.arange(proba.shape[1], dtype=int)
+    metrics = compute_metrics(y_true, classes[proba.argmax(axis=1)], proba, classes)
+    metrics[metric] = _metric_value(y_true, proba, metric)
+    return {
+        **spec,
+        "members": json.dumps(members),
+        "weights": json.dumps(weights.tolist()),
+        "member_count": int(len(members)),
+        "effective_member_count": int(
+            np.count_nonzero(weights > _plan_super_learner_weight_tol(plan))
+        ),
+        "inner_oof_rows": int(len(ordered)),
+        "weight_source": f"convex_{_plan_super_learner_loss(plan)}",
+        "super_learner_loss": _plan_super_learner_loss(plan),
+        "super_learner_loss_value": float(loss_value),
+        **{f"{key}_mean": float(value) for key, value in metrics.items()},
+    }
 
 
 def _candidate_table_for_inner(
@@ -338,12 +700,12 @@ def _candidate_table_for_inner(
     plan: Ensemble,
     metric: str,
     outer_split_key: str | None,
-    available_ids: set[str] | None = None,
 ) -> pd.DataFrame:
+    _validate_plan(plan)
     eligible = _eligible_config_ids(configs, plan)
-    if available_ids is not None:
-        eligible &= {str(x) for x in available_ids}
-    scores = _complete_inner_scores(inner_results, outer_split_key, metric, eligible)
+    scores = _complete_inner_scores(
+        inner_results, inner_predictions, outer_split_key, metric, eligible
+    )
     if scores.empty:
         return pd.DataFrame()
     pred = _prediction_frame_for_outer(inner_predictions, outer_split_key)
@@ -351,20 +713,62 @@ def _candidate_table_for_inner(
     pcols = _proba_cols(pred)
     if not pcols:
         raise ValueError("Inner predictions do not contain probability columns.")
-    rows = []
+    rows: list[dict[str, Any]] = []
     for spec in _ensemble_configs(plan):
-        row = _score_inner_candidate(spec, scores, pred, configs, plan, pcols)
-        if row is None:
-            continue
-        rows.append(row)
+        method = str(spec["selection_strategy"])
+        if method in {"top_k", "best_per_resolution", "best_per_learner_type"}:
+            row = _candidate_from_simple_selector(
+                spec, scores, pred, configs, pcols, metric
+            )
+        elif method == "caruana":
+            row = _candidate_from_caruana(spec, scores, pred, pcols, plan, metric)
+        elif method == "super_learner":
+            row = _candidate_from_super_learner(spec, scores, pred, pcols, plan, metric)
+        else:
+            raise ValueError(f"Unknown ensemble method: {method!r}.")
+        if row is not None:
+            rows.append(row)
     if not rows:
         return pd.DataFrame()
     out = pd.DataFrame(rows)
-    score_col = f"{metric}_mean" if f"{metric}_mean" in out.columns else "nMCC_mean"
-    out = out.sort_values(
-        [score_col, "ensemble_config_id"], ascending=[False, True], kind="mergesort"
+    score_col = f"{metric}_mean"
+    if score_col not in out.columns:
+        raise ValueError(
+            f"The requested ensemble metric {metric!r} was not produced for candidates."
+        )
+    out = out[np.isfinite(pd.to_numeric(out[score_col], errors="coerce"))].copy()
+    method_priority = {
+        "top_k": 0,
+        "best_per_resolution": 1,
+        "best_per_learner_type": 2,
+        "caruana": 3,
+        "super_learner": 4,
+    }
+    out["_method_priority"] = (
+        out["selection_strategy"]
+        .astype(str)
+        .map(method_priority)
+        .fillna(999)
+        .astype(int)
     )
+    out = out.sort_values(
+        [score_col, "_method_priority", "member_count", "ensemble_config_id"],
+        ascending=[_metric_is_loss(metric), True, True, True],
+        kind="mergesort",
+    ).drop(columns=["_method_priority"])
     return out.reset_index(drop=True)
+
+
+def _parse_json_list(value: Any, field: str) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    try:
+        parsed = json.loads(str(value))
+    except Exception as exc:
+        raise ValueError(f"Could not parse ensemble {field} JSON.") from exc
+    if not isinstance(parsed, list):
+        raise ValueError(f"Ensemble {field} must decode to a list.")
+    return parsed
 
 
 def select_mpma_e_by_outer_fold(
@@ -375,64 +779,68 @@ def select_mpma_e_by_outer_fold(
     plan: Ensemble,
     metric: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    _validate_plan(plan)
     outer = _prediction_frame_for_outer(outer_predictions, None)
-    inner_pred = _prediction_frame_for_outer(inner_predictions, None)
     outer_pcols = _proba_cols(outer)
     if not outer_pcols:
         raise ValueError("Outer predictions do not contain probability columns.")
-    selections = []
-    prediction_rows = []
-    metric_rows = []
-    outer_keys = sorted(set(outer["outer_split_key"].astype(str)))
+    if "split_key" not in inner_results.columns:
+        raise ValueError("Inner-results table must contain split_key.")
+    selections: list[dict[str, Any]] = []
+    prediction_rows: list[dict[str, Any]] = []
+    metric_rows: list[dict[str, Any]] = []
+    outer_keys = sorted(set(inner_results["split_key"].astype(str)))
     for outer_key in outer_keys:
-        fold_outer = outer[outer["outer_split_key"].astype(str).eq(outer_key)].copy()
-        fold_inner_pred = inner_pred[
-            inner_pred["outer_split_key"].astype(str).eq(outer_key)
-        ].copy()
-        if fold_outer.empty or fold_inner_pred.empty:
-            continue
-        available_ids = set(fold_outer["config_id"].astype(str))
         candidates = _candidate_table_for_inner(
-            inner_results,
-            inner_predictions,
-            configs,
-            plan,
-            metric,
-            outer_key,
-            available_ids,
+            inner_results, inner_predictions, configs, plan, metric, outer_key
         )
         if candidates.empty:
-            continue
-        score_col = (
-            f"{metric}_mean" if f"{metric}_mean" in candidates.columns else "nMCC_mean"
-        )
+            raise RuntimeError(
+                f"No valid inner-only ensemble candidate was produced for outer fold {outer_key!r}."
+            )
+        score_col = f"{metric}_mean"
         winner = candidates.iloc[0].to_dict()
-        members = json.loads(str(winner["members"]))
-        eligible = _eligible_config_ids(configs, plan) & available_ids
-        scores = _complete_inner_scores(inner_results, outer_key, metric, eligible)
-        ordered, stack = _aligned_stack(fold_outer, members, outer_pcols, False)
-        if ordered is None or stack is None:
-            continue
+        members = [str(x) for x in _parse_json_list(winner["members"], "members")]
         weights = np.asarray(
-            [float(scores.get(cid, np.nan)) for cid in members], dtype=float
+            [float(x) for x in _parse_json_list(winner["weights"], "weights")],
+            dtype=float,
         )
-        proba = _aggregate_proba(stack, weights, str(winner["aggregation_strategy"]))
+        if len(members) != len(weights):
+            raise RuntimeError(
+                f"Selected ensemble for {outer_key!r} has inconsistent members/weights."
+            )
+        fold_outer = outer[outer["outer_split_key"].astype(str).eq(outer_key)].copy()
+        if fold_outer.empty:
+            raise RuntimeError(
+                f"Outer fold {outer_key!r} has no outer-test predictions. Nested ensemble evaluation cannot silently drop the fold."
+            )
+        ordered, stack = _aligned_stack(fold_outer, members, outer_pcols, inner=False)
+        if ordered is None or stack is None:
+            missing = _missing_members(fold_outer, members, outer_pcols, inner=False)
+            raise RuntimeError(
+                f"Selected ensemble for outer fold {outer_key!r} cannot be evaluated because selected member predictions are missing: {missing}. The ensemble is not re-selected using outer-test availability."
+            )
+        proba = _weighted_probability_mean(stack, weights)
         classes = np.arange(proba.shape[1], dtype=int)
         y_true = ordered["y_true"].to_numpy(dtype=int)
         y_pred = classes[proba.argmax(axis=1)]
         outer_metrics = compute_metrics(y_true, y_pred, proba, classes)
+        weights_json = json.dumps([float(x) for x in weights])
+        members_json = json.dumps(members)
         selections.append(
             {
                 "outer_split_key": outer_key,
                 "ensemble_config_id": str(winner["ensemble_config_id"]),
-                "selection_basis": "outer_fold_inner_validation_predictions",
+                "selection_basis": "outer_fold_inner_oof_predictions_only",
                 "selection_metric": str(metric),
                 "inner_score": float(winner[score_col]),
                 "selection_strategy": str(winner["selection_strategy"]),
                 "aggregation_strategy": str(winner["aggregation_strategy"]),
-                "ensemble_size": int(winner["ensemble_size"]),
-                "member_count": int(winner["member_count"]),
-                "members": json.dumps(members),
+                "ensemble_size": int(winner.get("ensemble_size", 0)),
+                "member_count": int(len(members)),
+                "members": members_json,
+                "weights": weights_json,
+                "weight_source": str(winner.get("weight_source", "")),
             }
         )
         metric_rows.append(
@@ -447,11 +855,16 @@ def select_mpma_e_by_outer_fold(
         ordered["ensemble_config_id"] = str(winner["ensemble_config_id"])
         ordered["selection_strategy"] = str(winner["selection_strategy"])
         ordered["aggregation_strategy"] = str(winner["aggregation_strategy"])
-        ordered["members"] = json.dumps(members)
+        ordered["members"] = members_json
+        ordered["weights"] = weights_json
         ordered["y_pred"] = y_pred.astype(int)
         for j, col in enumerate(outer_pcols):
             ordered[col] = proba[:, j]
         prediction_rows.extend(ordered.to_dict(orient="records"))
+    if len(selections) != len(outer_keys):
+        raise RuntimeError(
+            "MPMA-E did not produce exactly one explicit selection per outer fold."
+        )
     return (
         pd.DataFrame(selections),
         pd.DataFrame(prediction_rows),
@@ -464,7 +877,7 @@ def summarize_mpma_e_strategy(fold_metrics: pd.DataFrame) -> dict[str, Any]:
         return {}
     out: dict[str, Any] = {
         "Strategy": "MPMA-E",
-        "selection_basis": "outer_fold_inner_validation_predictions",
+        "selection_basis": "outer_fold_inner_oof_predictions_only",
         "n_outer_folds": int(len(fold_metrics)),
     }
     for metric in fold_metrics.columns:
@@ -489,41 +902,39 @@ def select_final_mpma_e_candidate(
     configs: pd.DataFrame,
     plan: Ensemble,
     metric: str,
+    member_score_metric: str | None = None,
 ) -> tuple[dict[str, Any], pd.DataFrame]:
     candidates = _candidate_table_for_inner(
-        inner_results,
-        inner_predictions,
-        configs,
-        plan,
-        metric,
-        None,
-        None,
+        inner_results, inner_predictions, configs, plan, metric, None
     )
     if candidates.empty:
-        return {}, candidates
-    score_col = (
-        f"{metric}_mean" if f"{metric}_mean" in candidates.columns else "nMCC_mean"
-    )
+        return ({}, candidates)
+    score_col = f"{metric}_mean"
     candidates = candidates.rename(columns={score_col: "inner_score"})
     first = candidates.iloc[0].to_dict()
+    compatibility_metric = str(member_score_metric or metric)
     best = {
         "ensemble_config_id": str(first["ensemble_config_id"]),
-        "selection_basis": "all_inner_validation_predictions_for_final_refit",
+        "selection_basis": "all_inner_oof_predictions_for_final_refit",
         "selection_metric": str(metric),
+        "optimize_metric": compatibility_metric,
+        "member_score_metric": compatibility_metric,
         "inner_score": float(first["inner_score"]),
         "selection_strategy": str(first["selection_strategy"]),
         "aggregation_strategy": str(first["aggregation_strategy"]),
-        "ensemble_size": int(first["ensemble_size"]),
+        "ensemble_size": int(first.get("ensemble_size", 0)),
         "member_count": int(first["member_count"]),
-        "members": str(first["members"]),
+        "members": _parse_json_list(first["members"], "members"),
+        "weights": [float(x) for x in _parse_json_list(first["weights"], "weights")],
+        "weight_source": str(first.get("weight_source", "")),
     }
     for key, value in first.items():
-        if key in best or key in {"optimize_metric", "threshold_score"}:
+        if key in best or key == "optimize_metric":
             continue
         if key.startswith("outer_"):
             continue
         best[f"inner_{key}"] = value
-    return best, candidates
+    return (best, candidates)
 
 
 def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
@@ -535,27 +946,23 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
     inner_prediction_path = root / "inner_predictions" / "inner_predictions.tsv"
     config_path = root / "configs.tsv"
     required = [outer_path, inner_result_path, inner_prediction_path, config_path]
-    if any(not path.exists() for path in required):
+    if any((not path.exists() for path in required)):
         raise FileNotFoundError("Run evaluate(sweep) before sweep_ensemble(sweep).")
     outer_predictions = pd.read_csv(outer_path, sep="\t")
     inner_results = pd.read_csv(inner_result_path, sep="\t")
     inner_predictions = pd.read_csv(inner_prediction_path, sep="\t")
     configs = pd.read_csv(config_path, sep="\t")
-    metric = sweep.ensemble.optimize_metric
-    if metric not in inner_results.columns:
-        metric = (
-            sweep.evaluation.optimize_metric
-            if sweep.evaluation.optimize_metric in inner_results.columns
-            else "nMCC"
-        )
+    metric = str(sweep.ensemble.optimize_metric)
     stage("Ensemble sweep", str(root))
     summary_table(
         "Ensemble search",
         {
-            "candidate ensembles": f"{len(_ensemble_configs(sweep.ensemble)):,}",
-            "selection strategies": sweep.ensemble.selection_strategies,
-            "aggregation strategies": sweep.ensemble.aggregation_strategies,
-            "ensemble sizes": sweep.ensemble.sizes,
+            "candidate ensemble methods": f"{len(_ensemble_configs(sweep.ensemble)):,}",
+            "methods": _plan_methods(sweep.ensemble),
+            "top-k sizes": sweep.ensemble.sizes,
+            "learned library size": _plan_library_size(sweep.ensemble),
+            "Caruana max iterations": _plan_caruana_iterations(sweep.ensemble),
+            "Super Learner loss": _plan_super_learner_loss(sweep.ensemble),
             "excluded learners": sweep.ensemble.exclude_learners or "none",
             "excluded resolutions": sweep.ensemble.exclude_resolutions or "none",
             "excluded transformations": sweep.ensemble.exclude_transformations
@@ -565,7 +972,7 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
     )
     resource_tracker = ResourceTracker(
         sample_interval_s=float(
-            getattr(sweep.evaluation, "resource_sample_interval_s", 0.10)
+            getattr(sweep.evaluation, "resource_sample_interval_s", 0.1)
         )
     ).start()
     selection, selected_outer_predictions, fold_metrics = select_mpma_e_by_outer_fold(
@@ -578,22 +985,28 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
     )
     if selection.empty or selected_outer_predictions.empty or fold_metrics.empty:
         raise RuntimeError("No valid nested ensemble selections were produced.")
+    member_score_metric = str(sweep.evaluation.optimize_metric)
+    if member_score_metric not in inner_results.columns:
+        raise ValueError(
+            f"inner_results.tsv must contain the base evaluation metric {member_score_metric!r} required for final-model member metadata."
+        )
     final_ensemble, candidates = select_final_mpma_e_candidate(
         inner_results,
         inner_predictions,
         configs,
         sweep.ensemble,
         metric,
+        member_score_metric,
     )
     if not final_ensemble:
         raise RuntimeError(
-            "No valid final ensemble candidate was produced from inner validation predictions."
+            "No valid final ensemble candidate was produced from inner OOF predictions."
         )
     nested_summary = summarize_mpma_e_strategy(fold_metrics)
     final_mpma = select_final_mpma_candidate(
         inner_results,
         configs,
-        metric,
+        str(sweep.evaluation.optimize_metric),
         plan=sweep.ensemble,
     )
     selection_path = ensemble_dir / "mpma_e_outer_selection.tsv"
@@ -614,7 +1027,7 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
         "nested_mpma_e": nested_summary,
         "terminology": {
             "MPMA-B": "fold-specific single MPMA selected by inner-validation scoring for nested performance; separate final candidate selected from all inner validation for refit",
-            "MPMA-E": "fold-specific ensemble specification selected by inner-validation predictions for nested performance; separate final candidate selected from all inner validation predictions for refit",
+            "MPMA-E": "fold-specific ensemble learned exclusively from inner out-of-fold predictions; member identities and weights are frozen before outer-test application",
         },
     }
     dump_json_standard(selected, ensemble_dir / "selected_unit.json")
@@ -626,6 +1039,7 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
                 "selection_basis": final_mpma.get("selection_basis", ""),
                 "inner_score": final_mpma.get("inner_score", np.nan),
                 "members": "",
+                "weights": "",
             },
             {
                 "unit": "MPMA-E final candidate",
@@ -633,6 +1047,7 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
                 "selection_basis": final_ensemble.get("selection_basis", ""),
                 "inner_score": final_ensemble.get("inner_score", np.nan),
                 "members": final_ensemble.get("members", "[]"),
+                "weights": final_ensemble.get("weights", "[]"),
             },
         ]
     )
@@ -684,7 +1099,7 @@ def _matrix_for_mpma_e_figure(sweep: Sweep) -> tuple[np.ndarray, list[str], str]
         raise RuntimeError(
             "No raw abundance matrix is available for MPMA-E visualisation."
         )
-    return X, feature_names, "raw input abundance matrix"
+    return (X, feature_names, "raw input abundance matrix")
 
 
 def _raw_input_matrix_for_figure(sweep: Sweep) -> tuple[np.ndarray, list[str]]:
@@ -716,7 +1131,7 @@ def _raw_input_matrix_for_figure(sweep: Sweep) -> tuple[np.ndarray, list[str]]:
                 "No sample IDs overlap between metadata and abundance matrix."
             )
         X = bio[common].T.to_numpy(dtype=np.float32)
-        return X, bio.index.tolist()
+        return (X, bio.index.tolist())
     if fmt in {"csv", "wide_csv"}:
         df = pd.read_csv(abundance_path)
         if metadata_path is not None:
@@ -743,12 +1158,16 @@ def _raw_input_matrix_for_figure(sweep: Sweep) -> tuple[np.ndarray, list[str]]:
             raise ValueError(
                 "No numeric abundance columns found after excluding metadata columns."
             )
-        return df[numeric_cols].to_numpy(dtype=np.float32), [
-            str(c) for c in numeric_cols
-        ]
+        return (
+            df[numeric_cols].to_numpy(dtype=np.float32),
+            [str(c) for c in numeric_cols],
+        )
     dataset = load_dataset(sweep.data, TAXONOMIC_LEVELS)
     if "all" in dataset.X_by_level:
-        return dataset.X_by_level["all"], dataset.feature_names_by_level.get("all", [])
+        return (
+            dataset.X_by_level["all"],
+            dataset.feature_names_by_level.get("all", []),
+        )
     blocks = list(dataset.X_by_level.values())
     names = [name for lv in dataset.feature_names_by_level.values() for name in lv]
-    return np.concatenate(blocks, axis=1), names
+    return (np.concatenate(blocks, axis=1), names)

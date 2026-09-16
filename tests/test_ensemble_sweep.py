@@ -2,11 +2,13 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
+from mllabiome import ensemble_sweep
 from mllabiome.configs_sweep import Ensemble
 from mllabiome.ensemble_sweep import (
     _caruana_select,
     _ensemble_configs,
     _fit_super_learner,
+    _metric_value,
     _weighted_probability_mean,
     select_mpma_e_by_outer_fold,
 )
@@ -126,12 +128,19 @@ def test_default_ensemble_space_contains_only_publication_methods():
         selection_strategies=(
             "top_k",
             "best_per_resolution",
+            "best_per_learner_type",
             "caruana",
             "super_learner",
         ),
         aggregation_strategies=("mean_proba",),
     )
-    expected = {"top_k", "best_per_resolution", "caruana", "super_learner"}
+    expected = {
+        "top_k",
+        "best_per_resolution",
+        "best_per_learner_type",
+        "caruana",
+        "super_learner",
+    }
     configs = _ensemble_configs(plan)
     assert {x["selection_strategy"] for x in configs} == expected
 
@@ -212,7 +221,14 @@ def test_super_learner_weights_are_simplex_constrained_and_prefer_strong_model()
 
 
 @pytest.mark.parametrize(
-    "method", ["top_k", "best_per_resolution", "caruana", "super_learner"]
+    "method",
+    [
+        "top_k",
+        "best_per_resolution",
+        "best_per_learner_type",
+        "caruana",
+        "super_learner",
+    ],
 )
 def test_outer_labels_cannot_change_selected_ensemble(method):
     plan = Ensemble(
@@ -286,3 +302,93 @@ def test_every_inner_outer_key_must_produce_exactly_one_selection():
     for value in selection["weights"]:
         weights = np.asarray(json.loads(value), dtype=float)
         assert weights.sum() == pytest.approx(1.0)
+
+
+def test_log_loss_metric_matches_manual_binary_cross_entropy():
+    y = np.array([0, 1, 1, 0], dtype=int)
+    proba = np.array([[0.9, 0.1], [0.2, 0.8], [0.3, 0.7], [0.75, 0.25]], dtype=float)
+    expected = -np.mean(np.log([0.9, 0.8, 0.7, 0.75]))
+    assert _metric_value(y, proba, "log_loss") == pytest.approx(expected)
+
+
+def test_caruana_log_loss_uses_lower_is_better():
+    y = np.array([0, 1, 0, 1], dtype=int)
+    strong = np.array([[0.95, 0.05], [0.05, 0.95], [0.9, 0.1], [0.1, 0.9]], dtype=float)
+    weak = np.full((4, 2), 0.5, dtype=float)
+    stack = np.stack([strong, weak], axis=0)
+    members, weights, score, trajectory = _caruana_select(
+        ["strong", "weak"], stack, y, "log_loss", max_iterations=4
+    )
+    assert members[0] == "strong"
+    assert weights[0] > 0.5
+    assert score == pytest.approx(min(trajectory))
+
+
+def test_log_loss_can_select_ensemble_without_log_loss_column_in_inner_results():
+    plan = Ensemble(
+        selection_strategies=(
+            "top_k",
+            "best_per_resolution",
+            "best_per_learner_type",
+            "caruana",
+            "super_learner",
+        ),
+        aggregation_strategies=("mean_proba",),
+        sizes=(2,),
+        optimize_metric="log_loss",
+    )
+    selection, predictions, metrics = select_mpma_e_by_outer_fold(
+        _inner_results(),
+        _inner_predictions(),
+        _outer_predictions(),
+        _configs(),
+        plan,
+        "log_loss",
+    )
+    assert not selection.empty
+    assert not predictions.empty
+    assert not metrics.empty
+    assert set(selection["selection_metric"]) == {"log_loss"}
+    assert np.isfinite(selection["inner_score"].to_numpy(dtype=float)).all()
+    assert (selection["member_count"].to_numpy(dtype=int) > 0).all()
+
+
+def test_best_per_learner_type_keeps_one_configuration_per_algorithm():
+    scores = pd.Series([0.9, 0.8, 0.7, 0.6], index=["A", "B", "C", "D"])
+    configs = pd.DataFrame(
+        [
+            {
+                "config_id": "A",
+                "resolution": "species",
+                "learner": "RF_1000_msl5",
+                "count_transformation": "relative_abundance",
+                "active": 1,
+            },
+            {
+                "config_id": "B",
+                "resolution": "genus",
+                "learner": "RF_fast",
+                "count_transformation": "relative_abundance",
+                "active": 1,
+            },
+            {
+                "config_id": "C",
+                "resolution": "family",
+                "learner": "LR_L2",
+                "count_transformation": "relative_abundance",
+                "active": 1,
+            },
+            {
+                "config_id": "D",
+                "resolution": "order",
+                "learner": "XGB_depth3",
+                "count_transformation": "relative_abundance",
+                "active": 1,
+            },
+        ]
+    )
+    members = ensemble_sweep._select_best_per_learner_type(scores, configs)
+    assert members == ["A", "C", "D"]
+    assert ensemble_sweep._learner_type("RF_1000_msl5") == "random_forest"
+    assert ensemble_sweep._learner_type("RF_fast") == "random_forest"
+    assert ensemble_sweep._learner_type("LR_L2") == "logistic_regression"

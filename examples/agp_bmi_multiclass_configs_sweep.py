@@ -19,6 +19,9 @@ DATA = mll.Data(
 )
 
 _RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
+    # ("phylum", ("phylum",)),
+    # ("class", ("class",)),
+    # ("order", ("order",)),
     ("family", ("family",)),
     ("genus", ("genus",)),
     ("raw", ("all",)),
@@ -30,7 +33,18 @@ def _build_count_transformations():
     return [
         T("identity"),
         T("relative_abundance"),
+        T("presence_absence"),
+        T("hellinger"),
         T("arcsine_sqrt"),
+        # T("log10_relative_abundance_half_min_pseudocount"),
+        # T("centered_log_ratio_multiplicative_replacement"),
+        # T("standardized_centered_log_ratio_multiplicative_replacement"),
+        # T("yeo_johnson_relative_abundance"),
+        # T("quantile_normal_relative_abundance"),
+        # T("robust_scaled_relative_abundance"),
+        # T("within_sample_fractional_rank"),
+        # T("training_ecdf_rank"),
+        # T("prevalence_weighted_relative_abundance"),
     ]
 
 
@@ -66,7 +80,15 @@ GATE = mll.QualificationGate(
 
 ENSEMBLE = mll.Ensemble(
     sizes=(3,),
-    optimize_metric="nMCC",
+    selection_strategies=(
+        "top_k",
+        "best_per_resolution",
+        "best_per_learner_type",
+        "caruana",
+        "super_learner",
+    ),
+    aggregation_strategies=("mean_proba",),
+    optimize_metric="log_loss",
 )
 
 EXPLAINABILITY = mll.Explainability(
