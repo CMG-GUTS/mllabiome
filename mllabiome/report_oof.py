@@ -245,12 +245,24 @@ def _performance_display(performance: pd.DataFrame) -> pd.DataFrame:
     return _wide_metric_table(performance, _PRIMARY_METRIC_ORDER)
 
 
-def _multiclass_display(performance: pd.DataFrame) -> pd.DataFrame:
+def _multiclass_display(
+    performance: pd.DataFrame, n_classes: int | None
+) -> pd.DataFrame:
+    if n_classes is None or int(n_classes) <= 2:
+        return pd.DataFrame()
     return _wide_metric_table(performance, _MULTICLASS_METRIC_ORDER)
 
 
-def _probability_display(performance: pd.DataFrame) -> pd.DataFrame:
-    return _wide_metric_table(performance, _PROBABILITY_METRIC_ORDER)
+def _probability_display(
+    performance: pd.DataFrame, n_classes: int | None
+) -> pd.DataFrame:
+    if n_classes is not None and int(n_classes) <= 2:
+        order = ("Brier", "LogLoss")
+    elif n_classes is not None and int(n_classes) > 2:
+        order = ("Brier_multiclass", "LogLoss")
+    else:
+        order = _PROBABILITY_METRIC_ORDER
+    return _wide_metric_table(performance, order)
 
 
 def _calibration_display(performance: pd.DataFrame) -> pd.DataFrame:
@@ -353,7 +365,9 @@ def _format_contrast_value(value: Any, metric: str) -> str:
     return f"{v:.4f}"
 
 
-def _contrast_display(contrasts: pd.DataFrame) -> pd.DataFrame:
+def _contrast_display(
+    contrasts: pd.DataFrame, n_classes: int | None = None
+) -> pd.DataFrame:
     required = {
         "strategy_a",
         "strategy_b",
@@ -368,7 +382,18 @@ def _contrast_display(contrasts: pd.DataFrame) -> pd.DataFrame:
     if contrasts.empty or not required.issubset(contrasts.columns):
         return pd.DataFrame()
     shown = contrasts.copy()
-    metric_rank = {metric: index for index, metric in enumerate(_CONTRAST_METRIC_ORDER)}
+    metric_order = list(_CONTRAST_METRIC_ORDER)
+    if n_classes is not None and int(n_classes) <= 2:
+        excluded = {
+            "AUC_macro",
+            "AUC_weighted",
+            "PR_AUC_macro",
+            "F1_macro",
+            "Brier_multiclass",
+        }
+        metric_order = [metric for metric in metric_order if metric not in excluded]
+    metric_rank = {metric: index for index, metric in enumerate(metric_order)}
+    shown = shown[shown["metric"].astype(str).isin(metric_order)].copy()
     shown["_metric_rank"] = shown["metric"].astype(str).map(metric_rank).fillna(999)
     shown = shown.sort_values(
         ["_metric_rank", "strategy_a", "strategy_b", "estimand"],
@@ -447,6 +472,8 @@ def _links_html(tables_dir: Path) -> str:
         ("strategy_oof_calibration.tsv", "Reliability-curve data"),
         ("strategy_oof_pairwise_contrasts.tsv", "Paired OOF contrasts"),
         ("strategy_oof_statistics_manifest.json", "OOF methods manifest"),
+        ("strategy_oof_coverage.tsv", "OOF coverage"),
+        ("strategy_oof_pairwise_coverage.tsv", "Paired OOF coverage"),
     ]
     links = []
     for filename, label in names:
@@ -618,19 +645,44 @@ def _enhance_compact_layout(text: str, report_dir: Path) -> str:
     return _inject_compact_report_css(text)
 
 
-def _section_html(report_dir: Path) -> str:
+def _task_class_count(sweep: Any) -> int | None:
+    data = getattr(sweep, "data", None)
+    labels = getattr(data, "class_labels", None)
+    if labels is not None:
+        try:
+            count = len(labels)
+        except TypeError:
+            count = 0
+        if count > 0:
+            return int(count)
+    label_map = getattr(data, "label_map", None)
+    if isinstance(label_map, dict) and label_map:
+        values = {str(value) for value in label_map.values()}
+        if values:
+            return int(len(values))
+    return None
+
+
+def _section_html(report_dir: Path, n_classes: int | None = None) -> str:
     tables_dir = report_dir / "tables"
     performance = _read_tsv(tables_dir / "strategy_oof_performance.tsv")
     calibration_curve = _read_tsv(tables_dir / "strategy_oof_calibration.tsv")
     contrasts = _read_tsv(tables_dir / "strategy_oof_pairwise_contrasts.tsv")
     manifest = _read_json(tables_dir / "strategy_oof_statistics_manifest.json")
+    if n_classes is None:
+        try:
+            manifest_classes = int(manifest.get("n_classes", 0))
+        except (TypeError, ValueError):
+            manifest_classes = 0
+        if manifest_classes > 0:
+            n_classes = manifest_classes
     if performance.empty:
         return ""
     primary_table = _performance_display(performance)
-    multiclass_table = _multiclass_display(performance)
-    probability_table = _probability_display(performance)
+    multiclass_table = _multiclass_display(performance, n_classes)
+    probability_table = _probability_display(performance, n_classes)
     calibration_table = _calibration_display(performance)
-    contrast_table = _contrast_display(contrasts)
+    contrast_table = _contrast_display(contrasts, n_classes)
     design_table = _design_display(manifest)
     parts = [
         _SECTION_START,
@@ -746,12 +798,12 @@ def _extract_compute_block(text: str) -> tuple[str, str]:
     return text[:start] + text[end:], block
 
 
-def enhance_html_report(report_dir: Path | str) -> bool:
+def enhance_html_report(report_dir: Path | str, n_classes: int | None = None) -> bool:
     report_dir = Path(report_dir)
     index_path = report_dir / "index.html"
     if not index_path.exists():
         raise FileNotFoundError(f"Report HTML does not exist: {index_path}")
-    section = _section_html(report_dir)
+    section = _section_html(report_dir, n_classes=n_classes)
     text = _enhance_compact_layout(
         index_path.read_text(encoding="utf-8"),
         report_dir,
@@ -862,7 +914,15 @@ def write_report(sweep: Any) -> dict[str, Path]:
         _report_module._terminal_table = original_terminal
     report_dir = root / "report"
     tables_dir = report_dir / "tables"
-    inserted = enhance_html_report(report_dir)
+    performance_path = tables_dir / "strategy_oof_performance.tsv"
+    if _read_tsv(performance_path).empty:
+        raise RuntimeError(
+            "Report statistics did not produce strategy_oof_performance.tsv."
+        )
+    inserted = enhance_html_report(
+        report_dir,
+        n_classes=_task_class_count(sweep),
+    )
     if inserted:
         _terminal_oof_summary(report_dir)
     new_outputs = {
@@ -874,6 +934,9 @@ def write_report(sweep: Any) -> dict[str, Path]:
         / "strategy_oof_pairwise_contrasts.tsv",
         "strategy_oof_statistics_manifest": tables_dir
         / "strategy_oof_statistics_manifest.json",
+        "strategy_oof_coverage": tables_dir / "strategy_oof_coverage.tsv",
+        "strategy_oof_pairwise_coverage": tables_dir
+        / "strategy_oof_pairwise_coverage.tsv",
     }
     existing = {name: path for name, path in new_outputs.items() if path.exists()}
     outputs.update(existing)

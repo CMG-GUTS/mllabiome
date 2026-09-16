@@ -692,7 +692,7 @@ def _procedure_table(sweep: Sweep, root: Path) -> pd.DataFrame:
             ],
             [
                 "Selection rule",
-                "MPMA-B and MPMA-E selected by inner-validation score; outer folds are reserved for final held-out performance estimation.",
+                "Model and ensemble selection use inner-validation performance; reported performance uses held-out outer evaluation predictions.",
             ],
         ],
         columns=["Field", "Value"],
@@ -791,12 +791,12 @@ def _strategy_latex_table(root: Path, path: Path, task_title: str) -> pd.DataFra
     task = _latex_task_name(task_title)
     caption = (
         r"Held-out performance for the configured task. "
-        r"MPMA-E = MPMAs Ensemble selected automatically by the framework based on inner validation score; "
-        r"MPMA-B = single highest-scoring, based on inner validation, MPMA pipeline; "
+        r"MPMA-E = ensemble selected from inner-validation predictions; "
+        r"MPMA-B = single MPMA selected by inner-validation performance; "
         r"AutoML = FLAML automated model search on raw abundances at the deepest available single rank; "
         r"Baseline RF = 1000-tree random forest on arcsin-sqrt abundances at the deepest available single rank; "
         r"SIAMCAT = SIAMCAT workflow on the complete original taxonomic lineage without a mllabiome abundance transformation. "
-        r"PR-AUC (AP) = average precision, the framework's precision-recall summary. "
+        r"PR-AUC (AP) = average precision. "
         r"F1\textsubscript{w} = weighted F1. "
         r"Values are mean $\pm$ SD across outer evaluation units, followed by 95\% bootstrap confidence intervals for the mean. Bold = best mean per metric. All values are percentages."
     )
@@ -895,7 +895,7 @@ def _top10_latex_table(root: Path, path: Path, task_title: str) -> pd.DataFrame:
     }
     caption = (
         f"Top 10 {task_title} MPMA configurations ranked by inner-validation nMCC. "
-        "Inner-validation scores are used for model selection; outer-fold scores are reported only for final held-out performance estimation. "
+        "Configurations are ranked by mean inner-validation nMCC; outer-fold metrics summarize held-out performance. "
         "All metric values are percentages and reported as mean $\\pm$ standard deviation."
     )
     align = "r" + "l" * max(0, len(disp.columns) - 1)
@@ -1517,15 +1517,12 @@ code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consol
 <h2 id="procedure" class="first-section">Evaluation procedure</h2>
 {_html_table(procedure)}
 <h2 id="performance">Task performance summary</h2>
-<p>Held-out strategy performance is reported as mean ± SD across outer evaluation units, followed by a 95% bootstrap confidence interval for the mean. For LODO, outer units are held-out datasets; for nested cross-validation, they are outer test folds. PR-AUC (AP) is average precision. All available framework metrics, bootstrap summaries, and pairwise tests are saved in the report tables.</p>
+<p>Held-out strategy performance is reported as mean ± SD across outer evaluation units with 95% bootstrap confidence intervals. For LODO, outer units are held-out datasets; for nested cross-validation, they are outer test folds. PR-AUC (AP) is average precision. Additional metric-level summaries and pairwise tests are available in the report tables.</p>
 {_html_table(strategy_html, raw_html_cols=strat_metric_cols)}
 {_tex_link(tables_dir / "task_strategy_performance.tex", report_dir, "task_strategy_performance.tex")}
 <h3 id="statistics">Statistical comparisons</h3>
-<p>Differences are Strategy A minus Strategy B. The table below shows the configured primary selection metric. Full pairwise results for ROC-AUC, PR-AUC (AP), nMCC, weighted F1, precision, and recall are saved in strategy_pairwise_tests.tsv. Holm adjustment is applied across strategy pairs within each metric.</p>
+<p>Pairwise differences are Strategy A minus Strategy B. The table shows the configured primary metric; complete pairwise results are available in strategy_pairwise_tests.tsv. Holm adjustment is applied across strategy pairs within each metric.</p>
 {_html_table(primary_pairwise)}
-<h3 id="compute">Computational resources</h3>
-<p>Compute is reported as additive CPU core-hours, model-fit count, and peak resident memory for the worker process tree. CPU core-hours include child-process CPU time, including external R processes when used. FLOPs are intentionally not reported because mixed classical-ML workloads such as tree induction, branching, comparisons, memory operations, and SIAMCAT/R routines are not represented faithfully by a portable floating-point-operation count. MPMA-B and MPMA-E share the MPMA search pool, so their compute values overlap and must not be summed.{(" Hardware: " + html.escape(hardware_text) + ".") if hardware_text else ""}</p>
-{_html_table(compute_display)}
 <h2 id="top-mpmas">Top 10 MPMA-B configurations</h2>
 {_html_table(top10_html, raw_html_cols=top_metric_cols)}
 
@@ -1540,6 +1537,9 @@ code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consol
 
 <h2 id="figures">Global figures</h2>
 {"".join(figs) if figs else "<p>No figure artefacts found yet.</p>"}
+<h3 id="compute">Computational resources</h3>
+<p>Compute is summarized by additive CPU core-hours, model-fit count, and peak resident memory for the worker process tree. CPU time includes child processes and external R processes when used. MPMA-B and MPMA-E share the MPMA search pool, so their compute totals overlap.{(" Hardware: " + html.escape(hardware_text) + ".") if hardware_text else ""}</p>
+{_html_table(compute_display)}
 <p class="report-footer">mllabiome · generated report</p>
 </main></div></body></html>
 """
