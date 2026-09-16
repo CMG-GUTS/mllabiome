@@ -7,28 +7,57 @@ import numpy as np
 import pandas as pd
 from . import report as _report_module
 from .console import console, path_table, stage, success
-from .final_models import build_final_models, load_final_models
+from .final_models import load_final_models
 
 _PERCENT_METRICS = {
     "AUC",
+    "AUC_macro",
+    "AUC_weighted",
     "PR_AUC",
+    "PR_AUC_macro",
     "nMCC",
     "Accuracy",
     "BalAcc",
     "F1",
     "F1w",
+    "F1_macro",
     "Precision",
     "Recall",
 }
-_PERFORMANCE_METRIC_ORDER = (
+_PRIMARY_METRIC_ORDER = (
     "AUC",
     "PR_AUC",
     "nMCC",
-    "Accuracy",
-    "BalAcc",
     "F1w",
     "Precision",
     "Recall",
+    "BalAcc",
+    "Accuracy",
+)
+_MULTICLASS_METRIC_ORDER = (
+    "AUC_macro",
+    "AUC_weighted",
+    "PR_AUC_macro",
+    "F1_macro",
+)
+_PROBABILITY_METRIC_ORDER = (
+    "Brier",
+    "Brier_multiclass",
+    "LogLoss",
+)
+_CONTRAST_METRIC_ORDER = (
+    "AUC",
+    "AUC_macro",
+    "AUC_weighted",
+    "PR_AUC",
+    "PR_AUC_macro",
+    "nMCC",
+    "F1w",
+    "F1_macro",
+    "Precision",
+    "Recall",
+    "BalAcc",
+    "Accuracy",
     "Brier",
     "Brier_multiclass",
     "LogLoss",
@@ -40,12 +69,16 @@ _CALIBRATION_METRIC_ORDER = (
 )
 _METRIC_LABELS = {
     "AUC": "ROC-AUC",
+    "AUC_macro": "ROC-AUC macro",
+    "AUC_weighted": "ROC-AUC weighted",
     "PR_AUC": "PR-AUC (AP)",
+    "PR_AUC_macro": "PR-AUC macro",
     "nMCC": "nMCC",
     "Accuracy": "Accuracy",
     "BalAcc": "Balanced accuracy",
     "F1": "F1",
     "F1w": "F1w",
+    "F1_macro": "F1 macro",
     "Precision": "Precision",
     "Recall": "Recall",
     "Brier": "Brier score",
@@ -209,7 +242,15 @@ def _wide_metric_table(
 
 
 def _performance_display(performance: pd.DataFrame) -> pd.DataFrame:
-    return _wide_metric_table(performance, _PERFORMANCE_METRIC_ORDER)
+    return _wide_metric_table(performance, _PRIMARY_METRIC_ORDER)
+
+
+def _multiclass_display(performance: pd.DataFrame) -> pd.DataFrame:
+    return _wide_metric_table(performance, _MULTICLASS_METRIC_ORDER)
+
+
+def _probability_display(performance: pd.DataFrame) -> pd.DataFrame:
+    return _wide_metric_table(performance, _PROBABILITY_METRIC_ORDER)
 
 
 def _calibration_display(performance: pd.DataFrame) -> pd.DataFrame:
@@ -242,9 +283,13 @@ def _html_table(df: pd.DataFrame) -> str:
 def _methodology_html(manifest: dict[str, Any]) -> str:
     protocol = str(manifest.get("protocol", "")).strip().lower()
     n_bootstrap = manifest.get("n_bootstrap", "")
-    bootstrap = f"{int(n_bootstrap):,}" if str(n_bootstrap).isdigit() else ""
+    try:
+        bootstrap = f"{int(n_bootstrap):,}"
+    except (TypeError, ValueError):
+        bootstrap = ""
     if protocol in {"lodo", "leave_one_dataset_out"}:
-        text = "Pooled held-out estimates use a two-stage cohort-and-subject bootstrap"
+        method = "two-stage cohort-and-subject bootstrap"
+        estimand = "sample-weighted and equal-cohort held-out performance"
     else:
         design = manifest.get("observed_oof_design", {})
         repeats = []
@@ -255,46 +300,46 @@ def _methodology_html(manifest: dict[str, Any]) -> str:
                         repeats.append(int(value.get("n_repeats")))
                     except (TypeError, ValueError):
                         pass
-        text = (
-            "Pooled held-out estimates use a subject-cluster bootstrap"
+        method = (
+            "subject-cluster bootstrap"
             if repeats and max(repeats) == 1
-            else "Pooled held-out estimates use subject-cluster and repeat resampling"
+            else "subject-cluster and repeat bootstrap"
         )
-    if bootstrap:
-        text += f" ({bootstrap} replicates)"
-    return f"<p>{html.escape(text)}. Brackets denote 95% confidence intervals.</p>"
+        estimand = "pooled outer-fold out-of-fold performance"
+    suffix = f" using {bootstrap} replicates" if bootstrap else ""
+    return (
+        f"<p>Estimates summarize {html.escape(estimand)}. "
+        f"Uncertainty is reported as 95% percentile bootstrap confidence intervals "
+        f"from a {html.escape(method)}{html.escape(suffix)}.</p>"
+    )
 
 
 def _probability_semantics_html(manifest: dict[str, Any]) -> str:
     semantics = manifest.get("probability_semantics", {})
     if not isinstance(semantics, dict):
         return ""
-    omitted: list[str] = []
+    excluded: list[str] = []
     for strategy, info in semantics.items():
         if not isinstance(info, dict) or bool(info.get("valid", False)):
             continue
-        aggregations = info.get("aggregation_strategies", [])
         reason = str(info.get("reason", "")).lower()
-        if isinstance(aggregations, list) and aggregations:
-            detail = "outer-fold aggregation: " + ", ".join(
-                str(x) for x in aggregations
-            )
-        elif "rank_mean" in reason:
-            detail = "rank_mean aggregation"
+        if "rank_mean" in reason:
+            detail = "rank aggregation"
         elif "siamcat" in reason:
-            detail = "score output"
+            detail = "score-valued output"
         elif "ridge" in reason:
             detail = "decision-score output"
         else:
-            detail = "probability semantics not verified"
-        omitted.append(
+            detail = "non-probability output"
+        excluded.append(
             f"<strong>{html.escape(str(strategy))}</strong> ({html.escape(detail)})"
         )
-    if not omitted:
+    if not excluded:
         return ""
     return (
-        "<p>Proper scoring and calibration metrics are reported only for strategies with verified probabilistic outputs. Omitted: "
-        + "; ".join(omitted)
+        "<p>Brier score, log loss, and calibration summaries are shown for "
+        "probability-valued predictions. Probability-based summaries are not shown for "
+        + "; ".join(excluded)
         + ".</p>"
     )
 
@@ -314,7 +359,6 @@ def _contrast_display(contrasts: pd.DataFrame) -> pd.DataFrame:
         "strategy_b",
         "estimand",
         "metric",
-        "is_selection_metric",
         "estimate_a",
         "estimate_b",
         "advantage_a_over_b",
@@ -323,21 +367,13 @@ def _contrast_display(contrasts: pd.DataFrame) -> pd.DataFrame:
     }
     if contrasts.empty or not required.issubset(contrasts.columns):
         return pd.DataFrame()
-    selection_metrics = set(
-        contrasts.loc[
-            contrasts["is_selection_metric"].fillna(False).astype(bool), "metric"
-        ].astype(str)
+    shown = contrasts.copy()
+    metric_rank = {metric: index for index, metric in enumerate(_CONTRAST_METRIC_ORDER)}
+    shown["_metric_rank"] = shown["metric"].astype(str).map(metric_rank).fillna(999)
+    shown = shown.sort_values(
+        ["_metric_rank", "strategy_a", "strategy_b", "estimand"],
+        kind="mergesort",
     )
-    preferred = selection_metrics | {
-        "AUC",
-        "PR_AUC",
-        "Brier",
-        "Brier_multiclass",
-        "LogLoss",
-    }
-    shown = contrasts[contrasts["metric"].astype(str).isin(preferred)].copy()
-    if shown.empty:
-        shown = contrasts.copy()
     estimands = [
         str(x)
         for x in shown["estimand"].dropna().astype(str).unique().tolist()
@@ -357,12 +393,6 @@ def _contrast_display(contrasts: pd.DataFrame) -> pd.DataFrame:
                 f" [{_format_contrast_value(low, metric)}, "
                 f"{_format_contrast_value(high, metric)}]"
             )
-        if np.isfinite(low) and low > 0:
-            interpretation = "A favored"
-        elif np.isfinite(high) and high < 0:
-            interpretation = "B favored"
-        else:
-            interpretation = "CI includes 0"
         item: dict[str, Any] = {
             "Strategy A": str(row.get("strategy_a", "")),
             "Strategy B": str(row.get("strategy_b", "")),
@@ -376,11 +406,37 @@ def _contrast_display(contrasts: pd.DataFrame) -> pd.DataFrame:
                 "Metric": metric_label,
                 "A": _format_contrast_value(row.get("estimate_a"), metric),
                 "B": _format_contrast_value(row.get("estimate_b"), metric),
-                "Advantage A over B (95% CI)": advantage_text,
-                "Interpretation": interpretation,
+                "Effect favoring A (95% CI)": advantage_text,
             }
         )
         rows.append(item)
+    return pd.DataFrame(rows)
+
+
+def _design_display(manifest: dict[str, Any]) -> pd.DataFrame:
+    design = manifest.get("observed_oof_design", {})
+    if not isinstance(design, dict) or not design:
+        return pd.DataFrame()
+    rows: list[dict[str, Any]] = []
+    for strategy, values in design.items():
+        if not isinstance(values, dict):
+            continue
+        row: dict[str, Any] = {"Strategy": str(strategy)}
+        mapping = (
+            ("n_unique_samples", "Subjects"),
+            ("n_outer_units", "Outer units"),
+            ("n_repeats", "Repeats"),
+            ("n_cohorts", "Held-out cohorts"),
+        )
+        for source, label in mapping:
+            value = values.get(source)
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                continue
+            if number > 0:
+                row[label] = number
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -407,7 +463,16 @@ def _links_html(tables_dir: Path) -> str:
 def _procedure_grid_html(procedure: pd.DataFrame) -> str:
     if procedure.empty or not {"Field", "Value"}.issubset(procedure.columns):
         return ""
-    rows = [(str(row["Field"]), str(row["Value"])) for _, row in procedure.iterrows()]
+    rows = []
+    for _, row in procedure.iterrows():
+        field = str(row["Field"])
+        value = str(row["Value"])
+        if field == "Selection rule":
+            value = (
+                "Model and ensemble selection use inner-validation performance; "
+                "reported performance uses held-out outer evaluation predictions."
+            )
+        rows.append((field, value))
     wide = [row for row in rows if row[0] == "Selection rule"]
     compact = [row for row in rows if row[0] != "Selection rule"]
     midpoint = (len(compact) + 1) // 2
@@ -561,22 +626,55 @@ def _section_html(report_dir: Path) -> str:
     manifest = _read_json(tables_dir / "strategy_oof_statistics_manifest.json")
     if performance.empty:
         return ""
-    performance_table = _performance_display(performance)
+    primary_table = _performance_display(performance)
+    multiclass_table = _multiclass_display(performance)
+    probability_table = _probability_display(performance)
     calibration_table = _calibration_display(performance)
     contrast_table = _contrast_display(contrasts)
+    design_table = _design_display(manifest)
     parts = [
         _SECTION_START,
-        '<h2 id="oof-performance">Pooled out-of-fold performance</h2>',
-        "<p>Performance is calculated from held-out predictions pooled across outer test folds. Discrimination and classification metrics are percentages; proper scoring rules and calibration statistics are shown on their natural scales.</p>",
+        '<h2 id="oof-performance">Out-of-fold statistical inference</h2>',
+        "<p>Held-out predictions are pooled at the protocol-defined inference unit. "
+        "Tables report point estimates and 95% confidence intervals.</p>",
         _methodology_html(manifest),
-        _html_table(performance_table),
-        _probability_semantics_html(manifest),
     ]
+    if not design_table.empty:
+        parts.extend(
+            [
+                '<h3 id="oof-design">Inference design</h3>',
+                _html_table(design_table),
+            ]
+        )
+    if not primary_table.empty:
+        parts.extend(
+            [
+                '<h3 id="oof-primary-performance">Performance</h3>',
+                _html_table(primary_table),
+            ]
+        )
+    if not multiclass_table.empty:
+        parts.extend(
+            [
+                '<h3 id="oof-multiclass-performance">Multiclass summaries</h3>',
+                _html_table(multiclass_table),
+            ]
+        )
+    if not probability_table.empty:
+        parts.extend(
+            [
+                '<h3 id="oof-probability-quality">Probability quality</h3>',
+                _html_table(probability_table),
+                _probability_semantics_html(manifest),
+            ]
+        )
     if not contrast_table.empty:
         parts.extend(
             [
                 '<h3 id="oof-contrasts">Paired strategy contrasts</h3>',
-                "<p>Paired differences use matched held-out observations and the same resampling structure as the pooled estimates. Positive values favor Strategy A. Brackets denote 95% confidence intervals.</p>",
+                "<p>Contrasts use matched held-out predictions and the same bootstrap "
+                "draws for both strategies. Positive effects favor Strategy A after "
+                "accounting for metric direction.</p>",
                 _html_table(contrast_table),
             ]
         )
@@ -584,7 +682,8 @@ def _section_html(report_dir: Path) -> str:
         parts.extend(
             [
                 '<h3 id="oof-calibration-summary">Calibration</h3>',
-                "<p>Ideal values are 0 for calibration-in-the-large and intercept, and 1 for slope.</p>",
+                "<p>Calibration-in-the-large and intercept are referenced to 0; "
+                "calibration slope is referenced to 1.</p>",
                 _html_table(calibration_table),
             ]
         )
@@ -592,7 +691,8 @@ def _section_html(report_dir: Path) -> str:
         parts.extend(
             [
                 '<h3 id="oof-calibration-summary">Calibration</h3>',
-                "<p>One-vs-rest reliability data are available in <code>strategy_oof_calibration.tsv</code>.</p>",
+                "<p>One-vs-rest reliability-curve data are available in "
+                "<code>strategy_oof_calibration.tsv</code>.</p>",
             ]
         )
     parts.append(_links_html(tables_dir))
@@ -652,31 +752,27 @@ def enhance_html_report(report_dir: Path | str) -> bool:
     if not index_path.exists():
         raise FileNotFoundError(f"Report HTML does not exist: {index_path}")
     section = _section_html(report_dir)
-    original = index_path.read_text(encoding="utf-8")
-    text = _enhance_compact_layout(original, report_dir)
-    if not section:
-        index_path.write_text(text, encoding="utf-8")
-        return False
+    text = _enhance_compact_layout(
+        index_path.read_text(encoding="utf-8"),
+        report_dir,
+    )
     text = _remove_existing_section(text)
-    insertion_pos = _statistics_section_end(text)
-    marker = '<span id="mllabiome-oof-insertion-slot"></span>'
-    text = text[:insertion_pos] + marker + text[insertion_pos:]
+    if section:
+        insertion_pos = _statistics_section_end(text)
+        text = text[:insertion_pos] + section + "\n" + text[insertion_pos:]
     text, compute_block = _extract_compute_block(text)
-    if marker not in text:
-        raise RuntimeError(
-            "OOF insertion slot was lost while normalizing report layout"
-        )
-    text = text.replace(marker, section + "\n", 1)
     footer_pos = text.find(_FOOTER_ANCHOR)
     if footer_pos == -1:
         body_close = text.rfind("</body>")
         footer_pos = body_close if body_close != -1 else len(text)
-    text = text[:footer_pos] + compute_block + "\n" + text[footer_pos:]
+    if compute_block:
+        text = text[:footer_pos] + compute_block + "\n" + text[footer_pos:]
     text = text.replace(_NAV_LINK + "\n", "").replace("\n" + _NAV_LINK, "")
-    if _NAV_ANCHOR in text:
+    if section and _NAV_ANCHOR in text:
         text = text.replace(_NAV_ANCHOR, _NAV_ANCHOR + "\n" + _NAV_LINK, 1)
+    text = text.replace("Learner family", "Learner type")
     index_path.write_text(text, encoding="utf-8")
-    return True
+    return bool(section)
 
 
 def _terminal_oof_summary(report_dir: Path) -> None:
@@ -708,21 +804,67 @@ def _terminal_oof_summary(report_dir: Path) -> None:
     console.print(table)
 
 
+def _member_table_with_learner_type(
+    table: pd.DataFrame,
+) -> pd.DataFrame:
+    if table.empty:
+        return table
+    return table.rename(columns={"Learner family": "Learner type"})
+
+
+def _procedure_table_publication(table: pd.DataFrame) -> pd.DataFrame:
+    if table.empty or not {"Field", "Value"}.issubset(table.columns):
+        return table
+    out = table.copy()
+    mask = out["Field"].astype(str).eq("Selection rule")
+    out.loc[
+        mask,
+        "Value",
+    ] = (
+        "Model and ensemble selection use inner-validation performance; "
+        "reported performance uses held-out outer evaluation predictions."
+    )
+    return out
+
+
 def write_report(sweep: Any) -> dict[str, Path]:
     root = Path(sweep.root())
-    build_final_models(root)
     original_summary = _report_module._ensemble_summary_table
+    original_procedure = _report_module._procedure_table
+    original_terminal = _report_module._terminal_table
+
+    def procedure_table(report_sweep: Any, report_root: Path) -> pd.DataFrame:
+        return _procedure_table_publication(
+            original_procedure(report_sweep, report_root)
+        )
+
+    def terminal_table(
+        title: str,
+        table: pd.DataFrame,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        return original_terminal(
+            title,
+            _member_table_with_learner_type(table),
+            *args,
+            **kwargs,
+        )
+
     _report_module._ensemble_summary_table = _ensemble_summary_from_selected
+    _report_module._procedure_table = procedure_table
+    _report_module._terminal_table = terminal_table
     try:
         outputs = dict(_report_module.write_report(sweep))
     finally:
         _report_module._ensemble_summary_table = original_summary
+        _report_module._procedure_table = original_procedure
+        _report_module._terminal_table = original_terminal
     report_dir = root / "report"
     tables_dir = report_dir / "tables"
     inserted = enhance_html_report(report_dir)
-    if not inserted:
-        return outputs
-    _terminal_oof_summary(report_dir)
+    if inserted:
+        _terminal_oof_summary(report_dir)
     new_outputs = {
         "strategy_oof_performance": tables_dir / "strategy_oof_performance.tsv",
         "strategy_oof_performance_table": tables_dir
@@ -736,7 +878,8 @@ def write_report(sweep: Any) -> dict[str, Path]:
     existing = {name: path for name, path in new_outputs.items() if path.exists()}
     outputs.update(existing)
     if existing:
-        stage("Pooled OOF inference", str(report_dir))
+        stage("Out-of-fold inference", str(report_dir))
         path_table("OOF report outputs", existing)
-    success("Pooled OOF section added to index.html")
+    if inserted:
+        success("Out-of-fold inference added to index.html")
     return outputs

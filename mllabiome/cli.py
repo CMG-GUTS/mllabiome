@@ -60,6 +60,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.stage == "explain":
         explain(sweep)
     elif args.stage == "report":
+        build_final_models(sweep.root())
         write_report(sweep)
 
 
