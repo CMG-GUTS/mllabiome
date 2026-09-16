@@ -1020,7 +1020,17 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
     fold_metrics.to_csv(result_path, sep="\t", index=False)
     candidates.to_csv(candidate_path, sep="\t", index=False)
     dump_json_standard(nested_summary, summary_path)
-    dump_json_standard(final_ensemble, final_path)
+    report_final_ensemble = dict(final_ensemble)
+    report_final_ensemble["optimize_metric"] = str(
+        final_ensemble.get("selection_metric", metric)
+    )
+    report_final_ensemble["ensemble_size"] = int(
+        final_ensemble.get(
+            "effective_member_count",
+            final_ensemble.get("member_count", final_ensemble.get("ensemble_size", 0)),
+        )
+    )
+    dump_json_standard(report_final_ensemble, final_path)
     selected = {
         "inner_val_best_mpma": final_mpma,
         "inner_val_best_mpmas_ensemble": final_ensemble,

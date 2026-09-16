@@ -28,8 +28,8 @@ def _build_count_transformations():
     return [
         T("relative_abundance"),
         T("identity"),
-        T("presence_absence"),
-        T("hellinger"),
+        # T("presence_absence"),
+        # T("hellinger"),
         T("arcsine_sqrt"),
     ]
 

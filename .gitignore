@@ -52,6 +52,7 @@ reports/
 results/
 examples/runs/
 runs/
+examples/data/IBS/IBS_lodo_mllabiome.csv
 
 # Potential inputs and custom files
 sandbox/
