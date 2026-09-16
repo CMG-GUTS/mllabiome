@@ -726,16 +726,7 @@ def _pairwise_rows(
 
 
 def _probability_columns(frame: pd.DataFrame) -> list[str]:
-    columns = [column for column in frame.columns if str(column).startswith("proba_")]
-
-    def key(column: str) -> tuple[int, str]:
-        suffix = str(column).split("proba_", 1)[1]
-        try:
-            return int(suffix), str(column)
-        except ValueError:
-            return 10**9, str(column)
-
-    return sorted(columns, key=key)
+    return [str(column) for column in frame.columns if str(column).startswith("proba_")]
 
 
 def _prepare_oof_frame(frame: pd.DataFrame, protocol: str) -> pd.DataFrame:
@@ -758,6 +749,21 @@ def _prepare_oof_frame(frame: pd.DataFrame, protocol: str) -> pd.DataFrame:
     if out.empty:
         return out
     out["y_true"] = out["y_true"].astype(int)
+    if len(pcols) == 2 and "y_proba_pos" in out.columns:
+        positive = pd.to_numeric(out["y_proba_pos"], errors="coerce").to_numpy(
+            dtype=float
+        )
+        second = out[pcols[1]].to_numpy(dtype=float)
+        valid_positive = np.isfinite(positive)
+        if bool(np.any(valid_positive)) and not np.allclose(
+            positive[valid_positive],
+            second[valid_positive],
+            atol=1e-7,
+            rtol=1e-7,
+        ):
+            raise ValueError(
+                "Binary probability columns are not aligned with canonical class order."
+            )
     if "y_pred" in out.columns:
         pred = pd.to_numeric(out["y_pred"], errors="coerce")
         fallback = np.argmax(out[pcols].to_numpy(dtype=float), axis=1)
@@ -1698,7 +1704,7 @@ def _statistics_fingerprint(
         "oof_metrics": list(OOF_METRIC_ORDER),
         "calibration_bins": int(calibration_bins),
         "files": [_file_signature(path) for path in paths],
-        "schema_version": 4,
+        "schema_version": 6,
     }
     text = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()

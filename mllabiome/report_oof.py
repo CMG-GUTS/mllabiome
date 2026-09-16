@@ -625,9 +625,9 @@ def _inject_compact_report_css(text: str) -> str:
 .procedure-field { color:var(--mid); font-size:var(--font-table); font-weight:700; }
 .procedure-value { color:var(--ink); font-size:var(--font-table); min-width:0; overflow-wrap:anywhere; }
 .procedure-wide { grid-column:1 / -1; margin-top:2px; }
-#mpma-b-composition { margin:4px 0 22px; }
-#mpma-b-composition h3 { margin-top:8px; }
-#mpma-b-composition .table-wrap { margin-top:8px; margin-bottom:14px; }
+#mpma-b-composition, #mpma-e-specification { margin:4px 0 22px; }
+#mpma-b-composition h3, #mpma-e-specification h3 { margin-top:8px; }
+#mpma-b-composition .table-wrap, #mpma-e-specification .table-wrap { margin-top:8px; margin-bottom:14px; }
 @media (max-width: 760px) {
   .procedure-grid { grid-template-columns:1fr; column-gap:0; }
   .procedure-wide { grid-column:auto; }

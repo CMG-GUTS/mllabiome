@@ -1219,7 +1219,7 @@ def _print_report_summary(
             top10_html[cols] if cols else top10_html,
             max_rows=10,
         )
-    _terminal_table("Selected MPMA-E", ensemble_summary)
+    _terminal_table("Final MPMA-E specification", ensemble_summary)
     if not ensemble_members.empty:
         cols = [
             c
@@ -1234,7 +1234,7 @@ def _print_report_summary(
             if c in ensemble_members.columns
         ]
         _terminal_table(
-            "MPMA-E members", ensemble_members[cols] if cols else ensemble_members
+            "Final MPMA-E members", ensemble_members[cols] if cols else ensemble_members
         )
     _feature_support_terminal(root, top_n=8)
 
@@ -1506,9 +1506,8 @@ code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consol
 <header class="report-nav"><div class="report-nav-inner"><a class="brand" href="#top" aria-label="mllabiome report"><span class="brand-mark">mll</span><span>mllabiome</span></a><nav class="report-links" aria-label="Report navigation">
 <a href="#procedure">Evaluation</a>
 <a href="#performance">Performance</a>
-<a href="#top-mpmas">MPMA-B</a>
+<a href="#mpma-b-composition">MPMA-B</a>
 <a href="#mpma-e">MPMA-E</a>
-<a href="#mpma-e-members">Members</a>
 <a href="#explainability-comparison">Explainability</a>
 <a href="#figures">Figures</a>
 <a href="#statistics">Statistics</a>
@@ -1519,18 +1518,17 @@ code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consol
 <h2 id="performance">Task performance summary</h2>
 <p>Held-out strategy performance is reported as mean ± SD across outer evaluation units with 95% bootstrap confidence intervals. For LODO, outer units are held-out datasets; for nested cross-validation, they are outer test folds. PR-AUC (AP) is average precision. Additional metric-level summaries and pairwise tests are available in the report tables.</p>
 {_html_table(strategy_html, raw_html_cols=strat_metric_cols)}
+<section id="mpma-e-specification">
+<h3 id="mpma-e">Final MPMA-E specification</h3>
+{_html_table(ensemble_summary)}
+{_html_table(ensemble_members)}
+</section>
 {_tex_link(tables_dir / "task_strategy_performance.tex", report_dir, "task_strategy_performance.tex")}
 <h3 id="statistics">Statistical comparisons</h3>
 <p>Pairwise differences are Strategy A minus Strategy B. The table shows the configured primary metric; complete pairwise results are available in strategy_pairwise_tests.tsv. Holm adjustment is applied across strategy pairs within each metric.</p>
 {_html_table(primary_pairwise)}
 <h2 id="top-mpmas">Top 10 MPMA-B configurations</h2>
 {_html_table(top10_html, raw_html_cols=top_metric_cols)}
-
-<h2 id="mpma-e">Selected MPMA-E</h2>
-{_html_table(ensemble_summary)}
-
-<h2 id="mpma-e-members">Selected MPMA-E members</h2>
-{_html_table(ensemble_members)}
 
 <h2 id="explainability-comparison">Explainability comparison</h2>
 {side_by_side_figs if side_by_side_figs else "<p>No side-by-side explainability comparison is available yet.</p>"}

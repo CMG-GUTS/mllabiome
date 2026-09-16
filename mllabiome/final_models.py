@@ -494,6 +494,8 @@ def fixed_strategy_predictions(root: Path | str, strategy: str) -> pd.DataFrame:
         base["y_pred"] = np.argmax(proba, axis=1).astype(int)
         for index, column in enumerate(pcols):
             base[column] = proba[:, index]
+        if len(pcols) == 2:
+            base["y_proba_pos"] = proba[:, 1]
         base["ensemble_config_id"] = str(unit.get("ensemble_config_id", ""))
         base["aggregation_strategy"] = aggregation
         base["members"] = json.dumps(member_ids)
