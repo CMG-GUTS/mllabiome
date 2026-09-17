@@ -10,9 +10,15 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
     roc_auc_score,
+    explained_variance_score,
+    mean_absolute_error,
+    mean_squared_error,
+    median_absolute_error,
+    r2_score,
 )
+from scipy.stats import pearsonr, spearmanr
 
-from .utils import METRIC_COLUMNS
+from .utils import METRIC_COLUMNS, REGRESSION_METRIC_COLUMNS
 
 
 def _metric_key(metric: str) -> str:
@@ -26,6 +32,10 @@ def metric_is_loss(metric: str) -> bool:
         "brier",
         "brier_loss",
         "brier_multiclass",
+        "mae",
+        "mse",
+        "rmse",
+        "medae",
     }
 
 
@@ -280,6 +290,34 @@ def compute_metrics(
             out["AUC"] = out["AUC_macro"]
             out["PR_AUC_macro"] = float(np.mean(ap_values))
 
+    return {
+        key: round(value, 6) if np.isfinite(value) else float("nan")
+        for key, value in out.items()
+    }
+
+
+def compute_regression_metrics(
+    y_true: np.ndarray, y_pred: np.ndarray
+) -> dict[str, float]:
+    truth = np.asarray(y_true, dtype=float).reshape(-1)
+    pred = np.asarray(y_pred, dtype=float).reshape(-1)
+    out = {key: float("nan") for key in REGRESSION_METRIC_COLUMNS}
+    if truth.shape != pred.shape:
+        raise ValueError("y_true and y_pred must have identical shape.")
+    if len(truth) == 0:
+        return out
+    if not np.isfinite(truth).all() or not np.isfinite(pred).all():
+        raise ValueError("Regression predictions and targets must be finite.")
+    mse = float(mean_squared_error(truth, pred))
+    out["MAE"] = float(mean_absolute_error(truth, pred))
+    out["MSE"] = mse
+    out["RMSE"] = float(np.sqrt(mse))
+    out["MedAE"] = float(median_absolute_error(truth, pred))
+    out["ExplainedVariance"] = float(explained_variance_score(truth, pred))
+    out["R2"] = float(r2_score(truth, pred)) if len(truth) >= 2 else float("nan")
+    if len(truth) >= 2 and np.std(truth) > 0 and np.std(pred) > 0:
+        out["PearsonR"] = float(pearsonr(truth, pred).statistic)
+        out["SpearmanR"] = float(spearmanr(truth, pred).statistic)
     return {
         key: round(value, 6) if np.isfinite(value) else float("nan")
         for key, value in out.items()

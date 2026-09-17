@@ -40,8 +40,21 @@ class Permutation:
     def __post_init__(self) -> None:
         if int(self.n_repeats) < 1:
             raise ValueError("Permutation.n_repeats must be at least 1.")
-        if str(self.scoring).strip().lower() not in {"log_loss", "brier"}:
-            raise ValueError("Permutation.scoring must be 'log_loss' or 'brier'.")
+        if str(self.scoring).strip().lower() not in {
+            "auto",
+            "log_loss",
+            "brier",
+            "r2",
+            "mae",
+            "mse",
+            "rmse",
+            "medae",
+            "explainedvariance",
+            "explained_variance",
+            "pearsonr",
+            "spearmanr",
+        }:
+            raise ValueError("Unsupported Permutation.scoring value.")
         if isinstance(self.max_samples, float) and not (
             0.0 < float(self.max_samples) <= 1.0
         ):

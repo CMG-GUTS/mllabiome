@@ -491,38 +491,7 @@ def _links_html(tables_dir: Path) -> str:
 
 
 def _procedure_grid_html(procedure: pd.DataFrame) -> str:
-    if procedure.empty or not {"Field", "Value"}.issubset(procedure.columns):
-        return ""
-    rows = []
-    for _, row in procedure.iterrows():
-        field = str(row["Field"])
-        value = str(row["Value"])
-        if field == "Selection rule":
-            value = (
-                "Model and ensemble selection use inner-validation performance; "
-                "reported performance uses held-out outer evaluation predictions."
-            )
-        rows.append((field, value))
-    wide = [row for row in rows if row[0] == "Selection rule"]
-    compact = [row for row in rows if row[0] != "Selection rule"]
-    midpoint = (len(compact) + 1) // 2
-    columns = (compact[:midpoint], compact[midpoint:])
-    parts = ['<div class="procedure-grid">']
-    for column in columns:
-        parts.append('<div class="procedure-column">')
-        for field, value in column:
-            parts.append('<div class="procedure-row">')
-            parts.append(f'<div class="procedure-field">{html.escape(field)}</div>')
-            parts.append(f'<div class="procedure-value">{html.escape(value)}</div>')
-            parts.append("</div>")
-        parts.append("</div>")
-    for field, value in wide:
-        parts.append('<div class="procedure-row procedure-wide">')
-        parts.append(f'<div class="procedure-field">{html.escape(field)}</div>')
-        parts.append(f'<div class="procedure-value">{html.escape(value)}</div>')
-        parts.append("</div>")
-    parts.append("</div>")
-    return "".join(parts)
+    return _report_module._procedure_grid_html(procedure)
 
 
 def _human_token(value: Any) -> str:
@@ -621,25 +590,12 @@ def _insert_mpma_b_composition(text: str, report_dir: Path) -> str:
 def _inject_compact_report_css(text: str) -> str:
     if ".procedure-grid {" in text:
         return text
-    css = """
-.procedure-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); column-gap:34px; margin:10px 0 24px; }
-.procedure-column { min-width:0; }
-.procedure-row { display:grid; grid-template-columns:132px minmax(0,1fr); gap:12px; padding:6px 7px; border-bottom:1px solid var(--track); line-height:1.38; }
-.procedure-field { color:var(--mid); font-size:var(--font-table); font-weight:700; }
-.procedure-value { color:var(--ink); font-size:var(--font-table); min-width:0; overflow-wrap:anywhere; }
-.procedure-wide { grid-column:1 / -1; margin-top:2px; }
-#mpma-b-composition, #mpma-e-specification { margin:4px 0 22px; }
-#mpma-b-composition h3, #mpma-e-specification h3 { margin-top:8px; }
-#mpma-b-composition .table-wrap, #mpma-e-specification .table-wrap { margin-top:8px; margin-bottom:14px; }
-@media (max-width: 760px) {
-  .procedure-grid { grid-template-columns:1fr; column-gap:0; }
-  .procedure-wide { grid-column:auto; }
-}
-"""
     style_end = text.find("</style>")
     if style_end == -1:
         return text
-    return text[:style_end] + css + text[style_end:]
+    return (
+        text[:style_end] + _report_module._publication_layout_css() + text[style_end:]
+    )
 
 
 def _enhance_compact_layout(text: str, report_dir: Path) -> str:
@@ -666,7 +622,14 @@ def _task_class_count(sweep: Any) -> int | None:
     return None
 
 
-def _section_html(report_dir: Path, n_classes: int | None = None) -> str:
+def oof_section_html(
+    report_dir: Path | str,
+    n_classes: int | None = None,
+    heading_level: int = 2,
+    id_prefix: str = "",
+    include_downloads: bool = True,
+) -> str:
+    report_dir = Path(report_dir)
     tables_dir = report_dir / "tables"
     performance = _read_tsv(tables_dir / "strategy_oof_performance.tsv")
     calibration_curve = _read_tsv(tables_dir / "strategy_oof_calibration.tsv")
@@ -687,9 +650,14 @@ def _section_html(report_dir: Path, n_classes: int | None = None) -> str:
     calibration_table = _calibration_display(performance)
     contrast_table = _contrast_display(contrasts, n_classes)
     design_table = _design_display(manifest)
+    level = max(1, min(5, int(heading_level)))
+    sublevel = min(6, level + 1)
+    heading = f"h{level}"
+    subheading = f"h{sublevel}"
+    prefix = f"{id_prefix}-" if id_prefix else ""
     parts = [
-        _SECTION_START,
-        '<h2 id="oof-performance">Out-of-fold statistical inference</h2>',
+        f'<section id="{prefix}oof-inference">',
+        f'<{heading} id="{prefix}oof-performance">Out-of-fold statistical inference</{heading}>',
         "<p>Held-out predictions are pooled at the protocol-defined inference unit. "
         "Tables report point estimates and 95% confidence intervals.</p>",
         _methodology_html(manifest),
@@ -697,28 +665,28 @@ def _section_html(report_dir: Path, n_classes: int | None = None) -> str:
     if not design_table.empty:
         parts.extend(
             [
-                '<h3 id="oof-design">Inference design</h3>',
+                f'<{subheading} id="{prefix}oof-design">Inference design</{subheading}>',
                 _html_table(design_table),
             ]
         )
     if not primary_table.empty:
         parts.extend(
             [
-                '<h3 id="oof-primary-performance">Performance</h3>',
+                f'<{subheading} id="{prefix}oof-primary-performance">Performance</{subheading}>',
                 _html_table(primary_table),
             ]
         )
     if not multiclass_table.empty:
         parts.extend(
             [
-                '<h3 id="oof-multiclass-performance">Multiclass summaries</h3>',
+                f'<{subheading} id="{prefix}oof-multiclass-performance">Multiclass summaries</{subheading}>',
                 _html_table(multiclass_table),
             ]
         )
     if not probability_table.empty:
         parts.extend(
             [
-                '<h3 id="oof-probability-quality">Probability quality</h3>',
+                f'<{subheading} id="{prefix}oof-probability-quality">Probability quality</{subheading}>',
                 _html_table(probability_table),
                 _probability_semantics_html(manifest),
             ]
@@ -726,7 +694,7 @@ def _section_html(report_dir: Path, n_classes: int | None = None) -> str:
     if not contrast_table.empty:
         parts.extend(
             [
-                '<h3 id="oof-contrasts">Paired strategy contrasts</h3>',
+                f'<{subheading} id="{prefix}oof-contrasts">Paired strategy contrasts</{subheading}>',
                 "<p>Contrasts use matched held-out predictions and the same bootstrap "
                 "draws for both strategies. Positive effects favor Strategy A after "
                 "accounting for metric direction.</p>",
@@ -736,7 +704,7 @@ def _section_html(report_dir: Path, n_classes: int | None = None) -> str:
     if not calibration_table.empty:
         parts.extend(
             [
-                '<h3 id="oof-calibration-summary">Calibration</h3>',
+                f'<{subheading} id="{prefix}oof-calibration-summary">Calibration</{subheading}>',
                 "<p>Calibration-in-the-large and intercept are referenced to 0; "
                 "calibration slope is referenced to 1.</p>",
                 _html_table(calibration_table),
@@ -745,14 +713,19 @@ def _section_html(report_dir: Path, n_classes: int | None = None) -> str:
     elif not calibration_curve.empty:
         parts.extend(
             [
-                '<h3 id="oof-calibration-summary">Calibration</h3>',
+                f'<{subheading} id="{prefix}oof-calibration-summary">Calibration</{subheading}>',
                 "<p>One-vs-rest reliability-curve data are available in "
                 "<code>strategy_oof_calibration.tsv</code>.</p>",
             ]
         )
-    parts.append(_links_html(tables_dir))
+    if include_downloads:
+        parts.append(_links_html(tables_dir))
     parts.append(_SECTION_END)
     return "\n".join(part for part in parts if part)
+
+
+def _section_html(report_dir: Path, n_classes: int | None = None) -> str:
+    return oof_section_html(report_dir, n_classes=n_classes)
 
 
 def _remove_existing_section(text: str) -> str:

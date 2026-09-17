@@ -16,7 +16,11 @@ from .ensemble_aggregation import (
 
 _SCHEMA_VERSION = 2
 _PROBABILITY_PRESERVING = set(PROBABILITY_PRESERVING_AGGREGATIONS)
-_SUPPORTED_ENSEMBLES = set(SUPPORTED_AGGREGATIONS)
+_SUPPORTED_ENSEMBLES = set(SUPPORTED_AGGREGATIONS) | {
+    "mean_prediction",
+    "weighted_mean_prediction",
+    "median_prediction",
+}
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -124,7 +128,7 @@ def _build_mpma_b(root: Path, configs: pd.DataFrame) -> dict[str, Any]:
     ).strip()
     if metric:
         result["selection_metric"] = metric
-    for key in ("score", "inner_validation_score"):
+    for key in ("score", "inner_validation_score", "inner_score"):
         if key in source:
             try:
                 value = float(source[key])
@@ -202,16 +206,28 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
     score_map = _member_scores(root, member_ids, member_score_metric)
 
     stored_weights: list[float] | None = None
-    if aggregation == "weighted_mean_proba":
+    if aggregation in {"weighted_mean_proba", "weighted_mean_prediction"}:
         stored_weights = _stored_weights(unit, member_ids)
         if stored_weights is None:
             raise ValueError(
-                "Final weighted_mean_proba MPMA-E is missing its learned aggregation weights. "
-                "Weights are no longer reconstructed from member scores."
+                f"Final {aggregation} MPMA-E is missing its learned aggregation weights."
             )
-    linear_weights = effective_aggregation_weights(
-        aggregation, len(member_ids), stored_weights
-    )
+    if aggregation == "mean_prediction":
+        linear_weights = np.full(
+            len(member_ids), 1.0 / float(len(member_ids)), dtype=float
+        )
+    elif aggregation == "weighted_mean_prediction":
+        linear_weights = (
+            np.asarray(stored_weights, dtype=float)
+            if stored_weights is not None
+            else None
+        )
+    elif aggregation == "median_prediction":
+        linear_weights = None
+    else:
+        linear_weights = effective_aggregation_weights(
+            aggregation, len(member_ids), stored_weights
+        )
 
     members: list[dict[str, Any]] = []
     for index, config_id in enumerate(member_ids):
@@ -230,6 +246,7 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
     max_size = int(unit.get("max_size", realised_size))
     result: dict[str, Any] = {
         "ensemble_config_id": str(unit.get("ensemble_config_id", "")).strip(),
+        "task": str(unit.get("task", "classification")),
         "selection_strategy": selection_strategy,
         "aggregation_strategy": aggregation,
         "selection_metric": selection_metric,

@@ -14,10 +14,15 @@ from sklearn.discriminant_analysis import (
 )
 from sklearn.ensemble import (
     ExtraTreesClassifier,
+    ExtraTreesRegressor,
     HistGradientBoostingClassifier,
+    HistGradientBoostingRegressor,
     RandomForestClassifier,
+    RandomForestRegressor,
 )
 from sklearn.linear_model import (
+    ElasticNet,
+    Ridge,
     LogisticRegression,
     PassiveAggressiveClassifier,
     RidgeClassifier,
@@ -126,13 +131,24 @@ def _learner_name(item: Any) -> str:
     return item if isinstance(item, str) else str(item[0])
 
 
-def _learner_factory(item: Any) -> tuple[str, Callable[[], BaseEstimator]]:
+def _learner_factory(
+    item: Any, task: str = "classification"
+) -> tuple[str, Callable[[], BaseEstimator]]:
+    task = str(task).strip().casefold()
+
+    def validate(estimator: BaseEstimator) -> BaseEstimator:
+        if task == "regression":
+            if not callable(getattr(estimator, "predict", None)):
+                raise TypeError(
+                    f"{type(estimator).__name__} does not provide predict()."
+                )
+            return estimator
+        return _require_probability_estimator(estimator)
+
     if isinstance(item, tuple):
         name, spec = item
         if isinstance(spec, BaseEstimator):
-            return str(name), lambda spec=spec: _require_probability_estimator(
-                clone(spec)
-            )
+            return str(name), lambda spec=spec: validate(clone(spec))
         if callable(spec):
 
             def factory(spec=spec):
@@ -141,13 +157,13 @@ def _learner_factory(item: Any) -> tuple[str, Callable[[], BaseEstimator]]:
                     raise TypeError(
                         f"Learner factory for {name!r} must return a scikit-learn BaseEstimator."
                     )
-                return _require_probability_estimator(estimator)
+                return validate(estimator)
 
             return str(name), factory
         raise TypeError(
             f"Learner tuple for {name!r} must contain an estimator or factory."
         )
-    return str(item), lambda item=item: build_learner(str(item))
+    return str(item), lambda item=item: build_learner(str(item), task=task)
 
 
 class FLAMLClassifier(BaseEstimator):
@@ -211,8 +227,36 @@ class FLAMLClassifier(BaseEstimator):
         return self.model_.predict_proba(X_frame)
 
 
-def build_learner(name: str) -> BaseEstimator:
+def build_learner(name: str, task: str = "classification") -> BaseEstimator:
     base = str(name).lower()
+    if str(task).strip().casefold() == "regression":
+        if base in {"rf", "rf_500_msl5"}:
+            return RandomForestRegressor(
+                n_estimators=500, min_samples_leaf=5, n_jobs=1, random_state=42
+            )
+        if base in {"rf_1000_msl5", "baseline_rf"}:
+            return RandomForestRegressor(
+                n_estimators=1000, min_samples_leaf=5, n_jobs=1, random_state=42
+            )
+        if base in {"rf_200", "rf_fast"}:
+            return RandomForestRegressor(
+                n_estimators=200, min_samples_leaf=2, n_jobs=1, random_state=42
+            )
+        if base in {"et", "extratrees"}:
+            return ExtraTreesRegressor(
+                n_estimators=500, min_samples_leaf=3, n_jobs=1, random_state=42
+            )
+        if base in {"histgb", "histgradientboosting"}:
+            return HistGradientBoostingRegressor(random_state=42)
+        if base in {"ridge", "ridge_a1"}:
+            return Ridge(alpha=1.0)
+        if base == "ridge_a01":
+            return Ridge(alpha=0.1)
+        if base in {"elasticnet", "enet"}:
+            return ElasticNet(alpha=1.0, l1_ratio=0.5, random_state=42)
+        raise ValueError(
+            f"Unknown regression learner {name!r}. Provide (name, estimator) in the sweep config to add it."
+        )
     if base in {"lr", "lr_l2", "lr_l2_bal", "logistic"}:
         return _logistic_regression(
             kind="l2", max_iter=2000, class_weight="balanced", random_state=42

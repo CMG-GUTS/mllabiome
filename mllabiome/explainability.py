@@ -2035,6 +2035,128 @@ def _existing_method_outputs(target_dir: Path, method: str) -> dict[str, Path]:
     return outputs
 
 
+def _visual_class_labels(sweep: Sweep, target_dir: Path) -> tuple[str, ...]:
+    labels = getattr(sweep.data, "class_labels", None)
+    if labels is not None:
+        try:
+            values = tuple(str(x) for x in labels)
+        except TypeError:
+            values = ()
+        if values:
+            return values
+    label_map = getattr(sweep.data, "label_map", None)
+    if isinstance(label_map, dict) and label_map:
+        try:
+            return tuple(
+                str(value)
+                for _, value in sorted(label_map.items(), key=lambda item: int(item[0]))
+            )
+        except Exception:
+            return tuple(str(value) for value in label_map.values())
+    meta_path = target_dir / "explained_unit.json"
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text())
+        except Exception:
+            meta = {}
+        labels = (
+            meta.get("explained_class_labels", []) if isinstance(meta, dict) else []
+        )
+        if isinstance(labels, list) and labels:
+            return tuple(str(x) for x in labels)
+    return ()
+
+
+def _refresh_target_visuals(target_dir: Path, sweep: Sweep) -> dict[str, Path]:
+    if not target_dir.exists():
+        return {}
+    class_labels = _visual_class_labels(sweep, target_dir)
+    top_k = int(getattr(sweep.explainability, "top_k", 15))
+    figures_dir = target_dir / "figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    outputs: dict[str, Path] = {}
+
+    def render(
+        top_path: Path, stats_path_for: Callable[[str], Path], stem_prefix: str
+    ) -> None:
+        if not top_path.exists():
+            return
+        try:
+            top = pd.read_csv(top_path, sep="\t")
+        except Exception:
+            return
+        if top.empty or "feature" not in top.columns:
+            return
+        if "class_index" in top.columns:
+            groups = list(top.groupby("class_index", sort=True))
+        else:
+            groups = [(0, top)]
+        for class_index, class_top in groups:
+            try:
+                c = int(class_index)
+            except Exception:
+                c = 0
+            if class_labels and 0 <= c < len(class_labels):
+                label = class_labels[c]
+            elif "class_label" in class_top.columns and not class_top.empty:
+                label = str(class_top.iloc[0].get("class_label", f"class_{c}"))
+            else:
+                label = f"class_{c}"
+            slug = _class_slug(label)
+            stats_path = stats_path_for(slug)
+            if not stats_path.exists():
+                continue
+            try:
+                stats = pd.read_csv(stats_path, sep="\t")
+            except Exception:
+                continue
+            if "class_index" in stats.columns:
+                selected = stats[
+                    pd.to_numeric(stats["class_index"], errors="coerce").eq(c)
+                ]
+                if not selected.empty:
+                    stats = selected
+            for kind in ("feature_importance", "feature_support"):
+                stem = figures_dir / f"{kind}{stem_prefix}__{slug}"
+                _plot_feature_importance(
+                    class_top, stats, stem, top_k, class_labels or (label,)
+                )
+                for suffix in (".svg", ".pdf", ".png"):
+                    path = stem.with_suffix(suffix)
+                    if path.exists():
+                        outputs[path.stem + suffix.replace(".", "_")] = path
+
+    render(
+        target_dir / "top_features.tsv",
+        lambda slug: target_dir / "feature_distribution_stats.tsv",
+        "",
+    )
+    for top_path in sorted(target_dir.glob("top_features_*.tsv")):
+        method = top_path.stem[len("top_features_") :]
+        if not method:
+            continue
+        render(
+            top_path,
+            lambda slug, method=method: (
+                target_dir / f"feature_distribution_stats_{method}__{slug}.tsv"
+            ),
+            f"_{method}",
+        )
+    return outputs
+
+
+def refresh_explainability_visuals(root: Path | str, sweep: Sweep) -> dict[str, Path]:
+    exp_root = Path(root) / "explainability"
+    outputs: dict[str, Path] = {}
+    if not exp_root.exists():
+        return outputs
+    for slug in ("mpma_b", "mpma_e", "baseline_rf"):
+        target_dir = exp_root / slug
+        for key, path in _refresh_target_visuals(target_dir, sweep).items():
+            outputs[f"{slug}_{key}"] = path
+    return outputs
+
+
 def _safe_cache_name(value: str | None) -> str:
     text = str(value or "").strip()
     if not text:

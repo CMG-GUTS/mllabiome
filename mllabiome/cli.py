@@ -4,13 +4,9 @@ import importlib.util
 import sys
 from pathlib import Path
 from rich.traceback import install as install_rich_traceback
-from .configs_sweep import Sweep, build_sweep_from_module, evaluate
+from .configs_sweep import Sweep, build_sweep_from_module
 from .console import error, stage
-from .ensemble_sweep import sweep_ensemble
-from .final_explainability import explain
-from .final_models import build_final_models
-from .pipeline import run_all
-from .report_oof import write_report
+from .pipeline import run_stage
 
 
 def _load_sweep(path: Path) -> Sweep:
@@ -50,18 +46,7 @@ def main(argv: list[str] | None = None) -> None:
     stage("mllabiome", f"config={args.config} · stage={args.stage}")
     if args.redo:
         sweep.evaluation.redo = True
-    if args.stage == "all":
-        run_all(sweep)
-    elif args.stage == "evaluate":
-        evaluate(sweep)
-    elif args.stage == "ensemble":
-        sweep_ensemble(sweep)
-        build_final_models(sweep.root())
-    elif args.stage == "explain":
-        explain(sweep)
-    elif args.stage == "report":
-        build_final_models(sweep.root())
-        write_report(sweep)
+    run_stage(sweep, args.stage)
 
 
 if __name__ == "__main__":

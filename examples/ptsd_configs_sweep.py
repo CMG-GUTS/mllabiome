@@ -18,7 +18,7 @@ DATA = mll.Data(
 _RESOLUTION_SETS = [
     ("genus", ("genus",)),
     # ("domain-family", ("domain", "phylum", "class", "order", "family")),
-    ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
+    # ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
     ("raw", ("all",)),
 ]
 
@@ -82,7 +82,7 @@ EXPLAINABILITY = mll.Explainability(
     targets=("mpma_b",),
     profile="screening",  # or "comprehensive"
     methods=(
-        mll.Permutation(),
+        # mll.Permutation(),
         mll.SHAP(),
         # mll.ALE(),
         # mll.LIME(),

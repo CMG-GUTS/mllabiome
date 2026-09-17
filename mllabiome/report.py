@@ -272,7 +272,7 @@ def _top_mpma_display(df: pd.DataFrame, *, html_mode: bool = False) -> pd.DataFr
         row = {
             "Rank": int(r.get("rank", len(rows) + 1)),
             "Resolution": str(r.get("resolution", "")),
-            "MPDR transformation": str(
+            "Count transformation": str(
                 r.get("transformation_abbreviation", r.get("count_transformation", ""))
             ),
             "Learner": str(r.get("learner", "")),
@@ -568,34 +568,36 @@ def _strategy_performance_display(
 
 
 def _ensemble_summary_table(root: Path) -> pd.DataFrame:
-    ens = _ensemble_row(root)
+    ens = _ensemble_final_candidate(root)
+    if not ens:
+        ens = _ensemble_row(root)
     if not ens:
         return pd.DataFrame()
 
     members = ens.get("effective_member_count")
-
     if members is None:
         members = ens.get("member_count")
-
     if members is None:
-        raw_members = ens.get("members", [])
-
+        raw_members = ens.get("members")
         if isinstance(raw_members, str):
             try:
                 raw_members = json.loads(raw_members)
             except Exception:
-                raw_members = []
-
+                raw_members = None
         if isinstance(raw_members, list):
             members = len(raw_members)
         else:
             members = ens.get("ensemble_size", "")
 
+    max_size = ens.get("max_size")
+    if max_size is None:
+        max_size = ens.get("ensemble_size", members)
+
     row = {
         "Strategy": "MPMA-E",
         "Selection": ens.get("selection_strategy", ""),
         "Aggregation": ens.get("aggregation_strategy", ""),
-        "Max size": ens.get("max_size", members),
+        "Max size": max_size,
         "Members": members,
         "Selection metric": ens.get(
             "selection_metric",
@@ -615,10 +617,8 @@ def _ensemble_members_table(root: Path) -> pd.DataFrame:
         rename = {
             "member_order": "Member",
             "ranks": "Resolution",
-            "transformation": "MPDR transformation",
+            "transformation": "Count transformation",
             "classifier_family": "Learner type",
-            "raw_transform": "count_transformation",
-            "raw_model": "learner",
         }
         cols = [
             c
@@ -627,8 +627,6 @@ def _ensemble_members_table(root: Path) -> pd.DataFrame:
                 "ranks",
                 "transformation",
                 "classifier_family",
-                "raw_transform",
-                "raw_model",
             ]
             if c in df.columns
         ]
@@ -1631,7 +1629,7 @@ def _print_report_summary(
             for c in [
                 "Rank",
                 "Resolution",
-                "MPDR transformation",
+                "Count transformation",
                 "Learner",
                 "Inner nMCC",
                 "Outer nMCC",
@@ -1652,7 +1650,7 @@ def _print_report_summary(
             for c in [
                 "Member",
                 "Resolution",
-                "MPDR transformation",
+                "Count transformation",
                 "Learner type",
                 "count_transformation",
                 "learner",
@@ -1669,6 +1667,131 @@ def _tex_link(path: Path, report_dir: Path, label: str) -> str:
     if not path.exists():
         return ""
     return f'<p><a href="{html.escape(_rel(path, report_dir))}">{html.escape(label)}</a></p>'
+
+
+def _procedure_grid_html(procedure: pd.DataFrame) -> str:
+    if procedure.empty or not {"Field", "Value"}.issubset(procedure.columns):
+        return _html_table(procedure)
+    rows = [(str(row["Field"]), str(row["Value"])) for _, row in procedure.iterrows()]
+    wide = [row for row in rows if row[0] == "Selection rule"]
+    compact = [row for row in rows if row[0] != "Selection rule"]
+    midpoint = (len(compact) + 1) // 2
+    columns = (compact[:midpoint], compact[midpoint:])
+    parts = ['<div class="procedure-grid">']
+    for column in columns:
+        parts.append('<div class="procedure-column">')
+        for field, value in column:
+            parts.append('<div class="procedure-row">')
+            parts.append(f'<div class="procedure-field">{html.escape(field)}</div>')
+            parts.append(f'<div class="procedure-value">{html.escape(value)}</div>')
+            parts.append("</div>")
+        parts.append("</div>")
+    for field, value in wide:
+        parts.append('<div class="procedure-row procedure-wide">')
+        parts.append(f'<div class="procedure-field">{html.escape(field)}</div>')
+        parts.append(f'<div class="procedure-value">{html.escape(value)}</div>')
+        parts.append("</div>")
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _publication_layout_css() -> str:
+    return """
+.procedure-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); column-gap:34px; margin:10px 0 24px; }
+.procedure-column { min-width:0; }
+.procedure-row { display:grid; grid-template-columns:132px minmax(0,1fr); gap:12px; padding:6px 7px; border-bottom:1px solid var(--track); line-height:1.38; }
+.procedure-field { color:var(--mid); font-size:var(--font-table); font-weight:700; }
+.procedure-value { color:var(--ink); font-size:var(--font-table); min-width:0; overflow-wrap:anywhere; }
+.procedure-wide { grid-column:1 / -1; margin-top:2px; }
+#mpma-b-composition, #mpma-e-specification { margin:4px 0 22px; }
+#mpma-b-composition h3, #mpma-e-specification h3 { margin-top:8px; }
+#mpma-b-composition .table-wrap, #mpma-e-specification .table-wrap { margin-top:8px; margin-bottom:14px; }
+@media (max-width: 760px) {
+  .procedure-grid { grid-template-columns:1fr; column-gap:0; }
+  .procedure-wide { grid-column:auto; }
+}
+"""
+
+
+def _report_css() -> str:
+    return """
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+:root {
+  --ink:#0f172a; --mid:#64748b; --dim:#94a3b8; --track:#e2e8f0; --soft:#f8fafc;
+  --bg:#ffffff; --blue:#2563eb; --blue-hover:#0ea5e9; --blue-soft:#eff6ff; --blue-hover-soft:#f0f9ff;
+  --nav-h:44px; --content-w:1120px;
+  --font-body:13px; --font-small:12px; --font-table:12px;
+}
+*, *::before, *::after { box-sizing:border-box; }
+html {
+  background:var(--bg); color:var(--ink);
+  font-family:'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+  letter-spacing:-0.01em; scroll-behavior:smooth;
+}
+body { margin:0; padding:0; background:var(--bg); }
+a { color:var(--blue); text-decoration:none; }
+a:hover { opacity:0.85; text-decoration:none; }
+a:focus-visible { outline:2px solid #38bdf8; outline-offset:3px; border-radius:6px; }
+.report-nav {
+  position:sticky; top:0; z-index:30; height:var(--nav-h);
+  background:rgba(255,255,255,0.93); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+  border-bottom:1px solid #f1f5f9; box-shadow:none;
+}
+.report-nav-inner {
+  height:var(--nav-h); max-width:var(--content-w); margin:0 auto; padding:0 24px;
+  display:flex; align-items:center; justify-content:space-between; gap:22px;
+}
+.brand { display:flex; align-items:center; gap:9px; color:var(--ink); font-size:0.82rem; font-weight:700; text-decoration:none; white-space:nowrap; }
+.brand:hover { opacity:0.85; }
+.brand-mark { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border:1px solid var(--track); border-radius:7px; font-size:0.72rem; background:#fff; letter-spacing:-0.03em; }
+.report-links { display:flex; align-items:center; gap:3px; overflow-x:auto; white-space:nowrap; min-width:0; }
+.report-links a { color:var(--mid); font-size:0.78rem; font-weight:500; padding:7px 8px; border-radius:6px; }
+.report-links a:hover { color:var(--blue-hover); background:var(--blue-hover-soft); opacity:1; }
+.report-shell { max-width:var(--content-w); margin:0 auto; padding:28px 24px 70px; }
+.report-content { min-width:0; }
+h1 { font-size:26px; line-height:1.16; margin:0 0 8px; font-weight:800; letter-spacing:-0.04em; }
+h2 { font-size:16px; margin:38px 0 14px; font-weight:750; border-top:1px solid var(--track); padding-top:20px; letter-spacing:-0.025em; }
+h2.first-section { margin-top:0; border-top:0; padding-top:0; }
+h3 { font-size:13px; font-weight:700; margin:16px 0 10px; }
+h4 { font-size:13px; font-weight:750; margin:28px 0 10px; }
+h5 { font-size:12px; font-weight:750; margin:22px 0 8px; color:var(--ink); }
+h6 { font-size:12px; font-weight:650; margin:16px 0 7px; color:var(--mid); }
+.xai-target { margin:0 0 34px; }
+.xai-class { border-top:1px solid var(--track); margin-top:20px; padding-top:2px; }
+p, li { font-size:var(--font-body); color:var(--mid); line-height:1.56; }
+.report-path { margin-top:0; }
+figure { margin:18px 0 28px; overflow-x:auto; }
+figure img { max-width:100%; width:auto; height:auto; display:block; }
+.embedded-svg { overflow-x:auto; }
+.embedded-svg svg { max-width:100%; height:auto; display:block; font-family:'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important; }
+figcaption { font-size:var(--font-small); color:var(--mid); margin-top:7px; }
+.compare-block { margin:17px 0 32px; overflow-x:auto; padding-bottom:2px; }
+.compare-block > h3 { font-size:13px; margin:18px 0 11px; color:var(--ink); }
+.compare-grid { display:grid; grid-template-columns:repeat(var(--compare-columns), minmax(430px, 1fr)); gap:16px; align-items:start; }
+.compare-cell { min-width:0; }
+.compare-cell h3 { font-size:12px; color:var(--mid); margin:0 0 7px; font-weight:700; }
+.compare-cell figure { margin:0; }
+.compare-cell figcaption { display:none; }
+.compare-cell .embedded-svg svg { min-width:430px; }
+.missing-figure { border:1px solid var(--track); color:var(--mid); font-size:12px; padding:36px 12px; text-align:center; background:#fff; border-radius:10px; }
+
+.table-wrap { overflow-x:auto; margin:12px 0 24px; }
+table { border-collapse:collapse; width:100%; font-size:var(--font-table); }
+th, td { border-bottom:1px solid var(--track); padding:7px 7px; text-align:left; vertical-align:top; line-height:1.38; }
+th { color:var(--mid); font-weight:700; background:#fff; }
+code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
+.report-footer { border-top:1px solid var(--track); margin-top:42px; padding-top:16px; color:var(--dim); font-size:12px; }
+@media (max-width: 860px) {
+  .report-nav-inner { padding:0 16px; }
+  .report-shell { padding:22px 18px 56px; }
+  .brand span:last-child { display:none; }
+  .report-links a { padding:7px 6px; }
+  h1 { font-size:22px; }
+  .compare-grid { grid-template-columns:repeat(var(--compare-columns), minmax(360px, 1fr)); }
+  .compare-cell .embedded-svg svg { min-width:360px; }
+}
+""" + _publication_layout_css()
 
 
 def write_report(sweep: Sweep) -> dict[str, Path]:
@@ -1803,88 +1926,14 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
     figs.append(
         _fig(root / "figures" / "mpma_e", report_dir, "Selected MPMA-E schematic")
     )
+    from .explainability import refresh_explainability_visuals
+
+    refresh_explainability_visuals(root, sweep)
     explainability_html, explainability_count = _explainability_report_blocks(
         root, report_dir, top_n=int(getattr(sweep.explainability, "top_k", 15))
     )
 
-    css = """
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
-:root {
-  --ink:#0f172a; --mid:#64748b; --dim:#94a3b8; --track:#e2e8f0; --soft:#f8fafc;
-  --bg:#ffffff; --blue:#2563eb; --blue-hover:#0ea5e9; --blue-soft:#eff6ff; --blue-hover-soft:#f0f9ff;
-  --nav-h:44px; --content-w:1120px;
-  --font-body:13px; --font-small:12px; --font-table:12px;
-}
-*, *::before, *::after { box-sizing:border-box; }
-html {
-  background:var(--bg); color:var(--ink);
-  font-family:'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
-  letter-spacing:-0.01em; scroll-behavior:smooth;
-}
-body { margin:0; padding:0; background:var(--bg); }
-a { color:var(--blue); text-decoration:none; }
-a:hover { opacity:0.85; text-decoration:none; }
-a:focus-visible { outline:2px solid #38bdf8; outline-offset:3px; border-radius:6px; }
-.report-nav {
-  position:sticky; top:0; z-index:30; height:var(--nav-h);
-  background:rgba(255,255,255,0.93); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
-  border-bottom:1px solid #f1f5f9; box-shadow:none;
-}
-.report-nav-inner {
-  height:var(--nav-h); max-width:var(--content-w); margin:0 auto; padding:0 24px;
-  display:flex; align-items:center; justify-content:space-between; gap:22px;
-}
-.brand { display:flex; align-items:center; gap:9px; color:var(--ink); font-size:0.82rem; font-weight:700; text-decoration:none; white-space:nowrap; }
-.brand:hover { opacity:0.85; }
-.brand-mark { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border:1px solid var(--track); border-radius:7px; font-size:0.72rem; background:#fff; letter-spacing:-0.03em; }
-.report-links { display:flex; align-items:center; gap:3px; overflow-x:auto; white-space:nowrap; min-width:0; }
-.report-links a { color:var(--mid); font-size:0.78rem; font-weight:500; padding:7px 8px; border-radius:6px; }
-.report-links a:hover { color:var(--blue-hover); background:var(--blue-hover-soft); opacity:1; }
-.report-shell { max-width:var(--content-w); margin:0 auto; padding:28px 24px 70px; }
-.report-content { min-width:0; }
-.report-kicker { font-size:12px; color:var(--blue); font-weight:700; margin:0 0 7px; }
-h1 { font-size:26px; line-height:1.16; margin:0 0 8px; font-weight:800; letter-spacing:-0.04em; }
-h2 { font-size:16px; margin:38px 0 14px; font-weight:750; border-top:1px solid var(--track); padding-top:20px; letter-spacing:-0.025em; }
-h2.first-section { margin-top:0; border-top:0; padding-top:0; }
-h3 { font-size:13px; font-weight:700; margin:16px 0 10px; }
-h4 { font-size:13px; font-weight:750; margin:28px 0 10px; }
-h5 { font-size:12px; font-weight:750; margin:22px 0 8px; color:var(--ink); }
-h6 { font-size:12px; font-weight:650; margin:16px 0 7px; color:var(--mid); }
-.xai-target { margin:0 0 34px; }
-.xai-class { border-top:1px solid var(--track); margin-top:20px; padding-top:2px; }
-p, li { font-size:var(--font-body); color:var(--mid); line-height:1.56; }
-.report-path { margin-top:0; }
-figure { margin:18px 0 28px; overflow-x:auto; }
-figure img { max-width:100%; width:auto; height:auto; display:block; }
-.embedded-svg { overflow-x:auto; }
-.embedded-svg svg { max-width:100%; height:auto; display:block; font-family:'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important; }
-figcaption { font-size:var(--font-small); color:var(--mid); margin-top:7px; }
-.compare-block { margin:17px 0 32px; overflow-x:auto; padding-bottom:2px; }
-.compare-block > h3 { font-size:13px; margin:18px 0 11px; color:var(--ink); }
-.compare-grid { display:grid; grid-template-columns:repeat(var(--compare-columns), minmax(430px, 1fr)); gap:16px; align-items:start; }
-.compare-cell { min-width:0; }
-.compare-cell h3 { font-size:12px; color:var(--mid); margin:0 0 7px; font-weight:700; }
-.compare-cell figure { margin:0; }
-.compare-cell figcaption { display:none; }
-.compare-cell .embedded-svg svg { min-width:430px; }
-.missing-figure { border:1px solid var(--track); color:var(--mid); font-size:12px; padding:36px 12px; text-align:center; background:#fff; border-radius:10px; }
-.table-wrap { overflow-x:auto; margin:12px 0 24px; }
-table { border-collapse:collapse; width:100%; font-size:var(--font-table); }
-th, td { border-bottom:1px solid var(--track); padding:7px 7px; text-align:left; vertical-align:top; line-height:1.38; }
-th { color:var(--mid); font-weight:700; background:#fff; }
-code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
-.report-footer { border-top:1px solid var(--track); margin-top:42px; padding-top:16px; color:var(--dim); font-size:12px; }
-@media (max-width: 860px) {
-  .report-nav-inner { padding:0 16px; }
-  .report-shell { padding:22px 18px 56px; }
-  .brand span:last-child { display:none; }
-  .report-links a { padding:7px 6px; }
-  h1 { font-size:22px; }
-  .compare-grid { grid-template-columns:repeat(var(--compare-columns), minmax(360px, 1fr)); }
-  .compare-cell .embedded-svg svg { min-width:360px; }
-}
-"""
+    css = _report_css()
     top_metric_cols = {
         c for c in top10_html.columns if c.startswith("Inner") or c.startswith("Outer")
     }
@@ -1904,7 +1953,7 @@ code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consol
 </nav></div></header>
 <div class="report-shell"><main id="top" class="report-content">
 <h2 id="procedure" class="first-section">Evaluation procedure</h2>
-{_html_table(procedure)}
+{_procedure_grid_html(procedure)}
 <h2 id="performance">Task performance summary</h2>
 <p>Held-out strategy performance is reported as mean ± SD across outer evaluation units with 95% bootstrap confidence intervals. For LODO, outer units are held-out datasets; for nested cross-validation, they are outer test folds. PR-AUC (AP) is average precision. Additional metric-level summaries and pairwise tests are available in the report tables.</p>
 {_html_table(strategy_html, raw_html_cols=strat_metric_cols)}
@@ -1935,6 +1984,8 @@ code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consol
     dump_json_standard(
         {
             "report_dir": report_dir,
+            "task": "classification",
+            "target": str(sweep.data.target_col),
             "figures_embedded": len([f for f in figs if f]),
             "explainability_targets": explainability_count,
         },

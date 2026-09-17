@@ -482,6 +482,188 @@ def plot_feature_support(
     return True
 
 
+def plot_regression_feature_support(
+    importance: pd.DataFrame,
+    out_stem: Path,
+    top_k: int,
+) -> bool:
+    apply_style()
+    required = {"method", "feature", "importance_mean"}
+    if (
+        importance is None
+        or importance.empty
+        or not required.issubset(importance.columns)
+    ):
+        return False
+    d = importance.copy()
+    d["importance_mean"] = pd.to_numeric(d["importance_mean"], errors="coerce")
+    d = d[np.isfinite(d["importance_mean"].to_numpy(dtype=float))]
+    if d.empty:
+        return False
+    d["method"] = d["method"].astype(str)
+    d["feature"] = d["feature"].astype(str)
+    methods = [str(x) for x in d["method"].drop_duplicates().tolist()]
+    if not methods:
+        return False
+    rows = []
+    for method in methods:
+        sub = d[d["method"].eq(method)].copy()
+        sub = sub.sort_values(["importance_mean", "feature"], ascending=[False, True])
+        n = len(sub)
+        if n == 1:
+            sub["support"] = 1.0
+        else:
+            sub["support"] = 1.0 - np.arange(n, dtype=float) / float(n - 1)
+        rows.append(sub[["method", "feature", "support"]])
+    support = pd.concat(rows, ignore_index=True)
+    pivot = support.pivot_table(
+        index="feature", columns="method", values="support", aggfunc="first"
+    )
+    pivot = pivot.reindex(columns=methods)
+    pivot["mean_support"] = pivot.mean(axis=1, skipna=True)
+    pivot["methods_available"] = pivot[methods].notna().sum(axis=1)
+    top = (
+        pivot.reset_index()
+        .sort_values(
+            ["mean_support", "methods_available", "feature"],
+            ascending=[False, False, True],
+        )
+        .head(int(top_k))
+    )
+    if top.empty:
+        return False
+    top = top.reset_index(drop=True)
+    n = len(top)
+    solo_method = len(methods) == 1
+    fig_h_mm = max(58.0, 3.85 * n + 24.0)
+    fig_w = (108.0 * MM) if solo_method else COL_W_2
+    fig = plt.figure(figsize=(fig_w, fig_h_mm * MM))
+    fig.patch.set_facecolor(BG)
+    panel = [0.045, 0.075, 0.910, 0.840]
+    if solo_method:
+        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.050, 0.640, 0.670), zorder=5)
+        ax_hm = fig.add_axes(_bbox(panel, 0.760, 0.050, 0.100, 0.670), zorder=5)
+        ax_bar = None
+        bracket_lab = (0.020, 0.640)
+        bracket_hm = (0.760, 0.860)
+    else:
+        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.050, 0.515, 0.670), zorder=5)
+        ax_hm = fig.add_axes(_bbox(panel, 0.600, 0.050, 0.235, 0.670), zorder=5)
+        ax_bar = fig.add_axes(_bbox(panel, 0.875, 0.050, 0.105, 0.670), zorder=5)
+        bracket_lab = (0.020, 0.515)
+        bracket_hm = (0.600, 0.835)
+    axes = (ax_lab, ax_hm) if ax_bar is None else (ax_lab, ax_hm, ax_bar)
+    for ax in axes:
+        ax.set_facecolor(BG)
+        ax.set_ylim(n - 0.5, -0.5)
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        for yi in np.arange(n + 1) - 0.5:
+            ax.axhline(yi, color=TRACK, lw=0.22, zorder=0)
+    ax_lab.set_xlim(0, 1)
+    ax_lab.set_xticks([])
+    for i, feature in enumerate(top["feature"].astype(str)):
+        ax_lab.text(
+            0.010,
+            i,
+            str(i + 1),
+            ha="left",
+            va="center",
+            fontsize=4.65,
+            color=DIM,
+            clip_on=False,
+        )
+        ax_lab.text(
+            0.095,
+            i,
+            _feature_label(feature),
+            ha="left",
+            va="center",
+            fontsize=4.95,
+            color=INK,
+            path_effects=[mpe.withStroke(linewidth=1.65, foreground="white")],
+            clip_on=False,
+        )
+    matrix = top[methods].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    matrix = np.clip(matrix, 0, 1)
+    masked = np.ma.masked_invalid(matrix)
+    cmap = SUPPORT_CMAP.copy()
+    cmap.set_bad(TRACK)
+    ax_hm.imshow(
+        masked, aspect="auto", interpolation="nearest", cmap=cmap, vmin=0, vmax=1
+    )
+    ax_hm.set_xticks(np.arange(len(methods)))
+    display_names = {
+        "shap": "SHAP",
+        "lime": "LIME",
+        "permutation": "Perm.",
+        "ale": "ALE",
+    }
+    labels = [display_names.get(m.casefold(), m) for m in methods]
+    ax_hm.set_xticklabels(labels, fontsize=4.05, color="#000000", rotation=0)
+    ax_hm.tick_params(axis="x", length=0, pad=2, colors="#000000")
+    for lab in ax_hm.get_xticklabels():
+        lab.set_clip_on(False)
+    for x in np.arange(-0.5, len(methods) + 0.5, 1):
+        ax_hm.axvline(x, color="white", lw=0.45)
+    for yline in np.arange(-0.5, n + 0.5, 1):
+        ax_hm.axhline(yline, color="white", lw=0.35)
+    if solo_method:
+        for yi in range(n):
+            value = float(matrix[yi, 0]) if matrix.shape[1] else np.nan
+            label = f"{value:.2f}" if np.isfinite(value) else "NA"
+            color = _support_text_color(value) if np.isfinite(value) else DIM
+            ax_hm.text(
+                0,
+                yi,
+                label,
+                ha="center",
+                va="center",
+                fontsize=4.65,
+                color=color,
+                zorder=5,
+            )
+    if ax_bar is not None:
+        mean_support = (
+            pd.to_numeric(top["mean_support"], errors="coerce")
+            .fillna(0.0)
+            .to_numpy(dtype=float)
+        )
+        mean_support = np.clip(mean_support, 0, 1)
+        ax_bar.set_xlim(0, 1.0)
+        ax_bar.set_xticks([0, 1])
+        ax_bar.set_xticklabels(["0", "1"], fontsize=4.25, color="#000000")
+        _style_black_bottom_axis(ax_bar, show_left=False)
+        for i, value in enumerate(mean_support):
+            ax_bar.plot(
+                [0, 1], [i, i], color=TRACK, lw=3.0, solid_capstyle="round", zorder=1
+            )
+            ax_bar.plot(
+                [0, value],
+                [i, i],
+                color=ACC_L,
+                lw=3.0,
+                solid_capstyle="round",
+                zorder=2,
+            )
+            ax_bar.plot(
+                [value, value],
+                [i - 0.16, i + 0.16],
+                color=ACC_D,
+                lw=0.55,
+                zorder=3,
+                clip_on=False,
+            )
+    _bracket(fig, panel, bracket_lab[0], bracket_lab[1], 0.765, "Ranked feature")
+    _bracket(fig, panel, bracket_hm[0], bracket_hm[1], 0.765, "Method support")
+    if ax_bar is not None:
+        _bracket(fig, panel, 0.875, 0.980, 0.765, "Mean")
+    save_all(fig, out_stem)
+    plt.close(fig)
+    return True
+
+
 def _interp_col_net(t: float, col0: str, col_mid: str, col1: str):
     t = float(np.clip(t, 0, 1))
     a = np.array(mcolors.to_rgba(col0))
@@ -1077,17 +1259,24 @@ def plot_interaction_network(
     layout: str = "default",
 ) -> bool:
     apply_style()
+    labels = [str(x) for x in (class_labels or ())]
+    regression_mode = len(labels) < 2
     fig = plt.figure(figsize=(COL_W_2, 125 * MM))
     fig.patch.set_facecolor(BG)
-    ax_net = fig.add_axes([0.02, 0.06, 0.69, 0.88], zorder=4)
-    ax_leg1 = fig.add_axes([0.73, 0.53, 0.25, 0.37], zorder=12)
-    ax_leg2 = fig.add_axes([0.75, 0.17, 0.20, 0.28], zorder=12)
+    if regression_mode:
+        ax_net = fig.add_axes([0.02, 0.06, 0.79, 0.88], zorder=4)
+        ax_leg1 = fig.add_axes([0.82, 0.53, 0.15, 0.37], zorder=12)
+        ax_leg2 = fig.add_axes([0.82, 0.24, 0.14, 0.34], zorder=12)
+    else:
+        ax_net = fig.add_axes([0.02, 0.06, 0.69, 0.88], zorder=4)
+        ax_leg1 = fig.add_axes([0.73, 0.53, 0.25, 0.37], zorder=12)
+        ax_leg2 = fig.add_axes([0.75, 0.17, 0.20, 0.28], zorder=12)
     try:
         s_min, s_max = _draw_network(ax_net, tab, stats, top_k, layout=layout)
-        labels = [str(x) for x in (class_labels or ())]
-        ctrl_text = labels[0] if len(labels) >= 1 else "controls"
-        case_text = labels[1] if len(labels) >= 2 else "cases"
-        _legend_size_colour_net(ax_leg1, ctrl_text=ctrl_text, case_text=case_text)
+        if regression_mode:
+            ax_leg1.axis("off")
+        else:
+            _legend_size_colour_net(ax_leg1, ctrl_text=labels[0], case_text=labels[1])
         _legend_edge_net(ax_leg2, s_min, s_max)
     except Exception as exc:
         ax_net.clear()

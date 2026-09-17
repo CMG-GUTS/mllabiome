@@ -1154,6 +1154,13 @@ def select_final_mpma_e_candidate(
 
 
 def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
+    if (
+        str(getattr(sweep.data, "task", "classification")).strip().casefold()
+        == "regression"
+    ):
+        from .regression_ensemble import sweep_regression_ensemble
+
+        return sweep_regression_ensemble(sweep)
     root = sweep.root()
     ensemble_dir = root / "ensembling"
     ensemble_dir.mkdir(parents=True, exist_ok=True)

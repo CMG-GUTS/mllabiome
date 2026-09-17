@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .metrics import compute_metrics, metric_is_loss
+from .metrics import compute_metrics, compute_regression_metrics, metric_is_loss
 from .utils import dump_json_standard
 
 
@@ -300,28 +300,42 @@ def mpma_b_fold_metrics(selected_predictions: pd.DataFrame) -> pd.DataFrame:
     if selected_predictions is None or selected_predictions.empty:
         return pd.DataFrame()
     pcols = [c for c in selected_predictions.columns if c.startswith("proba_")]
-    if not pcols:
-        raise ValueError(
-            "Selected MPMA-B predictions do not contain probability columns."
-        )
     rows: list[dict[str, Any]] = []
     for outer_split_key, group in selected_predictions.groupby(
         "outer_split_key", sort=True
     ):
-        y_true = pd.to_numeric(group["y_true"], errors="raise").astype(int).to_numpy()
-        y_pred = pd.to_numeric(group["y_pred"], errors="raise").astype(int).to_numpy()
-        proba = group[pcols].apply(pd.to_numeric, errors="raise").to_numpy(dtype=float)
-        classes = np.arange(len(pcols), dtype=int)
-        metrics = compute_metrics(y_true, y_pred, proba, classes)
         config_ids = group["config_id"].astype(str).unique()
         if len(config_ids) != 1:
             raise ValueError(
                 "Each outer split must contain predictions from exactly one selected MPMA-B config."
             )
+        if pcols:
+            y_true = (
+                pd.to_numeric(group["y_true"], errors="raise").astype(int).to_numpy()
+            )
+            y_pred = (
+                pd.to_numeric(group["y_pred"], errors="raise").astype(int).to_numpy()
+            )
+            proba = (
+                group[pcols].apply(pd.to_numeric, errors="raise").to_numpy(dtype=float)
+            )
+            classes = np.arange(len(pcols), dtype=int)
+            metrics = compute_metrics(y_true, y_pred, proba, classes)
+            task = "classification"
+        else:
+            y_true = pd.to_numeric(group["y_true"], errors="raise").to_numpy(
+                dtype=float
+            )
+            y_pred = pd.to_numeric(group["y_pred"], errors="raise").to_numpy(
+                dtype=float
+            )
+            metrics = compute_regression_metrics(y_true, y_pred)
+            task = "regression"
         rows.append(
             {
                 "outer_split_key": str(outer_split_key),
                 "config_id": str(config_ids[0]),
+                "task": task,
                 **metrics,
             }
         )

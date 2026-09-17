@@ -18,7 +18,7 @@ TAXONOMIC_LEVELS: tuple[str, ...] = (
     "strain",
 )
 
-METRIC_COLUMNS = [
+CLASSIFICATION_METRIC_COLUMNS = [
     "AUC",
     "AUC_macro",
     "AUC_weighted",
@@ -34,6 +34,19 @@ METRIC_COLUMNS = [
     "log_loss",
     "brier",
 ]
+
+REGRESSION_METRIC_COLUMNS = [
+    "R2",
+    "MAE",
+    "MSE",
+    "RMSE",
+    "MedAE",
+    "ExplainedVariance",
+    "PearsonR",
+    "SpearmanR",
+]
+
+METRIC_COLUMNS = CLASSIFICATION_METRIC_COLUMNS + REGRESSION_METRIC_COLUMNS
 
 
 def _as_float_matrix(X: np.ndarray) -> np.ndarray:

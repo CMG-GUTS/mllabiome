@@ -16,13 +16,17 @@ class Data:
     metadata_path: Path | str | None = None
     format: str = "auto"
     sample_id_col: str = "sample_id"
-    target_col: str = "label"
+    target_col: str | tuple[str, ...] = "label"
+    task: str = "classification"
+    target_tasks: Mapping[str, str] | None = None
     group_col: str | None = None
     stratify_col: str | tuple[str, ...] | None = None
     metadata_cols: tuple[str, ...] = ()
     label_map: Mapping[Any, int] | None = None
     class_labels: tuple[str, ...] | None = None
     positive_class: int | str = 1
+    target_class_labels: Mapping[str, tuple[str, ...]] | None = None
+    target_positive_classes: Mapping[str, int | str] | None = None
 
 
 @dataclass
@@ -34,6 +38,8 @@ class Dataset:
     metadata: pd.DataFrame
     class_labels: list[str]
     positive_class: int | None
+    task: str = "classification"
+    target_name: str = "label"
 
     @property
     def classes(self) -> np.ndarray:
@@ -46,8 +52,47 @@ class Dataset:
         return self.class_labels[int(self.positive_class)]
 
 
+def _single_target_name(spec: Data) -> str:
+    if not isinstance(spec.target_col, str):
+        raise ValueError(
+            "load_dataset requires a single target column; multi-target sweeps are expanded by evaluate()."
+        )
+    return spec.target_col
+
+
+def _normalise_task(task: str) -> str:
+    value = str(task).strip().casefold().replace("-", "_")
+    aliases = {
+        "binary": "classification",
+        "multiclass": "classification",
+        "continuous": "regression",
+    }
+    value = aliases.get(value, value)
+    if value not in {"classification", "regression"}:
+        raise ValueError(
+            f"Unsupported single-target task {task!r}. Use 'classification' or 'regression'."
+        )
+    return value
+
+
+def _encode_regression(values: Sequence[Any]) -> np.ndarray:
+    series = pd.to_numeric(pd.Series(list(values)), errors="coerce")
+    if series.isna().any():
+        bad = np.flatnonzero(series.isna().to_numpy()).tolist()
+        raise ValueError(
+            f"Regression target contains missing or non-numeric values at {len(bad)} row(s); first positions: {bad[:5]!r}."
+        )
+    y = series.to_numpy(dtype=float)
+    if not np.isfinite(y).all():
+        raise ValueError("Regression target contains NaN or infinite values.")
+    if len(y) < 2:
+        raise ValueError("Regression requires at least two samples.")
+    return y
+
+
 def load_dataset(spec: Data, levels_needed: Iterable[str] | None = None) -> Dataset:
     levels_needed = tuple(dict.fromkeys(levels_needed or TAXONOMIC_LEVELS))
+    _single_target_name(spec)
     fmt = spec.format
     abundance_path = Path(spec.abundance_path)
     metadata_path = Path(spec.metadata_path) if spec.metadata_path is not None else None
@@ -319,19 +364,26 @@ def _load_csv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
                 f"sample_id_col={spec.sample_id_col!r} must exist in both CSV files."
             )
         df = df.merge(meta, on=spec.sample_id_col, how="inner", suffixes=("", "__meta"))
-    if spec.target_col not in df.columns:
-        raise ValueError(f"Target column {spec.target_col!r} not found.")
+    target_col = _single_target_name(spec)
+    if target_col not in df.columns:
+        raise ValueError(f"Target column {target_col!r} not found.")
     if spec.sample_id_col in df.columns:
         sample_ids = df[spec.sample_id_col].astype(str).tolist()
     else:
         sample_ids = [str(i) for i in range(len(df))]
-    y, class_labels, positive_class = _encode_y(
-        df[spec.target_col].tolist(),
-        spec.label_map,
-        spec.class_labels,
-        spec.positive_class,
-    )
-    reserved = {spec.sample_id_col, spec.target_col, *(spec.metadata_cols or ())}
+    task = _normalise_task(spec.task)
+    if task == "regression":
+        y = _encode_regression(df[target_col].tolist())
+        class_labels = []
+        positive_class = None
+    else:
+        y, class_labels, positive_class = _encode_y(
+            df[target_col].tolist(),
+            spec.label_map,
+            spec.class_labels,
+            spec.positive_class,
+        )
+    reserved = {spec.sample_id_col, target_col, *(spec.metadata_cols or ())}
     if spec.group_col:
         reserved.add(spec.group_col)
     if spec.stratify_col:
@@ -359,6 +411,8 @@ def _load_csv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
         class_labels,
         positive_class,
         levels_needed,
+        task,
+        target_col,
     )
 
 
@@ -448,8 +502,9 @@ def _load_matrix_tsv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Data
     meta = pd.read_csv(metadata_path, sep=None, engine="python", dtype=str)
     if spec.sample_id_col not in meta.columns:
         raise ValueError(f"Metadata missing sample ID column {spec.sample_id_col!r}.")
-    if spec.target_col not in meta.columns:
-        raise ValueError(f"Metadata missing target column {spec.target_col!r}.")
+    target_col = _single_target_name(spec)
+    if target_col not in meta.columns:
+        raise ValueError(f"Metadata missing target column {target_col!r}.")
     meta[spec.sample_id_col] = meta[spec.sample_id_col].astype(str).str.strip()
     if meta[spec.sample_id_col].duplicated().any():
         duplicates = meta.loc[
@@ -461,12 +516,18 @@ def _load_matrix_tsv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Data
         abundance_path, metadata_sample_ids
     )
     meta = meta.set_index(spec.sample_id_col).loc[selected_sample_ids].reset_index()
-    y, class_labels, positive_class = _encode_y(
-        meta[spec.target_col].tolist(),
-        spec.label_map,
-        spec.class_labels,
-        spec.positive_class,
-    )
+    task = _normalise_task(spec.task)
+    if task == "regression":
+        y = _encode_regression(meta[target_col].tolist())
+        class_labels = []
+        positive_class = None
+    else:
+        y, class_labels, positive_class = _encode_y(
+            meta[target_col].tolist(),
+            spec.label_map,
+            spec.class_labels,
+            spec.positive_class,
+        )
     X = bio[selected_sample_ids].T.to_numpy(dtype=np.float32)
     feature_names = bio.index.tolist()
     return _dataset_from_feature_matrix(
@@ -478,6 +539,8 @@ def _load_matrix_tsv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Data
         class_labels,
         positive_class,
         levels_needed,
+        task,
+        target_col,
     )
 
 
@@ -490,6 +553,8 @@ def _dataset_from_feature_matrix(
     class_labels: list[str],
     positive_class: int | None,
     levels_needed: tuple[str, ...],
+    task: str = "classification",
+    target_name: str = "label",
 ) -> Dataset:
     X_all = np.asarray(X_all, dtype=np.float32)
     if X_all.ndim != 2:
@@ -504,12 +569,15 @@ def _dataset_from_feature_matrix(
         )
     if len(y) != len(sample_ids):
         raise ValueError("Target length does not match the number of sample IDs.")
-    if not np.all(np.isin(y, np.arange(len(class_labels), dtype=int))):
-        raise ValueError(
-            "Encoded target contains values outside the canonical class range."
-        )
-    if len(class_labels) == 2 and positive_class != 1:
-        raise ValueError("Binary positive class must be canonical internal class 1.")
+    if task == "classification":
+        if not np.all(np.isin(y, np.arange(len(class_labels), dtype=int))):
+            raise ValueError(
+                "Encoded target contains values outside the canonical class range."
+            )
+        if len(class_labels) == 2 and positive_class != 1:
+            raise ValueError(
+                "Binary positive class must be canonical internal class 1."
+            )
     level_to_idx: dict[str, list[int]] = {lv: [] for lv in TAXONOMIC_LEVELS}
     for j, name in enumerate(feature_names):
         level = _taxonomic_rank(name)
@@ -525,11 +593,13 @@ def _dataset_from_feature_matrix(
     return Dataset(
         X_by_level=X_by_level,
         feature_names_by_level=names_by_level,
-        y=np.asarray(y, dtype=int),
+        y=np.asarray(y, dtype=int if task == "classification" else float),
         sample_ids=sample_ids,
         metadata=meta,
         class_labels=class_labels,
         positive_class=positive_class,
+        task=task,
+        target_name=target_name,
     )
 
 

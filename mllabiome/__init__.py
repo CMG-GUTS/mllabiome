@@ -4,7 +4,7 @@ from .threading import configure_thread_limits
 
 configure_thread_limits()
 
-__version__ = "0.1.0"
+__version__ = "0.1.0rc21"
 from .configs_sweep import (
     MPDR,
     MPMA,
@@ -26,7 +26,7 @@ from .explainability import (
 )
 from .final_explainability import explain
 from .learners import FLAMLClassifier, build_learner
-from .metrics import compute_metrics
+from .metrics import compute_metrics, compute_regression_metrics
 from .pipeline import run_all
 from .report import write_report
 from .resolutions import materialize_mpdr
@@ -43,7 +43,12 @@ from .transformations import (
     transformation_label,
     transformation_space_table,
 )
-from .utils import METRIC_COLUMNS, TAXONOMIC_LEVELS
+from .utils import (
+    CLASSIFICATION_METRIC_COLUMNS,
+    METRIC_COLUMNS,
+    REGRESSION_METRIC_COLUMNS,
+    TAXONOMIC_LEVELS,
+)
 
 __all__ = [
     "Data",
@@ -78,6 +83,9 @@ __all__ = [
     "build_sweep_configs",
     "build_sweep_from_module",
     "compute_metrics",
+    "compute_regression_metrics",
+    "CLASSIFICATION_METRIC_COLUMNS",
+    "REGRESSION_METRIC_COLUMNS",
     "evaluate",
     "explain",
     "load_dataset",

@@ -80,6 +80,13 @@ def _invalidate_stale(root: Path, models: dict, explainability) -> None:
 
 
 def explain(sweep):
+    if (
+        str(getattr(sweep.data, "task", "classification")).strip().casefold()
+        == "regression"
+    ):
+        from .regression_explainability import explain_regression
+
+        return explain_regression(sweep)
     root = Path(sweep.root())
     models = build_final_models(root)
     _invalidate_stale(root, models, sweep.explainability)
