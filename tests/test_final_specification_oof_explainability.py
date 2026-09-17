@@ -12,11 +12,25 @@ from mllabiome import final_explainability as final_xai
 from mllabiome import mpma_e_explainability as mpmae_xai
 from mllabiome.configs_sweep import Explainability
 from mllabiome.explainability_methods import Permutation
+from mllabiome.transformations import TransformationCoordinate
 
 
 class IdentityTransformation:
     def apply_pair(self, train, test):
         return np.asarray(train, dtype=float), np.asarray(test, dtype=float)
+
+    def coordinate_metadata(self, input_features):
+        return [
+            TransformationCoordinate(
+                name=str(feature),
+                coordinate_type="feature_coordinate",
+                anchor_feature=str(feature),
+                components=(str(feature),),
+                coefficients=(1.0,),
+                exact_feature_identity=True,
+            )
+            for feature in input_features
+        ]
 
 
 class RecordingEstimator:

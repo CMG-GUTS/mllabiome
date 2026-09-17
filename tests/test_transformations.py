@@ -1,8 +1,10 @@
 import numpy as np
 import pytest
 from scipy.stats import rankdata
+from skbio.stats.composition import alr as skbio_alr
 from skbio.stats.composition import closure as skbio_closure
 from skbio.stats.composition import clr as skbio_clr
+from skbio.stats.composition import ilr as skbio_ilr
 from skbio.stats.composition import multi_replace as skbio_multi_replace
 from sklearn.preprocessing import (
     PowerTransformer,
@@ -29,6 +31,8 @@ EXPECTED_TRANSFORMATIONS = {
     "arcsine_sqrt",
     "log10_relative_abundance_half_min_pseudocount",
     "centered_log_ratio_multiplicative_replacement",
+    "additive_log_ratio_first_reference_multiplicative_replacement",
+    "isometric_log_ratio_egozcue_multiplicative_replacement",
     "standardized_centered_log_ratio_multiplicative_replacement",
     "yeo_johnson_relative_abundance",
     "quantile_normal_relative_abundance",
@@ -36,6 +40,11 @@ EXPECTED_TRANSFORMATIONS = {
     "within_sample_fractional_rank",
     "training_ecdf_rank",
     "prevalence_weighted_relative_abundance",
+}
+
+LOG_RATIO_COORDINATE_TRANSFORMATIONS = {
+    "additive_log_ratio_first_reference_multiplicative_replacement",
+    "isometric_log_ratio_egozcue_multiplicative_replacement",
 }
 
 
@@ -114,6 +123,14 @@ def test_canonical_aliases():
     assert Transformation("sqrt").name == "hellinger"
     assert Transformation("arcsin_sqrt").name == "arcsine_sqrt"
     assert Transformation("clr").name == "centered_log_ratio_multiplicative_replacement"
+    assert (
+        Transformation("alr").name
+        == "additive_log_ratio_first_reference_multiplicative_replacement"
+    )
+    assert (
+        Transformation("ilr").name
+        == "isometric_log_ratio_egozcue_multiplicative_replacement"
+    )
 
 
 def test_unknown_transformation_requires_an_explicit_custom_callable():
@@ -208,6 +225,84 @@ def test_clr_single_sample_preserves_2d_shape_and_matches_scikit_bio():
         expected = expected.reshape(1, -1)
     assert out.shape == X.shape
     np.testing.assert_allclose(out, expected, rtol=1e-06, atol=1e-06)
+
+
+def test_alr_matches_scikit_bio_first_reference_and_coordinate_metadata():
+    X = _train_matrix()
+    features = ["a", "b", "c", "d"]
+    transform = CountTransformation("alr").fit(X)
+    out = transform.apply(X)
+    expected = np.asarray(skbio_alr(_positive_composition(X), ref_idx=0), dtype=float)
+    np.testing.assert_allclose(out, expected, rtol=1e-06, atol=1e-06)
+    assert out.shape == (X.shape[0], X.shape[1] - 1)
+    assert transform.get_feature_names_out(features) == [
+        "ALR[b/a]",
+        "ALR[c/a]",
+        "ALR[d/a]",
+    ]
+    metadata = transform.coordinate_metadata(features)
+    assert [item.name for item in metadata] == ["ALR[b/a]", "ALR[c/a]", "ALR[d/a]"]
+    assert all(item.coordinate_type == "alr_logcontrast" for item in metadata)
+    assert all(item.anchor_feature is None for item in metadata)
+    assert all(not item.exact_feature_identity for item in metadata)
+    assert [item.components for item in metadata] == [("b", "a"), ("c", "a"), ("d", "a")]
+    assert all(item.coefficients == (1.0, -1.0) for item in metadata)
+
+
+def test_ilr_matches_scikit_bio_egozcue_basis_and_coordinate_metadata():
+    X = _train_matrix()
+    features = ["a", "b", "c", "d"]
+    transform = CountTransformation("ilr").fit(X)
+    assert transform._impl is not None
+    basis = np.asarray(transform._impl.basis_, dtype=float)
+    expected_basis = np.asarray(
+        [
+            [1.0 / np.sqrt(2.0), -1.0 / np.sqrt(2.0), 0.0, 0.0],
+            [1.0 / np.sqrt(6.0), 1.0 / np.sqrt(6.0), -2.0 / np.sqrt(6.0), 0.0],
+            [
+                1.0 / np.sqrt(12.0),
+                1.0 / np.sqrt(12.0),
+                1.0 / np.sqrt(12.0),
+                -3.0 / np.sqrt(12.0),
+            ],
+        ],
+        dtype=float,
+    )
+    np.testing.assert_allclose(basis, expected_basis, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(
+        basis @ basis.T,
+        np.eye(X.shape[1] - 1),
+        rtol=1e-06,
+        atol=1e-06,
+    )
+    np.testing.assert_allclose(basis.sum(axis=1), 0.0, rtol=0, atol=1e-12)
+    out = transform.apply(X)
+    expected = np.asarray(skbio_ilr(_positive_composition(X), basis=basis), dtype=float)
+    np.testing.assert_allclose(out, expected, rtol=1e-06, atol=1e-06)
+    assert out.shape == (X.shape[0], X.shape[1] - 1)
+    metadata = transform.coordinate_metadata(features)
+    assert len(metadata) == X.shape[1] - 1
+    assert [item.name for item in metadata] == transform.get_feature_names_out(features)
+    assert all(item.coordinate_type == "ilr_balance" for item in metadata)
+    assert all(item.anchor_feature is None for item in metadata)
+    assert all(not item.exact_feature_identity for item in metadata)
+    for index, item in enumerate(metadata):
+        row = basis[index]
+        mask = np.abs(row) > 1e-15
+        assert item.components == tuple(np.asarray(features, dtype=object)[mask].tolist())
+        np.testing.assert_allclose(
+            np.asarray(item.coefficients, dtype=float),
+            row[mask],
+            rtol=0,
+            atol=1e-12,
+        )
+
+
+def test_alr_and_ilr_single_sample_preserve_2d_coordinate_shape():
+    X = _test_matrix()[0:1]
+    for name in LOG_RATIO_COORDINATE_TRANSFORMATIONS:
+        out = CountTransformation(name).fit_apply(X)
+        assert out.shape == (1, X.shape[1] - 1)
 
 
 def test_standardized_clr_single_test_sample_preserves_2d_shape():
@@ -345,12 +440,17 @@ def test_prevalence_weighted_relative_abundance_uses_training_prevalence_only():
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED_TRANSFORMATIONS))
-def test_every_builtin_preserves_sample_and_feature_dimensions(name):
+def test_every_builtin_preserves_samples_and_has_declared_feature_dimension(name):
     train = _train_matrix()
     test = _test_matrix()
     out_train, out_test = CountTransformation(name).apply_pair(train, test)
-    assert out_train.shape == train.shape
-    assert out_test.shape == test.shape
+    expected_features = (
+        train.shape[1] - 1
+        if name in LOG_RATIO_COORDINATE_TRANSFORMATIONS
+        else train.shape[1]
+    )
+    assert out_train.shape == (train.shape[0], expected_features)
+    assert out_test.shape == (test.shape[0], expected_features)
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED_TRANSFORMATIONS))
@@ -372,7 +472,7 @@ def test_fitted_transform_rejects_different_feature_count():
 
 def test_custom_transform_must_preserve_dimensions():
     transform = Transformation("bad_custom", lambda X: np.asarray(X)[:, :-1])
-    with pytest.raises(ValueError, match="one-to-one correspondence"):
+    with pytest.raises(ValueError, match="unexpected matrix shape"):
         transform.apply(_train_matrix(), _test_matrix())
 
 
@@ -463,6 +563,8 @@ def test_compositional_log_transforms_reject_all_zero_samples():
     X = np.array([[1.0, 2.0, 3.0], [0.0, 0.0, 0.0]], dtype=float)
     for name in (
         "centered_log_ratio_multiplicative_replacement",
+        "additive_log_ratio_first_reference_multiplicative_replacement",
+        "isometric_log_ratio_egozcue_multiplicative_replacement",
         "standardized_centered_log_ratio_multiplicative_replacement",
         "log10_relative_abundance_half_min_pseudocount",
     ):

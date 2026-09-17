@@ -9,6 +9,7 @@ import pytest
 from mllabiome.configs_sweep import Explainability
 from mllabiome.ensemble_aggregation import aggregate_member_predictions
 from mllabiome.explainability_methods import SHAP
+from mllabiome.transformations import TransformationCoordinate
 from mllabiome.mpma_e_explainability import (
     _run_hierarchical_shap,
     _write_prediction_tables,
@@ -23,6 +24,24 @@ def _member(config_id: str, proba: np.ndarray, base: np.ndarray, values: np.ndar
         "transformation_key": "arcsine_sqrt",
         "learner_key": "RF",
         "feature_names_fold": ["taxon_a", "taxon_b"],
+        "coordinate_metadata_fold": [
+            TransformationCoordinate(
+                name="taxon_a",
+                coordinate_type="feature_coordinate",
+                anchor_feature="taxon_a",
+                components=("taxon_a",),
+                coefficients=(1.0,),
+                exact_feature_identity=True,
+            ),
+            TransformationCoordinate(
+                name="taxon_b",
+                coordinate_type="feature_coordinate",
+                anchor_feature="taxon_b",
+                components=("taxon_b",),
+                coefficients=(1.0,),
+                exact_feature_identity=True,
+            ),
+        ],
         "proba": np.asarray(proba, dtype=float),
         "_test_base": np.asarray(base, dtype=float),
         "_test_values": np.asarray(values, dtype=float),
