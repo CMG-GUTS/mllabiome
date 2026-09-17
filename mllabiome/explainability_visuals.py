@@ -227,35 +227,51 @@ def _style_black_bottom_axis(ax: plt.Axes, *, show_left: bool = False) -> None:
     ax.tick_params(axis="y", length=0, color=axis_black, labelcolor=axis_black)
 
 
-def _plain_taxon_label(feature_name: str, max_len: int = 32) -> str:
-    s = str(feature_name)
-    last = s.split("___")[-1]
+def _terminal_taxon_label(value: str) -> str:
+    text = str(value).split("___")[-1].split("|")[-1]
     rank = ""
     for pfx in ("s__", "g__", "f__", "o__", "c__", "p__", "d__", "t__"):
-        if last.startswith(pfx):
+        if text.startswith(pfx):
             rank = pfx[0] + ". "
-            last = last[len(pfx) :]
+            text = text[len(pfx) :]
             break
-    last = last.replace("_", " ").strip() or s.replace("_", " ")
-    out = f"{rank}{last}"
+    text = text.replace("_", " ").strip()
+    return f"{rank}{text}" if text else str(value).replace("_", " ")
+
+
+def _plain_taxon_label(feature_name: str, max_len: int = 32) -> str:
+    text = str(feature_name)
+    if text.startswith("ALR[") and text.endswith("]"):
+        body = text[4:-1]
+        if "/" in body:
+            numerator, reference = body.split("/", 1)
+            out = f"ALR[{_terminal_taxon_label(numerator)} / {_terminal_taxon_label(reference)}]"
+        else:
+            out = text
+    elif text.startswith("ILR_"):
+        parts = text.split("_", 2)
+        if len(parts) == 3 and parts[1].isdigit():
+            out = f"ILR balance {int(parts[1])} · {parts[2][:6]}"
+        else:
+            out = text.replace("_", " ")
+    else:
+        out = _terminal_taxon_label(text)
     if len(out) > max_len:
         out = out[: max_len - 1].rstrip() + "…"
     return out
 
 
 def _net_short_label(feature_name: str) -> str:
-    last = str(feature_name).split("___")[-1]
-    for pfx in ("s__", "g__", "f__", "o__", "c__", "p__", "d__", "t__"):
-        if last.startswith(pfx):
-            name = last[len(pfx) :].replace("_", " ").strip()
-            return f"{pfx[0]}. {name}"
-    return last.replace("_", " ").strip()
+    return _plain_taxon_label(str(feature_name), 54)
 
 
 def _net_italic(label: str) -> str:
-    parts = str(label).split(". ", 1)
+    text = str(label)
+    if text.startswith("ALR[") or text.startswith("ILR balance "):
+        return text
+    parts = text.split(". ", 1)
     if len(parts) < 2:
-        return label
+        return text
     prefix, name = parts
     return rf"$\mathit{{{prefix}.}}$ {name.replace('$', '')}"
 
@@ -383,18 +399,20 @@ def plot_feature_support(
             clip_on=False,
         )
 
-    lfc = []
+    shifts = []
     for feat in features:
         row = stat_map.get(feat, {})
         try:
-            v = float(row.get("log2_case_vs_control_mean", np.nan))
+            v = float(row.get("standardized_mean_difference", np.nan))
         except Exception:
             v = np.nan
-        lfc.append(v)
-    lfc_clip = np.clip(np.nan_to_num(np.asarray(lfc, dtype=float), nan=0.0), -2.0, 2.0)
+        shifts.append(v)
+    shift_clip = np.clip(
+        np.nan_to_num(np.asarray(shifts, dtype=float), nan=0.0), -2.0, 2.0
+    )
     ax_dir.set_xlim(-2.75, 2.75)
     ax_dir.axvline(0, color="#000000", lw=0.38, zorder=1, alpha=0.75)
-    for i, v in enumerate(lfc_clip):
+    for i, v in enumerate(shift_clip):
         col = CLASS_CASE if v >= 0 else CLASS_CTRL
         ax_dir.plot(
             [0, v],
@@ -678,24 +696,20 @@ def _interp_col_net(t: float, col0: str, col_mid: str, col1: str):
     return tuple(out)
 
 
-def _net_node_color(c_ctrl: float, c_case: float):
-    pseudo = 1e-3
-    lfc_max = 2.0
-    lfc = np.log2((float(c_case) + pseudo) / (float(c_ctrl) + pseudo))
+def _net_node_color(standardized_shift: float):
+    shift = float(standardized_shift) if np.isfinite(standardized_shift) else 0.0
     neut = np.array(mcolors.to_rgba(NET_NEUT))
-    if lfc >= 0:
-        t = min(lfc / lfc_max, 1.0)
+    if shift >= 0:
+        t = min(abs(shift) / 2.0, 1.0)
         target = np.array(mcolors.to_rgba(CLASS_CASE))
     else:
-        t = min(-lfc / lfc_max, 1.0)
+        t = min(abs(shift) / 2.0, 1.0)
         target = np.array(mcolors.to_rgba(CLASS_CTRL))
     return tuple((1.0 - t) * neut + t * target)
 
 
-def _net_node_radius(c_ctrl: float, c_case: float, is_hub: bool = False) -> float:
-    mean = max((float(c_ctrl) + float(c_case)) / 2.0, 0.05)
-    lo, hi = np.log10(0.05), np.log10(60.0)
-    norm = np.clip((np.log10(mean) - lo) / (hi - lo), 0, 1)
+def _net_node_radius(strength_norm: float, is_hub: bool = False) -> float:
+    norm = float(np.clip(strength_norm, 0.0, 1.0))
     r = 0.08 + norm * 0.12
     if is_hub:
         r = max(r * 1.6, 0.20)
@@ -775,8 +789,9 @@ def _build_network_graph(interactions: pd.DataFrame, stats: pd.DataFrame | None)
                 G.add_node(
                     feat,
                     label=_net_short_label(feat),
-                    c0=_get_abundance(stat_map, feat, "control_mean_pct"),
-                    c1=_get_abundance(stat_map, feat, "case_mean_pct"),
+                    standardized_shift=_get_abundance(
+                        stat_map, feat, "standardized_mean_difference", 0.0
+                    ),
                 )
         if G.has_edge(f1, f2):
             if w > G[f1][f2]["weight"]:
@@ -785,6 +800,13 @@ def _build_network_graph(interactions: pd.DataFrame, stats: pd.DataFrame | None)
             G.add_edge(f1, f2, weight=w, rank=row_i + 1)
     if len(G.edges()) == 0:
         raise RuntimeError("no plottable interaction edges")
+    weighted_degree = {node: float(value) for node, value in G.degree(weight="weight")}
+    max_degree = max(weighted_degree.values()) if weighted_degree else 0.0
+    for node in G.nodes():
+        value = weighted_degree.get(node, 0.0)
+        G.nodes[node]["strength_norm"] = (
+            float(value / max_degree) if max_degree > 0 else 0.0
+        )
     return G
 
 
@@ -937,8 +959,8 @@ def _draw_network(
     for node in G.nodes():
         nd = G.nodes[node]
         is_hub = bool(node == hub and hub_deg >= 4)
-        c = _net_node_color(nd["c0"], nd["c1"])
-        r = _net_node_radius(nd["c0"], nd["c1"], is_hub=is_hub)
+        c = _net_node_color(nd.get("standardized_shift", 0.0))
+        r = _net_node_radius(nd.get("strength_norm", 0.0), is_hub=is_hub)
         x, y = pos[node]
         ax.add_patch(
             plt.Circle(
@@ -960,7 +982,8 @@ def _draw_network(
     node_r_arr = np.array(
         [
             _net_node_radius(
-                G.nodes[n]["c0"], G.nodes[n]["c1"], is_hub=(n == hub and hub_deg >= 4)
+                G.nodes[n].get("strength_norm", 0.0),
+                is_hub=(n == hub and hub_deg >= 4),
             )
             for n in node_list
         ],

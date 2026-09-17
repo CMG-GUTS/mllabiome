@@ -149,6 +149,15 @@ def _fit_oof_members_fold_task(
             sweep, spec["transformation_key"]
         )()
         X_train, X_test = ct.apply_pair(X_train_raw, X_test_raw)
+        coordinate_metadata = ct.coordinate_metadata(names)
+        transformed_names = [str(item.name) for item in coordinate_metadata]
+        if (
+            len(transformed_names) != X_train.shape[1]
+            or X_train.shape[1] != X_test.shape[1]
+        ):
+            raise _core.ExplainabilityConfigurationError(
+                f"Transformation {spec['transformation_key']!r} produced feature metadata inconsistent with its transformed matrix."
+            )
         clf = _core.configure_estimator_threads(
             _core._configured_learner_factory(sweep, spec["learner_key"])(),
             threads_per_worker,
@@ -178,7 +187,8 @@ def _fit_oof_members_fold_task(
             {
                 **spec,
                 "member_no": int(member_no),
-                "feature_names_fold": names,
+                "feature_names_fold": transformed_names,
+                "coordinate_metadata_fold": coordinate_metadata,
                 "X_train": np.asarray(X_train, dtype=float),
                 "X_test": np.asarray(X_test, dtype=float),
                 "estimator": clf,
@@ -506,8 +516,11 @@ def _run_hierarchical_shap(
     spec = _core._method_spec(sweep.explainability.methods, "shap")
 
     representation_records: list[dict[str, Any]] = []
-    taxon_records: list[dict[str, Any]] = []
+    exact_taxon_records: list[dict[str, Any]] = []
+    participation_records: list[dict[str, Any]] = []
+    coordinate_records: list[dict[str, Any]] = []
     diagnostic_rows: list[dict[str, Any]] = []
+    has_non_exact_coordinates = False
     for fold_no, fold in enumerate(bundle["folds"], start=1):
         test_idx = np.asarray(fold["test_idx"], dtype=int)
         train_idx = np.asarray(fold["train_idx"], dtype=int)
@@ -535,8 +548,9 @@ def _run_hierarchical_shap(
                 sorted(set(rows_ex.tolist()) | set(int(x) for x in forced)), dtype=int
             )
 
-        taxon_accumulator: dict[tuple[int, int, str], float] = {}
-        taxon_gross: dict[tuple[int, int, str], float] = {}
+        exact_taxon_accumulator: dict[tuple[int, int, str], float] = {}
+        exact_taxon_gross: dict[tuple[int, int, str], float] = {}
+        participation_accumulator: dict[tuple[int, int, str], float] = {}
         ensemble_base = None
         ensemble_sum_phi = None
         covered_ensemble_classes: set[int] = set()
@@ -582,6 +596,39 @@ def _run_hierarchical_shap(
                     str(member["config_id"]),
                 ]
             )
+            coordinates = list(member["coordinate_metadata_fold"])
+            if len(coordinates) != values.shape[1]:
+                raise _core.ExplainabilityConfigurationError(
+                    f"Transformation coordinate metadata for {member['config_id']!r} has {len(coordinates)} entries but SHAP returned {values.shape[1]} features."
+                )
+            for coordinate in coordinates:
+                if not bool(coordinate.exact_feature_identity):
+                    has_non_exact_coordinates = True
+                coordinate_records.append(
+                    {
+                        "split_key": str(fold["split_key"]),
+                        "fold_no": int(fold_no),
+                        "config_id": str(member["config_id"]),
+                        "member_no": int(member_index + 1),
+                        "transformation": str(member["transformation_key"]),
+                        "coordinate": str(coordinate.name),
+                        "coordinate_type": str(coordinate.coordinate_type),
+                        "anchor_feature": ""
+                        if coordinate.anchor_feature is None
+                        else str(coordinate.anchor_feature),
+                        "exact_feature_identity": bool(
+                            coordinate.exact_feature_identity
+                        ),
+                        "components": json.dumps(
+                            list(coordinate.components), separators=(",", ":")
+                        ),
+                        "coefficients": json.dumps(
+                            [float(x) for x in coordinate.coefficients],
+                            separators=(",", ":"),
+                        ),
+                        "representation_feature": f"{prefix}|{coordinate.name}",
+                    }
+                )
 
             for out_class_pos, class_index in output_pairs:
                 local_values = values[:, :, out_class_pos]
@@ -607,10 +654,23 @@ def _run_hierarchical_shap(
                     )
 
                 propagated = local_values * weight if linear else local_values
-                for feature_index, biological_feature in enumerate(
-                    member["feature_names_fold"]
-                ):
-                    representation_feature = f"{prefix}|{biological_feature}"
+                for feature_index, coordinate in enumerate(coordinates):
+                    coordinate_name = str(coordinate.name)
+                    anchor_feature = (
+                        ""
+                        if coordinate.anchor_feature is None
+                        else str(coordinate.anchor_feature)
+                    )
+                    representation_feature = f"{prefix}|{coordinate_name}"
+                    coefficients = np.asarray(coordinate.coefficients, dtype=float)
+                    coefficient_mass = float(np.abs(coefficients).sum())
+                    if coefficient_mass <= 0.0 or len(coordinate.components) != len(
+                        coefficients
+                    ):
+                        raise _core.ExplainabilityConfigurationError(
+                            f"Invalid coordinate metadata for {representation_feature!r}."
+                        )
+                    component_weights = np.abs(coefficients) / coefficient_mass
                     for row_pos, local_test_row in enumerate(rows_ex):
                         global_i = int(test_idx[int(local_test_row)])
                         raw_value = float(local_values[row_pos, feature_index])
@@ -625,7 +685,13 @@ def _run_hierarchical_shap(
                                 "member_no": int(member_index + 1),
                                 "class_index": int(class_index),
                                 "class_label": str(class_labels[class_index]),
-                                "biological_feature": str(biological_feature),
+                                "coordinate": coordinate_name,
+                                "coordinate_type": str(coordinate.coordinate_type),
+                                "anchor_feature": anchor_feature,
+                                "exact_feature_identity": bool(
+                                    coordinate.exact_feature_identity
+                                ),
+                                "biological_feature": anchor_feature,
                                 "representation_feature": representation_feature,
                                 "member_shap": raw_value,
                                 "aggregation_weight": weight if linear else np.nan,
@@ -634,13 +700,26 @@ def _run_hierarchical_shap(
                                 else np.nan,
                             }
                         )
-                        if linear:
-                            key = (global_i, int(class_index), str(biological_feature))
-                            taxon_accumulator[key] = (
-                                taxon_accumulator.get(key, 0.0) + propagated_value
+                        if (
+                            linear
+                            and bool(coordinate.exact_feature_identity)
+                            and anchor_feature
+                        ):
+                            key = (global_i, int(class_index), anchor_feature)
+                            exact_taxon_accumulator[key] = (
+                                exact_taxon_accumulator.get(key, 0.0) + propagated_value
                             )
-                            taxon_gross[key] = taxon_gross.get(key, 0.0) + abs(
-                                propagated_value
+                            exact_taxon_gross[key] = exact_taxon_gross.get(
+                                key, 0.0
+                            ) + abs(propagated_value)
+                        magnitude = abs(propagated_value) if linear else abs(raw_value)
+                        for component, component_weight in zip(
+                            coordinate.components, component_weights
+                        ):
+                            key = (global_i, int(class_index), str(component))
+                            participation_accumulator[key] = (
+                                participation_accumulator.get(key, 0.0)
+                                + magnitude * float(component_weight)
                             )
 
                 if linear:
@@ -687,12 +766,10 @@ def _run_hierarchical_shap(
             for (
                 global_i,
                 class_index,
-                biological_feature,
-            ), net_value in taxon_accumulator.items():
-                gross_value = float(
-                    taxon_gross[(global_i, class_index, biological_feature)]
-                )
-                taxon_records.append(
+                feature,
+            ), net_value in exact_taxon_accumulator.items():
+                gross_value = float(exact_taxon_gross[(global_i, class_index, feature)])
+                exact_taxon_records.append(
                     {
                         "split_key": str(fold["split_key"]),
                         "fold_no": int(fold_no),
@@ -700,7 +777,7 @@ def _run_hierarchical_shap(
                         "sample_index": int(global_i),
                         "class_index": int(class_index),
                         "class_label": str(class_labels[class_index]),
-                        "feature": str(biological_feature),
+                        "feature": str(feature),
                         "net_propagated_shap": float(net_value),
                         "gross_propagated_shap": gross_value,
                         "cancellation_fraction": float(
@@ -710,6 +787,26 @@ def _run_hierarchical_shap(
                         else 0.0,
                     }
                 )
+        for (
+            global_i,
+            class_index,
+            feature,
+        ), value in participation_accumulator.items():
+            participation_records.append(
+                {
+                    "split_key": str(fold["split_key"]),
+                    "fold_no": int(fold_no),
+                    "sample_id": str(dataset.sample_ids[int(global_i)]),
+                    "sample_index": int(global_i),
+                    "class_index": int(class_index),
+                    "class_label": str(class_labels[class_index]),
+                    "feature": str(feature),
+                    "participation": float(value),
+                    "scope": "linear_ensemble_abs_propagated_shap"
+                    if linear
+                    else "constituent_member_abs_shap",
+                }
+            )
 
     info("Aggregating MPMA-E member SHAP attributions and writing outputs")
     raw = pd.DataFrame(representation_records)
@@ -722,6 +819,11 @@ def _run_hierarchical_shap(
             "MPMA-E hierarchical SHAP produced no attributions."
         )
 
+    coordinate_frame = pd.DataFrame(coordinate_records).drop_duplicates()
+    p = out_dir / "coordinate_metadata.tsv"
+    coordinate_frame.to_csv(p, sep="\t", index=False)
+    outputs["coordinate_metadata"] = p
+
     member_summary = (
         raw.assign(abs_member_shap=raw["member_shap"].abs())
         .groupby(
@@ -730,10 +832,14 @@ def _run_hierarchical_shap(
                 "member_no",
                 "class_index",
                 "class_label",
-                "biological_feature",
+                "coordinate",
+                "coordinate_type",
+                "anchor_feature",
+                "exact_feature_identity",
                 "representation_feature",
             ],
             as_index=False,
+            dropna=False,
         )
         .agg(
             importance_mean=("abs_member_shap", "mean"),
@@ -747,6 +853,42 @@ def _run_hierarchical_shap(
     member_summary.to_csv(p, sep="\t", index=False)
     outputs["feature_importance_member_shap"] = p
 
+    participation_raw = pd.DataFrame(participation_records)
+    p = out_dir / "shap_taxon_participation_oof.tsv.gz"
+    participation_raw.to_csv(p, sep="\t", index=False, compression="gzip")
+    outputs["shap_taxon_participation_oof"] = p
+    participation_frames: list[pd.DataFrame] = []
+    if not participation_raw.empty:
+        for split_key, fold_raw in participation_raw.groupby("split_key", sort=False):
+            fold_frame = fold_raw.groupby(
+                ["class_index", "class_label", "feature"], as_index=False
+            ).agg(importance_mean=("participation", "mean"))
+            fold_frame["fold_key"] = str(split_key)
+            participation_frames.append(fold_frame)
+        participation_features = sorted(
+            participation_raw["feature"].astype(str).unique().tolist()
+        )
+        participation_scoring = (
+            "outer_fold_mean_component_weighted_abs_propagated_shap_participation"
+            if linear
+            else "outer_fold_mean_component_weighted_constituent_abs_shap_participation"
+        )
+        participation_summary = _core._aggregate_fold_feature_importance(
+            "taxon_participation",
+            participation_frames,
+            participation_features,
+            class_indices,
+            class_labels,
+            participation_scoring,
+            sweep.explainability.top_k,
+        )
+        participation_summary["interpretation"] = (
+            "unsigned_nonadditive_logcontrast_component_participation"
+        )
+        p = out_dir / "feature_importance_taxon_participation.tsv"
+        participation_summary.to_csv(p, sep="\t", index=False)
+        outputs["feature_importance_taxon_participation"] = p
+
     if linear:
         linear_raw = raw[
             np.isfinite(pd.to_numeric(raw["propagated_shap"], errors="coerce"))
@@ -759,10 +901,14 @@ def _run_hierarchical_shap(
                     "member_no",
                     "class_index",
                     "class_label",
-                    "biological_feature",
+                    "coordinate",
+                    "coordinate_type",
+                    "anchor_feature",
+                    "exact_feature_identity",
                     "representation_feature",
                 ],
                 as_index=False,
+                dropna=False,
             )
             .agg(
                 importance_mean=("abs_propagated_shap", "mean"),
@@ -777,85 +923,151 @@ def _run_hierarchical_shap(
         representation_summary.to_csv(p, sep="\t", index=False)
         outputs["feature_importance_mpdr_propagated_shap"] = p
 
-        taxon_raw = pd.DataFrame(taxon_records)
-        p = out_dir / "shap_taxon_net_oof.tsv.gz"
-        taxon_raw.to_csv(p, sep="\t", index=False, compression="gzip")
-        outputs["shap_taxon_net_oof"] = p
-        fold_frames: list[pd.DataFrame] = []
-        for split_key, fold_raw in taxon_raw.groupby("split_key", sort=False):
+        coordinate_fold_frames: list[pd.DataFrame] = []
+        for split_key, fold_raw in linear_raw.groupby("split_key", sort=False):
             fold_frame = (
-                fold_raw.assign(abs_net=fold_raw["net_propagated_shap"].abs())
-                .groupby(["class_index", "class_label", "feature"], as_index=False)
-                .agg(
-                    importance_mean=("abs_net", "mean"),
-                    signed_importance_mean=("net_propagated_shap", "mean"),
+                fold_raw.assign(abs_value=fold_raw["propagated_shap"].abs())
+                .groupby(
+                    ["class_index", "class_label", "representation_feature"],
+                    as_index=False,
                 )
+                .agg(
+                    importance_mean=("abs_value", "mean"),
+                    signed_importance_mean=("propagated_shap", "mean"),
+                )
+                .rename(columns={"representation_feature": "feature"})
             )
             fold_frame["fold_key"] = str(split_key)
-            fold_frames.append(fold_frame)
-        biological_features = sorted(taxon_raw["feature"].astype(str).unique().tolist())
-        fold_path, fold_long = _core._write_fold_feature_importance(
-            "propagated_member_shap", fold_frames, out_dir
+            coordinate_fold_frames.append(fold_frame)
+        representation_features = sorted(
+            linear_raw["representation_feature"].astype(str).unique().tolist()
         )
-        outputs["shap_taxon_by_outer_fold"] = fold_path
-        taxon_summary = _core._aggregate_fold_feature_importance(
-            "propagated_member_shap",
-            fold_frames,
-            biological_features,
+        coordinate_fold_path, _ = _core._write_fold_feature_importance(
+            "propagated_member_shap_coordinate", coordinate_fold_frames, out_dir
+        )
+        outputs["shap_coordinate_by_outer_fold"] = coordinate_fold_path
+        coordinate_stability = _core._aggregate_fold_feature_importance(
+            "propagated_member_shap_coordinate",
+            coordinate_fold_frames,
+            representation_features,
             class_indices,
             class_labels,
-            "outer_fold_mean_abs_net_weighted_member_shap",
+            "outer_fold_mean_abs_weighted_member_coordinate_shap",
             sweep.explainability.top_k,
         )
-        support = (
-            taxon_raw.assign(abs_gross=taxon_raw["gross_propagated_shap"].abs())
-            .groupby(["class_index", "class_label", "feature"], as_index=False)
-            .agg(
-                gross_member_support=("abs_gross", "mean"),
-                cancellation_fraction=("cancellation_fraction", "mean"),
-                n_oof_explanations=("net_propagated_shap", "size"),
+        p = out_dir / "feature_stability_coordinate.tsv"
+        coordinate_stability.to_csv(p, sep="\t", index=False)
+        outputs["feature_stability_coordinate"] = p
+
+        exact_taxon_raw = pd.DataFrame(exact_taxon_records)
+        exact_taxon_summary = pd.DataFrame()
+        if not exact_taxon_raw.empty:
+            p = out_dir / "shap_taxon_net_oof.tsv.gz"
+            exact_taxon_raw.to_csv(p, sep="\t", index=False, compression="gzip")
+            outputs["shap_taxon_net_oof"] = p
+            fold_frames: list[pd.DataFrame] = []
+            for split_key, fold_raw in exact_taxon_raw.groupby("split_key", sort=False):
+                fold_frame = (
+                    fold_raw.assign(abs_net=fold_raw["net_propagated_shap"].abs())
+                    .groupby(["class_index", "class_label", "feature"], as_index=False)
+                    .agg(
+                        importance_mean=("abs_net", "mean"),
+                        signed_importance_mean=("net_propagated_shap", "mean"),
+                    )
+                )
+                fold_frame["fold_key"] = str(split_key)
+                fold_frames.append(fold_frame)
+            biological_features = sorted(
+                exact_taxon_raw["feature"].astype(str).unique().tolist()
             )
-        )
-        taxon_summary = taxon_summary.merge(
-            support,
-            on=["class_index", "class_label", "feature"],
-            how="left",
-        )
-        p = out_dir / "feature_importance_taxon_net_shap.tsv"
-        taxon_summary.to_csv(p, sep="\t", index=False)
-        outputs["feature_importance_taxon_net_shap"] = p
-        p = out_dir / "feature_stability.tsv"
-        stability_cols = [
-            "method",
-            "class_index",
-            "class_label",
-            "feature",
-            "importance_mean",
-            "importance_sd",
-            "importance_median",
-            "importance_q25",
-            "importance_q75",
-            "mean_rank",
-            "median_rank",
-            "rank_iqr",
-            "top_k_frequency",
-            "n_estimable_folds",
-            "n_outer_folds_total",
-            "fold_coverage",
-            "signed_importance_mean",
-            "sign_positive_fraction",
-            "sign_negative_fraction",
-            "sign_consistency",
-        ]
-        taxon_summary[[c for c in stability_cols if c in taxon_summary.columns]].to_csv(
-            p, sep="\t", index=False
-        )
-        outputs["stability"] = p
-        compat = taxon_summary.copy()
-        compat["scoring"] = "outer_fold_mean_abs_net_weighted_member_shap"
-        p = out_dir / "feature_importance.tsv"
-        compat.to_csv(p, sep="\t", index=False)
-        outputs["importance"] = p
+            fold_path, _ = _core._write_fold_feature_importance(
+                "propagated_member_shap", fold_frames, out_dir
+            )
+            outputs["shap_taxon_by_outer_fold"] = fold_path
+            exact_taxon_summary = _core._aggregate_fold_feature_importance(
+                "propagated_member_shap",
+                fold_frames,
+                biological_features,
+                class_indices,
+                class_labels,
+                "outer_fold_mean_abs_net_weighted_member_shap",
+                sweep.explainability.top_k,
+            )
+            support = (
+                exact_taxon_raw.assign(
+                    abs_gross=exact_taxon_raw["gross_propagated_shap"].abs()
+                )
+                .groupby(["class_index", "class_label", "feature"], as_index=False)
+                .agg(
+                    gross_member_support=("abs_gross", "mean"),
+                    cancellation_fraction=("cancellation_fraction", "mean"),
+                    n_oof_explanations=("net_propagated_shap", "size"),
+                )
+            )
+            exact_taxon_summary = exact_taxon_summary.merge(
+                support,
+                on=["class_index", "class_label", "feature"],
+                how="left",
+            )
+            exact_taxon_summary["scope"] = (
+                "exact_feature_identity_members_only"
+                if has_non_exact_coordinates
+                else "all_members"
+            )
+            p = out_dir / "feature_importance_taxon_net_shap.tsv"
+            exact_taxon_summary.to_csv(p, sep="\t", index=False)
+            outputs["feature_importance_taxon_net_shap"] = p
+
+        if has_non_exact_coordinates:
+            compat = coordinate_stability.copy()
+            compat["scoring"] = "outer_fold_mean_abs_weighted_member_coordinate_shap"
+            p = out_dir / "feature_stability.tsv"
+            compat.to_csv(p, sep="\t", index=False)
+            outputs["stability"] = p
+            p = out_dir / "feature_importance.tsv"
+            compat.to_csv(p, sep="\t", index=False)
+            outputs["importance"] = p
+        elif not exact_taxon_summary.empty:
+            stability_cols = [
+                "method",
+                "class_index",
+                "class_label",
+                "feature",
+                "importance_mean",
+                "importance_sd",
+                "importance_median",
+                "importance_q25",
+                "importance_q75",
+                "mean_rank",
+                "median_rank",
+                "rank_iqr",
+                "top_k_frequency",
+                "n_estimable_folds",
+                "n_outer_folds_total",
+                "fold_coverage",
+                "signed_importance_mean",
+                "sign_positive_fraction",
+                "sign_negative_fraction",
+                "sign_consistency",
+            ]
+            p = out_dir / "feature_stability.tsv"
+            exact_taxon_summary[
+                [c for c in stability_cols if c in exact_taxon_summary.columns]
+            ].to_csv(p, sep="\t", index=False)
+            outputs["stability"] = p
+            compat = exact_taxon_summary.copy()
+            compat["scoring"] = "outer_fold_mean_abs_net_weighted_member_shap"
+            p = out_dir / "feature_importance.tsv"
+            compat.to_csv(p, sep="\t", index=False)
+            outputs["importance"] = p
+        else:
+            compat = coordinate_stability.copy()
+            p = out_dir / "feature_stability.tsv"
+            compat.to_csv(p, sep="\t", index=False)
+            outputs["stability"] = p
+            p = out_dir / "feature_importance.tsv"
+            compat.to_csv(p, sep="\t", index=False)
+            outputs["importance"] = p
     else:
         compat = member_summary[
             member_summary["class_index"].isin([int(x) for x in class_indices])
@@ -922,7 +1134,7 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
         str(mpma_e["aggregation_strategy"]) in LINEAR_PROBABILITY_AGGREGATIONS
     )
     metadata = {
-        "schema_version": 2,
+        "schema_version": 3,
         "unit": "MPMA-E",
         "ensemble_config_id": mpma_e.get("ensemble_config_id", ""),
         "selection_strategy": mpma_e.get("selection_strategy", ""),
@@ -935,11 +1147,12 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
             linear_exact and "shap" in methods
         ),
         "exact_feature_attribution_condition": (
-            "Available because MPMA-E is a fixed linear mean/weighted mean of member probabilities. "
-            "Member SHAP decompositions are propagated using the exact aggregation weights."
+            "Exact at model-coordinate level because MPMA-E is a fixed linear mean/weighted mean of member probabilities and member SHAP decompositions are propagated using the exact aggregation weights. Taxon-level signed aggregation is restricted to coordinates with exact one-to-one feature identity."
             if linear_exact
-            else "Unavailable: the selected aggregation is non-linear. Member-native SHAP and leave-one-member-out aggregation influence are reported instead."
+            else "Unavailable at ensemble level because the selected aggregation is non-linear. Member-native coordinate SHAP and leave-one-member-out aggregation influence are reported instead."
         ),
+        "taxon_level_attribution_policy": "Signed taxon SHAP is emitted only for one-to-one feature coordinates. ALR and ILR remain exact model-coordinate explanations and are not back-projected as signed taxon SHAP.",
+        "taxon_participation_policy": "Unsigned non-additive taxon participation is derived from absolute coordinate SHAP weighted by normalized absolute log-contrast coefficients and is reported separately from SHAP attribution.",
         "pseudo_concatenated_mpdr_feature_space_used": False,
         "methods": list(methods),
         "method_parameters": [_core.method_to_dict(x) for x in method_specs],

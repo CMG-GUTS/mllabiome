@@ -1,12 +1,15 @@
 from __future__ import annotations
 import inspect
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Callable
 import numpy as np
 import pandas as pd
 from scipy.stats import rankdata
+from skbio.stats.composition import alr as skbio_alr
 from skbio.stats.composition import closure as skbio_closure
 from skbio.stats.composition import clr as skbio_clr
+from skbio.stats.composition import ilr as skbio_ilr
 from skbio.stats.composition import multi_replace as skbio_multi_replace
 from sklearn.base import BaseEstimator, clone
 from sklearn.preprocessing import (
@@ -27,6 +30,16 @@ class TransformationLabel:
     @property
     def abbreviation(self) -> str:
         return self.key
+
+
+@dataclass(frozen=True)
+class TransformationCoordinate:
+    name: str
+    coordinate_type: str
+    anchor_feature: str | None
+    components: tuple[str, ...]
+    coefficients: tuple[float, ...]
+    exact_feature_identity: bool
 
 
 TRANSFORMATION_LABELS: tuple[TransformationLabel, ...] = (
@@ -57,6 +70,33 @@ TRANSFORMATION_LABELS: tuple[TransformationLabel, ...] = (
             "clr_mult",
             "clr-mult",
         ),
+    ),
+    TransformationLabel(
+        "additive_log_ratio_first_reference_multiplicative_replacement",
+        (
+            "alr",
+            "scikit-bio_alr",
+            "skbio_alr",
+            "scikit_bio_alr",
+            "scikitbio_alr",
+            "alr_mult",
+            "alr-mult",
+        ),
+        "log_ratio_coordinate",
+    ),
+    TransformationLabel(
+        "isometric_log_ratio_egozcue_multiplicative_replacement",
+        (
+            "ilr",
+            "scikit-bio_ilr",
+            "skbio_ilr",
+            "scikit_bio_ilr",
+            "scikitbio_ilr",
+            "ilr_egozcue",
+            "ilr_mult",
+            "ilr-mult",
+        ),
+        "log_ratio_coordinate",
     ),
     TransformationLabel(
         "standardized_centered_log_ratio_multiplicative_replacement",
@@ -165,6 +205,59 @@ def _clr_matrix(X: np.ndarray) -> np.ndarray:
     return out
 
 
+def _egozcue_basis(n_components: int) -> np.ndarray:
+    n = int(n_components)
+    if n < 2:
+        raise ValueError(
+            "Log-ratio coordinate transformations require at least two features."
+        )
+    basis = np.zeros((n - 1, n), dtype=np.float64)
+    for i in range(n - 1):
+        scale = np.sqrt((i + 1) * (i + 2))
+        basis[i, : i + 1] = 1.0 / scale
+        basis[i, i + 1] = -(i + 1) / scale
+    return basis
+
+
+def _alr_matrix(X: np.ndarray) -> np.ndarray:
+    positive = _positive_composition(X)
+    if positive.shape[1] < 2:
+        raise ValueError("ALR requires at least two features.")
+    out = np.asarray(skbio_alr(positive, ref_idx=0), dtype=np.float64)
+    if out.ndim == 1 and positive.shape[0] == 1:
+        out = out.reshape(1, -1)
+    expected = (positive.shape[0], positive.shape[1] - 1)
+    if out.shape != expected:
+        raise ValueError(
+            f"ALR transformation returned shape {out.shape}; expected {expected}."
+        )
+    return out
+
+
+def _ilr_matrix(X: np.ndarray, basis: np.ndarray) -> np.ndarray:
+    positive = _positive_composition(X)
+    if positive.shape[1] < 2:
+        raise ValueError("ILR requires at least two features.")
+    out = np.asarray(skbio_ilr(positive, basis=basis), dtype=np.float64)
+    if out.ndim == 1 and positive.shape[0] == 1:
+        out = out.reshape(1, -1)
+    expected = (positive.shape[0], positive.shape[1] - 1)
+    if out.shape != expected:
+        raise ValueError(
+            f"ILR transformation returned shape {out.shape}; expected {expected}."
+        )
+    return out
+
+
+def _default_feature_names(n_features: int) -> list[str]:
+    return [f"feature_{i + 1:04d}" for i in range(int(n_features))]
+
+
+def _coordinate_digest(features: list[str], index: int) -> str:
+    payload = "\x1f".join(features) + f"\x1e{int(index)}"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:10]
+
+
 def _finite_output(
     X: np.ndarray,
     *,
@@ -178,7 +271,7 @@ def _finite_output(
         raise ValueError("A transformation returned non-finite values.")
     if expected_shape is not None and out.shape != expected_shape:
         raise ValueError(
-            f"{context} must preserve sample and taxon dimensions: expected shape {expected_shape}, got {out.shape}. mllabiome requires a one-to-one correspondence between transformed columns and input taxa."
+            f"{context} returned an unexpected matrix shape: expected {expected_shape}, got {out.shape}."
         )
     return out.astype(np.float32, copy=False)
 
@@ -192,7 +285,9 @@ class _BuiltinTransformer:
         self.variable_mask_: np.ndarray | None = None
         self.sorted_columns_: list[np.ndarray] | None = None
         self.prevalence_: np.ndarray | None = None
+        self.basis_: np.ndarray | None = None
         self.n_features_in_: int | None = None
+        self.n_features_out_: int | None = None
 
     def _base_transform(self, X: np.ndarray) -> np.ndarray:
         name = self.name
@@ -208,6 +303,12 @@ class _BuiltinTransformer:
             return np.arcsin(np.sqrt(_relative_abundance(X)))
         if name == "centered_log_ratio_multiplicative_replacement":
             return _clr_matrix(X)
+        if name == "additive_log_ratio_first_reference_multiplicative_replacement":
+            return _alr_matrix(X)
+        if name == "isometric_log_ratio_egozcue_multiplicative_replacement":
+            if self.basis_ is None:
+                raise RuntimeError("Transformation has not been fitted.")
+            return _ilr_matrix(X, self.basis_)
         if name == "within_sample_fractional_rank":
             raw = _matrix(X, nonnegative=True)
             if raw.shape[1] == 0:
@@ -220,6 +321,20 @@ class _BuiltinTransformer:
         raw = _matrix(X)
         self.n_features_in_ = int(raw.shape[1])
         name = self.name
+        if name in {
+            "additive_log_ratio_first_reference_multiplicative_replacement",
+            "isometric_log_ratio_egozcue_multiplicative_replacement",
+        }:
+            if raw.shape[1] < 2:
+                raise ValueError(
+                    "Log-ratio coordinate transformations require at least two features."
+                )
+            _positive_composition(X)
+            self.n_features_out_ = int(raw.shape[1] - 1)
+            if name == "isometric_log_ratio_egozcue_multiplicative_replacement":
+                self.basis_ = _egozcue_basis(raw.shape[1])
+        else:
+            self.n_features_out_ = int(raw.shape[1])
         if name == "log10_relative_abundance_half_min_pseudocount":
             _matrix(X, nonnegative=True, nonzero_rows=True)
             rel = _relative_abundance(X)
@@ -258,19 +373,22 @@ class _BuiltinTransformer:
         elif name == "prevalence_weighted_relative_abundance":
             abundance = _matrix(X, nonnegative=True)
             self.prevalence_ = (abundance > 0).mean(axis=0).astype(np.float64)
-        else:
+        elif name not in {
+            "additive_log_ratio_first_reference_multiplicative_replacement",
+            "isometric_log_ratio_egozcue_multiplicative_replacement",
+        }:
             self._base_transform(X)
         return self
 
     def _expected_shape(self, X: np.ndarray) -> tuple[int, int]:
         raw = _matrix(X)
-        if self.n_features_in_ is None:
+        if self.n_features_in_ is None or self.n_features_out_ is None:
             raise RuntimeError("Transformation has not been fitted.")
         if raw.shape[1] != self.n_features_in_:
             raise ValueError(
                 f"Feature count differs from the fitted abundance transformation: expected {self.n_features_in_}, got {raw.shape[1]}."
             )
-        return raw.shape
+        return (raw.shape[0], self.n_features_out_)
 
     def transform(self, X: np.ndarray) -> np.ndarray:
         name = self.name
@@ -282,6 +400,8 @@ class _BuiltinTransformer:
             "hellinger",
             "arcsine_sqrt",
             "centered_log_ratio_multiplicative_replacement",
+            "additive_log_ratio_first_reference_multiplicative_replacement",
+            "isometric_log_ratio_egozcue_multiplicative_replacement",
             "within_sample_fractional_rank",
         }:
             return _finite_output(
@@ -371,6 +491,88 @@ class _BuiltinTransformer:
             )
         raise KeyError(f"Unknown abundance transformation {name!r}.")
 
+    def get_feature_names_out(
+        self, input_features: list[str] | tuple[str, ...] | np.ndarray | None = None
+    ) -> list[str]:
+        if self.n_features_in_ is None or self.n_features_out_ is None:
+            raise RuntimeError("Transformation has not been fitted.")
+        features = (
+            _default_feature_names(self.n_features_in_)
+            if input_features is None
+            else [str(x) for x in list(input_features)]
+        )
+        if len(features) != self.n_features_in_:
+            raise ValueError(
+                f"Input feature-name count differs from the fitted abundance transformation: expected {self.n_features_in_}, got {len(features)}."
+            )
+        if self.name == "additive_log_ratio_first_reference_multiplicative_replacement":
+            reference = features[0]
+            return [f"ALR[{feature}/{reference}]" for feature in features[1:]]
+        if self.name == "isometric_log_ratio_egozcue_multiplicative_replacement":
+            return [
+                f"ILR_{i + 1:04d}_{_coordinate_digest(features, i)}"
+                for i in range(self.n_features_out_)
+            ]
+        return features
+
+    def coordinate_metadata(
+        self, input_features: list[str] | tuple[str, ...] | np.ndarray | None = None
+    ) -> list[TransformationCoordinate]:
+        if self.n_features_in_ is None or self.n_features_out_ is None:
+            raise RuntimeError("Transformation has not been fitted.")
+        features = (
+            _default_feature_names(self.n_features_in_)
+            if input_features is None
+            else [str(x) for x in list(input_features)]
+        )
+        names = self.get_feature_names_out(features)
+        if self.name == "additive_log_ratio_first_reference_multiplicative_replacement":
+            reference = features[0]
+            return [
+                TransformationCoordinate(
+                    name=name,
+                    coordinate_type="alr_logcontrast",
+                    anchor_feature=None,
+                    components=(feature, reference),
+                    coefficients=(1.0, -1.0),
+                    exact_feature_identity=False,
+                )
+                for name, feature in zip(names, features[1:])
+            ]
+        if self.name == "isometric_log_ratio_egozcue_multiplicative_replacement":
+            if self.basis_ is None:
+                raise RuntimeError("Transformation has not been fitted.")
+            coordinates: list[TransformationCoordinate] = []
+            for i, name in enumerate(names):
+                row = np.asarray(self.basis_[i], dtype=float)
+                mask = np.abs(row) > 1e-15
+                coordinates.append(
+                    TransformationCoordinate(
+                        name=name,
+                        coordinate_type="ilr_balance",
+                        anchor_feature=None,
+                        components=tuple(
+                            feature
+                            for feature, keep in zip(features, mask)
+                            if bool(keep)
+                        ),
+                        coefficients=tuple(float(value) for value in row[mask]),
+                        exact_feature_identity=False,
+                    )
+                )
+            return coordinates
+        return [
+            TransformationCoordinate(
+                name=name,
+                coordinate_type="feature_coordinate",
+                anchor_feature=feature,
+                components=(feature,),
+                coefficients=(1.0,),
+                exact_feature_identity=True,
+            )
+            for name, feature in zip(names, features)
+        ]
+
     def apply_pair(
         self, X_tr: np.ndarray, X_te: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -451,11 +653,15 @@ class CountTransformation:
         self.pseudo_count = None
         self.random_state = int(random_state)
         self._impl: _BuiltinTransformer | None = None
+        self.n_features_in_: int | None = None
+        self.n_features_out_: int | None = None
 
     def fit(self, X: np.ndarray) -> "CountTransformation":
         self._impl = _BuiltinTransformer(self.name, random_state=self.random_state).fit(
             X
         )
+        self.n_features_in_ = self._impl.n_features_in_
+        self.n_features_out_ = self._impl.n_features_out_
         return self
 
     def apply(self, X: np.ndarray) -> np.ndarray:
@@ -464,6 +670,24 @@ class CountTransformation:
                 f"Count transformation {self.name!r} has not been fitted."
             )
         return self._impl.transform(X)
+
+    def get_feature_names_out(
+        self, input_features: list[str] | tuple[str, ...] | np.ndarray | None = None
+    ) -> list[str]:
+        if self._impl is None:
+            raise RuntimeError(
+                f"Count transformation {self.name!r} has not been fitted."
+            )
+        return self._impl.get_feature_names_out(input_features)
+
+    def coordinate_metadata(
+        self, input_features: list[str] | tuple[str, ...] | np.ndarray | None = None
+    ) -> list[TransformationCoordinate]:
+        if self._impl is None:
+            raise RuntimeError(
+                f"Count transformation {self.name!r} has not been fitted."
+            )
+        return self._impl.coordinate_metadata(input_features)
 
     def apply_pair(
         self, X_tr: np.ndarray, X_te: np.ndarray
@@ -507,6 +731,7 @@ class CountTransformationAdapter:
         self.random_state = int(random_state)
         self.obj: Any | None = None
         self.n_features_in_: int | None = None
+        self.n_features_out_: int | None = None
 
     def _make(self) -> Any:
         if self.spec is None:
@@ -536,6 +761,10 @@ class CountTransformationAdapter:
         if hasattr(obj, "fit"):
             obj.fit(X_float)
         self.obj = obj
+        n_features_out = getattr(obj, "n_features_out_", None)
+        self.n_features_out_ = (
+            int(n_features_out) if n_features_out is not None else self.n_features_in_
+        )
         return self
 
     def apply(self, X: np.ndarray) -> np.ndarray:
@@ -544,10 +773,10 @@ class CountTransformationAdapter:
                 f"Count transformation {self.name!r} has not been fitted."
             )
         X_float = _as_float_matrix(X)
-        expected_shape = np.asarray(X_float).shape
-        if self.n_features_in_ is not None and expected_shape[1] != self.n_features_in_:
+        input_shape = np.asarray(X_float).shape
+        if self.n_features_in_ is not None and input_shape[1] != self.n_features_in_:
             raise ValueError(
-                f"Feature count differs from the fitted abundance transformation: expected {self.n_features_in_}, got {expected_shape[1]}."
+                f"Feature count differs from the fitted abundance transformation: expected {self.n_features_in_}, got {input_shape[1]}."
             )
         obj = self.obj
         if isinstance(obj, Transform):
@@ -564,11 +793,66 @@ class CountTransformationAdapter:
             raise TypeError(
                 f"Custom count transformation {self.name!r} must be callable or provide fit/apply or fit/transform."
             )
+        expected_features = (
+            int(self.n_features_out_)
+            if self.n_features_out_ is not None
+            else int(input_shape[1])
+        )
         return _finite_output(
             result,
-            expected_shape=expected_shape,
+            expected_shape=(int(input_shape[0]), expected_features),
             context=f"Count transformation {self.name!r}",
         )
+
+    def get_feature_names_out(
+        self, input_features: list[str] | tuple[str, ...] | np.ndarray | None = None
+    ) -> list[str]:
+        if self.obj is None:
+            raise RuntimeError(
+                f"Count transformation {self.name!r} has not been fitted."
+            )
+        if hasattr(self.obj, "get_feature_names_out"):
+            try:
+                names = self.obj.get_feature_names_out(input_features)
+            except TypeError:
+                names = self.obj.get_feature_names_out()
+            return [str(x) for x in list(names)]
+        if self.n_features_in_ is None or self.n_features_out_ is None:
+            raise RuntimeError(
+                f"Count transformation {self.name!r} has not been fitted."
+            )
+        features = (
+            _default_feature_names(self.n_features_in_)
+            if input_features is None
+            else [str(x) for x in list(input_features)]
+        )
+        if self.n_features_out_ != len(features):
+            raise ValueError(
+                f"Transformation {self.name!r} changes feature dimension but does not expose get_feature_names_out()."
+            )
+        return features
+
+    def coordinate_metadata(
+        self, input_features: list[str] | tuple[str, ...] | np.ndarray | None = None
+    ) -> list[TransformationCoordinate]:
+        if self.obj is None:
+            raise RuntimeError(
+                f"Count transformation {self.name!r} has not been fitted."
+            )
+        if hasattr(self.obj, "coordinate_metadata"):
+            return list(self.obj.coordinate_metadata(input_features))
+        names = self.get_feature_names_out(input_features)
+        return [
+            TransformationCoordinate(
+                name=name,
+                coordinate_type="feature_coordinate",
+                anchor_feature=name,
+                components=(name,),
+                coefficients=(1.0,),
+                exact_feature_identity=True,
+            )
+            for name in names
+        ]
 
     def apply_pair(
         self, X_tr: np.ndarray, X_te: np.ndarray

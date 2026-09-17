@@ -1092,6 +1092,15 @@ def _xai_method_display(method: str) -> str:
     }.get(str(method).strip().lower(), str(method))
 
 
+def _xai_coordinate_column(target_dir: Path) -> str:
+    table = _read_tsv(target_dir / "coordinate_metadata.tsv")
+    if table.empty or "exact_feature_identity" not in table.columns:
+        return "Feature"
+    values = table["exact_feature_identity"].astype(str).str.strip().str.lower()
+    exact = values.isin({"true", "1", "yes"})
+    return "Model coordinate" if bool((~exact).any()) else "Feature"
+
+
 def _xai_target_metadata(target_dir: Path) -> tuple[list[str], list[tuple[int, str]]]:
     meta = _read_json(target_dir / "explained_unit.json")
     methods = [
@@ -1159,6 +1168,7 @@ def _xai_consensus_table(
         tab = tab.head(int(top_n)).copy()
         tab.insert(0, "rank", np.arange(1, len(tab) + 1))
     rows: list[dict[str, Any]] = []
+    feature_column = _xai_coordinate_column(target_dir)
     support_cols = [
         c for c in ("SHAP", "Permutation", "ALE", "LIME") if c in tab.columns
     ]
@@ -1167,7 +1177,7 @@ def _xai_consensus_table(
             "Rank": int(_safe_float(row.get("rank", len(rows) + 1)))
             if np.isfinite(_safe_float(row.get("rank", np.nan)))
             else len(rows) + 1,
-            "Feature": _short_feature_label(row.get("feature", "")),
+            feature_column: _short_feature_label(row.get("feature", "")),
         }
         for col in support_cols:
             val = _safe_float(row.get(col, np.nan))
@@ -1210,10 +1220,11 @@ def _xai_stability_table(
             ["_sort_imp", "feature"], ascending=[False, True], na_position="last"
         )
     rows: list[dict[str, Any]] = []
+    feature_column = _xai_coordinate_column(target_dir)
     for rank, (_, row) in enumerate(tab.head(int(top_n)).iterrows(), start=1):
         item: dict[str, Any] = {
             "Rank": rank,
-            "Feature": _short_feature_label(row.get("feature", "")),
+            feature_column: _short_feature_label(row.get("feature", "")),
         }
         for src, dst, fmt in [
             ("importance_mean", "Importance mean", ".4g"),
@@ -1254,6 +1265,7 @@ def _xai_local_table(target_dir: Path, method: str, top_n: int = 5) -> pd.DataFr
     if selected.empty or top.empty:
         return pd.DataFrame()
     rows: list[dict[str, Any]] = []
+    feature_column = _xai_coordinate_column(target_dir)
     group_cols = [c for c in ("sample_id", "class_index") if c in top.columns]
     grouped = top.groupby(group_cols, sort=False) if group_cols else [((), top)]
     for _, group in grouped:
@@ -1267,7 +1279,7 @@ def _xai_local_table(target_dir: Path, method: str, top_n: int = 5) -> pd.DataFr
                 "Sample": str(row.get("sample_id", "")),
                 "Role": str(row.get("selection_role", "")),
                 "Class": str(row.get("class_label", row.get("class_index", ""))),
-                "Feature": _short_feature_label(row.get("feature", "")),
+                feature_column: _short_feature_label(row.get("feature", "")),
             }
             p = _safe_float(row.get("p_class_mean", np.nan))
             item["P(class)"] = f"{p:.3f}" if np.isfinite(p) else ""
@@ -1322,13 +1334,16 @@ def _explainability_report_blocks(
             else "available methods"
         )
         local_mode = _xai_local_mode(target_dir)
+        coordinate_mode = _xai_coordinate_column(target_dir) == "Model coordinate"
+        unit_singular = "model coordinate" if coordinate_mode else "feature"
+        unit_plural = "model coordinates" if coordinate_mode else "features"
         parts.append(f'<section class="xai-target"><h3>{html.escape(label)}</h3>')
         parts.append(
             f"<p>Cross-fitted OOF explanations of the final selected specification. Methods: {html.escape(method_text)}. Global explanation, cross-fold stability, and local sample explanation are reported as distinct layers.</p>"
         )
         parts.append("<h4>Global explanations</h4>")
         parts.append(
-            "<p>Global results summarize held-out predictions across samples. SHAP and LIME global importance are aggregations of local OOF attributions; permutation importance and ALE are population-level quantities by construction.</p>"
+            f"<p>Global results summarize held-out predictions across samples. SHAP and LIME global importance are aggregations of local OOF attributions; permutation importance and ALE are population-level quantities by construction. The reported units are {html.escape(unit_plural)}.</p>"
         )
         for class_index, class_label in classes:
             parts.append(
@@ -1345,7 +1360,7 @@ def _explainability_report_blocks(
             if consensus_fig or not consensus_tab.empty:
                 parts.append("<h6>Cross-method concordance</h6>")
                 parts.append(
-                    "<p>Method-specific effect magnitudes are not averaged. Concordance is normalized within-method rank support among methods available for each feature.</p>"
+                    f"<p>Method-specific effect magnitudes are not averaged. Concordance is normalized within-method rank support among methods available for each {html.escape(unit_singular)}.</p>"
                 )
                 if consensus_fig:
                     parts.append(consensus_fig)
@@ -1544,15 +1559,36 @@ def _compact_procedure_for_terminal(procedure: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values("_order").drop(columns="_order")
 
 
-def _short_feature_label(feature: Any, max_len: int = 46) -> str:
-    text = str(feature)
-    last = text.split("___")[-1]
+def _terminal_feature_label(value: Any) -> str:
+    text = str(value).split("___")[-1].split("|")[-1]
+    rank = ""
     for pfx in ("s__", "g__", "f__", "o__", "c__", "p__", "d__", "t__"):
-        if last.startswith(pfx):
-            last = f"{pfx[0]}. " + last[len(pfx) :]
+        if text.startswith(pfx):
+            rank = f"{pfx[0]}. "
+            text = text[len(pfx) :]
             break
-    last = last.replace("_", " ").strip() or text
-    return last if len(last) <= max_len else last[: max_len - 1].rstrip() + "…"
+    text = text.replace("_", " ").strip()
+    return f"{rank}{text}" if text else str(value).replace("_", " ")
+
+
+def _short_feature_label(feature: Any, max_len: int = 64) -> str:
+    text = str(feature)
+    if text.startswith("ALR[") and text.endswith("]"):
+        body = text[4:-1]
+        if "/" in body:
+            numerator, reference = body.split("/", 1)
+            label = f"ALR[{_terminal_feature_label(numerator)} / {_terminal_feature_label(reference)}]"
+        else:
+            label = text
+    elif text.startswith("ILR_"):
+        parts = text.split("_", 2)
+        if len(parts) == 3 and parts[1].isdigit():
+            label = f"ILR balance {int(parts[1])} · {parts[2][:10]}"
+        else:
+            label = text.replace("_", " ")
+    else:
+        label = _terminal_feature_label(text)
+    return label if len(label) <= max_len else label[: max_len - 1].rstrip() + "…"
 
 
 def _target_dirs_for_terminal(root: Path) -> list[tuple[str, Path]]:

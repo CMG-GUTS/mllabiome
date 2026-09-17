@@ -2883,10 +2883,26 @@ def _fit_oof_single_for_explainability(
         raise ExplainabilityConfigurationError(
             "No outer fold could be fitted for out-of-fold explainability."
         )
+    ct_reference = ct_factory()
+    X_reference, _ = ct_reference.apply_pair(X_base, X_base)
+    coordinate_metadata = ct_reference.coordinate_metadata(list(feature_names))
+    transformed_feature_names = [str(item.name) for item in coordinate_metadata]
+    if X_reference.shape[1] != len(transformed_feature_names):
+        raise ExplainabilityConfigurationError(
+            f"Transformation {transformation_key!r} produced feature metadata inconsistent with its transformed matrix."
+        )
+    for fold in folds:
+        if fold["X_train"].shape[1] != len(transformed_feature_names) or fold[
+            "X_test"
+        ].shape[1] != len(transformed_feature_names):
+            raise ExplainabilityConfigurationError(
+                f"Transformation {transformation_key!r} produced inconsistent feature coordinates across outer folds."
+            )
     return {
         "dataset": dataset,
-        "X_base": X_base,
-        "feature_names": list(feature_names),
+        "X_base": np.asarray(X_reference, dtype=float),
+        "feature_names": transformed_feature_names,
+        "coordinate_metadata": coordinate_metadata,
         "folds": folds,
         "execution": execution,
     }
@@ -2923,9 +2939,14 @@ def _mpma_e_reference_and_folds(
             f"|{learner_key}"
             f"|{str(r.get('config_id', member_i))}"
         )
-        feature_names.extend([f"{label_prefix}|{name}" for name in names_member])
         ct_ref = _configured_count_transformation_factory(sweep, transformation_key)()
         X_ref_member, _ = ct_ref.apply_pair(X_base_member, X_base_member)
+        transformed_names = ct_ref.get_feature_names_out(list(names_member))
+        if X_ref_member.shape[1] != len(transformed_names):
+            raise ExplainabilityConfigurationError(
+                f"Transformation {transformation_key!r} produced feature metadata inconsistent with its transformed matrix."
+            )
+        feature_names.extend([f"{label_prefix}|{name}" for name in transformed_names])
         reference_blocks.append(X_ref_member)
         member_materialized.append(
             {
@@ -3918,6 +3939,7 @@ def _explain_one(
             "stability": target_dir / "feature_stability.tsv",
         }
 
+    coordinate_metadata: list[Any] = []
     if ensemble_explain:
         info("Preparing selected MPMA-E outer-fold units for OOF explanation")
         dataset, X_base, feature_names, oof_folds, row = _mpma_e_reference_and_folds(
@@ -3929,6 +3951,7 @@ def _explain_one(
         dataset = oof_bundle["dataset"]
         X_base = oof_bundle["X_base"]
         feature_names = oof_bundle["feature_names"]
+        coordinate_metadata = list(oof_bundle.get("coordinate_metadata", []))
         oof_folds = oof_bundle["folds"]
 
     class_indices = _resolve_explainability_classes(
@@ -3956,6 +3979,29 @@ def _explain_one(
     )
     figures_dir = target_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
+    coordinate_metadata_path: Path | None = None
+    if coordinate_metadata:
+        coordinate_frame = pd.DataFrame(
+            [
+                {
+                    "coordinate": str(item.name),
+                    "coordinate_type": str(item.coordinate_type),
+                    "anchor_feature": ""
+                    if item.anchor_feature is None
+                    else str(item.anchor_feature),
+                    "exact_feature_identity": bool(item.exact_feature_identity),
+                    "components": json.dumps(
+                        list(item.components), separators=(",", ":")
+                    ),
+                    "coefficients": json.dumps(
+                        [float(x) for x in item.coefficients], separators=(",", ":")
+                    ),
+                }
+                for item in coordinate_metadata
+            ]
+        )
+        coordinate_metadata_path = target_dir / "coordinate_metadata.tsv"
+        coordinate_frame.to_csv(coordinate_metadata_path, sep="\t", index=False)
 
     source_signature = _explainability_source_signature(
         target_slug, row, oof_folds, feature_names, dataset.class_labels
@@ -4920,6 +4966,8 @@ def _explain_one(
         "importance": target_dir / "feature_importance.tsv",
         "stability": target_dir / "feature_stability.tsv",
     }
+    if coordinate_metadata_path is not None:
+        outputs["coordinate_metadata"] = coordinate_metadata_path
     outputs.update(class_figure_paths)
     outputs.update(method_outputs)
     outputs.update(interaction_outputs)
@@ -5093,7 +5141,12 @@ def _fit_selected_mpma_e_for_explainability(
             f"|{learner_key}"
             f"|{str(r.get('config_id', member_i))}"
         )
-        feature_names.extend([f"{label_prefix}|{name}" for name in names_member])
+        transformed_names = ct.get_feature_names_out(list(names_member))
+        if X_member.shape[1] != len(transformed_names):
+            raise ExplainabilityConfigurationError(
+                f"Transformation {transformation_key!r} produced feature metadata inconsistent with its transformed matrix."
+            )
+        feature_names.extend([f"{label_prefix}|{name}" for name in transformed_names])
         X_blocks.append(X_member)
         fitted_members.append(
             {
@@ -5256,17 +5309,35 @@ def _method_support_table(
     return out[[c for c in cols if c in out.columns]]
 
 
-def _plain_taxon_label(feature_name: str, max_len: int = 34) -> str:
-    s = str(feature_name)
-    last = s.split("___")[-1].split("|")[-1]
+def _terminal_taxon_label(value: str) -> str:
+    text = str(value).split("___")[-1].split("|")[-1]
     rank = ""
     for pfx in ("s__", "g__", "f__", "o__", "c__", "p__", "d__", "t__"):
-        if last.startswith(pfx):
+        if text.startswith(pfx):
             rank = pfx[0] + ". "
-            last = last[len(pfx) :]
+            text = text[len(pfx) :]
             break
-    last = last.replace("_", " ").strip() or s.replace("_", " ")
-    out = f"{rank}{last}"
+    text = text.replace("_", " ").strip()
+    return f"{rank}{text}" if text else str(value).replace("_", " ")
+
+
+def _plain_taxon_label(feature_name: str, max_len: int = 34) -> str:
+    text = str(feature_name)
+    if text.startswith("ALR[") and text.endswith("]"):
+        body = text[4:-1]
+        if "/" in body:
+            numerator, reference = body.split("/", 1)
+            out = f"ALR[{_terminal_taxon_label(numerator)} / {_terminal_taxon_label(reference)}]"
+        else:
+            out = text
+    elif text.startswith("ILR_"):
+        parts = text.split("_", 2)
+        if len(parts) == 3 and parts[1].isdigit():
+            out = f"ILR balance {int(parts[1])} · {parts[2][:6]}"
+        else:
+            out = text.replace("_", " ")
+    else:
+        out = _terminal_taxon_label(text)
     return out if len(out) <= max_len else out[: max_len - 1].rstrip() + "…"
 
 
@@ -5383,6 +5454,41 @@ def _short_taxon(name: str, max_len: int = 70) -> str:
     return s if len(s) <= max_len else s[: max_len - 1] + "…"
 
 
+def _standardized_group_shift(
+    control: np.ndarray,
+    case: np.ndarray,
+) -> tuple[float, float, float, float, float]:
+    control = np.asarray(control, dtype=float)
+    case = np.asarray(case, dtype=float)
+    control = control[np.isfinite(control)]
+    case = case[np.isfinite(case)]
+    control_mean = float(np.mean(control)) if control.size else np.nan
+    case_mean = float(np.mean(case)) if case.size else np.nan
+    difference = (
+        float(case_mean - control_mean)
+        if np.isfinite(control_mean) and np.isfinite(case_mean)
+        else np.nan
+    )
+    control_sd = float(np.std(control, ddof=1)) if control.size > 1 else np.nan
+    case_sd = float(np.std(case, ddof=1)) if case.size > 1 else np.nan
+    pooled_sd = np.nan
+    if control.size > 1 and case.size > 1:
+        denominator = control.size + case.size - 2
+        if denominator > 0:
+            pooled_variance = (
+                (control.size - 1) * control_sd**2 + (case.size - 1) * case_sd**2
+            ) / float(denominator)
+            if np.isfinite(pooled_variance) and pooled_variance >= 0:
+                pooled_sd = float(np.sqrt(pooled_variance))
+    if np.isfinite(difference) and np.isfinite(pooled_sd) and pooled_sd > 0:
+        standardized = float(difference / pooled_sd)
+    elif np.isfinite(difference) and difference == 0:
+        standardized = 0.0
+    else:
+        standardized = np.nan
+    return control_mean, case_mean, difference, pooled_sd, standardized
+
+
 def _interaction_distribution_stats_for_class(
     features: Sequence[str],
     feature_names: Sequence[str],
@@ -5399,19 +5505,17 @@ def _interaction_distribution_stats_for_class(
         if key not in index:
             continue
         values = np.asarray(X[:, index[key]], dtype=float)
-        target = values[target_mask]
-        other = values[other_mask]
-        target_mean = float(np.nanmean(target)) if target.size else np.nan
-        other_mean = float(np.nanmean(other)) if other.size else np.nan
+        control_mean, case_mean, difference, pooled_sd, standardized = (
+            _standardized_group_shift(values[other_mask], values[target_mask])
+        )
         rows.append(
             {
                 "feature": key,
-                "case_mean_pct": target_mean * 100.0
-                if np.isfinite(target_mean)
-                else np.nan,
-                "control_mean_pct": other_mean * 100.0
-                if np.isfinite(other_mean)
-                else np.nan,
+                "control_mean_coordinate": control_mean,
+                "case_mean_coordinate": case_mean,
+                "case_minus_control_coordinate": difference,
+                "pooled_sd_coordinate": pooled_sd,
+                "standardized_mean_difference": standardized,
             }
         )
     return pd.DataFrame(rows)
@@ -5488,39 +5592,42 @@ def _feature_distribution_stats(
 ) -> pd.DataFrame:
     idx = {f: i for i, f in enumerate(feature_names)}
     rows = []
-    eps = 1e-10
     for feat in features:
         if feat not in idx:
             continue
-        vals = X[:, idx[feat]].astype(float)
+        vals = np.asarray(X[:, idx[feat]], dtype=float)
+        finite = vals[np.isfinite(vals)]
         row = {
             "feature": feat,
-            "overall_mean": float(np.mean(vals)),
-            "mean_relative_abundance": float(np.mean(vals)),
-            "overall_median": float(np.median(vals)),
-            "prevalence": float(np.mean(vals > 0)),
+            "overall_mean_coordinate": float(np.mean(finite))
+            if finite.size
+            else np.nan,
+            "overall_median_coordinate": float(np.median(finite))
+            if finite.size
+            else np.nan,
+            "overall_sd_coordinate": float(np.std(finite, ddof=1))
+            if finite.size > 1
+            else np.nan,
         }
         for c, label in enumerate(labels):
-            sub = vals[y == c]
-            row[f"mean_{label}"] = float(np.mean(sub)) if len(sub) else np.nan
-            row[f"prevalence_{label}"] = float(np.mean(sub > 0)) if len(sub) else np.nan
+            sub = vals[np.asarray(y) == c]
+            sub = sub[np.isfinite(sub)]
+            row[f"mean_coordinate_{label}"] = (
+                float(np.mean(sub)) if sub.size else np.nan
+            )
+            row[f"median_coordinate_{label}"] = (
+                float(np.median(sub)) if sub.size else np.nan
+            )
         if len(labels) >= 2:
-            ctrl = vals[y == 0]
-            case = vals[y == 1]
-            ctrl_mean = float(np.mean(ctrl)) if len(ctrl) else np.nan
-            case_mean = float(np.mean(case)) if len(case) else np.nan
-            row["control_mean"] = ctrl_mean
-            row["case_mean"] = case_mean
-            row["control_mean_pct"] = (
-                ctrl_mean * 100.0 if np.isfinite(ctrl_mean) else np.nan
+            control_mean, case_mean, difference, pooled_sd, standardized = (
+                _standardized_group_shift(
+                    vals[np.asarray(y) == 0], vals[np.asarray(y) == 1]
+                )
             )
-            row["case_mean_pct"] = (
-                case_mean * 100.0 if np.isfinite(case_mean) else np.nan
-            )
-            row["log2_case_vs_control_mean"] = (
-                float(np.log2((case_mean + eps) / (ctrl_mean + eps)))
-                if np.isfinite(case_mean) and np.isfinite(ctrl_mean)
-                else np.nan
-            )
+            row["control_mean_coordinate"] = control_mean
+            row["case_mean_coordinate"] = case_mean
+            row["case_minus_control_coordinate"] = difference
+            row["pooled_sd_coordinate"] = pooled_sd
+            row["standardized_mean_difference"] = standardized
         rows.append(row)
     return pd.DataFrame(rows)

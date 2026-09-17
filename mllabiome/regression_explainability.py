@@ -155,6 +155,30 @@ def _targets(sweep: Sweep, models: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(out or ["mpma_b"]))
 
 
+def _coordinate_metadata_rows(
+    transform: Any, input_features: Sequence[str], prefix: str = ""
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in transform.coordinate_metadata(list(input_features)):
+        coordinate = str(item.name)
+        rows.append(
+            {
+                "coordinate": f"{prefix}|{coordinate}" if prefix else coordinate,
+                "native_coordinate": coordinate,
+                "coordinate_type": str(item.coordinate_type),
+                "anchor_feature": ""
+                if item.anchor_feature is None
+                else str(item.anchor_feature),
+                "exact_feature_identity": bool(item.exact_feature_identity),
+                "components": json.dumps(list(item.components), separators=(",", ":")),
+                "coefficients": json.dumps(
+                    [float(x) for x in item.coefficients], separators=(",", ":")
+                ),
+            }
+        )
+    return rows
+
+
 def _fit_individual_folds(
     sweep: Sweep, row: pd.Series
 ) -> tuple[Any, list[dict[str, Any]]]:
@@ -184,6 +208,8 @@ def _fit_individual_folds(
         names = [str(name) for name, keep in zip(base_names, mask) if bool(keep)]
         transform = transforms[transform_key]()
         X_train, X_test = transform.apply_pair(X_train0, X_test0)
+        coordinate_metadata = _coordinate_metadata_rows(transform, names)
+        names = transform.get_feature_names_out(names)
         model = configure_estimator_threads(learners[learner_key](), 1)
         model.fit(X_train, dataset.y[train_idx])
         pred = np.asarray(model.predict(X_test), dtype=float).reshape(-1)
@@ -195,6 +221,7 @@ def _fit_individual_folds(
                 "X_train": np.asarray(X_train, dtype=float),
                 "X_test": np.asarray(X_test, dtype=float),
                 "feature_names": names,
+                "coordinate_metadata": coordinate_metadata,
                 "y_test": np.asarray(dataset.y[test_idx], dtype=float),
                 "y_pred": pred,
                 "estimator": model,
@@ -247,6 +274,7 @@ def _fit_ensemble_folds(
         train_blocks: list[np.ndarray] = []
         test_blocks: list[np.ndarray] = []
         feature_names: list[str] = []
+        coordinate_metadata: list[dict[str, Any]] = []
         fitted: list[dict[str, Any]] = []
         start = 0
         for row, X_base, names in materialized:
@@ -258,6 +286,7 @@ def _fit_ensemble_folds(
             learner_key = str(row["learner"])
             transform = transforms[transform_key]()
             X_train_member, X_test_member = transform.apply_pair(X_train0, X_test0)
+            transformed_names = transform.get_feature_names_out(kept_names)
             model = configure_estimator_threads(learners[learner_key](), 1)
             model.fit(X_train_member, dataset.y[train_idx])
             stop = start + X_train_member.shape[1]
@@ -265,7 +294,10 @@ def _fit_ensemble_folds(
             prefix = (
                 f"{row['resolution']}|{transform_key}|{learner_key}|{row['config_id']}"
             )
-            feature_names.extend([f"{prefix}|{name}" for name in kept_names])
+            feature_names.extend([f"{prefix}|{name}" for name in transformed_names])
+            coordinate_metadata.extend(
+                _coordinate_metadata_rows(transform, kept_names, prefix)
+            )
             train_blocks.append(np.asarray(X_train_member, dtype=float))
             test_blocks.append(np.asarray(X_test_member, dtype=float))
             start = stop
@@ -281,6 +313,7 @@ def _fit_ensemble_folds(
                 "X_train": X_train,
                 "X_test": X_test,
                 "feature_names": feature_names,
+                "coordinate_metadata": coordinate_metadata,
                 "y_test": np.asarray(dataset.y[test_idx], dtype=float),
                 "y_pred": pred,
                 "estimator": ensemble,
@@ -865,6 +898,22 @@ def _explain_target(
         unit = {"type": "MPMA", "config_id": str(row["config_id"])}
     target_dir = root / "explainability" / slug
     target_dir.mkdir(parents=True, exist_ok=True)
+    coordinate_rows: list[dict[str, Any]] = []
+    for fold_no, fold in enumerate(folds, start=1):
+        for item in fold.get("coordinate_metadata", []):
+            coordinate_rows.append(
+                {
+                    "fold_no": int(fold_no),
+                    "split_key": str(fold.get("split_key", "")),
+                    **item,
+                }
+            )
+    coordinate_path: Path | None = None
+    if coordinate_rows:
+        coordinate_path = target_dir / "coordinate_metadata.tsv"
+        pd.DataFrame(coordinate_rows).drop_duplicates().to_csv(
+            coordinate_path, sep="\t", index=False
+        )
     methods = tuple(method_name(method) for method in sweep.explainability.methods)
     frames: list[pd.DataFrame] = []
     curves: list[pd.DataFrame] = []
@@ -922,6 +971,8 @@ def _explain_target(
         "stability": importance_path,
         "fold_importance": fold_path,
     }
+    if coordinate_path is not None:
+        outputs["coordinate_metadata"] = coordinate_path
     if curves:
         curve_path = target_dir / "ale_curves.tsv"
         pd.concat(curves, ignore_index=True, sort=False).to_csv(

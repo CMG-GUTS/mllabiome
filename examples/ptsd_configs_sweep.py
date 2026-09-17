@@ -27,10 +27,13 @@ def _build_count_transformations():
     T = mll.Transformation
     return [
         # T("relative_abundance"),
-        T("identity"),
-        # T("presence_absence"),
-        # T("hellinger"),
+        # T("identity"),
+        # # T("presence_absence"),
+        # # T("hellinger"),
+        T("clr"),
         T("arcsine_sqrt"),
+        T("alr"),
+        T("ilr"),
     ]
 
 
@@ -82,11 +85,11 @@ EXPLAINABILITY = mll.Explainability(
     targets=("mpma_b",),
     profile="screening",  # or "comprehensive"
     methods=(
-        # mll.Permutation(),
+        mll.Permutation(),
         mll.SHAP(),
-        # mll.ALE(),
-        # mll.LIME(),
-        # mll.ALEInteractions(),
+        mll.ALE(),
+        mll.LIME(),
+        mll.ALEInteractions(),
     ),
     classes="auto",
     top_k=15,

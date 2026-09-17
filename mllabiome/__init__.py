@@ -4,7 +4,7 @@ from .threading import configure_thread_limits
 
 configure_thread_limits()
 
-__version__ = "0.1.0rc21"
+__version__ = "0.1.0rc23"
 from .configs_sweep import (
     MPDR,
     MPMA,
@@ -38,6 +38,7 @@ from .transformations import (
     CountTransformationAdapter,
     Transform,
     Transformation,
+    TransformationCoordinate,
     TransformationLabel,
     build_count_transformations,
     transformation_label,
@@ -73,6 +74,7 @@ __all__ = [
     "TAXONOMIC_LEVELS",
     "Transform",
     "Transformation",
+    "TransformationCoordinate",
     "TransformationLabel",
     "TRANSFORMATION_LABELS",
     "TRANSFORMATION_SPACE",
