@@ -9,6 +9,7 @@ import pandas as pd
 
 from . import explainability as _core
 from .configs_sweep import _lodo_feature_pair
+from .console import info, progress, success, summary_table
 from .data import load_dataset
 from .ensemble_aggregation import (
     LINEAR_PROBABILITY_AGGREGATIONS,
@@ -117,6 +118,86 @@ def _prediction_reproduction_error(
     return float(np.max(np.abs(expected - np.asarray(proba, dtype=float))))
 
 
+def _fit_oof_members_fold_task(
+    split_no: int,
+    split: dict[str, Any],
+    specs: list[dict[str, Any]],
+    sweep: Any,
+    dataset: Any,
+    stored: pd.DataFrame,
+    aggregation: str,
+    weighted_input: list[float] | None,
+    threads_per_worker: int,
+) -> tuple[int, dict[str, Any] | None, list[dict[str, Any]]]:
+    train_idx = np.asarray(split["train_idx"], dtype=int)
+    test_idx = np.asarray(split["test_idx"], dtype=int)
+    if len(test_idx) == 0 or len(np.unique(dataset.y[train_idx])) < 2:
+        return int(split_no), None, []
+    fitted_members: list[dict[str, Any]] = []
+    member_proba: list[np.ndarray] = []
+    reproduction_rows: list[dict[str, Any]] = []
+    for member_no, spec in enumerate(specs, start=1):
+        X_train_raw, X_test_raw, mask = _lodo_feature_pair(
+            spec["X_base"], train_idx, test_idx, str(sweep.evaluation.protocol)
+        )
+        names = [
+            name
+            for name, keep in zip(spec["feature_names"], np.asarray(mask, dtype=bool))
+            if bool(keep)
+        ]
+        ct = _core._configured_count_transformation_factory(
+            sweep, spec["transformation_key"]
+        )()
+        X_train, X_test = ct.apply_pair(X_train_raw, X_test_raw)
+        clf = _core.configure_estimator_threads(
+            _core._configured_learner_factory(sweep, spec["learner_key"])(),
+            threads_per_worker,
+        )
+        clf.fit(X_train, dataset.y[train_idx])
+        proba = _core._predict_proba_aligned(
+            clf, X_test, np.arange(len(dataset.class_labels), dtype=int)
+        )
+        member_proba.append(proba)
+        sample_ids = [str(dataset.sample_ids[int(i)]) for i in test_idx]
+        max_error = _prediction_reproduction_error(
+            stored,
+            split_key=str(split["split_key"]),
+            config_id=spec["config_id"],
+            sample_ids=sample_ids,
+            proba=proba,
+        )
+        reproduction_rows.append(
+            {
+                "split_key": str(split["split_key"]),
+                "config_id": spec["config_id"],
+                "max_abs_probability_error": max_error,
+                "verified_against_stored_outer_predictions": int(max_error is not None),
+            }
+        )
+        fitted_members.append(
+            {
+                **spec,
+                "member_no": int(member_no),
+                "feature_names_fold": names,
+                "X_train": np.asarray(X_train, dtype=float),
+                "X_test": np.asarray(X_test, dtype=float),
+                "estimator": clf,
+                "proba": np.asarray(proba, dtype=float),
+            }
+        )
+    stack = np.stack(member_proba, axis=0)
+    ensemble_proba = aggregate_member_predictions(stack, aggregation, weighted_input)
+    fold = {
+        "split_key": str(split["split_key"]),
+        "train_idx": train_idx,
+        "test_idx": test_idx,
+        "members": fitted_members,
+        "member_stack": stack,
+        "proba": ensemble_proba,
+    }
+    return int(split_no), fold, reproduction_rows
+
+
 def _fit_oof_members(
     sweep: Any,
     rankings: pd.DataFrame,
@@ -135,95 +216,51 @@ def _fit_oof_members(
     specs = _prepare_member_specs(sweep, dataset, member_rows, mpma_e)
     splits = _core._explainability_outer_splits(sweep, dataset)
     stored = _stored_member_outer_predictions(root)
-
     aggregation = str(mpma_e["aggregation_strategy"])
     linear_weights = _linear_weights(mpma_e)
     weighted_input = (
         linear_weights.tolist() if aggregation == "weighted_mean_proba" else None
     )
-
-    folds: list[dict[str, Any]] = []
-    reproduction_rows: list[dict[str, Any]] = []
-    for split in splits:
-        train_idx = np.asarray(split["train_idx"], dtype=int)
-        test_idx = np.asarray(split["test_idx"], dtype=int)
-        if len(test_idx) == 0 or len(np.unique(dataset.y[train_idx])) < 2:
-            continue
-        fitted_members: list[dict[str, Any]] = []
-        member_proba: list[np.ndarray] = []
-        for member_no, spec in enumerate(specs, start=1):
-            X_train_raw, X_test_raw, mask = _lodo_feature_pair(
-                spec["X_base"],
-                train_idx,
-                test_idx,
-                str(sweep.evaluation.protocol),
-            )
-            names = [
-                name
-                for name, keep in zip(
-                    spec["feature_names"], np.asarray(mask, dtype=bool)
-                )
-                if bool(keep)
-            ]
-            ct = _core._configured_count_transformation_factory(
-                sweep, spec["transformation_key"]
-            )()
-            X_train, X_test = ct.apply_pair(X_train_raw, X_test_raw)
-            clf = _core._configured_learner_factory(sweep, spec["learner_key"])()
-            clf.fit(X_train, dataset.y[train_idx])
-            proba = _core._predict_proba_aligned(
-                clf, X_test, np.arange(len(dataset.class_labels), dtype=int)
-            )
-            member_proba.append(proba)
-            sample_ids = [str(dataset.sample_ids[int(i)]) for i in test_idx]
-            max_error = _prediction_reproduction_error(
+    execution = _core._xai_execution_plan(sweep, len(splits))
+    tasks = [
+        (
+            _fit_oof_members_fold_task,
+            (
+                split_no,
+                split,
+                specs,
+                sweep,
+                dataset,
                 stored,
-                split_key=str(split["split_key"]),
-                config_id=spec["config_id"],
-                sample_ids=sample_ids,
-                proba=proba,
-            )
-            reproduction_rows.append(
-                {
-                    "split_key": str(split["split_key"]),
-                    "config_id": spec["config_id"],
-                    "max_abs_probability_error": max_error,
-                    "verified_against_stored_outer_predictions": int(
-                        max_error is not None
-                    ),
-                }
-            )
-            fitted_members.append(
-                {
-                    **spec,
-                    "member_no": int(member_no),
-                    "feature_names_fold": names,
-                    "X_train": np.asarray(X_train, dtype=float),
-                    "X_test": np.asarray(X_test, dtype=float),
-                    "estimator": clf,
-                    "proba": np.asarray(proba, dtype=float),
-                }
-            )
-        stack = np.stack(member_proba, axis=0)
-        ensemble_proba = aggregate_member_predictions(
-            stack, aggregation, weighted_input
+                aggregation,
+                weighted_input,
+                int(execution.threads_per_worker),
+            ),
+            {},
         )
-        folds.append(
-            {
-                "split_key": str(split["split_key"]),
-                "train_idx": train_idx,
-                "test_idx": test_idx,
-                "members": fitted_members,
-                "member_stack": stack,
-                "proba": ensemble_proba,
-            }
+        for split_no, split in enumerate(splits, start=1)
+    ]
+    folds_by_no: dict[int, dict[str, Any]] = {}
+    reproduction_rows: list[dict[str, Any]] = []
+    with progress() as prog:
+        task = prog.add_task(
+            f"Fitting MPMA-E OOF folds · {execution.workers} workers · {execution.threads_per_worker} threads/worker",
+            total=len(tasks),
         )
-
+        for split_no, fold, reproduction in _core._xai_task_iterator(tasks, execution):
+            if fold is not None:
+                folds_by_no[int(split_no)] = fold
+            reproduction_rows.extend(reproduction)
+            prog.update(
+                task,
+                advance=1,
+                description=f"Fitting MPMA-E OOF folds · completed {len(folds_by_no)}/{len(tasks)} · last fold {split_no}",
+            )
+    folds = [folds_by_no[i] for i in sorted(folds_by_no)]
     if not folds:
         raise _core.ExplainabilityConfigurationError(
             "No outer fold could be fitted for MPMA-E explainability."
         )
-
     reproduction = pd.DataFrame(reproduction_rows)
     verified = reproduction[
         reproduction["verified_against_stored_outer_predictions"].eq(1)
@@ -238,6 +275,7 @@ def _fit_oof_members(
                 f"probabilities (worst absolute difference={float(worst):.3g}). "
                 "The evaluated pipeline must be reproduced exactly before explanation."
             )
+    success("MPMA-E outer-fold member refits completed")
     return {
         "dataset": dataset,
         "member_rows": member_rows,
@@ -245,6 +283,7 @@ def _fit_oof_members(
         "folds": folds,
         "reproduction": reproduction,
         "linear_weights": linear_weights,
+        "execution": execution,
     }
 
 
@@ -254,6 +293,8 @@ def _shap_member_values(
     *,
     rows_ex: np.ndarray,
     rows_bg: np.ndarray,
+    spec: Any,
+    random_state: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     try:
         import shap
@@ -261,33 +302,45 @@ def _shap_member_values(
         raise _core.ExplainabilityDependencyError(
             "MPMA-E hierarchical SHAP requires the 'shap' package."
         ) from exc
-
     X_train = np.asarray(member["X_train"], dtype=float)
     X_test = np.asarray(member["X_test"], dtype=float)
     background = X_train[np.asarray(rows_bg, dtype=int)]
     selected = X_test[np.asarray(rows_ex, dtype=int)]
     classes = np.arange(len(class_labels), dtype=int)
     model_fn = _core._explain_predict_proba(member["estimator"], classes)
-    min_max_evals = max(500, 2 * X_train.shape[1] + 1)
+    masker_name = str(spec.masker).strip().lower()
+    if masker_name == "independent":
+        masker = shap.maskers.Independent(background, max_samples=len(background))
+    elif masker_name == "partition":
+        masker = shap.maskers.Partition(
+            background, max_samples=len(background), clustering="correlation"
+        )
+    else:
+        raise _core.ExplainabilityConfigurationError(
+            f"Unsupported SHAP masker {spec.masker!r}."
+        )
+    minimum = 2 * X_train.shape[1] + 1
+    max_evals = max(minimum, minimum * max(1, int(spec.permutation_rounds)))
     try:
-        with _core._quiet_external_progress():
-            explainer = shap.Explainer(
-                model_fn,
-                background,
-                feature_names=list(member["feature_names_fold"]),
-            )
+        explainer = shap.Explainer(
+            model_fn,
+            masker,
+            algorithm=str(spec.algorithm),
+            feature_names=list(member["feature_names_fold"]),
+            output_names=list(class_labels),
+            seed=int(random_state),
+        )
+        try:
+            explanation = explainer(selected, silent=False, max_evals=max_evals)
+        except TypeError:
             try:
-                explanation = explainer(selected, silent=True, max_evals=min_max_evals)
+                explanation = explainer(selected, max_evals=max_evals)
             except TypeError:
-                try:
-                    explanation = explainer(selected, max_evals=min_max_evals)
-                except TypeError:
-                    explanation = explainer(selected)
+                explanation = explainer(selected)
     except Exception as exc:
         raise _core.ExplainabilityConfigurationError(
             f"SHAP failed for MPMA-E member {member['config_id']!r}."
         ) from exc
-
     values = np.asarray(explanation.values, dtype=float)
     base = np.asarray(explanation.base_values, dtype=float)
     n_classes = len(class_labels)
@@ -305,7 +358,6 @@ def _shap_member_values(
                 if len(base) == len(rows_ex)
                 else np.tile(base[None, :], (len(rows_ex), 1))
             )
-
         return values, base
     if values.ndim != 3 or values.shape[2] != n_classes:
         raise _core.ExplainabilityConfigurationError(
@@ -448,11 +500,14 @@ def _run_hierarchical_shap(
     linear_weights = bundle["linear_weights"]
     linear = linear_weights is not None
     class_labels = list(dataset.class_labels)
+    class_indices = _core._resolve_explainability_classes(
+        dataset, sweep.explainability.classes
+    )
+    spec = _core._method_spec(sweep.explainability.methods, "shap")
 
     representation_records: list[dict[str, Any]] = []
     taxon_records: list[dict[str, Any]] = []
     diagnostic_rows: list[dict[str, Any]] = []
-
     for fold_no, fold in enumerate(bundle["folds"], start=1):
         test_idx = np.asarray(fold["test_idx"], dtype=int)
         train_idx = np.asarray(fold["train_idx"], dtype=int)
@@ -461,12 +516,12 @@ def _run_hierarchical_shap(
         seed = int(sweep.explainability.random_state) + fold_no * 997
         rows_bg = _core._sample_rows(
             dummy_train,
-            max_rows=int(sweep.explainability.shap_background),
+            max_rows=int(spec.background_size),
             random_state=seed,
         )
         rows_ex = _core._sample_rows(
             dummy_test,
-            max_rows=int(sweep.explainability.shap_max_samples),
+            max_rows=int(spec.max_explain),
             random_state=seed + 13,
         )
         requested = {str(x) for x in sweep.explainability.instance_sample_ids}
@@ -487,17 +542,37 @@ def _run_hierarchical_shap(
         covered_ensemble_classes: set[int] = set()
 
         for member_index, member in enumerate(fold["members"]):
+            info(
+                f"MPMA-E SHAP · fold {fold_no}/{len(bundle['folds'])} · member {member_index + 1}/{len(fold['members'])} · "
+                f"{member['config_id']} · {len(rows_ex)} samples · {len(member['feature_names_fold'])} features"
+            )
             values, base = _shap_member_values(
                 member,
                 class_labels,
                 rows_ex=rows_ex,
                 rows_bg=rows_bg,
+                spec=spec,
+                random_state=seed + member_index * 101,
+            )
+            success(
+                f"MPMA-E SHAP fold {fold_no}/{len(bundle['folds'])} · member {member_index + 1}/{len(fold['members'])} completed"
             )
             proba = np.asarray(member["proba"], dtype=float)[rows_ex]
-            if values.shape[2] == 1 and len(class_labels) == 2:
-                class_indices = [1]
+            if values.shape[2] == len(class_labels):
+                output_pairs = [(int(c), int(c)) for c in class_indices]
+            elif values.shape[2] == 1 and len(class_labels) == 2:
+                positive = int(
+                    1 if dataset.positive_class is None else dataset.positive_class
+                )
+                if positive not in class_indices:
+                    raise _core.ExplainabilityConfigurationError(
+                        "Binary SHAP returned one output that does not match the configured explained class."
+                    )
+                output_pairs = [(0, positive)]
             else:
-                class_indices = list(range(values.shape[2]))
+                raise _core.ExplainabilityConfigurationError(
+                    f"Unexpected SHAP output shape {values.shape}."
+                )
             weight = float(linear_weights[member_index]) if linear else float("nan")
             prefix = "|".join(
                 [
@@ -508,7 +583,7 @@ def _run_hierarchical_shap(
                 ]
             )
 
-            for out_class_pos, class_index in enumerate(class_indices):
+            for out_class_pos, class_index in output_pairs:
                 local_values = values[:, :, out_class_pos]
                 local_base = base[:, out_class_pos]
                 member_residual = (
@@ -518,6 +593,7 @@ def _run_hierarchical_shap(
                     diagnostic_rows.append(
                         {
                             "split_key": str(fold["split_key"]),
+                            "fold_no": int(fold_no),
                             "sample_id": str(
                                 dataset.sample_ids[int(test_idx[int(local_test_row)])]
                             ),
@@ -542,6 +618,7 @@ def _run_hierarchical_shap(
                         representation_records.append(
                             {
                                 "split_key": str(fold["split_key"]),
+                                "fold_no": int(fold_no),
                                 "sample_id": str(dataset.sample_ids[global_i]),
                                 "sample_index": global_i,
                                 "config_id": str(member["config_id"]),
@@ -583,7 +660,6 @@ def _run_hierarchical_shap(
             for row_pos, local_test_row in enumerate(rows_ex):
                 global_i = int(test_idx[int(local_test_row)])
                 for class_index in sorted(covered_ensemble_classes):
-                    label = class_labels[class_index]
                     residual = (
                         ensemble_base[row_pos, class_index]
                         + ensemble_sum_phi[row_pos, class_index]
@@ -592,10 +668,11 @@ def _run_hierarchical_shap(
                     diagnostic_rows.append(
                         {
                             "split_key": str(fold["split_key"]),
+                            "fold_no": int(fold_no),
                             "sample_id": str(dataset.sample_ids[global_i]),
                             "config_id": "__MPMA_E__",
                             "class_index": int(class_index),
-                            "class_label": str(label),
+                            "class_label": str(class_labels[class_index]),
                             "ensemble_shap_additivity_residual": float(residual),
                             "ensemble_base_value": float(
                                 ensemble_base[row_pos, class_index]
@@ -618,6 +695,7 @@ def _run_hierarchical_shap(
                 taxon_records.append(
                     {
                         "split_key": str(fold["split_key"]),
+                        "fold_no": int(fold_no),
                         "sample_id": str(dataset.sample_ids[int(global_i)]),
                         "sample_index": int(global_i),
                         "class_index": int(class_index),
@@ -633,12 +711,12 @@ def _run_hierarchical_shap(
                     }
                 )
 
+    info("Aggregating MPMA-E member SHAP attributions and writing outputs")
     raw = pd.DataFrame(representation_records)
     outputs: dict[str, Path] = {}
     raw_path = out_dir / "shap_member_attributions.tsv.gz"
     raw.to_csv(raw_path, sep="\t", index=False, compression="gzip")
     outputs["shap_member_attributions"] = raw_path
-
     if raw.empty:
         raise _core.ExplainabilityConfigurationError(
             "MPMA-E hierarchical SHAP produced no attributions."
@@ -663,7 +741,7 @@ def _run_hierarchical_shap(
             importance_sd=("abs_member_shap", "std"),
             n_oof_explanations=("member_shap", "size"),
         )
-        .sort_values("importance_mean", ascending=False)
+        .sort_values(["class_index", "importance_mean"], ascending=[True, False])
     )
     p = out_dir / "feature_importance_member_shap.tsv"
     member_summary.to_csv(p, sep="\t", index=False)
@@ -693,7 +771,7 @@ def _run_hierarchical_shap(
                 aggregation_weight=("aggregation_weight", "first"),
                 n_oof_explanations=("propagated_shap", "size"),
             )
-            .sort_values("importance_mean", ascending=False)
+            .sort_values(["class_index", "importance_mean"], ascending=[True, False])
         )
         p = out_dir / "feature_importance_mpdr_propagated_shap.tsv"
         representation_summary.to_csv(p, sep="\t", index=False)
@@ -703,39 +781,85 @@ def _run_hierarchical_shap(
         p = out_dir / "shap_taxon_net_oof.tsv.gz"
         taxon_raw.to_csv(p, sep="\t", index=False, compression="gzip")
         outputs["shap_taxon_net_oof"] = p
-        taxon_summary = (
-            taxon_raw.assign(
-                abs_net=taxon_raw["net_propagated_shap"].abs(),
-                abs_gross=taxon_raw["gross_propagated_shap"].abs(),
+        fold_frames: list[pd.DataFrame] = []
+        for split_key, fold_raw in taxon_raw.groupby("split_key", sort=False):
+            fold_frame = (
+                fold_raw.assign(abs_net=fold_raw["net_propagated_shap"].abs())
+                .groupby(["class_index", "class_label", "feature"], as_index=False)
+                .agg(
+                    importance_mean=("abs_net", "mean"),
+                    signed_importance_mean=("net_propagated_shap", "mean"),
+                )
             )
+            fold_frame["fold_key"] = str(split_key)
+            fold_frames.append(fold_frame)
+        biological_features = sorted(taxon_raw["feature"].astype(str).unique().tolist())
+        fold_path, fold_long = _core._write_fold_feature_importance(
+            "propagated_member_shap", fold_frames, out_dir
+        )
+        outputs["shap_taxon_by_outer_fold"] = fold_path
+        taxon_summary = _core._aggregate_fold_feature_importance(
+            "propagated_member_shap",
+            fold_frames,
+            biological_features,
+            class_indices,
+            class_labels,
+            "outer_fold_mean_abs_net_weighted_member_shap",
+            sweep.explainability.top_k,
+        )
+        support = (
+            taxon_raw.assign(abs_gross=taxon_raw["gross_propagated_shap"].abs())
             .groupby(["class_index", "class_label", "feature"], as_index=False)
             .agg(
-                importance_mean=("abs_net", "mean"),
                 gross_member_support=("abs_gross", "mean"),
-                signed_importance_mean=("net_propagated_shap", "mean"),
-                importance_sd=("abs_net", "std"),
                 cancellation_fraction=("cancellation_fraction", "mean"),
                 n_oof_explanations=("net_propagated_shap", "size"),
             )
-            .sort_values("importance_mean", ascending=False)
+        )
+        taxon_summary = taxon_summary.merge(
+            support,
+            on=["class_index", "class_label", "feature"],
+            how="left",
         )
         p = out_dir / "feature_importance_taxon_net_shap.tsv"
         taxon_summary.to_csv(p, sep="\t", index=False)
         outputs["feature_importance_taxon_net_shap"] = p
-
-        if len(class_labels) == 2:
-            compat = taxon_summary[taxon_summary["class_index"].eq(1)].copy()
-        else:
-            compat = taxon_summary.copy()
-        compat.insert(0, "method", "propagated_member_shap")
-        compat["scoring"] = "mean_abs_net_weighted_member_shap"
+        p = out_dir / "feature_stability.tsv"
+        stability_cols = [
+            "method",
+            "class_index",
+            "class_label",
+            "feature",
+            "importance_mean",
+            "importance_sd",
+            "importance_median",
+            "importance_q25",
+            "importance_q75",
+            "mean_rank",
+            "median_rank",
+            "rank_iqr",
+            "top_k_frequency",
+            "n_estimable_folds",
+            "n_outer_folds_total",
+            "fold_coverage",
+            "signed_importance_mean",
+            "sign_positive_fraction",
+            "sign_negative_fraction",
+            "sign_consistency",
+        ]
+        taxon_summary[[c for c in stability_cols if c in taxon_summary.columns]].to_csv(
+            p, sep="\t", index=False
+        )
+        outputs["stability"] = p
+        compat = taxon_summary.copy()
+        compat["scoring"] = "outer_fold_mean_abs_net_weighted_member_shap"
         p = out_dir / "feature_importance.tsv"
         compat.to_csv(p, sep="\t", index=False)
         outputs["importance"] = p
     else:
-        compat = member_summary.copy()
-        if len(class_labels) == 2:
-            compat = compat[compat["class_index"].eq(1)].copy()
+        compat = member_summary[
+            member_summary["class_index"].isin([int(x) for x in class_indices])
+        ].copy()
         compat.insert(0, "method", "member_shap_not_exact_ensemble")
         compat["feature"] = compat["representation_feature"]
         compat["scoring"] = "constituent_member_mean_abs_shap"
@@ -766,8 +890,25 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
 
     out_dir = root / "explainability" / "mpma_e"
     out_dir.mkdir(parents=True, exist_ok=True)
-    methods = _core._normalise_explainability_methods(sweep.explainability.methods)
+    method_specs = _core._normalise_explainability_method_specs(
+        sweep.explainability.methods
+    )
+    methods = tuple(_core.method_name(x) for x in method_specs)
+    info("Preparing final MPMA-E member refits for OOF explanation")
     bundle = _fit_oof_members(sweep, rankings, mpma_e)
+    dataset = bundle["dataset"]
+    class_indices = _core._resolve_explainability_classes(
+        dataset, sweep.explainability.classes
+    )
+    summary_table(
+        "MPMA-E explainability workload",
+        {
+            "outer folds": len(bundle.get("folds", [])),
+            "members": len(bundle.get("specs", mpma_e.get("members", []))),
+            "classes explained": len(class_indices),
+            "class labels": [str(dataset.class_labels[int(i)]) for i in class_indices],
+        },
+    )
 
     outputs = _write_prediction_tables(bundle, mpma_e, out_dir)
     reproduction_path = out_dir / "prediction_reproduction_diagnostics.tsv"
@@ -800,6 +941,35 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
             else "Unavailable: the selected aggregation is non-linear. Member-native SHAP and leave-one-member-out aggregation influence are reported instead."
         ),
         "pseudo_concatenated_mpdr_feature_space_used": False,
+        "methods": list(methods),
+        "method_parameters": [_core.method_to_dict(x) for x in method_specs],
+        "explainability_config": _core._explainability_config_payload(
+            sweep.explainability
+        ),
+        "explainability_config_signature": _core._explainability_config_signature(
+            sweep.explainability
+        ),
+        "explained_class_indices": [int(x) for x in class_indices],
+        "explained_class_labels": [
+            str(dataset.class_labels[int(x)]) for x in class_indices
+        ],
+        "class_target": "class_probability",
+        "stability_unit": "outer_fold",
+        "stability_interpretation": "descriptive_cross_fit_variability_not_independent_fold_confidence_intervals",
+        "stability_statistics": [
+            "importance_sd",
+            "rank_iqr",
+            "top_k_frequency",
+            "fold_coverage",
+            "sign_consistency",
+        ],
+        "ensemble_level_method_scope": {
+            "shap": "exact_for_linear_probability_aggregation",
+            "lime": "member_native_only",
+            "ale": "member_native_only",
+            "permutation": "member_native_only",
+            "interactions": "member_native_only",
+        },
         "cross_validation_explanations": "outer_test_folds_of_final_selected_specification",
         "selection_independence_note": (
             "The final MPMA-E specification is selected from all inner-OOF evidence and then cross-fitted over outer folds for descriptive final-model explanation; this is not strict fold-local nested strategy attribution."

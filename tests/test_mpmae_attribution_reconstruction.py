@@ -6,7 +6,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from mllabiome.configs_sweep import Explainability
 from mllabiome.ensemble_aggregation import aggregate_member_predictions
+from mllabiome.explainability_methods import SHAP
 from mllabiome.mpma_e_explainability import (
     _run_hierarchical_shap,
     _write_prediction_tables,
@@ -72,11 +74,11 @@ def _bundle(weights: np.ndarray, aggregation: str):
 
 def _sweep(tmp_path):
     return SimpleNamespace(
-        explainability=SimpleNamespace(
+        explainability=Explainability(
+            methods=(SHAP(background_size=50, max_explain=50),),
+            classes="auto",
             random_state=42,
-            shap_background=50,
-            shap_max_samples=50,
-            instance_sample_ids=(),
+            representative_instances=False,
         )
     )
 
@@ -141,7 +143,16 @@ def test_weighted_signed_member_shap_reconstructs_ensemble_probability(
         ],
     }
 
-    def fake_member_shap(member, class_labels, *, rows_ex, rows_bg):
+    def fake_member_shap(
+        member,
+        class_labels,
+        *,
+        rows_ex,
+        rows_bg,
+        spec,
+        random_state,
+        progress_callback=None,
+    ):
         rows = np.asarray(rows_ex, dtype=int)
         return member["_test_values"][rows], member["_test_base"][rows]
 
@@ -152,7 +163,8 @@ def test_weighted_signed_member_shap_reconstructs_ensemble_probability(
     outputs = _run_hierarchical_shap(_sweep(tmp_path), bundle, mpma_e, tmp_path)
     diagnostics = pd.read_csv(outputs["shap_additivity_diagnostics"], sep="\t")
     ensemble_rows = diagnostics[diagnostics["config_id"].eq("__MPMA_E__")].copy()
-    assert len(ensemble_rows) == 4
+    assert len(ensemble_rows) == 2
+    assert set(ensemble_rows["class_index"].astype(int)) == {1}
     np.testing.assert_allclose(
         ensemble_rows["ensemble_shap_additivity_residual"].to_numpy(dtype=float),
         0.0,
@@ -197,7 +209,16 @@ def test_taxon_net_shap_is_signed_weighted_sum_and_reports_cancellation(
         ],
     }
 
-    def fake_member_shap(member, class_labels, *, rows_ex, rows_bg):
+    def fake_member_shap(
+        member,
+        class_labels,
+        *,
+        rows_ex,
+        rows_bg,
+        spec,
+        random_state,
+        progress_callback=None,
+    ):
         rows = np.asarray(rows_ex, dtype=int)
         return member["_test_values"][rows], member["_test_base"][rows]
 

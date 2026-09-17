@@ -80,8 +80,15 @@ ENSEMBLE = mll.Ensemble(
 )
 EXPLAINABILITY = mll.Explainability(
     targets=("mpma_b",),
-    methods=("permutation",),
-    n_repeats=1,
+    profile="screening",  # or "comprehensive"
+    methods=(
+        mll.Permutation(),
+        mll.SHAP(),
+        # mll.ALE(),
+        # mll.LIME(),
+        # mll.ALEInteractions(),
+    ),
+    classes="auto",
     top_k=15,
     representative_instances=False,
 )

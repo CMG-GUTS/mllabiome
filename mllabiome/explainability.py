@@ -1,20 +1,25 @@
 from __future__ import annotations
 
 import io
+import inspect
+import hashlib
 import json
 import logging
 import math
 import shutil
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from multiprocessing import Manager
 from pathlib import Path
+from queue import Empty
+from threading import Event, Thread
 from typing import Any, Callable, Sequence
 
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed, parallel_backend
 from scipy.stats import rankdata
 from sklearn.base import BaseEstimator
-from sklearn.inspection import permutation_importance
-from sklearn.metrics import balanced_accuracy_score, roc_auc_score
+from threadpoolctl import threadpool_limits
 
 from .configs_sweep import (
     Sweep,
@@ -22,15 +27,30 @@ from .configs_sweep import (
     _outer_splits,
     _strata_from_metadata,
 )
-from .console import console, info, path_table, stage, success, summary_table
+from .console import console, info, path_table, progress, stage, success, summary_table
 from .data import load_dataset
 from .explainability_visuals import plot_feature_support as _plot_feature_support_visual
+from .explainability_methods import (
+    ALE,
+    ALEInteractions,
+    LIME,
+    Permutation,
+    SHAP,
+    coerce_method,
+    method_name,
+    method_to_dict,
+)
 from .explainability_visuals import (
     plot_interaction_network as _plot_interaction_network_visual,
 )
 from .learners import _learner_factory
 from .metrics import _estimator_call, _predict_proba_aligned
 from .resolutions import materialize_mpdr
+from .runtime import (
+    configure_estimator_threads,
+    resolve_execution_plan,
+    thread_environment,
+)
 from .style import ACC_D, ACC_L, BG, COL_W_2, DIM, INK, MID, TRACK, UC_CASE, UC_CTRL
 from .style import apply as apply_style
 from .style import save_all
@@ -109,34 +129,114 @@ class ExplainabilityDependencyError(RuntimeError):
 _EXPLAINABILITY_METHODS = {"shap", "lime", "ale", "permutation", "interactions"}
 
 
-def _normalise_explainability_methods(methods: Sequence[str]) -> tuple[str, ...]:
-    aliases = {
-        "ale_interactions": "interactions",
-        "interaction": "interactions",
-        "lime_tabular": "lime",
-    }
-    out = tuple(
-        aliases.get(
-            str(m).strip().lower().replace(" ", "_"),
-            str(m).strip().lower().replace(" ", "_"),
-        )
-        for m in methods
-        if str(m).strip()
-    )
-    if not out:
+def _normalise_explainability_method_specs(methods: Sequence[Any]) -> tuple[Any, ...]:
+    if not methods:
         raise ExplainabilityConfigurationError(
             "Explainability.methods must contain at least one explicit method."
         )
-    unsupported = sorted(set(out) - _EXPLAINABILITY_METHODS)
+    specs: list[Any] = []
+    unsupported: list[str] = []
+    for method in methods:
+        try:
+            spec = coerce_method(method)
+        except Exception:
+            unsupported.append(str(method))
+            continue
+        if method_name(spec) not in _EXPLAINABILITY_METHODS:
+            unsupported.append(str(method))
+            continue
+        specs.append(spec)
     if unsupported:
         raise ExplainabilityConfigurationError(
             "Unsupported explainability method(s): "
             + ", ".join(unsupported)
             + ". Supported methods are: "
             + ", ".join(sorted(_EXPLAINABILITY_METHODS))
-            + ". No fallback method will be used."
+            + "."
         )
-    return out
+    names = [method_name(x) for x in specs]
+    if len(set(names)) != len(names):
+        raise ExplainabilityConfigurationError(
+            "Explainability.methods must not contain duplicate method types."
+        )
+    return tuple(specs)
+
+
+def _normalise_explainability_methods(methods: Sequence[Any]) -> tuple[str, ...]:
+    return tuple(
+        method_name(x) for x in _normalise_explainability_method_specs(methods)
+    )
+
+
+def _method_spec(methods: Sequence[Any], name: str) -> Any:
+    target = str(name)
+    for spec in _normalise_explainability_method_specs(methods):
+        if method_name(spec) == target:
+            return spec
+    raise ExplainabilityConfigurationError(
+        f"Explainability method {target!r} is not configured."
+    )
+
+
+def _resolve_explainability_classes(dataset: Any, configured: Any) -> tuple[int, ...]:
+    n_classes = len(dataset.class_labels)
+    if isinstance(configured, str):
+        token = configured.strip().lower()
+        if token in {"", "auto"}:
+            if n_classes == 2:
+                value = getattr(dataset, "positive_class", None)
+                return (int(1 if value is None else value),)
+            return tuple(range(n_classes))
+        if token == "all":
+            return tuple(range(n_classes))
+        configured = (configured,)
+    indices: list[int] = []
+    labels = [str(x) for x in dataset.class_labels]
+    for value in configured:
+        if isinstance(value, (int, np.integer)):
+            idx = int(value)
+        else:
+            text = str(value).strip()
+            matches = [
+                i
+                for i, label in enumerate(labels)
+                if label.casefold() == text.casefold()
+            ]
+            if len(matches) == 1:
+                idx = int(matches[0])
+            else:
+                try:
+                    idx = int(text)
+                except ValueError as exc:
+                    raise ExplainabilityConfigurationError(
+                        f"Unknown explainability class {value!r}. Available classes: {labels!r}."
+                    ) from exc
+        if idx < 0 or idx >= n_classes:
+            raise ExplainabilityConfigurationError(
+                f"Explainability class index {idx} is outside 0..{n_classes - 1}."
+            )
+        if idx not in indices:
+            indices.append(idx)
+    if not indices:
+        raise ExplainabilityConfigurationError(
+            "No explainability classes were selected."
+        )
+    return tuple(indices)
+
+
+def _class_slug(label: Any) -> str:
+    text = str(label).strip().lower()
+    out = "".join(ch if ch.isalnum() else "_" for ch in text)
+    while "__" in out:
+        out = out.replace("__", "_")
+    return out.strip("_") or "class"
+
+
+def _auto_ale_bins(n_samples: int, spec: ALE | ALEInteractions) -> int:
+    if isinstance(spec.bins, (int, np.integer)):
+        return max(2, int(spec.bins))
+    value = int(np.floor(np.sqrt(max(1, int(n_samples)))))
+    return int(max(int(spec.min_bins), min(int(spec.max_bins), value)))
 
 
 def _preflight_explainability_dependencies(methods: Sequence[str]) -> None:
@@ -248,31 +348,18 @@ def _aggregate_member_proba(stack: np.ndarray, aggregation: str) -> np.ndarray:
     return proba / row_sums
 
 
-def _positive_response(
-    clf: BaseEstimator, X: np.ndarray, classes: np.ndarray
-) -> np.ndarray:
-    proba = _predict_proba_aligned(clf, X, classes)
-    if proba.shape[1] == 2:
-        return proba[:, 1]
-    return proba.max(axis=1)
-
-
 def _explain_predict_proba(
     clf: BaseEstimator, classes: np.ndarray
 ) -> Callable[[np.ndarray], np.ndarray]:
     return lambda X_: _predict_proba_aligned(clf, _as_float_matrix(X_), classes)
 
 
-def _explain_predict_response(
-    clf: BaseEstimator, classes: np.ndarray
+def _explain_predict_class_probability(
+    clf: BaseEstimator, classes: np.ndarray, class_index: int
 ) -> Callable[[np.ndarray], np.ndarray]:
-    return lambda X_: _positive_response(clf, _as_float_matrix(X_), classes)
-
-
-def _explain_decision_function(
-    clf: BaseEstimator,
-) -> Callable[[np.ndarray], np.ndarray]:
-    return lambda X_: _estimator_call(clf, "decision_function", _as_float_matrix(X_))
+    return lambda X_: _predict_proba_aligned(clf, _as_float_matrix(X_), classes)[
+        :, int(class_index)
+    ]
 
 
 def _sample_rows(X: np.ndarray, *, max_rows: int, random_state: int) -> np.ndarray:
@@ -283,215 +370,265 @@ def _sample_rows(X: np.ndarray, *, max_rows: int, random_state: int) -> np.ndarr
     return np.sort(rng.choice(np.arange(X.shape[0]), size=int(max_rows), replace=False))
 
 
+def _xai_execution_plan(sweep: Sweep, task_count: int):
+    configured = getattr(sweep.explainability, "n_jobs", None)
+    n_jobs = (
+        getattr(sweep.evaluation, "n_jobs", 1) if configured is None else configured
+    )
+    backend = getattr(sweep.explainability, "parallel_backend", None) or getattr(
+        sweep.evaluation, "parallel_backend", "loky"
+    )
+    return resolve_execution_plan(
+        n_jobs,
+        max(1, int(task_count)),
+        backend=str(backend),
+        memory_fraction=float(getattr(sweep.evaluation, "memory_fraction", 0.80)),
+        min_worker_memory_gib=float(
+            getattr(sweep.evaluation, "min_worker_memory_gib", 1.0)
+        ),
+    )
+
+
+def _run_xai_task(
+    fn: Callable[..., Any],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    threads_per_worker: int,
+) -> Any:
+    with (
+        thread_environment(threads_per_worker),
+        threadpool_limits(limits=max(1, int(threads_per_worker))),
+    ):
+        return fn(*args, **kwargs)
+
+
+def _xai_task_iterator(
+    tasks: Sequence[tuple[Callable[..., Any], tuple[Any, ...], dict[str, Any]]],
+    execution: Any,
+):
+    if execution.workers == 1:
+        for fn, args, kwargs in tasks:
+            yield _run_xai_task(fn, args, kwargs, int(execution.threads_per_worker))
+        return
+    delayed_tasks = [
+        delayed(_run_xai_task)(fn, args, kwargs, int(execution.threads_per_worker))
+        for fn, args, kwargs in tasks
+    ]
+    backend_kwargs = {"n_jobs": int(execution.workers)}
+    if str(execution.backend) == "loky":
+        backend_kwargs["inner_max_num_threads"] = int(execution.threads_per_worker)
+    with parallel_backend(str(execution.backend), **backend_kwargs):
+        yield from Parallel(
+            n_jobs=int(execution.workers),
+            backend=str(execution.backend),
+            return_as="generator_unordered",
+            pre_dispatch=max(int(execution.workers), int(execution.workers) * 2),
+            batch_size=1,
+            max_nbytes="1M",
+            mmap_mode="r",
+        )(delayed_tasks)
+
+
+def _progress_callback(
+    prog: Any, task_id: Any, prefix: str
+) -> Callable[[int, int, str], None]:
+    def update(completed: int, total: int, detail: str) -> None:
+        total_i = max(1, int(total))
+        prog.update(
+            task_id,
+            total=total_i,
+            completed=min(max(0, int(completed)), total_i),
+            description=f"{prefix} · {detail}",
+        )
+
+    return update
+
+
+def _queued_progress_callback(
+    progress_queue: Any, fold_no: int, every: int = 5
+) -> Callable[[int, int, str], None]:
+    last_sent = -1
+
+    def update(completed: int, total: int, detail: str) -> None:
+        nonlocal last_sent
+        completed_i = max(0, int(completed))
+        total_i = max(1, int(total))
+        if (
+            completed_i == 0
+            or completed_i >= total_i
+            or completed_i - last_sent >= max(1, int(every))
+        ):
+            progress_queue.put((int(fold_no), completed_i, total_i, str(detail)))
+            last_sent = completed_i
+
+    return update
+
+
+def _parallel_progress_results(
+    tasks: Sequence[tuple[Callable[..., Any], tuple[Any, ...], dict[str, Any]]],
+    execution: Any,
+    progress_queue: Any,
+    *,
+    label: str,
+    unit_label: str,
+    fold_totals: dict[int, int],
+) -> list[Any]:
+    total_work = max(1, sum(max(1, int(v)) for v in fold_totals.values()))
+    fold_progress = {int(k): 0 for k in fold_totals}
+    stop_monitor = Event()
+    results: list[Any] = []
+    with progress() as prog:
+        task = prog.add_task(
+            f"{label} · 0/{total_work:,} {unit_label} · {execution.workers} workers",
+            total=total_work,
+        )
+
+        def monitor() -> None:
+            while not stop_monitor.is_set():
+                try:
+                    fold_no, completed, total, detail = progress_queue.get(timeout=0.25)
+                except Empty:
+                    continue
+                fold_no = int(fold_no)
+                cap = max(1, int(fold_totals.get(fold_no, total)))
+                fold_progress[fold_no] = max(
+                    fold_progress.get(fold_no, 0),
+                    min(max(0, int(completed)), cap),
+                )
+                overall = min(total_work, sum(fold_progress.values()))
+                prog.update(
+                    task,
+                    completed=overall,
+                    description=(
+                        f"{label} · {overall:,}/{total_work:,} {unit_label} · "
+                        f"fold {fold_no}/{len(fold_totals)} · {detail}"
+                    ),
+                )
+
+        monitor_thread = Thread(target=monitor, daemon=True)
+        monitor_thread.start()
+        try:
+            for result in _xai_task_iterator(tasks, execution):
+                results.append(result)
+                fold_no = int(result[0])
+                fold_progress[fold_no] = max(1, int(fold_totals.get(fold_no, 1)))
+                overall = min(total_work, sum(fold_progress.values()))
+                prog.update(
+                    task,
+                    completed=overall,
+                    description=(
+                        f"{label} · {overall:,}/{total_work:,} {unit_label} · "
+                        f"completed fold {fold_no}/{len(fold_totals)}"
+                    ),
+                )
+        finally:
+            stop_monitor.set()
+            monitor_thread.join(timeout=2.0)
+        prog.update(
+            task,
+            completed=total_work,
+            description=f"{label} · completed {total_work:,}/{total_work:,} {unit_label}",
+        )
+    return results
+
+
 def _permutation_feature_importance(
     clf: BaseEstimator,
     X: np.ndarray,
     y: np.ndarray,
     feature_names: Sequence[str],
     class_labels: Sequence[str],
+    class_indices: Sequence[int],
     *,
-    n_repeats: int,
+    spec: Permutation,
     random_state: int,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> pd.DataFrame:
     classes = np.arange(len(class_labels), dtype=int)
     X = _as_float_matrix(X)
     y = np.asarray(y, dtype=int)
+    scoring_name = str(spec.scoring).strip().lower()
+    if scoring_name not in {"log_loss", "brier"}:
+        raise ExplainabilityConfigurationError(
+            "Permutation.scoring must be 'log_loss' or 'brier'."
+        )
+    n_samples, n_features = X.shape
+    n_repeats = int(spec.n_repeats)
+    if isinstance(spec.max_samples, float):
+        n_draw = max(1, min(n_samples, int(round(float(spec.max_samples) * n_samples))))
+    else:
+        n_draw = max(1, min(n_samples, int(spec.max_samples)))
+    seed_rng = np.random.RandomState(int(random_state))
+    random_seed = int(seed_rng.randint(np.iinfo(np.int32).max + 1))
+    full_baseline_proba = _predict_proba_aligned(clf, X, classes)
+    values = np.full((len(class_indices), n_features, n_repeats), np.nan, dtype=float)
+    total = max(1, n_features * n_repeats)
+    done = 0
+    if progress_callback is not None:
+        progress_callback(0, total, f"0/{n_features} features")
 
-    if len(class_labels) == 2:
-        scoring_name = "roc_auc"
-        pos = int(classes[-1])
-        pos_col = int(np.where(classes == pos)[0][0])
-
-        def scoring(
-            estimator: BaseEstimator, X_eval: np.ndarray, y_eval: np.ndarray
-        ) -> float:
-            proba = _predict_proba_aligned(estimator, _as_float_matrix(X_eval), classes)
-            y_bin = (np.asarray(y_eval, dtype=int) == pos).astype(int)
-            if len(np.unique(y_bin)) < 2:
-                pred = classes[np.argmax(proba, axis=1)]
-                return float(
-                    balanced_accuracy_score(np.asarray(y_eval, dtype=int), pred)
+    def scores(y_true: np.ndarray, proba: np.ndarray) -> np.ndarray:
+        out = np.empty(len(class_indices), dtype=float)
+        eps = np.finfo(float).eps
+        for pos, class_index in enumerate(class_indices):
+            c = int(class_index)
+            target = (np.asarray(y_true, dtype=int) == c).astype(float)
+            p = np.clip(np.asarray(proba, dtype=float)[:, c], eps, 1.0 - eps)
+            if scoring_name == "brier":
+                out[pos] = float(np.mean((target - p) ** 2))
+            else:
+                out[pos] = float(
+                    -np.mean(target * np.log(p) + (1.0 - target) * np.log(1.0 - p))
                 )
-            return float(roc_auc_score(y_bin, proba[:, pos_col]))
-    else:
-        scoring_name = "balanced_accuracy"
+        return out
 
-        def scoring(
-            estimator: BaseEstimator, X_eval: np.ndarray, y_eval: np.ndarray
-        ) -> float:
-            proba = _predict_proba_aligned(estimator, _as_float_matrix(X_eval), classes)
-            pred = classes[np.argmax(proba, axis=1)]
-            return float(balanced_accuracy_score(np.asarray(y_eval, dtype=int), pred))
-
-    try:
-        perm = permutation_importance(
-            clf,
-            X,
-            y,
-            n_repeats=n_repeats,
-            random_state=random_state,
-            scoring=scoring,
-        )
-    except Exception as exc:
-        raise ExplainabilityConfigurationError(
-            "Permutation explainability failed for the selected MPMA. No fallback method will be used."
-        ) from exc
-    return pd.DataFrame(
-        {
-            "method": "permutation",
-            "feature": list(feature_names),
-            "importance_mean": perm.importances_mean,
-            "importance_sd": perm.importances_std,
-            "scoring": scoring_name,
-        }
-    ).sort_values("importance_mean", ascending=False)
-
-
-def _shap_feature_importance(
-    clf: BaseEstimator,
-    X: np.ndarray,
-    feature_names: Sequence[str],
-    class_labels: Sequence[str],
-    *,
-    random_state: int,
-    max_background: int,
-    max_explain: int,
-) -> pd.DataFrame:
-    try:
-        import shap
-    except Exception as exc:
-        raise ExplainabilityDependencyError(
-            "Explainability.methods includes 'shap', but the 'shap' package is not importable. "
-            "Install shap or remove 'shap' from Explainability.methods. No fallback method will be used."
-        ) from exc
-
-    X = _as_float_matrix(X)
-    rows_bg = _sample_rows(X, max_rows=max_background, random_state=random_state)
-    rows_ex = _sample_rows(X, max_rows=max_explain, random_state=random_state + 13)
-    background = X[rows_bg]
-    X_explain = X[rows_ex]
-
-    classes = np.arange(len(class_labels), dtype=int)
-    if hasattr(clf, "predict_proba"):
-        model_fn = _explain_predict_proba(clf, classes)
-    elif hasattr(clf, "decision_function"):
-        model_fn = _explain_decision_function(clf)
-    else:
-        raise ExplainabilityConfigurationError(
-            f"Learner {type(clf).__name__} exposes neither predict_proba nor decision_function; "
-            "SHAP explainability cannot run exactly as configured. No fallback method will be used."
-        )
-
-    min_max_evals = max(500, 2 * len(feature_names) + 1)
-    try:
-        with _quiet_external_progress():
-            explainer = shap.Explainer(
-                model_fn, background, feature_names=list(feature_names)
-            )
-            try:
-                values = explainer(X_explain, silent=True, max_evals=min_max_evals)
-            except TypeError:
-                try:
-                    values = explainer(X_explain, max_evals=min_max_evals)
-                except TypeError:
-                    try:
-                        values = explainer(X_explain, silent=True)
-                    except TypeError:
-                        values = explainer(X_explain)
-    except Exception as exc:
-        raise ExplainabilityConfigurationError(
-            "SHAP failed for the selected MPMA. Explainability is strict, so execution stops "
-            "instead of replacing SHAP with another method."
-        ) from exc
-
-    arr = np.asarray(values.values, dtype=float)
-    if arr.ndim == 3:
-        if arr.shape[2] == 2:
-            arr = arr[:, :, 1]
+    baseline = scores(y, full_baseline_proba)
+    for feature_index, feature in enumerate(feature_names):
+        feature_rng = np.random.RandomState(random_seed)
+        if n_draw < n_samples:
+            idx = np.sort(feature_rng.choice(n_samples, size=n_draw, replace=False))
+            X_eval = X[idx].copy()
+            y_eval = y[idx]
         else:
-            arr = np.mean(np.abs(arr), axis=2)
-    if arr.ndim != 2 or arr.shape[1] != len(feature_names):
-        raise ExplainabilityConfigurationError(
-            f"Unexpected SHAP value shape {arr.shape}; expected n_samples × n_features. "
-            "No fallback method will be used."
-        )
-    score = np.mean(np.abs(arr), axis=0)
-    return pd.DataFrame(
-        {
-            "method": "shap",
-            "feature": list(feature_names),
-            "importance_mean": score,
-            "importance_sd": np.std(np.abs(arr), axis=0, ddof=1)
-            if arr.shape[0] > 1
-            else 0.0,
-            "scoring": "mean_abs_shap",
-        }
-    ).sort_values("importance_mean", ascending=False)
+            X_eval = X.copy()
+            y_eval = y
+        shuffling_idx = np.arange(len(X_eval))
+        for repeat_index in range(n_repeats):
+            feature_rng.shuffle(shuffling_idx)
+            X_eval[:, feature_index] = X_eval[shuffling_idx, feature_index]
+            permuted = _predict_proba_aligned(clf, X_eval, classes)
+            values[:, feature_index, repeat_index] = scores(y_eval, permuted) - baseline
+            done += 1
+            if progress_callback is not None:
+                progress_callback(
+                    done,
+                    total,
+                    f"feature {feature_index + 1}/{n_features} · repeat {repeat_index + 1}/{n_repeats} · {feature}",
+                )
 
-
-def _lime_feature_importance(
-    clf: BaseEstimator,
-    X: np.ndarray,
-    feature_names: Sequence[str],
-    class_labels: Sequence[str],
-    *,
-    random_state: int,
-    n_samples: int,
-    max_explain: int,
-) -> pd.DataFrame:
-    try:
-        from lime.lime_tabular import LimeTabularExplainer
-    except Exception as exc:
-        raise ExplainabilityDependencyError(
-            "Explainability.methods includes 'lime', but the 'lime' package is not importable. "
-            "Install lime or remove 'lime' from Explainability.methods. No fallback method will be used."
-        ) from exc
-
-    X = _as_float_matrix(X)
-    rows = _sample_rows(X, max_rows=max_explain, random_state=random_state + 29)
-    X_explain = X[rows]
-    predict_fn = _explain_predict_proba(clf, np.arange(len(class_labels), dtype=int))
-    class_names = list(class_labels)
-    label = 1 if len(class_names) == 2 else 0
-    try:
-        explainer = LimeTabularExplainer(
-            training_data=X,
-            feature_names=list(feature_names),
-            class_names=class_names,
-            mode="classification",
-            discretize_continuous=False,
-            random_state=int(random_state),
-        )
-        coeffs = np.zeros((X_explain.shape[0], len(feature_names)), dtype=float)
-        for i, row in enumerate(X_explain):
-            exp = explainer.explain_instance(
-                row,
-                predict_fn=predict_fn,
-                num_features=len(feature_names),
-                num_samples=int(n_samples),
-                labels=(label,),
+    rows: list[pd.DataFrame] = []
+    for pos, class_index in enumerate(class_indices):
+        c = int(class_index)
+        arr = values[pos]
+        rows.append(
+            pd.DataFrame(
+                {
+                    "method": "permutation",
+                    "class_index": c,
+                    "class_label": str(class_labels[c]),
+                    "feature": list(feature_names),
+                    "importance_mean": np.nanmean(arr, axis=1),
+                    "within_fold_importance_sd": np.nanstd(arr, axis=1, ddof=1)
+                    if n_repeats > 1
+                    else np.zeros(n_features, dtype=float),
+                    "scoring": f"increase_in_one_vs_rest_{scoring_name}",
+                }
             )
-            for fi, coef in exp.local_exp[label]:
-                if 0 <= int(fi) < len(feature_names):
-                    coeffs[i, int(fi)] = float(coef)
-    except Exception as exc:
-        raise ExplainabilityConfigurationError(
-            "LIME failed for the selected MPMA. Explainability is strict, so execution stops "
-            "instead of replacing LIME with another method."
-        ) from exc
-
-    score = np.mean(np.abs(coeffs), axis=0)
-    return pd.DataFrame(
-        {
-            "method": "lime",
-            "feature": list(feature_names),
-            "importance_mean": score,
-            "importance_sd": np.std(np.abs(coeffs), axis=0, ddof=1)
-            if coeffs.shape[0] > 1
-            else 0.0,
-            "scoring": f"mean_abs_lime_coefficients_label_{label}",
-        }
-    ).sort_values("importance_mean", ascending=False)
+        )
+    return pd.concat(rows, ignore_index=True).sort_values(
+        ["class_index", "importance_mean", "feature"],
+        ascending=[True, False, True],
+    )
 
 
 class _AleModelWrapper:
@@ -570,9 +707,11 @@ def _ale_feature_importance(
     X: np.ndarray,
     feature_names: Sequence[str],
     class_labels: Sequence[str],
+    class_indices: Sequence[int],
     *,
-    n_bins: int,
+    spec: ALE,
     top_features: Sequence[str] | None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> pd.DataFrame:
     pyale = _require_pyale()
     X = _as_float_matrix(X)
@@ -582,86 +721,117 @@ def _ale_feature_importance(
     features = [str(f) for f in features if str(f) in name_to_index]
     if not features:
         raise ExplainabilityConfigurationError(
-            "ALE was requested, but no candidate features were available. No fallback method will be used."
+            "ALE was requested, but no candidate features were available."
         )
     df_X = pd.DataFrame(X, columns=feature_names)
-    wrapper = _AleModelWrapper(
-        _explain_predict_response(clf, np.arange(len(class_labels), dtype=int))
-    )
+    n_bins = _auto_ale_bins(X.shape[0], spec)
     rows: list[dict[str, Any]] = []
     curves: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
-    for fname in features:
-        col = X[:, name_to_index[fname]]
-        finite_col = col[np.isfinite(col)]
-        n_distinct = int(np.unique(finite_col).size)
-        if n_distinct < 2:
-            skipped.append(
-                {
-                    "feature": fname,
-                    "reason": "fewer_than_two_distinct_finite_values",
-                    "n_finite": int(finite_col.size),
-                    "n_distinct": n_distinct,
-                }
-            )
-            continue
-        try:
-            with _quiet_pyale_info():
-                result = pyale(
-                    df_X,
-                    wrapper,
-                    [fname],
-                    grid_size=int(n_bins),
-                    include_CI=False,
-                    plot=False,
-                )
-            vals, grid, _ = _ale_result_values(result)
-        except Exception as exc:
-            skipped.append(
-                {
-                    "feature": fname,
-                    "reason": "pyale_failed",
-                    "error": str(exc)[:500],
-                    "n_finite": int(finite_col.size),
-                    "n_distinct": n_distinct,
-                }
-            )
-            continue
-        if vals.size == 0:
-            skipped.append(
-                {
-                    "feature": fname,
-                    "reason": "no_finite_ale_effect_values",
-                    "n_finite": int(finite_col.size),
-                    "n_distinct": n_distinct,
-                }
-            )
-            continue
-        centred = vals - float(np.mean(vals))
-        strength = float(np.sqrt(np.mean(centred**2)))
-        rows.append(
-            {
-                "method": "ale",
-                "feature": fname,
-                "importance_mean": strength,
-                "importance_sd": float(np.std(centred, ddof=1))
-                if len(centred) > 1
-                else 0.0,
-                "scoring": "outer_fold_rms_centered_ale",
-                "n_ale_points": int(vals.size),
-            }
+    classes = np.arange(len(class_labels), dtype=int)
+    total = max(1, len(class_indices) * len(features))
+    done = 0
+    if progress_callback is not None:
+        progress_callback(
+            0, total, f"0/{len(features)} features · {len(class_indices)} classes"
         )
-        if grid is not None and len(grid) == len(vals):
-            for gx, gy in zip(grid, vals):
-                curves.append(
-                    {"feature": fname, "grid": float(gx), "ale_effect": float(gy)}
+    for class_index in class_indices:
+        c = int(class_index)
+        wrapper = _AleModelWrapper(_explain_predict_class_probability(clf, classes, c))
+        for fname in features:
+            try:
+                col = X[:, name_to_index[fname]]
+                finite_col = col[np.isfinite(col)]
+                n_distinct = int(np.unique(finite_col).size)
+                if n_distinct < 2:
+                    skipped.append(
+                        {
+                            "class_index": c,
+                            "class_label": str(class_labels[c]),
+                            "feature": fname,
+                            "reason": "fewer_than_two_distinct_finite_values",
+                            "n_finite": int(finite_col.size),
+                            "n_distinct": n_distinct,
+                        }
+                    )
+                    continue
+                try:
+                    with _quiet_pyale_info():
+                        result = pyale(
+                            df_X,
+                            wrapper,
+                            [fname],
+                            grid_size=int(n_bins),
+                            include_CI=False,
+                            plot=False,
+                        )
+                    vals, grid, _ = _ale_result_values(result)
+                except Exception as exc:
+                    skipped.append(
+                        {
+                            "class_index": c,
+                            "class_label": str(class_labels[c]),
+                            "feature": fname,
+                            "reason": "pyale_failed",
+                            "error": str(exc)[:500],
+                            "n_finite": int(finite_col.size),
+                            "n_distinct": n_distinct,
+                        }
+                    )
+                    continue
+                if vals.size == 0:
+                    skipped.append(
+                        {
+                            "class_index": c,
+                            "class_label": str(class_labels[c]),
+                            "feature": fname,
+                            "reason": "no_finite_ale_effect_values",
+                            "n_finite": int(finite_col.size),
+                            "n_distinct": n_distinct,
+                        }
+                    )
+                    continue
+                centred = vals - float(np.mean(vals))
+                strength = float(np.sqrt(np.mean(centred**2)))
+                rows.append(
+                    {
+                        "method": "ale",
+                        "class_index": c,
+                        "class_label": str(class_labels[c]),
+                        "feature": fname,
+                        "importance_mean": strength,
+                        "within_fold_importance_sd": float(np.std(centred, ddof=1))
+                        if len(centred) > 1
+                        else 0.0,
+                        "scoring": "rms_centered_class_probability_ale",
+                    }
                 )
-    out = pd.DataFrame(rows)
-    if not out.empty:
-        out = out.sort_values("importance_mean", ascending=False)
-    out.attrs["curves"] = pd.DataFrame(curves)
-    out.attrs["skipped_features"] = pd.DataFrame(skipped)
-    return out
+                if grid is not None and len(grid) == len(vals):
+                    for x_value, effect in zip(grid, vals):
+                        curves.append(
+                            {
+                                "class_index": c,
+                                "class_label": str(class_labels[c]),
+                                "feature": fname,
+                                "grid_value": float(x_value),
+                                "ale_effect": float(effect),
+                            }
+                        )
+            finally:
+                done += 1
+                if progress_callback is not None:
+                    progress_callback(done, total, f"{class_labels[c]} · {fname}")
+    frame = pd.DataFrame(rows)
+    frame.attrs["curves"] = pd.DataFrame(curves)
+    frame.attrs["skipped_features"] = pd.DataFrame(skipped)
+    return (
+        frame.sort_values(
+            ["class_index", "importance_mean", "feature"],
+            ascending=[True, False, True],
+        )
+        if not frame.empty
+        else frame
+    )
 
 
 def _same_lineage_pair(f1: str, f2: str) -> bool:
@@ -727,110 +897,128 @@ def _ale_interactions(
     X: np.ndarray,
     feature_names: Sequence[str],
     class_labels: Sequence[str],
+    class_index: int,
     *,
-    n_bins: int,
-    top_k_interactions: int,
+    spec: ALEInteractions,
     scores: pd.Series,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, pd.DataFrame]:
     pyale = _require_pyale()
     X = _as_float_matrix(X)
     df_X = pd.DataFrame(X, columns=list(feature_names))
+    c = int(class_index)
     wrapper = _AleModelWrapper(
-        _explain_predict_response(clf, np.arange(len(class_labels), dtype=int))
+        _explain_predict_class_probability(
+            clf, np.arange(len(class_labels), dtype=int), c
+        )
     )
+    n_bins = _auto_ale_bins(X.shape[0], spec)
     pairs = _candidate_pairs_from_scores(
-        X, feature_names, scores, max_pairs=int(top_k_interactions)
+        X, feature_names, scores, max_pairs=int(spec.top_k)
     )
     if not pairs:
         raise ExplainabilityConfigurationError(
-            "Interactions were requested, but no usable feature pairs were available. No fallback method will be used."
+            "Interactions were requested, but no usable feature pairs were available."
         )
     raw_rows = []
-    for i, j in pairs:
+    total = len(pairs)
+    if progress_callback is not None:
+        progress_callback(0, total, f"0/{total} pairs")
+    for pair_no, (i, j) in enumerate(pairs, start=1):
         f1, f2 = str(feature_names[i]), str(feature_names[j])
         try:
-            with _quiet_pyale_info():
-                result2d = pyale(
-                    df_X,
-                    wrapper,
-                    [f1, f2],
-                    grid_size=int(n_bins),
-                    include_CI=False,
-                    plot=False,
-                )
-            vals2d, x1, x2 = _ale_result_values(result2d)
-        except Exception:
-            continue
-        if vals2d.size == 0:
-            continue
-        centred = vals2d - float(np.mean(vals2d))
-        current = float(np.sqrt(np.mean(centred**2)))
-        corrected = float("nan")
-        correction_applied = False
-        correction_error = ""
-        if x1 is None or x2 is None:
-            correction_error = (
-                "2D PyALE result does not expose coordinates for marginal correction"
-            )
-        else:
             try:
                 with _quiet_pyale_info():
-                    res1 = pyale(
+                    result2d = pyale(
                         df_X,
                         wrapper,
-                        [f1],
+                        [f1, f2],
                         grid_size=int(n_bins),
                         include_CI=False,
                         plot=False,
                     )
-                    res2 = pyale(
-                        df_X,
-                        wrapper,
-                        [f2],
-                        grid_size=int(n_bins),
-                        include_CI=False,
-                        plot=False,
+                vals2d, x1, x2 = _ale_result_values(result2d)
+            except Exception:
+                continue
+            if vals2d.size == 0:
+                continue
+            centred = vals2d - float(np.mean(vals2d))
+            current = float(np.sqrt(np.mean(centred**2)))
+            corrected = float("nan")
+            correction_applied = False
+            correction_error = ""
+            if x1 is None or x2 is None:
+                correction_error = "2D PyALE result does not expose coordinates for marginal correction"
+            else:
+                try:
+                    with _quiet_pyale_info():
+                        res1 = pyale(
+                            df_X,
+                            wrapper,
+                            [f1],
+                            grid_size=int(n_bins),
+                            include_CI=False,
+                            plot=False,
+                        )
+                        res2 = pyale(
+                            df_X,
+                            wrapper,
+                            [f2],
+                            grid_size=int(n_bins),
+                            include_CI=False,
+                            plot=False,
+                        )
+                    vals1, g1, _ = _ale_result_values(res1)
+                    vals2, g2, _ = _ale_result_values(res2)
+                    if g1 is None or g2 is None:
+                        raise ValueError("1D PyALE result does not expose grids")
+                    comp = (
+                        vals2d
+                        - _interp_unique(g1, vals1, x1)
+                        - _interp_unique(g2, vals2, x2)
                     )
-                vals1, g1, _ = _ale_result_values(res1)
-                vals2, g2, _ = _ale_result_values(res2)
-                if g1 is None or g2 is None:
-                    raise ValueError("1D PyALE result does not expose grids")
-                comp = (
-                    vals2d
-                    - _interp_unique(g1, vals1, x1)
-                    - _interp_unique(g2, vals2, x2)
+                    comp = comp - float(np.mean(comp))
+                    corrected = float(np.sqrt(np.mean(comp**2)))
+                    correction_applied = True
+                except Exception as exc:
+                    correction_error = str(exc)[:240]
+            raw_rows.append(
+                {
+                    "class_index": c,
+                    "class_label": str(class_labels[c]),
+                    "feature_1": f1,
+                    "feature_2": f2,
+                    "current": current,
+                    "corrected": corrected,
+                    "fixed_pairs": current,
+                    "corrected_fixed": corrected,
+                    "n_ale_cells": int(vals2d.size),
+                    "n_bins": int(n_bins),
+                    "correction_applied": bool(correction_applied),
+                    "correction_error": correction_error,
+                }
+            )
+        finally:
+            if progress_callback is not None:
+                progress_callback(
+                    pair_no, total, f"pair {pair_no}/{total} · {f1} × {f2}"
                 )
-                comp = comp - float(np.mean(comp))
-                corrected = float(np.sqrt(np.mean(comp**2)))
-                correction_applied = True
-            except Exception as exc:
-                correction_error = str(exc)[:240]
-        raw_rows.append(
-            {
-                "feature_1": f1,
-                "feature_2": f2,
-                "current": current,
-                "corrected": corrected,
-                "fixed_pairs": current,
-                "corrected_fixed": corrected,
-                "n_ale_cells": int(vals2d.size),
-                "correction_applied": bool(correction_applied),
-                "correction_error": correction_error,
-            }
-        )
     if not raw_rows:
         raise ExplainabilityConfigurationError(
-            "ALE interactions were requested, but no candidate pair produced a finite 2D ALE surface. No fallback method will be used."
+            "ALE interactions were requested, but no candidate pair produced a finite 2D ALE surface."
         )
     raw = pd.DataFrame(raw_rows)
     out: dict[str, pd.DataFrame] = {}
     for method in ("current", "corrected", "fixed_pairs", "corrected_fixed"):
         d = raw[
             [
+                "class_index",
+                "class_label",
                 "feature_1",
                 "feature_2",
                 method,
                 "n_ale_cells",
+                "n_bins",
                 "correction_applied",
                 "correction_error",
             ]
@@ -844,118 +1032,226 @@ def _ale_interactions(
 
 
 def _collapse_duplicate_feature_importance(frame: pd.DataFrame) -> pd.DataFrame:
-    pass
-    if (
-        frame.empty
-        or "feature" not in frame.columns
-        or not frame["feature"].duplicated().any()
-    ):
+    if frame.empty or "feature" not in frame.columns:
         return frame.copy()
-
+    keys = ["feature"]
+    if "class_index" in frame.columns:
+        keys = ["class_index", "feature"]
+    if not frame.duplicated(keys).any():
+        return frame.copy()
     d = frame.copy()
     d["feature"] = d["feature"].astype(str)
-    d["importance_mean"] = (
-        pd.to_numeric(d.get("importance_mean", 0.0), errors="coerce")
-        .replace([np.inf, -np.inf], np.nan)
-        .fillna(0.0)
-    )
-    if "importance_sd" in d.columns:
-        d["importance_sd"] = (
-            pd.to_numeric(d["importance_sd"], errors="coerce")
-            .replace([np.inf, -np.inf], np.nan)
-            .fillna(0.0)
-        )
-    else:
-        d["importance_sd"] = 0.0
-
-    def _combine_text(values: pd.Series) -> str:
-        seen: list[str] = []
-        for value in values:
-            s = str(value)
-            if s not in seen:
-                seen.append(s)
-        return "+".join(seen)
-
+    d["importance_mean"] = pd.to_numeric(
+        d.get("importance_mean", np.nan), errors="coerce"
+    ).replace([np.inf, -np.inf], np.nan)
+    if "importance_sd" not in d.columns:
+        d["importance_sd"] = np.nan
     agg: dict[str, Any] = {
-        "importance_mean": "sum",
-        "importance_sd": lambda s: float(
-            np.sqrt(np.sum(np.square(pd.to_numeric(s, errors="coerce").fillna(0.0))))
+        "importance_mean": lambda x: pd.to_numeric(x, errors="coerce").sum(min_count=1),
+        "importance_sd": lambda x: float(
+            np.sqrt(
+                np.nansum(
+                    np.square(pd.to_numeric(x, errors="coerce").to_numpy(dtype=float))
+                )
+            )
         ),
     }
-    if "method" in d.columns:
-        agg["method"] = "first"
-    if "scoring" in d.columns:
-        agg["scoring"] = _combine_text
-    if "mean_rank" in d.columns:
-        agg["mean_rank"] = "mean"
-    if "n_methods" in d.columns:
-        agg["n_methods"] = "max"
+    for column in (
+        "method",
+        "class_label",
+        "scoring",
+        "n_methods",
+        "n_methods_total",
+        "method_coverage",
+        "n_estimable_folds",
+        "n_outer_folds_total",
+        "fold_coverage",
+        "importance_median",
+        "importance_q25",
+        "importance_q75",
+        "mean_rank",
+        "median_rank",
+        "rank_iqr",
+        "top_k_frequency",
+        "signed_importance_mean",
+        "sign_positive_fraction",
+        "sign_negative_fraction",
+        "sign_consistency",
+    ):
+        if column in d.columns:
+            agg[column] = "first"
+    return d.groupby(keys, as_index=False, sort=False).agg(agg)
 
-    collapsed = d.groupby("feature", as_index=False, sort=False).agg(agg)
-    ordered = [c for c in frame.columns if c in collapsed.columns]
-    ordered.extend(c for c in collapsed.columns if c not in ordered)
-    return collapsed[ordered]
+
+def _rank_support_from_importance(frame: pd.DataFrame) -> pd.Series:
+    d = _collapse_duplicate_feature_importance(frame).copy()
+    if "class_index" not in d.columns:
+        d["class_index"] = 0
+    pieces: list[pd.Series] = []
+    for class_index, sub in d.groupby("class_index", sort=True):
+        values = pd.to_numeric(sub["importance_mean"], errors="coerce").replace(
+            [np.inf, -np.inf], np.nan
+        )
+        valid = values.notna()
+        if not valid.any():
+            continue
+        ranked = values.loc[valid].rank(ascending=False, method="average")
+        n = int(valid.sum())
+        support = (
+            pd.Series(1.0, index=ranked.index, dtype=float)
+            if n == 1
+            else 1.0 - (ranked - 1.0) / float(n - 1)
+        )
+        index = pd.MultiIndex.from_arrays(
+            [
+                np.full(len(support), int(class_index), dtype=int),
+                sub.loc[valid, "feature"].astype(str).to_numpy(),
+            ],
+            names=["class_index", "feature"],
+        )
+        pieces.append(
+            pd.Series(support.to_numpy(dtype=float), index=index, dtype=float)
+        )
+    return pd.concat(pieces) if pieces else pd.Series(dtype=float)
 
 
 def _combine_feature_importance(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
     if len(frames) == 1:
         return _collapse_duplicate_feature_importance(frames[0]).sort_values(
-            "importance_mean", ascending=False
+            ["class_index", "importance_mean", "feature"]
+            if "class_index" in frames[0].columns
+            else ["importance_mean", "feature"],
+            ascending=[True, False, True]
+            if "class_index" in frames[0].columns
+            else [False, True],
+            na_position="last",
         )
-    long = []
+    long: list[pd.DataFrame] = []
+    method_names: list[str] = []
+    labels: dict[int, str] = {}
     for frame in frames:
-        d = _collapse_duplicate_feature_importance(frame)[
-            ["method", "feature", "importance_mean"]
-        ].copy()
-        d["rank"] = d.groupby("method")["importance_mean"].rank(
-            ascending=False, method="average"
-        )
+        collapsed = _collapse_duplicate_feature_importance(frame)
+        method = str(collapsed["method"].iloc[0])
+        method_names.append(method)
+        if {"class_index", "class_label"}.issubset(collapsed.columns):
+            for _, row in (
+                collapsed[["class_index", "class_label"]].drop_duplicates().iterrows()
+            ):
+                labels[int(row["class_index"])] = str(row["class_label"])
+        support = _rank_support_from_importance(collapsed)
+        if support.empty:
+            continue
+        d = support.rename("rank_support").reset_index()
+        d["method"] = method
+        d["normalized_rank"] = 1.0 - d["rank_support"]
         long.append(d)
-    pooled = pd.concat(long, ignore_index=True)
-    out = (
-        pooled.groupby("feature", as_index=False)
-        .agg(
-            importance_mean=("importance_mean", "mean"),
-            mean_rank=("rank", "mean"),
-            n_methods=("method", "nunique"),
+    if not long:
+        raise ExplainabilityConfigurationError(
+            "No finite feature-importance values were available for consensus aggregation."
         )
-        .sort_values(["mean_rank", "importance_mean"], ascending=[True, False])
+    pooled = pd.concat(long, ignore_index=True)
+    grouped = pooled.groupby(["class_index", "feature"], as_index=False).agg(
+        importance_mean=("rank_support", "mean"),
+        importance_sd=("rank_support", "std"),
+        mean_rank=("normalized_rank", "mean"),
+        n_methods=("method", "nunique"),
     )
-    out["method"] = "consensus"
-    out["importance_sd"] = np.nan
-    out["scoring"] = "mean_rank_then_mean_importance"
-    return out[
+    grouped["importance_sd"] = grouped["importance_sd"].fillna(0.0)
+    grouped["consensus_score"] = grouped["importance_mean"]
+    grouped["consensus_sd"] = grouped["importance_sd"]
+    grouped["n_methods_total"] = int(len(dict.fromkeys(method_names)))
+    grouped["method_coverage"] = grouped["n_methods"] / grouped["n_methods_total"]
+    grouped["method"] = "consensus"
+    grouped["scoring"] = "mean_within_method_rank_support_available_methods"
+    grouped["class_label"] = (
+        grouped["class_index"]
+        .map(labels)
+        .fillna(grouped["class_index"].map(lambda x: f"class_{int(x)}"))
+    )
+    grouped = grouped.sort_values(
+        ["class_index", "importance_mean", "n_methods", "feature"],
+        ascending=[True, False, False, True],
+    )
+    return grouped[
         [
             "method",
+            "class_index",
+            "class_label",
             "feature",
             "importance_mean",
             "importance_sd",
+            "consensus_score",
+            "consensus_sd",
             "scoring",
             "mean_rank",
             "n_methods",
+            "n_methods_total",
+            "method_coverage",
         ]
     ]
 
 
 def _single_method_support_table(frame: pd.DataFrame, top_k: int) -> pd.DataFrame:
-    pass
     frame = _collapse_duplicate_feature_importance(frame)
+    if "class_index" not in frame.columns:
+        frame["class_index"] = 0
+        frame["class_label"] = "class_0"
     method = _method_display(str(frame["method"].iloc[0]))
-    top = frame.sort_values("importance_mean", ascending=False).head(int(top_k)).copy()
-    top["rank"] = np.arange(1, len(top) + 1, dtype=int)
-    top[method] = (
-        _support_from_importance(frame)
-        .reindex(top["feature"])
-        .fillna(0.0)
-        .to_numpy(float)
-    )
-    top["consensus"] = top[method].astype(float)
-    if "mean_rank" not in top.columns:
-        top["mean_rank"] = top["rank"].astype(float)
-    keep = ["rank", "feature", method, "consensus", "importance_mean", "mean_rank"]
-    if "n_methods" in top.columns:
-        keep.append("n_methods")
-    return top[keep]
+    support = _rank_support_from_importance(frame)
+    pieces: list[pd.DataFrame] = []
+    for class_index, sub in frame.groupby("class_index", sort=True):
+        top = (
+            sub.sort_values("importance_mean", ascending=False, na_position="last")
+            .head(int(top_k))
+            .copy()
+        )
+        top["rank"] = np.arange(1, len(top) + 1, dtype=int)
+        keys = pd.MultiIndex.from_arrays(
+            [
+                np.full(len(top), int(class_index), dtype=int),
+                top["feature"].astype(str).to_numpy(),
+            ]
+        )
+        top[method] = support.reindex(keys).to_numpy(dtype=float)
+        top["consensus"] = top[method].astype(float)
+        pieces.append(top)
+    out = pd.concat(pieces, ignore_index=True) if pieces else pd.DataFrame()
+    keep = [
+        "class_index",
+        "class_label",
+        "rank",
+        "feature",
+        method,
+        "consensus",
+        "importance_mean",
+        "importance_sd",
+        "mean_rank",
+        "median_rank",
+        "rank_iqr",
+        "top_k_frequency",
+        "fold_coverage",
+        "sign_consistency",
+    ]
+    return out[[c for c in keep if c in out.columns]]
+
+
+def _write_fold_feature_importance(
+    method: str, frames: Sequence[pd.DataFrame], target_dir: Path
+) -> tuple[Path, pd.DataFrame]:
+    prepared: list[pd.DataFrame] = []
+    for fold_no, frame in enumerate(frames, start=1):
+        d = frame.copy()
+        d.attrs = {}
+        d["method"] = str(method)
+        if "fold_no" not in d.columns:
+            d["fold_no"] = int(fold_no)
+        if "fold_key" not in d.columns:
+            d["fold_key"] = str(fold_no)
+        prepared.append(d)
+    out = pd.concat(prepared, ignore_index=True) if prepared else pd.DataFrame()
+    path = target_dir / f"feature_importance_{method}_by_outer_fold.tsv"
+    out.to_csv(path, sep="\t", index=False)
+    return path, out
 
 
 def _write_method_outputs(
@@ -969,36 +1265,66 @@ def _write_method_outputs(
     class_labels: list[str],
     top_k: int,
 ) -> dict[str, Path]:
-    pass
     method = str(frame["method"].iloc[0]).strip().lower()
     table_path = target_dir / f"feature_importance_{method}.tsv"
     frame.to_csv(table_path, sep="\t", index=False)
-
+    stability_columns = [
+        "method",
+        "class_index",
+        "class_label",
+        "feature",
+        "importance_mean",
+        "importance_sd",
+        "importance_median",
+        "importance_q25",
+        "importance_q75",
+        "mean_rank",
+        "median_rank",
+        "rank_iqr",
+        "top_k_frequency",
+        "n_estimable_folds",
+        "n_outer_folds_total",
+        "fold_coverage",
+        "signed_importance_mean",
+        "sign_positive_fraction",
+        "sign_negative_fraction",
+        "sign_consistency",
+    ]
+    stability_path = target_dir / f"feature_stability_{method}.tsv"
+    frame[[c for c in stability_columns if c in frame.columns]].to_csv(
+        stability_path, sep="\t", index=False
+    )
     top = _single_method_support_table(frame, top_k=top_k)
     top_path = target_dir / f"top_features_{method}.tsv"
     top.to_csv(top_path, sep="\t", index=False)
-
-    dist = _feature_distribution_stats(
-        top["feature"].astype(str).tolist(),
-        feature_names,
-        X_base,
-        y,
-        class_labels,
-    )
-    dist_path = target_dir / f"feature_distribution_stats_{method}.tsv"
-    dist.to_csv(dist_path, sep="\t", index=False)
-
-    importance_stem = figures_dir / f"feature_importance_{method}"
-    support_stem = figures_dir / f"feature_support_{method}"
-    _plot_feature_importance(top, dist, importance_stem, top_k, class_labels)
-    _plot_feature_importance(top, dist, support_stem, top_k, class_labels)
-    return {
+    outputs: dict[str, Path] = {
         f"importance_{method}": table_path,
+        f"stability_{method}": stability_path,
         f"top_features_{method}": top_path,
-        f"feature_distribution_{method}": dist_path,
-        f"figure_{method}": importance_stem.with_suffix(".png"),
-        f"feature_support_{method}": support_stem.with_suffix(".png"),
     }
+    if top.empty:
+        return outputs
+    for class_index, class_top in top.groupby("class_index", sort=True):
+        c = int(class_index)
+        label = str(class_labels[c]) if 0 <= c < len(class_labels) else f"class_{c}"
+        slug = _class_slug(label)
+        dist = _feature_distribution_stats(
+            class_top["feature"].astype(str).tolist(),
+            feature_names,
+            X_base,
+            y,
+            class_labels,
+        )
+        dist_path = target_dir / f"feature_distribution_stats_{method}__{slug}.tsv"
+        dist.to_csv(dist_path, sep="\t", index=False)
+        importance_stem = figures_dir / f"feature_importance_{method}__{slug}"
+        support_stem = figures_dir / f"feature_support_{method}__{slug}"
+        _plot_feature_importance(class_top, dist, importance_stem, top_k, class_labels)
+        _plot_feature_importance(class_top, dist, support_stem, top_k, class_labels)
+        outputs[f"feature_distribution_{method}_{slug}"] = dist_path
+        outputs[f"figure_{method}_{slug}"] = importance_stem.with_suffix(".png")
+        outputs[f"feature_support_{method}_{slug}"] = support_stem.with_suffix(".png")
+    return outputs
 
 
 def _select_instance_indices(
@@ -1367,6 +1693,348 @@ def _plot_instance_explanations(
     plt.close(fig)
 
 
+def _explainability_config_payload(explainability: Any) -> dict[str, Any]:
+    return {
+        "profile": str(getattr(explainability, "profile", "standard")),
+        "methods": [
+            method_to_dict(x)
+            for x in _normalise_explainability_method_specs(explainability.methods)
+        ],
+        "classes": explainability.classes,
+        "top_k": int(explainability.top_k),
+        "random_state": int(explainability.random_state),
+        "local_explanations": str(
+            getattr(explainability, "local_explanations", "representative")
+        ),
+        "representative_instances": bool(explainability.representative_instances),
+        "instance_sample_ids": list(explainability.instance_sample_ids),
+        "top_instance_features": int(explainability.top_instance_features),
+    }
+
+
+def _explainability_config_signature(explainability: Any) -> str:
+    payload = _explainability_config_payload(explainability)
+    raw = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), default=str
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _signature_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(k): _signature_value(v)
+            for k, v in sorted(value.items(), key=lambda item: str(item[0]))
+        }
+    if isinstance(value, (list, tuple, set)):
+        return [_signature_value(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return [_signature_value(v) for v in value.tolist()]
+    if isinstance(value, np.generic):
+        return _signature_value(value.item())
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    if pd.isna(value) if not isinstance(value, (str, bytes)) else False:
+        return None
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _signature_hash(payload: Any) -> str:
+    raw = json.dumps(
+        _signature_value(payload), sort_keys=True, separators=(",", ":"), default=str
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _explainability_source_signature(
+    target_slug: str,
+    row: pd.Series,
+    oof_folds: Sequence[dict[str, Any]],
+    feature_names: Sequence[str],
+    class_labels: Sequence[Any],
+) -> str:
+    config_keys = (
+        "unit",
+        "config_id",
+        "resolution",
+        "levels",
+        "count_transformation",
+        "learner",
+        "members",
+        "aggregation_strategy",
+    )
+    config = {key: row.get(key) for key in config_keys if key in row.index}
+    return _signature_hash(
+        {
+            "target": str(row.get("unit", row.get("config_id", target_slug))),
+            "config": config,
+            "features": list(feature_names),
+            "classes": [str(x) for x in class_labels],
+            "folds": [
+                {
+                    "split_key": str(fold.get("split_key", "")),
+                    "train_idx": np.asarray(fold.get("train_idx", []), dtype=int),
+                    "test_idx": np.asarray(fold.get("test_idx", []), dtype=int),
+                }
+                for fold in oof_folds
+            ],
+        }
+    )
+
+
+def _method_cache_signature(
+    explainability: Any,
+    spec: Any,
+    source_signature: str,
+    class_indices: Sequence[int],
+) -> str:
+    name = method_name(spec)
+    payload: dict[str, Any] = {
+        "method": name,
+        "parameters": method_to_dict(spec),
+        "source_signature": str(source_signature),
+        "classes": [int(x) for x in class_indices],
+        "random_state": int(explainability.random_state),
+    }
+    return _signature_hash(payload)
+
+
+def _method_cache_files_complete(target_dir: Path, method: str) -> bool:
+    if method == "interactions":
+        return (target_dir / "feature_interactions_current.csv").exists()
+    required = [
+        target_dir / f"feature_importance_{method}.tsv",
+        target_dir / f"feature_stability_{method}.tsv",
+        target_dir / f"feature_importance_{method}_by_outer_fold.tsv",
+        target_dir / f"top_features_{method}.tsv",
+    ]
+    return all(path.exists() for path in required)
+
+
+def _source_config_compatible(meta: dict[str, Any], row: pd.Series) -> bool:
+    old = meta.get("config", {})
+    keys = (
+        "unit",
+        "config_id",
+        "resolution",
+        "levels",
+        "count_transformation",
+        "learner",
+        "members",
+        "aggregation_strategy",
+    )
+    compared = False
+    for key in keys:
+        if key not in old or key not in row.index:
+            continue
+        a = _signature_value(old.get(key))
+        b = _signature_value(row.get(key))
+        if a is None or b is None:
+            continue
+        compared = True
+        if a != b:
+            return False
+    return compared
+
+
+def _legacy_method_cache_valid(
+    meta: dict[str, Any],
+    row: pd.Series,
+    explainability: Any,
+    spec: Any,
+    class_indices: Sequence[int],
+) -> bool:
+    if not meta or not _source_config_compatible(meta, row):
+        return False
+    old_classes = [int(x) for x in meta.get("explained_class_indices", [])]
+    if old_classes != [int(x) for x in class_indices]:
+        return False
+    params = meta.get("method_parameters", [])
+    names = [str(x).strip().lower() for x in meta.get("methods", [])]
+    current = _signature_value(method_to_dict(spec))
+    matched = False
+    for index, item in enumerate(params):
+        try:
+            old_name = names[index] if index < len(names) else ""
+            if not old_name:
+                keys = set(item)
+                if {"algorithm", "masker"}.issubset(keys):
+                    old_name = "shap"
+                elif {"n_repeats", "scoring", "max_samples"}.issubset(keys):
+                    old_name = "permutation"
+                elif {"num_samples", "feature_selection"}.issubset(keys):
+                    old_name = "lime"
+                elif "top_k" in keys and "bins" in keys:
+                    old_name = "interactions"
+                elif "bins" in keys:
+                    old_name = "ale"
+            if old_name == method_name(spec) and _signature_value(item) == current:
+                matched = True
+                break
+        except Exception:
+            continue
+    if not matched:
+        return False
+    old_cfg = meta.get("explainability_config", {})
+    if int(old_cfg.get("random_state", explainability.random_state)) != int(
+        explainability.random_state
+    ):
+        return False
+    return True
+
+
+def _method_cache_entry_status(
+    entry: dict[str, Any],
+    signature: str,
+    source_signature: str,
+    spec: Any,
+    class_indices: Sequence[int],
+) -> tuple[bool, str]:
+    if not entry:
+        return False, "no per-method provenance"
+    if str(entry.get("source_signature", "")) != str(source_signature):
+        return False, "selected model/data/splits changed"
+    if _signature_value(entry.get("parameters", {})) != _signature_value(
+        method_to_dict(spec)
+    ):
+        return False, "method parameters changed"
+    if [int(x) for x in entry.get("class_indices", [])] != [
+        int(x) for x in class_indices
+    ]:
+        return False, "explained classes changed"
+    if str(entry.get("signature", "")) != str(signature):
+        return False, "method random state or cache schema changed"
+    return True, "cache hit"
+
+
+def _method_cache_entry_valid(
+    entry: dict[str, Any],
+    signature: str,
+    source_signature: str,
+    spec: Any,
+    class_indices: Sequence[int],
+) -> bool:
+    return _method_cache_entry_status(
+        entry, signature, source_signature, spec, class_indices
+    )[0]
+
+
+def _method_cache_entry(
+    signature: str,
+    source_signature: str,
+    spec: Any,
+    class_indices: Sequence[int],
+    top_k: int,
+) -> dict[str, Any]:
+    return {
+        "cache_version": 4,
+        "signature": str(signature),
+        "source_signature": str(source_signature),
+        "parameters": method_to_dict(spec),
+        "class_indices": [int(x) for x in class_indices],
+        "top_k": int(top_k),
+    }
+
+
+def _method_cache_sidecar_path(target_dir: Path, name: str) -> Path:
+    return target_dir / ".method_cache" / f"{_safe_cache_name(name)}.json"
+
+
+def _load_method_cache_entry(
+    target_dir: Path,
+    name: str,
+    shared_cache: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    path = _method_cache_sidecar_path(target_dir, name)
+    if path.exists():
+        try:
+            payload = json.loads(path.read_text())
+            if isinstance(payload, dict):
+                return payload, "sidecar"
+        except Exception:
+            pass
+    entry = shared_cache.get(str(name), {})
+    if isinstance(entry, dict) and entry:
+        return dict(entry), "shared metadata"
+    return {}, "none"
+
+
+def _persist_method_cache_entry(
+    meta_path: Path,
+    previous_meta: dict[str, Any],
+    name: str,
+    entry: dict[str, Any],
+) -> None:
+    sidecar = _method_cache_sidecar_path(meta_path.parent, name)
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    dump_json_standard(dict(entry), sidecar)
+    current = dict(previous_meta)
+    if meta_path.exists():
+        try:
+            disk = json.loads(meta_path.read_text())
+            if isinstance(disk, dict):
+                current.update(disk)
+        except Exception:
+            pass
+    cache = dict(current.get("method_cache", {}))
+    cache[str(name)] = dict(entry)
+    current["method_cache"] = cache
+    dump_json_standard(current, meta_path)
+    previous_meta.clear()
+    previous_meta.update(current)
+
+
+def _cached_method_frame(
+    target_dir: Path, method: str
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    frame = pd.read_csv(target_dir / f"feature_importance_{method}.tsv", sep="\t")
+    fold = pd.read_csv(
+        target_dir / f"feature_importance_{method}_by_outer_fold.tsv", sep="\t"
+    )
+    return frame, fold
+
+
+def _existing_method_outputs(target_dir: Path, method: str) -> dict[str, Path]:
+    outputs: dict[str, Path] = {}
+    mapping = {
+        f"importance_{method}": target_dir / f"feature_importance_{method}.tsv",
+        f"stability_{method}": target_dir / f"feature_stability_{method}.tsv",
+        f"top_features_{method}": target_dir / f"top_features_{method}.tsv",
+        f"{method}_by_outer_fold": target_dir
+        / f"feature_importance_{method}_by_outer_fold.tsv",
+    }
+    for key, path in mapping.items():
+        if path.exists():
+            outputs[key] = path
+    for path in sorted(target_dir.glob(f"feature_distribution_stats_{method}__*.tsv")):
+        outputs[path.stem] = path
+    figures = target_dir / "figures"
+    for path in sorted(figures.glob(f"feature_importance_{method}__*.png")):
+        outputs[path.stem] = path
+    for path in sorted(figures.glob(f"feature_support_{method}__*.png")):
+        outputs[path.stem] = path
+    if method == "ale":
+        curve_table = target_dir / "ale_curves.tsv"
+        if curve_table.exists():
+            outputs["ale_curves"] = curve_table
+        for path in sorted(figures.glob("ale_curves__*.png")):
+            outputs[path.stem] = path
+    if method == "interactions":
+        for path in sorted(target_dir.glob("feature_interactions_*.csv")):
+            outputs[path.stem] = path
+        for path in sorted(figures.glob("interaction_network_*.png")):
+            outputs[path.stem] = path
+    if method in {"shap", "lime"}:
+        path = target_dir / f"instance_explanations_{method}_top_features.tsv"
+        if path.exists():
+            outputs[f"instance_explanations_{method}"] = path
+    return outputs
+
+
 def _safe_cache_name(value: str | None) -> str:
     text = str(value or "").strip()
     if not text:
@@ -1374,7 +2042,7 @@ def _safe_cache_name(value: str | None) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in text)
 
 
-def _explainability_cache_complete(target_dir: Path, methods: Sequence[str]) -> bool:
+def _explainability_cache_complete(target_dir: Path, explainability: Any) -> bool:
     if not (target_dir / "explained_unit.json").exists():
         return False
     if not (target_dir / "feature_importance.tsv").exists():
@@ -1385,9 +2053,19 @@ def _explainability_cache_complete(target_dir: Path, methods: Sequence[str]) -> 
     if (
         not (figs / "feature_support.svg").exists()
         and not (figs / "feature_support.png").exists()
+        and not list(figs.glob("feature_support__*.svg"))
+        and not list(figs.glob("feature_support__*.png"))
     ):
         return False
-    normalised = set(_normalise_explainability_methods(methods))
+    try:
+        meta = json.loads((target_dir / "explained_unit.json").read_text())
+    except Exception:
+        return False
+    if str(
+        meta.get("explainability_config_signature", "")
+    ) != _explainability_config_signature(explainability):
+        return False
+    normalised = set(_normalise_explainability_methods(explainability.methods))
     for method in ("shap", "lime", "ale", "permutation"):
         if (
             method in normalised
@@ -1433,7 +2111,7 @@ def _ensure_mpma_member_explanations(
             ]
         cid = str(matches.iloc[0]["config_id"]) if not matches.empty else str(member)
         cache_dir = sweep.root() / "explainability" / "cache" / _safe_cache_name(cid)
-        if _explainability_cache_complete(cache_dir, methods):
+        if _explainability_cache_complete(cache_dir, sweep.explainability):
             info(f"MPMA-E member {i}/{total} · config={cid} · cached")
             continue
         if matches.empty:
@@ -1483,26 +2161,24 @@ def _shap_values_for_data(
     class_labels: Sequence[str],
     *,
     random_state: int,
-    max_background: int,
-    max_explain: int,
+    spec: SHAP,
     force_explain_rows: Sequence[int] = (),
-) -> tuple[np.ndarray, np.ndarray]:
-    pass
+    show_progress: bool = True,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> tuple[np.ndarray, np.ndarray, str]:
     try:
         import shap
     except Exception as exc:
         raise ExplainabilityDependencyError(
-            "Explainability.methods includes 'shap', but the 'shap' package is not importable. "
-            "Install shap or remove 'shap' from Explainability.methods. No fallback method will be used."
+            "Explainability.methods includes SHAP, but the 'shap' package is not importable."
         ) from exc
-
     X_background = _as_float_matrix(X_background)
     X_explain = _as_float_matrix(X_explain)
     rows_bg = _sample_rows(
-        X_background, max_rows=max_background, random_state=random_state
+        X_background, max_rows=int(spec.background_size), random_state=random_state
     )
     rows_ex = _sample_rows(
-        X_explain, max_rows=max_explain, random_state=random_state + 13
+        X_explain, max_rows=int(spec.max_explain), random_state=random_state + 13
     )
     if force_explain_rows:
         forced = np.asarray(
@@ -1515,83 +2191,178 @@ def _shap_values_for_data(
             )
     background = X_background[rows_bg]
     X_selected = X_explain[rows_ex]
+    total_samples = max(1, len(X_selected))
+    if progress_callback is not None:
+        progress_callback(0, total_samples, f"0/{len(X_selected)} samples")
 
+    def normalize_values(values: Any) -> np.ndarray:
+        raw = getattr(values, "values", values)
+        if isinstance(raw, list):
+            arr = np.stack([np.asarray(x, dtype=float) for x in raw], axis=-1)
+        else:
+            arr = np.asarray(raw, dtype=float)
+        if arr.ndim == 2:
+            if len(class_labels) == 2:
+                arr = arr[:, :, None]
+            else:
+                raise ExplainabilityConfigurationError(
+                    f"Unexpected multiclass SHAP value shape {arr.shape}."
+                )
+        if arr.ndim != 3 or arr.shape[1] != len(feature_names):
+            raise ExplainabilityConfigurationError(
+                f"Unexpected SHAP value shape {arr.shape}; expected n_samples × n_features × n_classes."
+            )
+        if arr.shape[2] not in {1, len(class_labels)}:
+            raise ExplainabilityConfigurationError(
+                f"Unexpected SHAP output dimension {arr.shape[2]} for {len(class_labels)} classes."
+            )
+        return arr
+
+    def evaluate_in_batches(
+        call: Callable[[np.ndarray], Any], backend: str
+    ) -> np.ndarray:
+        if progress_callback is None or len(X_selected) <= 1:
+            return normalize_values(call(X_selected))
+        batch_size = max(1, min(25, len(X_selected)))
+        chunks: list[np.ndarray] = []
+        for start in range(0, len(X_selected), batch_size):
+            stop = min(len(X_selected), start + batch_size)
+            chunks.append(normalize_values(call(X_selected[start:stop])))
+            progress_callback(
+                stop,
+                total_samples,
+                f"sample {stop}/{len(X_selected)} · backend={backend}",
+            )
+        return np.concatenate(chunks, axis=0)
+
+    requested_algorithm = str(spec.algorithm).strip().lower()
+    if requested_algorithm in {"auto", "tree"}:
+        try:
+            explainer = shap.TreeExplainer(
+                clf,
+                data=background,
+                model_output="probability",
+                feature_perturbation="interventional",
+                feature_names=list(feature_names),
+            )
+            arr = evaluate_in_batches(explainer, "tree")
+            if progress_callback is not None and len(X_selected) <= 1:
+                progress_callback(
+                    len(X_selected),
+                    total_samples,
+                    f"sample {len(X_selected)}/{len(X_selected)} · backend=tree",
+                )
+            return arr, rows_ex, "tree"
+        except Exception as exc:
+            if requested_algorithm == "tree":
+                raise ExplainabilityConfigurationError(
+                    "TreeSHAP was requested but the fitted estimator is not supported in probability space."
+                ) from exc
     classes = np.arange(len(class_labels), dtype=int)
-    if hasattr(clf, "predict_proba"):
-        model_fn = _explain_predict_proba(clf, classes)
-    elif hasattr(clf, "decision_function"):
-        model_fn = _explain_decision_function(clf)
+    model_fn = _explain_predict_proba(clf, classes)
+    masker_name = str(spec.masker).strip().lower()
+    if masker_name == "independent":
+        masker = shap.maskers.Independent(background, max_samples=len(background))
+    elif masker_name == "partition":
+        masker = shap.maskers.Partition(
+            background, max_samples=len(background), clustering="correlation"
+        )
     else:
         raise ExplainabilityConfigurationError(
-            f"Learner {type(clf).__name__} exposes neither predict_proba nor decision_function; "
-            "SHAP explainability cannot run exactly as configured. No fallback method will be used."
+            f"Unsupported SHAP masker {spec.masker!r}. Use 'independent' or 'partition'."
+        )
+    algorithm = "permutation" if requested_algorithm == "auto" else requested_algorithm
+    minimum = 2 * len(feature_names) + 1
+    max_evals = max(minimum, minimum * max(1, int(spec.permutation_rounds)))
+    try:
+        explainer = shap.Explainer(
+            model_fn,
+            masker,
+            algorithm=algorithm,
+            feature_names=list(feature_names),
+            output_names=list(class_labels),
+            seed=int(random_state),
         )
 
-    min_max_evals = max(500, 2 * len(feature_names) + 1)
-    try:
-        with _quiet_external_progress():
-            explainer = shap.Explainer(
-                model_fn, background, feature_names=list(feature_names)
-            )
+        def call_explainer(batch: np.ndarray) -> Any:
             try:
-                values = explainer(X_selected, silent=True, max_evals=min_max_evals)
+                return explainer(
+                    batch,
+                    silent=not bool(show_progress)
+                    if progress_callback is None
+                    else True,
+                    max_evals=max_evals,
+                )
             except TypeError:
                 try:
-                    values = explainer(X_selected, max_evals=min_max_evals)
+                    return explainer(batch, max_evals=max_evals)
                 except TypeError:
-                    try:
-                        values = explainer(X_selected, silent=True)
-                    except TypeError:
-                        values = explainer(X_selected)
+                    return explainer(batch)
+
+        arr = evaluate_in_batches(call_explainer, algorithm)
+        if progress_callback is not None and len(X_selected) <= 1:
+            progress_callback(
+                len(X_selected),
+                total_samples,
+                f"sample {len(X_selected)}/{len(X_selected)} · backend={algorithm}",
+            )
     except Exception as exc:
         raise ExplainabilityConfigurationError(
-            "SHAP failed for an outer-test fold. Explainability is strict, so execution stops "
-            "instead of replacing SHAP with another method."
+            "SHAP failed for an outer-test fold."
         ) from exc
-
-    arr = np.asarray(values.values, dtype=float)
-    if arr.ndim == 3:
-        if arr.shape[2] == 2:
-            arr = arr[:, :, 1]
-        else:
-            arr = np.mean(np.abs(arr), axis=2)
-    if arr.ndim != 2 or arr.shape[1] != len(feature_names):
-        raise ExplainabilityConfigurationError(
-            f"Unexpected SHAP value shape {arr.shape}; expected n_samples × n_features. "
-            "No fallback method will be used."
-        )
-    return arr, rows_ex
+    return arr, rows_ex, algorithm
 
 
-def _importance_frame_from_value_blocks(
+def _value_frame_for_fold(
     method: str,
-    blocks: Sequence[np.ndarray],
+    values: np.ndarray,
     feature_names: Sequence[str],
+    class_indices: Sequence[int],
+    class_labels: Sequence[str],
     scoring: str,
 ) -> pd.DataFrame:
-    if not blocks:
+    arr = np.asarray(values, dtype=float)
+    if arr.ndim == 2:
+        arr = arr[:, :, None]
+    if arr.ndim != 3 or arr.shape[1] != len(feature_names):
         raise ExplainabilityConfigurationError(
-            f"{method.upper()} produced no outer-test explanations. No fallback method will be used."
+            f"Unexpected {method.upper()} value shape {arr.shape}."
         )
-    arr = np.concatenate(
-        [np.asarray(b, dtype=float) for b in blocks if np.asarray(b).size], axis=0
-    )
-    if arr.ndim != 2 or arr.shape[1] != len(feature_names):
+    if arr.shape[2] == len(class_labels):
+        selected = arr[:, :, list(class_indices)]
+    elif arr.shape[2] == len(class_indices):
+        selected = arr
+    elif arr.shape[2] == 1 and len(class_indices) == 1:
+        selected = arr
+    else:
         raise ExplainabilityConfigurationError(
-            f"Unexpected {method.upper()} OOF value shape {arr.shape}; expected n_oof_samples × n_features."
+            f"{method.upper()} output classes do not match configured explanation classes."
         )
-    abs_arr = np.abs(arr)
-    return pd.DataFrame(
-        {
-            "method": method,
-            "feature": list(feature_names),
-            "importance_mean": np.mean(abs_arr, axis=0),
-            "importance_sd": np.std(abs_arr, axis=0, ddof=1)
-            if abs_arr.shape[0] > 1
-            else 0.0,
-            "scoring": scoring,
-        }
-    ).sort_values("importance_mean", ascending=False)
+    rows: list[dict[str, Any]] = []
+    for pos, class_index in enumerate(class_indices):
+        vals = selected[:, :, pos]
+        abs_vals = np.abs(vals)
+        mean_abs = np.nanmean(abs_vals, axis=0)
+        signed = np.nanmean(vals, axis=0)
+        within_sd = (
+            np.nanstd(abs_vals, axis=0, ddof=1)
+            if vals.shape[0] > 1
+            else np.zeros(vals.shape[1], dtype=float)
+        )
+        for j, feature in enumerate(feature_names):
+            rows.append(
+                {
+                    "method": method,
+                    "class_index": int(class_index),
+                    "class_label": str(class_labels[int(class_index)]),
+                    "feature": str(feature),
+                    "importance_mean": float(mean_abs[j]),
+                    "signed_importance_mean": float(signed[j]),
+                    "within_fold_importance_sd": float(within_sd[j]),
+                    "scoring": scoring,
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def _lime_values_for_data(
@@ -1600,53 +2371,233 @@ def _lime_values_for_data(
     X_explain: np.ndarray,
     feature_names: Sequence[str],
     class_labels: Sequence[str],
+    class_indices: Sequence[int],
     *,
     random_state: int,
-    n_samples: int,
-    max_explain: int,
+    spec: LIME,
+    force_explain_rows: Sequence[int] = (),
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     try:
         from lime.lime_tabular import LimeTabularExplainer
     except Exception as exc:
         raise ExplainabilityDependencyError(
-            "Explainability.methods includes 'lime', but the 'lime' package is not importable. "
-            "Install lime or remove 'lime' from Explainability.methods. No fallback method will be used."
+            "Explainability.methods includes LIME, but the 'lime' package is not importable."
         ) from exc
 
     X_training = _as_float_matrix(X_training)
     X_explain = _as_float_matrix(X_explain)
-    rows = _sample_rows(X_explain, max_rows=max_explain, random_state=random_state + 29)
+    rows = _sample_rows(
+        X_explain, max_rows=int(spec.max_explain), random_state=random_state + 29
+    )
+    if force_explain_rows:
+        forced = np.asarray(
+            [int(i) for i in force_explain_rows if 0 <= int(i) < X_explain.shape[0]],
+            dtype=int,
+        )
+        if forced.size:
+            rows = np.array(
+                sorted(set(rows.tolist()) | set(forced.tolist())), dtype=int
+            )
     X_selected = X_explain[rows]
     predict_fn = _explain_predict_proba(clf, np.arange(len(class_labels), dtype=int))
-    class_names = list(class_labels)
-    label = 1 if len(class_names) == 2 else 0
+    kwargs: dict[str, Any] = {
+        "training_data": X_training,
+        "feature_names": list(feature_names),
+        "class_names": list(class_labels),
+        "mode": "classification",
+        "feature_selection": str(spec.feature_selection),
+        "discretize_continuous": bool(spec.discretize_continuous),
+        "random_state": int(random_state),
+    }
+    if spec.kernel_width is not None:
+        kwargs["kernel_width"] = float(spec.kernel_width)
+    total = max(1, len(X_selected))
+    if progress_callback is not None:
+        progress_callback(0, total, f"0/{len(X_selected)} samples")
     try:
-        explainer = LimeTabularExplainer(
-            training_data=X_training,
-            feature_names=list(feature_names),
-            class_names=class_names,
-            mode="classification",
-            discretize_continuous=False,
-            random_state=int(random_state),
+        explainer = LimeTabularExplainer(**kwargs)
+        coeffs = np.zeros(
+            (X_selected.shape[0], len(feature_names), len(class_indices)), dtype=float
         )
-        coeffs = np.zeros((X_selected.shape[0], len(feature_names)), dtype=float)
-        for i, row in enumerate(X_selected):
-            exp = explainer.explain_instance(
-                row,
-                predict_fn=predict_fn,
-                num_features=len(feature_names),
-                num_samples=int(n_samples),
-                labels=(label,),
+        labels = tuple(int(x) for x in class_indices)
+        explain_method = explainer.explain_instance
+        try:
+            signature = inspect.signature(explain_method)
+            parameters = signature.parameters
+            accepts_sampling_method = "sampling_method" in parameters or any(
+                item.kind is inspect.Parameter.VAR_KEYWORD
+                for item in parameters.values()
             )
-            for fi, coef in exp.local_exp[label]:
-                if 0 <= int(fi) < len(feature_names):
-                    coeffs[i, int(fi)] = float(coef)
+        except (TypeError, ValueError):
+            accepts_sampling_method = False
+        sampling_method = str(spec.sampling_method)
+        if not accepts_sampling_method and sampling_method != "gaussian":
+            raise ExplainabilityConfigurationError(
+                f"Installed LIME does not support sampling_method={sampling_method!r}; use 'gaussian' or upgrade LIME."
+            )
+        for i, row in enumerate(X_selected):
+            explain_kwargs: dict[str, Any] = {
+                "predict_fn": predict_fn,
+                "num_features": len(feature_names),
+                "num_samples": int(spec.num_samples),
+                "labels": labels,
+            }
+            if accepts_sampling_method:
+                explain_kwargs["sampling_method"] = sampling_method
+            exp = explain_method(row, **explain_kwargs)
+            for class_pos, label in enumerate(labels):
+                for fi, coef in exp.local_exp.get(label, []):
+                    if 0 <= int(fi) < len(feature_names):
+                        coeffs[i, int(fi), class_pos] = float(coef)
+            if progress_callback is not None:
+                progress_callback(i + 1, total, f"sample {i + 1}/{len(X_selected)}")
+    except ExplainabilityConfigurationError:
+        raise
     except Exception as exc:
         raise ExplainabilityConfigurationError(
-            "LIME failed for an outer-test fold. Explainability is strict, so execution stops "
-            "instead of replacing LIME with another method."
+            "LIME failed for an outer-test fold."
         ) from exc
     return coeffs, rows
+
+
+def _aggregate_fold_feature_importance(
+    method: str,
+    frames: Sequence[pd.DataFrame],
+    feature_names: Sequence[str],
+    class_indices: Sequence[int],
+    class_labels: Sequence[str],
+    scoring: str,
+    top_k: int,
+) -> pd.DataFrame:
+    if not frames:
+        raise ExplainabilityConfigurationError(
+            f"{method.upper()} produced no outer-test fold results."
+        )
+    n_folds_total = len(frames)
+    rows: list[dict[str, Any]] = []
+    for class_index in class_indices:
+        class_label = str(class_labels[int(class_index)])
+        fold_tables: list[pd.DataFrame] = []
+        for fold_no, frame in enumerate(frames, start=1):
+            sub = frame[
+                pd.to_numeric(frame.get("class_index", -1), errors="coerce")
+                .fillna(-1)
+                .astype(int)
+                .eq(int(class_index))
+            ].copy()
+            sub = sub.set_index("feature").reindex(list(feature_names))
+            vals = pd.to_numeric(sub.get("importance_mean", np.nan), errors="coerce")
+            signed = (
+                pd.to_numeric(sub["signed_importance_mean"], errors="coerce")
+                if "signed_importance_mean" in sub.columns
+                else pd.Series(np.nan, index=sub.index, dtype=float)
+            )
+            tab = pd.DataFrame(
+                {
+                    "feature": list(feature_names),
+                    "importance": vals.to_numpy(dtype=float),
+                    "signed": signed.to_numpy(dtype=float),
+                    "fold_no": int(fold_no),
+                }
+            )
+            valid = np.isfinite(tab["importance"].to_numpy(dtype=float))
+            tab["rank"] = np.nan
+            if np.any(valid):
+                tab.loc[valid, "rank"] = tab.loc[valid, "importance"].rank(
+                    ascending=False, method="average"
+                )
+                k = min(max(1, int(top_k)), int(valid.sum()))
+                tab["top_k"] = False
+                tab.loc[valid, "top_k"] = tab.loc[valid, "rank"] <= k
+            else:
+                tab["top_k"] = False
+            fold_tables.append(tab)
+        long = pd.concat(fold_tables, ignore_index=True)
+        for feature in feature_names:
+            sub = long[long["feature"].astype(str).eq(str(feature))].copy()
+            imp = pd.to_numeric(sub["importance"], errors="coerce")
+            valid = imp.notna() & np.isfinite(imp)
+            impv = imp[valid].to_numpy(dtype=float)
+            rankv = (
+                pd.to_numeric(sub.loc[valid, "rank"], errors="coerce")
+                .dropna()
+                .to_numpy(dtype=float)
+            )
+            signed = pd.to_numeric(sub.loc[valid, "signed"], errors="coerce")
+            signed = signed[np.isfinite(signed)].to_numpy(dtype=float)
+            n = int(len(impv))
+            if n == 0:
+                rows.append(
+                    {
+                        "method": method,
+                        "class_index": int(class_index),
+                        "class_label": class_label,
+                        "feature": str(feature),
+                        "importance_mean": np.nan,
+                        "importance_sd": np.nan,
+                        "importance_median": np.nan,
+                        "importance_q25": np.nan,
+                        "importance_q75": np.nan,
+                        "mean_rank": np.nan,
+                        "median_rank": np.nan,
+                        "rank_iqr": np.nan,
+                        "top_k_frequency": np.nan,
+                        "n_estimable_folds": 0,
+                        "n_outer_folds_total": int(n_folds_total),
+                        "fold_coverage": 0.0,
+                        "signed_importance_mean": np.nan,
+                        "sign_positive_fraction": np.nan,
+                        "sign_negative_fraction": np.nan,
+                        "sign_consistency": np.nan,
+                        "scoring": scoring,
+                    }
+                )
+                continue
+            q25, med, q75 = np.quantile(impv, [0.25, 0.5, 0.75])
+            if rankv.size:
+                rq25, rmed, rq75 = np.quantile(rankv, [0.25, 0.5, 0.75])
+            else:
+                rq25 = rmed = rq75 = np.nan
+            top_freq = float(sub.loc[valid, "top_k"].astype(float).mean())
+            if signed.size:
+                pos = float(np.mean(signed > 0.0))
+                neg = float(np.mean(signed < 0.0))
+                consistency = float(max(pos, neg))
+                signed_mean = float(np.mean(signed))
+            else:
+                pos = neg = consistency = signed_mean = np.nan
+            rows.append(
+                {
+                    "method": method,
+                    "class_index": int(class_index),
+                    "class_label": class_label,
+                    "feature": str(feature),
+                    "importance_mean": float(np.mean(impv)),
+                    "importance_sd": float(np.std(impv, ddof=1)) if n > 1 else 0.0,
+                    "importance_median": float(med),
+                    "importance_q25": float(q25),
+                    "importance_q75": float(q75),
+                    "mean_rank": float(np.mean(rankv)) if rankv.size else np.nan,
+                    "median_rank": float(rmed),
+                    "rank_iqr": float(rq75 - rq25) if rankv.size else np.nan,
+                    "top_k_frequency": top_freq,
+                    "n_estimable_folds": int(n),
+                    "n_outer_folds_total": int(n_folds_total),
+                    "fold_coverage": float(n / n_folds_total),
+                    "signed_importance_mean": signed_mean,
+                    "sign_positive_fraction": pos,
+                    "sign_negative_fraction": neg,
+                    "sign_consistency": consistency,
+                    "scoring": scoring,
+                }
+            )
+    out = pd.DataFrame(rows)
+    return out.sort_values(
+        ["class_index", "importance_mean", "feature"],
+        ascending=[True, False, True],
+        na_position="last",
+    )
 
 
 def _mean_feature_importance_frames(
@@ -1655,79 +2606,46 @@ def _mean_feature_importance_frames(
     feature_names: Sequence[str],
     scoring: str,
 ) -> pd.DataFrame:
-    if not frames:
-        raise ExplainabilityConfigurationError(
-            f"{method.upper()} produced no outer-test fold results. No fallback method will be used."
-        )
-    feature_names = list(feature_names)
-    sparse_ale = str(method).lower() == "ale"
-    means = []
-    sds = []
-    for frame in frames:
-        d = frame.set_index("feature").reindex(feature_names)
-        vals = pd.to_numeric(d["importance_mean"], errors="coerce").to_numpy(float)
-        means.append(
-            vals if sparse_ale else np.nan_to_num(vals, nan=0.0, posinf=0.0, neginf=0.0)
-        )
-        if "importance_sd" in d.columns:
-            sd_vals = pd.to_numeric(d["importance_sd"], errors="coerce").to_numpy(float)
-            sds.append(
-                sd_vals
-                if sparse_ale
-                else np.nan_to_num(sd_vals, nan=0.0, posinf=0.0, neginf=0.0)
-            )
-    mean_arr = np.vstack(means)
-    valid = np.isfinite(mean_arr)
-    n_valid = valid.sum(axis=0)
-    if sparse_ale:
-        sum_vals = np.where(valid, mean_arr, 0.0).sum(axis=0)
-        importance_mean = np.divide(
-            sum_vals,
-            n_valid,
-            out=np.zeros(mean_arr.shape[1], dtype=float),
-            where=n_valid > 0,
-        )
-    else:
-        importance_mean = np.nanmean(mean_arr, axis=0)
-    if sds:
-        sd_arr = np.vstack(sds)
-        sd_valid = np.isfinite(sd_arr)
-        sd_sq = np.where(sd_valid, sd_arr**2, 0.0).sum(axis=0)
-        sd_n = sd_valid.sum(axis=0)
-        importance_sd = np.sqrt(
-            np.divide(
-                sd_sq, sd_n, out=np.zeros(sd_arr.shape[1], dtype=float), where=sd_n > 0
-            )
-        )
-    else:
-        if sparse_ale:
-            centred = np.where(valid, mean_arr - importance_mean[None, :], np.nan)
-            importance_sd = (
-                np.nanstd(centred, axis=0, ddof=1)
-                if mean_arr.shape[0] > 1
-                else np.zeros(mean_arr.shape[1])
-            )
-            importance_sd = np.nan_to_num(
-                importance_sd, nan=0.0, posinf=0.0, neginf=0.0
-            )
-        else:
-            importance_sd = (
-                np.nanstd(mean_arr, axis=0, ddof=1)
-                if mean_arr.shape[0] > 1
-                else np.zeros(mean_arr.shape[1])
-            )
-    out = pd.DataFrame(
+    class_indices = sorted(
         {
-            "method": method,
-            "feature": feature_names,
-            "importance_mean": importance_mean,
-            "importance_sd": importance_sd,
-            "scoring": scoring,
+            int(x)
+            for frame in frames
+            if "class_index" in frame.columns
+            for x in pd.to_numeric(frame["class_index"], errors="coerce")
+            .dropna()
+            .astype(int)
         }
     )
-    if sparse_ale:
-        out["n_estimable_folds"] = n_valid.astype(int)
-    return out.sort_values("importance_mean", ascending=False)
+    if not class_indices:
+        class_indices = [0]
+        class_labels = ["class_0"]
+        prepared = []
+        for frame in frames:
+            d = frame.copy()
+            d["class_index"] = 0
+            d["class_label"] = "class_0"
+            prepared.append(d)
+        frames = prepared
+    else:
+        labels = {}
+        for frame in frames:
+            if {"class_index", "class_label"}.issubset(frame.columns):
+                for _, row in (
+                    frame[["class_index", "class_label"]].drop_duplicates().iterrows()
+                ):
+                    labels[int(row["class_index"])] = str(row["class_label"])
+        class_labels = [
+            labels.get(i, f"class_{i}") for i in range(max(class_indices) + 1)
+        ]
+    return _aggregate_fold_feature_importance(
+        method,
+        frames,
+        feature_names,
+        class_indices,
+        class_labels,
+        scoring,
+        top_k=min(30, len(feature_names)),
+    )
 
 
 def _explainability_outer_splits(sweep: Sweep, dataset: Any) -> list[dict[str, Any]]:
@@ -1767,6 +2685,37 @@ def _ordered_member_rows(
     return pd.DataFrame(rows).drop_duplicates("config_id")
 
 
+def _fit_oof_single_fold_task(
+    split_no: int,
+    split: dict[str, Any],
+    X_base: np.ndarray,
+    y: np.ndarray,
+    class_count: int,
+    ct_factory: Callable[[], Any],
+    learner_factory: Callable[[], BaseEstimator],
+    threads_per_worker: int,
+) -> tuple[int, dict[str, Any] | None]:
+    train_idx = np.asarray(split["train_idx"], dtype=int)
+    test_idx = np.asarray(split["test_idx"], dtype=int)
+    if len(test_idx) == 0 or len(np.unique(y[train_idx])) < 2:
+        return int(split_no), None
+    ct = ct_factory()
+    X_train, X_test = ct.apply_pair(X_base[train_idx], X_base[test_idx])
+    clf = configure_estimator_threads(learner_factory(), threads_per_worker)
+    clf.fit(X_train, y[train_idx])
+    proba = _predict_proba_aligned(clf, X_test, np.arange(int(class_count), dtype=int))
+    return int(split_no), {
+        "split_key": str(split["split_key"]),
+        "train_idx": train_idx,
+        "test_idx": test_idx,
+        "X_train": X_train,
+        "X_test": X_test,
+        "y_test": y[test_idx],
+        "estimator": clf,
+        "proba": proba,
+    }
+
+
 def _fit_oof_single_for_explainability(
     sweep: Sweep,
     row: pd.Series,
@@ -1779,31 +2728,35 @@ def _fit_oof_single_for_explainability(
     learner_key = str(row["learner"])
     ct_factory = _configured_count_transformation_factory(sweep, transformation_key)
     learner_factory = _configured_learner_factory(sweep, learner_key)
-    folds: list[dict[str, Any]] = []
-    for split in splits:
-        train_idx = np.asarray(split["train_idx"], dtype=int)
-        test_idx = np.asarray(split["test_idx"], dtype=int)
-        if len(test_idx) == 0 or len(np.unique(dataset.y[train_idx])) < 2:
-            continue
-        ct = ct_factory()
-        X_train, X_test = ct.apply_pair(X_base[train_idx], X_base[test_idx])
-        clf = learner_factory()
-        clf.fit(X_train, dataset.y[train_idx])
-        proba = _predict_proba_aligned(
-            clf, X_test, np.arange(len(dataset.class_labels), dtype=int)
+    execution = _xai_execution_plan(sweep, len(splits))
+    tasks = [
+        (
+            _fit_oof_single_fold_task,
+            (
+                split_no,
+                split,
+                X_base,
+                dataset.y,
+                len(dataset.class_labels),
+                ct_factory,
+                learner_factory,
+                int(execution.threads_per_worker),
+            ),
+            {},
         )
-        folds.append(
-            {
-                "split_key": str(split["split_key"]),
-                "train_idx": train_idx,
-                "test_idx": test_idx,
-                "X_train": X_train,
-                "X_test": X_test,
-                "y_test": dataset.y[test_idx],
-                "estimator": clf,
-                "proba": proba,
-            }
+        for split_no, split in enumerate(splits, start=1)
+    ]
+    folds_by_no: dict[int, dict[str, Any]] = {}
+    with progress() as prog:
+        task = prog.add_task(
+            f"Fitting OOF explanation models · {execution.workers} workers · {execution.threads_per_worker} threads/worker",
+            total=len(tasks),
         )
+        for split_no, fold in _xai_task_iterator(tasks, execution):
+            if fold is not None:
+                folds_by_no[int(split_no)] = fold
+            prog.advance(task)
+    folds = [folds_by_no[i] for i in sorted(folds_by_no)]
     if not folds:
         raise ExplainabilityConfigurationError(
             "No outer fold could be fitted for out-of-fold explainability."
@@ -1813,6 +2766,7 @@ def _fit_oof_single_for_explainability(
         "X_base": X_base,
         "feature_names": list(feature_names),
         "folds": folds,
+        "execution": execution,
     }
 
 
@@ -1984,18 +2938,19 @@ def _write_oof_prediction_summary(
 def _select_oof_instance_explanations(
     dataset: Any,
     feature_names: Sequence[str],
-    shap_oof_rows: Sequence[dict[str, Any]],
+    oof_rows: Sequence[dict[str, Any]],
     *,
+    method: str,
     sample_ids: Sequence[str],
     representative: bool,
     top_features_per_direction: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    if not shap_oof_rows:
+    if not oof_rows:
         return pd.DataFrame(), pd.DataFrame()
-    meta = pd.DataFrame(shap_oof_rows)
+    meta = pd.DataFrame(oof_rows)
     if meta.empty or "values" not in meta.columns:
         return pd.DataFrame(), pd.DataFrame()
-    values = np.vstack(meta.pop("values").to_list())
+    values = np.vstack(meta["values"].to_list())
     sid_requested = {str(s) for s in sample_ids}
     candidates: list[tuple[int, str]] = []
     if sid_requested:
@@ -2003,31 +2958,31 @@ def _select_oof_instance_explanations(
             if str(sid) in sid_requested:
                 candidates.append((sample_index, f"requested:{sid}"))
     if representative:
-        pred_summary = meta.groupby("sample_index", as_index=False).agg(
-            sample_id=("sample_id", "first"),
-            true_class=("true_class", "first"),
-            p_positive=("p_positive", "mean"),
-            n_oof_explanations=("sample_index", "size"),
-        )
         for cls in sorted(set(int(x) for x in dataset.y.tolist())):
-            sub = pred_summary[pred_summary["true_class"].astype(int).eq(cls)].copy()
+            sub = meta[meta["true_class"].astype(int).eq(cls)].copy()
             if sub.empty:
                 continue
-            centre = (
-                float(sub["p_positive"].median())
-                if np.isfinite(sub["p_positive"]).any()
-                else 0.5
+            own = sub[sub["class_index"].astype(int).eq(cls)]
+            if own.empty:
+                first_target = int(sub["class_index"].iloc[0])
+                own = sub[sub["class_index"].astype(int).eq(first_target)]
+            pred_summary = own.groupby("sample_index", as_index=False).agg(
+                p_class=("p_class", "mean")
             )
-            sub["_dist"] = (sub["p_positive"].astype(float) - centre).abs()
-            r = sub.sort_values(["_dist", "sample_index"]).iloc[0]
+            if pred_summary.empty:
+                continue
+            centre = float(pred_summary["p_class"].median())
+            pred_summary["_dist"] = (
+                pd.to_numeric(pred_summary["p_class"], errors="coerce") - centre
+            ).abs()
+            r = pred_summary.sort_values(["_dist", "sample_index"]).iloc[0]
             candidates.append((int(r["sample_index"]), f"representative_class_{cls}"))
-
-    seen = set()
+    seen: set[int] = set()
     selected_pairs: list[tuple[int, str]] = []
     for idx, role in candidates:
         if idx not in seen:
-            selected_pairs.append((idx, role))
             seen.add(idx)
+            selected_pairs.append((idx, role))
     if not selected_pairs:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -2035,80 +2990,427 @@ def _select_oof_instance_explanations(
     selected_rows: list[dict[str, Any]] = []
     k = max(1, int(top_features_per_direction))
     for sample_index, role in selected_pairs:
-        mask = meta["sample_index"].astype(int).eq(int(sample_index)).to_numpy()
-        if not np.any(mask):
+        sample_mask = meta["sample_index"].astype(int).eq(int(sample_index))
+        sample_meta = meta.loc[sample_mask].copy()
+        if sample_meta.empty:
             continue
-        vals = values[mask].mean(axis=0)
-        vals_sd = (
-            values[mask].std(axis=0, ddof=1)
-            if mask.sum() > 1
-            else np.zeros(values.shape[1])
-        )
-        sub_meta = meta.loc[mask].copy()
-        p_pos = pd.to_numeric(sub_meta.get("p_positive", np.nan), errors="coerce")
-        pred_mode = pd.to_numeric(
-            sub_meta.get("predicted_class", -1), errors="coerce"
-        ).dropna()
-        predicted = int(pred_mode.mode().iloc[0]) if not pred_mode.empty else -1
         sid = str(dataset.sample_ids[int(sample_index)])
-        selected_rows.append(
-            {
-                "sample_id": sid,
-                "sample_index": int(sample_index),
-                "selection_role": role,
-                "true_class": int(dataset.y[int(sample_index)]),
-                "predicted_class": predicted,
-                "p_positive": float(p_pos.mean()) if not p_pos.empty else float("nan"),
-                "p_positive_mean": float(p_pos.mean())
-                if not p_pos.empty
-                else float("nan"),
-                "p_positive_sd": float(p_pos.std(ddof=1)) if len(p_pos) > 1 else 0.0,
-                "n_oof_explanations": int(mask.sum()),
-            }
-        )
-        order_neg = np.argsort(vals)[:k]
-        order_pos = np.argsort(-vals)[:k]
-        chosen = list(
-            dict.fromkeys([int(i) for i in list(order_neg) + list(order_pos)])
-        )
-        chosen = sorted(chosen, key=lambda j: abs(float(vals[j])), reverse=True)
-        for rank, j in enumerate(chosen, start=1):
-            top_rows.append(
+        for class_index, class_meta in sample_meta.groupby("class_index", sort=True):
+            class_positions = class_meta.index.to_numpy(dtype=int)
+            vals = values[class_positions].mean(axis=0)
+            vals_sd = (
+                values[class_positions].std(axis=0, ddof=1)
+                if len(class_positions) > 1
+                else np.zeros(values.shape[1])
+            )
+            p_class = pd.to_numeric(class_meta["p_class"], errors="coerce")
+            pred_mode = pd.to_numeric(
+                class_meta.get("predicted_class", -1), errors="coerce"
+            ).dropna()
+            predicted = int(pred_mode.mode().iloc[0]) if not pred_mode.empty else -1
+            class_label = str(class_meta["class_label"].iloc[0])
+            selected_rows.append(
                 {
+                    "method": str(method),
                     "sample_id": sid,
                     "sample_index": int(sample_index),
                     "selection_role": role,
                     "true_class": int(dataset.y[int(sample_index)]),
                     "predicted_class": predicted,
-                    "p_positive": float(p_pos.mean())
-                    if not p_pos.empty
-                    else float("nan"),
-                    "p_positive_mean": float(p_pos.mean())
-                    if not p_pos.empty
-                    else float("nan"),
-                    "feature": str(feature_names[j]),
-                    "value": float(vals[j]),
-                    "value_sd": float(vals_sd[j]),
-                    "abs_value": float(abs(vals[j])),
-                    "rank": int(rank),
-                    "n_oof_explanations": int(mask.sum()),
+                    "class_index": int(class_index),
+                    "class_label": class_label,
+                    "p_class_mean": float(p_class.mean())
+                    if not p_class.empty
+                    else np.nan,
+                    "p_class_sd": float(p_class.std(ddof=1))
+                    if len(p_class) > 1
+                    else 0.0,
+                    "n_oof_explanations": int(len(class_positions)),
                 }
             )
+            order_neg = np.argsort(vals)[:k]
+            order_pos = np.argsort(-vals)[:k]
+            chosen = list(
+                dict.fromkeys([int(i) for i in list(order_neg) + list(order_pos)])
+            )
+            chosen = sorted(chosen, key=lambda j: abs(float(vals[j])), reverse=True)
+            for rank, j in enumerate(chosen, start=1):
+                top_rows.append(
+                    {
+                        "method": str(method),
+                        "sample_id": sid,
+                        "sample_index": int(sample_index),
+                        "selection_role": role,
+                        "true_class": int(dataset.y[int(sample_index)]),
+                        "predicted_class": predicted,
+                        "class_index": int(class_index),
+                        "class_label": class_label,
+                        "p_class_mean": float(p_class.mean())
+                        if not p_class.empty
+                        else np.nan,
+                        "feature": str(feature_names[j]),
+                        "value": float(vals[j]),
+                        "value_sd": float(vals_sd[j]),
+                        "abs_value": float(abs(vals[j])),
+                        "rank": int(rank),
+                        "n_oof_explanations": int(len(class_positions)),
+                    }
+                )
     return pd.DataFrame(top_rows), pd.DataFrame(selected_rows)
+
+
+def _select_local_sample_pairs(
+    dataset: Any,
+    folds: Sequence[dict[str, Any]],
+    *,
+    sample_ids: Sequence[str],
+    representative: bool,
+) -> list[tuple[int, str]]:
+    sid_to_idx = {str(sid): i for i, sid in enumerate(dataset.sample_ids)}
+    selected: list[tuple[int, str]] = []
+    for sid in sample_ids:
+        if str(sid) not in sid_to_idx:
+            raise ExplainabilityConfigurationError(
+                f"Requested instance sample_id {sid!r} was not found in the loaded dataset."
+            )
+        selected.append((int(sid_to_idx[str(sid)]), f"requested:{sid}"))
+    if representative:
+        records: list[dict[str, Any]] = []
+        for fold in folds:
+            test_idx = np.asarray(fold["test_idx"], dtype=int)
+            proba = np.asarray(fold.get("proba"), dtype=float)
+            if proba.ndim != 2 or proba.shape[0] != len(test_idx):
+                continue
+            for local_i, global_i in enumerate(test_idx):
+                cls = int(dataset.y[int(global_i)])
+                if 0 <= cls < proba.shape[1]:
+                    records.append(
+                        {
+                            "sample_index": int(global_i),
+                            "true_class": cls,
+                            "p_own_class": float(proba[int(local_i), cls]),
+                        }
+                    )
+        pred = pd.DataFrame(records)
+        if not pred.empty:
+            pred = pred.groupby(["sample_index", "true_class"], as_index=False).agg(
+                p_own_class=("p_own_class", "mean")
+            )
+            for cls in sorted(set(int(x) for x in dataset.y.tolist())):
+                sub = pred[pred["true_class"].eq(cls)].copy()
+                if sub.empty:
+                    continue
+                centre = float(
+                    pd.to_numeric(sub["p_own_class"], errors="coerce").median()
+                )
+                sub["_dist"] = (
+                    pd.to_numeric(sub["p_own_class"], errors="coerce") - centre
+                ).abs()
+                row = sub.sort_values(["_dist", "sample_index"]).iloc[0]
+                selected.append(
+                    (int(row["sample_index"]), f"representative_class_{cls}")
+                )
+    out: list[tuple[int, str]] = []
+    seen: set[int] = set()
+    for idx, role in selected:
+        if idx not in seen:
+            seen.add(idx)
+            out.append((idx, role))
+    return out
+
+
+def _summarize_selected_local_explanations(
+    dataset: Any,
+    feature_names: Sequence[str],
+    oof_rows: Sequence[dict[str, Any]],
+    selected_pairs: Sequence[tuple[int, str]],
+    *,
+    method: str,
+    top_features_per_direction: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not oof_rows or not selected_pairs:
+        return pd.DataFrame(), pd.DataFrame()
+    meta = pd.DataFrame(oof_rows)
+    if meta.empty or "values" not in meta.columns:
+        return pd.DataFrame(), pd.DataFrame()
+    values = np.vstack(meta["values"].to_list())
+    top_rows: list[dict[str, Any]] = []
+    selected_rows: list[dict[str, Any]] = []
+    k = max(1, int(top_features_per_direction))
+    for sample_index, role in selected_pairs:
+        sample_meta = meta[
+            meta["sample_index"].astype(int).eq(int(sample_index))
+        ].copy()
+        if sample_meta.empty:
+            continue
+        sid = str(dataset.sample_ids[int(sample_index)])
+        for class_index, class_meta in sample_meta.groupby("class_index", sort=True):
+            positions = class_meta.index.to_numpy(dtype=int)
+            vals = values[positions].mean(axis=0)
+            vals_sd = (
+                values[positions].std(axis=0, ddof=1)
+                if len(positions) > 1
+                else np.zeros(values.shape[1])
+            )
+            p_class = pd.to_numeric(class_meta["p_class"], errors="coerce")
+            pred_mode = pd.to_numeric(
+                class_meta.get("predicted_class", -1), errors="coerce"
+            ).dropna()
+            predicted = int(pred_mode.mode().iloc[0]) if not pred_mode.empty else -1
+            class_label = str(class_meta["class_label"].iloc[0])
+            selected_rows.append(
+                {
+                    "method": str(method),
+                    "sample_id": sid,
+                    "sample_index": int(sample_index),
+                    "selection_role": role,
+                    "true_class": int(dataset.y[int(sample_index)]),
+                    "predicted_class": predicted,
+                    "class_index": int(class_index),
+                    "class_label": class_label,
+                    "p_class_mean": float(p_class.mean())
+                    if not p_class.empty
+                    else np.nan,
+                    "p_class_sd": float(p_class.std(ddof=1))
+                    if len(p_class) > 1
+                    else 0.0,
+                    "n_oof_explanations": int(len(positions)),
+                }
+            )
+            order_neg = np.argsort(vals)[:k]
+            order_pos = np.argsort(-vals)[:k]
+            chosen = list(
+                dict.fromkeys([int(i) for i in list(order_neg) + list(order_pos)])
+            )
+            chosen = sorted(chosen, key=lambda j: abs(float(vals[j])), reverse=True)
+            for rank, j in enumerate(chosen, start=1):
+                top_rows.append(
+                    {
+                        "method": str(method),
+                        "sample_id": sid,
+                        "sample_index": int(sample_index),
+                        "selection_role": role,
+                        "true_class": int(dataset.y[int(sample_index)]),
+                        "predicted_class": predicted,
+                        "class_index": int(class_index),
+                        "class_label": class_label,
+                        "p_class_mean": float(p_class.mean())
+                        if not p_class.empty
+                        else np.nan,
+                        "feature": str(feature_names[j]),
+                        "value": float(vals[j]),
+                        "value_sd": float(vals_sd[j]),
+                        "abs_value": float(abs(vals[j])),
+                        "rank": int(rank),
+                        "n_oof_explanations": int(len(positions)),
+                    }
+                )
+    return pd.DataFrame(top_rows), pd.DataFrame(selected_rows)
+
+
+def _local_method_signature(
+    source_signature: str,
+    explainability: Any,
+    spec: Any,
+    class_indices: Sequence[int],
+    selected_pairs: Sequence[tuple[int, str]],
+) -> str:
+    payload = {
+        "source_signature": str(source_signature),
+        "method": method_name(spec),
+        "parameters": method_to_dict(spec),
+        "class_indices": [int(x) for x in class_indices],
+        "random_state": int(explainability.random_state),
+        "local_explanations": str(
+            getattr(explainability, "local_explanations", "none")
+        ),
+        "selected_samples": [[int(i), str(role)] for i, role in selected_pairs],
+        "top_instance_features": int(explainability.top_instance_features),
+    }
+    return _signature_hash(payload)
+
+
+def _compute_local_method_rows(
+    method: str,
+    spec: Any,
+    folds: Sequence[dict[str, Any]],
+    dataset: Any,
+    feature_names: Sequence[str],
+    class_indices: Sequence[int],
+    selected_pairs: Sequence[tuple[int, str]],
+    random_state: int,
+    threads_per_worker: int,
+) -> list[dict[str, Any]]:
+    selected = {int(i) for i, _ in selected_pairs}
+    rows: list[dict[str, Any]] = []
+    for fold_no, fold in enumerate(folds, start=1):
+        test_idx = np.asarray(fold["test_idx"], dtype=int)
+        local_positions = [i for i, gi in enumerate(test_idx) if int(gi) in selected]
+        if not local_positions:
+            continue
+        estimator = configure_estimator_threads(
+            fold["estimator"], int(threads_per_worker)
+        )
+        X_selected = np.asarray(fold["X_test"])[np.asarray(local_positions, dtype=int)]
+        if method == "shap":
+            values, selected_rows, _ = _shap_values_for_data(
+                estimator,
+                fold["X_train"],
+                X_selected,
+                feature_names,
+                dataset.class_labels,
+                random_state=int(random_state) + fold_no * 997,
+                spec=spec,
+                show_progress=False,
+            )
+        elif method == "lime":
+            values, selected_rows = _lime_values_for_data(
+                estimator,
+                fold["X_train"],
+                X_selected,
+                feature_names,
+                dataset.class_labels,
+                class_indices,
+                random_state=int(random_state) + fold_no * 997,
+                spec=spec,
+                progress_callback=None,
+            )
+        else:
+            continue
+        proba = np.asarray(fold.get("proba"), dtype=float)
+        pred = (
+            np.argmax(proba, axis=1)
+            if proba.ndim == 2 and proba.shape[0] == len(test_idx)
+            else np.full(len(test_idx), -1)
+        )
+        for value_row, sliced_row in enumerate(selected_rows):
+            original_local = int(local_positions[int(sliced_row)])
+            global_i = int(test_idx[original_local])
+            for class_pos, class_index in enumerate(class_indices):
+                value_pos = (
+                    int(class_index)
+                    if values.shape[2] == len(dataset.class_labels)
+                    else class_pos
+                )
+                p_class = (
+                    float(proba[original_local, int(class_index)])
+                    if proba.ndim == 2 and int(class_index) < proba.shape[1]
+                    else float("nan")
+                )
+                rows.append(
+                    {
+                        "split_key": str(fold.get("split_key", "")),
+                        "sample_id": str(dataset.sample_ids[global_i]),
+                        "sample_index": global_i,
+                        "true_class": int(dataset.y[global_i]),
+                        "predicted_class": int(pred[original_local])
+                        if original_local < len(pred)
+                        else -1,
+                        "class_index": int(class_index),
+                        "class_label": str(dataset.class_labels[int(class_index)]),
+                        "p_class": p_class,
+                        "values": values[value_row, :, value_pos],
+                    }
+                )
+    return rows
+
+
+def _ensure_local_explanation_outputs(
+    target_dir: Path,
+    source_signature: str,
+    sweep: Any,
+    specs_by_name: dict[str, Any],
+    methods: Sequence[str],
+    folds: Sequence[dict[str, Any]],
+    dataset: Any,
+    feature_names: Sequence[str],
+    class_indices: Sequence[int],
+    threads_per_worker: int,
+) -> dict[str, Path]:
+    mode = str(getattr(sweep.explainability, "local_explanations", "none"))
+    if mode == "none":
+        return {}
+    selected_pairs = _select_local_sample_pairs(
+        dataset,
+        folds,
+        sample_ids=sweep.explainability.instance_sample_ids,
+        representative=bool(sweep.explainability.representative_instances),
+    )
+    if not selected_pairs:
+        return {}
+    cache_path = target_dir / "local_explanations_cache.json"
+    try:
+        cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
+    except Exception:
+        cache = {}
+    outputs: dict[str, Path] = {}
+    for method in ("shap", "lime"):
+        if method not in methods:
+            continue
+        signature = _local_method_signature(
+            source_signature,
+            sweep.explainability,
+            specs_by_name[method],
+            class_indices,
+            selected_pairs,
+        )
+        top_path = target_dir / f"instance_explanations_{method}_top_features.tsv"
+        selected_path = target_dir / f"instance_explanations_{method}_selected.tsv"
+        entry = cache.get(method, {}) if isinstance(cache, dict) else {}
+        if (
+            str(entry.get("signature", "")) == signature
+            and top_path.exists()
+            and selected_path.exists()
+        ):
+            info(
+                f"Reusing cached local {method.upper()} explanations · selected samples unchanged"
+            )
+            outputs[f"instance_explanations_{method}"] = top_path
+            continue
+        info(
+            f"Computing local OOF {method.upper()} explanations · mode={mode} · samples={len(selected_pairs)}"
+        )
+        rows = _compute_local_method_rows(
+            method,
+            specs_by_name[method],
+            folds,
+            dataset,
+            feature_names,
+            class_indices,
+            selected_pairs,
+            sweep.explainability.random_state,
+            threads_per_worker,
+        )
+        top, selected = _summarize_selected_local_explanations(
+            dataset,
+            feature_names,
+            rows,
+            selected_pairs,
+            method=method,
+            top_features_per_direction=sweep.explainability.top_instance_features,
+        )
+        top.to_csv(top_path, sep="\t", index=False)
+        selected.to_csv(selected_path, sep="\t", index=False)
+        outputs[f"instance_explanations_{method}"] = top_path
+        cache[method] = {
+            "signature": signature,
+            "samples": [str(dataset.sample_ids[int(i)]) for i, _ in selected_pairs],
+        }
+        dump_json_standard(cache, cache_path)
+    return outputs
 
 
 def _aggregate_oof_interactions(
     tables_by_fold: Sequence[pd.DataFrame], method: str
 ) -> pd.DataFrame:
     if not tables_by_fold:
-        raise ExplainabilityConfigurationError(
-            f"OOF ALE interactions produced no {method!r} fold results. No fallback method will be used."
-        )
+        return pd.DataFrame()
     raw = pd.concat(tables_by_fold, ignore_index=True)
     raw["interaction_strength"] = pd.to_numeric(
         raw["interaction_strength"], errors="coerce"
     )
-    out = raw.groupby(["feature_1", "feature_2"], as_index=False).agg(
+    keys = ["class_index", "class_label", "feature_1", "feature_2"]
+    out = raw.groupby(keys, as_index=False).agg(
         interaction_strength=("interaction_strength", "mean"),
         interaction_strength_sd=("interaction_strength", "std"),
         n_outer_folds=("fold_key", "nunique"),
@@ -2117,13 +3419,263 @@ def _aggregate_oof_interactions(
         correction_applied=("correction_applied", "max"),
         correction_error=(
             "correction_error",
-            lambda s: "; ".join([str(x) for x in s if str(x) and str(x) != "nan"])[
+            lambda x: "; ".join([str(v) for v in x if str(v) and str(v) != "nan"])[
                 :240
             ],
         ),
     )
     out["method"] = method
-    return out.sort_values("interaction_strength", ascending=False, na_position="last")
+    return out.sort_values(
+        ["class_index", "interaction_strength"],
+        ascending=[True, False],
+        na_position="last",
+    )
+
+
+def _shap_fold_parallel_task(
+    fold_no: int,
+    fold: dict[str, Any],
+    feature_names: Sequence[str],
+    class_labels: Sequence[str],
+    class_indices: Sequence[int],
+    sample_ids: Sequence[Any],
+    y: np.ndarray,
+    instance_sample_ids: Sequence[str],
+    collect_local: bool,
+    random_state: int,
+    spec: SHAP,
+    threads_per_worker: int,
+    progress_queue: Any | None = None,
+) -> tuple[int, pd.DataFrame, list[dict[str, Any]], int, str]:
+    estimator = configure_estimator_threads(fold["estimator"], threads_per_worker)
+    test_idx = np.asarray(fold["test_idx"], dtype=int)
+    requested = {str(x) for x in instance_sample_ids}
+    force_rows = (
+        [i for i, gi in enumerate(test_idx) if str(sample_ids[int(gi)]) in requested]
+        if collect_local
+        else []
+    )
+    callback = (
+        _queued_progress_callback(progress_queue, int(fold_no))
+        if progress_queue is not None
+        else None
+    )
+    vals, rows_ex, backend = _shap_values_for_data(
+        estimator,
+        fold["X_train"],
+        fold["X_test"],
+        feature_names,
+        class_labels,
+        random_state=int(random_state),
+        spec=spec,
+        force_explain_rows=force_rows,
+        show_progress=False,
+        progress_callback=callback,
+    )
+    fold_frame = _value_frame_for_fold(
+        "shap",
+        vals,
+        feature_names,
+        class_indices,
+        class_labels,
+        "mean_abs_probability_shap_within_outer_fold",
+    )
+    fold_frame["fold_key"] = str(fold.get("split_key", ""))
+    fold_frame["fold_no"] = int(fold_no)
+    fold_frame["shap_backend"] = str(backend)
+    rows = (
+        _local_value_rows_for_fold(
+            fold, vals, rows_ex, class_indices, class_labels, sample_ids, y
+        )
+        if collect_local
+        else []
+    )
+    return int(fold_no), fold_frame, rows, int(len(rows_ex)), str(backend)
+
+
+def _local_value_rows_for_fold(
+    fold: dict[str, Any],
+    values: np.ndarray,
+    rows_ex: Sequence[int],
+    class_indices: Sequence[int],
+    class_labels: Sequence[str],
+    sample_ids: Sequence[Any],
+    y: np.ndarray,
+) -> list[dict[str, Any]]:
+    test_idx = np.asarray(fold["test_idx"], dtype=int)
+    proba = np.asarray(fold.get("proba"), dtype=float)
+    pred = (
+        np.argmax(proba, axis=1)
+        if proba.ndim == 2 and proba.shape[0] == len(test_idx)
+        else np.full(len(test_idx), -1)
+    )
+    rows: list[dict[str, Any]] = []
+    for local_value_row, local_test_row in enumerate(rows_ex):
+        global_i = int(test_idx[int(local_test_row)])
+        for class_pos, class_index in enumerate(class_indices):
+            value_pos = (
+                int(class_index) if values.shape[2] == len(class_labels) else class_pos
+            )
+            p_class = (
+                float(proba[int(local_test_row), int(class_index)])
+                if proba.ndim == 2 and int(class_index) < proba.shape[1]
+                else float("nan")
+            )
+            rows.append(
+                {
+                    "split_key": str(fold.get("split_key", "")),
+                    "sample_id": str(sample_ids[global_i]),
+                    "sample_index": global_i,
+                    "true_class": int(y[global_i]),
+                    "predicted_class": int(pred[int(local_test_row)])
+                    if int(local_test_row) < len(pred)
+                    else -1,
+                    "class_index": int(class_index),
+                    "class_label": str(class_labels[int(class_index)]),
+                    "p_class": p_class,
+                    "values": values[local_value_row, :, value_pos],
+                }
+            )
+    return rows
+
+
+def _lime_fold_parallel_task(
+    fold_no: int,
+    fold: dict[str, Any],
+    feature_names: Sequence[str],
+    class_labels: Sequence[str],
+    class_indices: Sequence[int],
+    sample_ids: Sequence[Any],
+    y: np.ndarray,
+    instance_sample_ids: Sequence[str],
+    collect_local: bool,
+    random_state: int,
+    spec: LIME,
+    threads_per_worker: int,
+    progress_queue: Any | None = None,
+) -> tuple[int, pd.DataFrame, list[dict[str, Any]]]:
+    estimator = configure_estimator_threads(fold["estimator"], threads_per_worker)
+    test_idx = np.asarray(fold["test_idx"], dtype=int)
+    requested = {str(x) for x in instance_sample_ids}
+    force_rows = (
+        [i for i, gi in enumerate(test_idx) if str(sample_ids[int(gi)]) in requested]
+        if collect_local
+        else []
+    )
+    callback = (
+        _queued_progress_callback(progress_queue, int(fold_no))
+        if progress_queue is not None
+        else None
+    )
+    coeffs, rows_ex = _lime_values_for_data(
+        estimator,
+        fold["X_train"],
+        fold["X_test"],
+        feature_names,
+        class_labels,
+        class_indices,
+        random_state=int(random_state),
+        spec=spec,
+        force_explain_rows=force_rows,
+        progress_callback=callback,
+    )
+    frame = _value_frame_for_fold(
+        "lime",
+        coeffs,
+        feature_names,
+        class_indices,
+        class_labels,
+        "mean_abs_lime_coefficient_within_outer_fold",
+    )
+    frame["fold_key"] = str(fold.get("split_key", ""))
+    frame["fold_no"] = int(fold_no)
+    rows = (
+        _local_value_rows_for_fold(
+            fold, coeffs, rows_ex, class_indices, class_labels, sample_ids, y
+        )
+        if collect_local
+        else []
+    )
+    return int(fold_no), frame, rows
+
+
+def _permutation_fold_parallel_task(
+    fold_no: int,
+    fold: dict[str, Any],
+    feature_names: Sequence[str],
+    class_labels: Sequence[str],
+    class_indices: Sequence[int],
+    random_state: int,
+    spec: Permutation,
+    threads_per_worker: int,
+    progress_queue: Any | None = None,
+) -> tuple[int, pd.DataFrame]:
+    estimator = configure_estimator_threads(fold["estimator"], threads_per_worker)
+    callback = (
+        _queued_progress_callback(progress_queue, int(fold_no))
+        if progress_queue is not None
+        else None
+    )
+    frame = _permutation_feature_importance(
+        estimator,
+        fold["X_test"],
+        fold["y_test"],
+        feature_names,
+        class_labels,
+        class_indices,
+        spec=spec,
+        random_state=int(random_state),
+        progress_callback=callback,
+    )
+    frame["fold_key"] = str(fold.get("split_key", ""))
+    frame["fold_no"] = int(fold_no)
+    return int(fold_no), frame
+
+
+def _ale_fold_parallel_task(
+    fold_no: int,
+    fold: dict[str, Any],
+    feature_names: Sequence[str],
+    class_labels: Sequence[str],
+    class_indices: Sequence[int],
+    spec: ALE,
+    threads_per_worker: int,
+    progress_queue: Any | None = None,
+) -> tuple[int, pd.DataFrame, pd.DataFrame | None, pd.DataFrame | None]:
+    estimator = configure_estimator_threads(fold["estimator"], threads_per_worker)
+    callback = (
+        _queued_progress_callback(progress_queue, int(fold_no))
+        if progress_queue is not None
+        else None
+    )
+    frame = _ale_feature_importance(
+        estimator,
+        fold["X_test"],
+        feature_names,
+        class_labels,
+        class_indices,
+        spec=spec,
+        top_features=None,
+        progress_callback=callback,
+    )
+    skipped = frame.attrs.get("skipped_features")
+    skipped_out = None
+    if isinstance(skipped, pd.DataFrame) and not skipped.empty:
+        skipped_out = skipped.copy()
+        skipped_out["fold_key"] = str(fold.get("split_key", ""))
+        skipped_out["fold_no"] = int(fold_no)
+    if frame.empty:
+        return int(fold_no), frame, None, skipped_out
+    curves = frame.attrs.get("curves")
+    frame = frame.copy()
+    frame["fold_key"] = str(fold.get("split_key", ""))
+    frame["fold_no"] = int(fold_no)
+    curves_out = None
+    if isinstance(curves, pd.DataFrame) and not curves.empty:
+        curves_out = curves.copy()
+        curves_out["fold_key"] = str(fold.get("split_key", ""))
+        curves_out["fold_no"] = int(fold_no)
+    return int(fold_no), frame, curves_out, skipped_out
 
 
 def _explain_one(
@@ -2134,7 +3686,9 @@ def _explain_one(
     display_label_override: str | None = None,
     allow_member_cache: bool = True,
 ) -> dict[str, Path]:
-    methods = _normalise_explainability_methods(sweep.explainability.methods)
+    method_specs = _normalise_explainability_method_specs(sweep.explainability.methods)
+    methods = tuple(method_name(x) for x in method_specs)
+    specs_by_name = {method_name(x): x for x in method_specs}
     _preflight_explainability_dependencies(methods)
     root = sweep.root()
     stage("Explainability", str(root))
@@ -2144,8 +3698,12 @@ def _explain_one(
             "target": target_override
             or _configured_explainability_targets(sweep.explainability),
             "methods": methods,
+            "profile": str(getattr(sweep.explainability, "profile", "standard")),
             "top features": sweep.explainability.top_k,
-            "interaction pairs": sweep.explainability.top_k_interactions
+            "local explanations": str(
+                getattr(sweep.explainability, "local_explanations", "representative")
+            ),
+            "interaction pairs": int(specs_by_name["interactions"].top_k)
             if "interactions" in methods
             else "not requested",
             "fallbacks": "off",
@@ -2212,21 +3770,20 @@ def _explain_one(
     if (
         allow_member_cache
         and target_dir.exists()
-        and _explainability_cache_complete(target_dir, methods)
+        and _explainability_cache_complete(target_dir, sweep.explainability)
     ):
         info(f"Reusing existing explainability for {target_label}")
         return {
             "explainability_dir": target_dir,
             "importance": target_dir / "feature_importance.tsv",
-            "figure": target_dir / "figures" / "feature_importance.png",
-            "feature_support": target_dir / "figures" / "feature_support.png",
+            "stability": target_dir / "feature_stability.tsv",
         }
     if (
         not ensemble_explain
         and allow_member_cache
         and cache_dir is not None
         and cache_dir.exists()
-        and _explainability_cache_complete(cache_dir, methods)
+        and _explainability_cache_complete(cache_dir, sweep.explainability)
     ):
         if target_dir != cache_dir:
             _copy_explainability_cache(cache_dir, target_dir)
@@ -2236,351 +3793,848 @@ def _explain_one(
         return {
             "explainability_dir": target_dir,
             "importance": target_dir / "feature_importance.tsv",
-            "figure": target_dir / "figures" / "feature_importance.png",
-            "feature_support": target_dir / "figures" / "feature_support.png",
+            "stability": target_dir / "feature_stability.tsv",
         }
 
     if ensemble_explain:
-        with console.status(
-            "Fitting selected MPMA-E outer-fold units for OOF explanation...",
-            spinner="dots",
-        ):
-            dataset, X_base, feature_names, oof_folds, row = (
-                _mpma_e_reference_and_folds(sweep, rankings)
-            )
+        info("Preparing selected MPMA-E outer-fold units for OOF explanation")
+        dataset, X_base, feature_names, oof_folds, row = _mpma_e_reference_and_folds(
+            sweep, rankings
+        )
     else:
-        with console.status(
-            "Fitting selected MPMA outer-fold units for OOF explanation...",
-            spinner="dots",
-        ):
-            oof_bundle = _fit_oof_single_for_explainability(sweep, row)
-            dataset = oof_bundle["dataset"]
-            X_base = oof_bundle["X_base"]
-            feature_names = oof_bundle["feature_names"]
-            oof_folds = oof_bundle["folds"]
+        info("Preparing selected MPMA outer-fold units for OOF explanation")
+        oof_bundle = _fit_oof_single_for_explainability(sweep, row)
+        dataset = oof_bundle["dataset"]
+        X_base = oof_bundle["X_base"]
+        feature_names = oof_bundle["feature_names"]
+        oof_folds = oof_bundle["folds"]
 
+    class_indices = _resolve_explainability_classes(
+        dataset, sweep.explainability.classes
+    )
+    execution = _xai_execution_plan(sweep, len(oof_folds))
+    memory_gib = (
+        "unknown"
+        if execution.memory_bytes is None
+        else f"{execution.memory_bytes / (1024**3):.1f} GiB"
+    )
+    summary_table(
+        "Explainability workload",
+        {
+            "outer folds": len(oof_folds),
+            "features": len(feature_names),
+            "classes explained": len(class_indices),
+            "class labels": [str(dataset.class_labels[int(i)]) for i in class_indices],
+            "CPU logical/physical": f"{execution.logical_cpus}/{execution.physical_cpus}",
+            "available memory": memory_gib,
+            "workers": execution.workers,
+            "threads per worker": execution.threads_per_worker,
+            "parallel backend": execution.backend,
+        },
+    )
     figures_dir = target_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
 
+    source_signature = _explainability_source_signature(
+        target_slug, row, oof_folds, feature_names, dataset.class_labels
+    )
+    previous_meta: dict[str, Any] = {}
+    meta_path = target_dir / "explained_unit.json"
+    if meta_path.exists():
+        try:
+            previous_meta = json.loads(meta_path.read_text())
+        except Exception:
+            previous_meta = {}
+    previous_method_cache = dict(previous_meta.get("method_cache", {}))
+    current_method_signatures = {
+        name: _method_cache_signature(
+            sweep.explainability, specs_by_name[name], source_signature, class_indices
+        )
+        for name in methods
+    }
+    current_method_entries = {
+        name: _method_cache_entry(
+            current_method_signatures[name],
+            source_signature,
+            specs_by_name[name],
+            class_indices,
+            sweep.explainability.top_k,
+        )
+        for name in current_method_signatures
+    }
+    reusable_methods: set[str] = set()
+    for name, signature in current_method_signatures.items():
+        if not _method_cache_files_complete(target_dir, name):
+            info(
+                f"Cache miss {name.upper()} · required method artifacts are incomplete"
+            )
+            continue
+        entry, provenance_source = _load_method_cache_entry(
+            target_dir, name, previous_method_cache
+        )
+        compatible, reason = _method_cache_entry_status(
+            entry, signature, source_signature, specs_by_name[name], class_indices
+        )
+        legacy = not compatible and _legacy_method_cache_valid(
+            previous_meta, row, sweep.explainability, specs_by_name[name], class_indices
+        )
+        if compatible or legacy:
+            reusable_methods.add(name)
+            _persist_method_cache_entry(
+                meta_path, previous_meta, name, current_method_entries[name]
+            )
+            previous_method_cache[name] = current_method_entries[name]
+            suffix = (
+                "migrated from legacy metadata"
+                if legacy and not compatible
+                else provenance_source
+            )
+            info(
+                f"Cache hit {name.upper()} · reusing completed global explainability · {suffix}"
+            )
+        else:
+            info(f"Cache miss {name.upper()} · {reason}")
+
     method_frames: list[pd.DataFrame] = []
+    fold_importance_frames: list[pd.DataFrame] = []
     method_outputs: dict[str, Path] = {}
     interaction_outputs: dict[str, Path] = {}
+    resolved_shap_backends: set[str] = set()
+    for name in methods:
+        if name not in reusable_methods:
+            continue
+        if name == "interactions":
+            interaction_outputs.update(_existing_method_outputs(target_dir, name))
+            continue
+        _, fold_long = _cached_method_frame(target_dir, name)
+        fold_frames = (
+            [frame.copy() for _, frame in fold_long.groupby("fold_no", sort=True)]
+            if "fold_no" in fold_long.columns
+            else [fold_long.copy()]
+        )
+        scoring_values = (
+            fold_long.get("scoring", pd.Series(dtype=object)).dropna().astype(str)
+        )
+        scoring = scoring_values.iloc[0] if not scoring_values.empty else name
+        frame = _aggregate_fold_feature_importance(
+            name,
+            fold_frames,
+            feature_names,
+            class_indices,
+            dataset.class_labels,
+            scoring,
+            sweep.explainability.top_k,
+        )
+        method_frames.append(frame)
+        fold_importance_frames.append(fold_long)
+        if name == "shap" and "shap_backend" in fold_long.columns:
+            resolved_shap_backends.update(
+                str(x) for x in fold_long["shap_backend"].dropna().astype(str).unique()
+            )
+        method_outputs.update(
+            _write_method_outputs(
+                frame,
+                target_dir=target_dir,
+                figures_dir=figures_dir,
+                X_base=X_base,
+                y=dataset.y,
+                feature_names=feature_names,
+                class_labels=dataset.class_labels,
+                top_k=sweep.explainability.top_k,
+            )
+        )
+        method_outputs.update(_existing_method_outputs(target_dir, name))
     oof_pred_path = _write_oof_prediction_summary(dataset, oof_folds, target_dir)
     method_outputs["oof_predictions"] = oof_pred_path
+    local_mode = str(
+        getattr(sweep.explainability, "local_explanations", "representative")
+    )
+    local_enabled = local_mode != "none"
 
     shap_oof_rows: list[dict[str, Any]] = []
-    if "shap" in methods:
-        info("Running OOF SHAP feature attribution")
-        shap_blocks: list[np.ndarray] = []
-        for fold_no, fold in enumerate(oof_folds, start=1):
-            test_idx = np.asarray(fold["test_idx"], dtype=int)
-            requested = {str(x) for x in sweep.explainability.instance_sample_ids}
-            force_rows = [
-                i
-                for i, gi in enumerate(test_idx)
-                if str(dataset.sample_ids[int(gi)]) in requested
-            ]
-            with console.status(
-                f"Computing SHAP values for outer fold {fold_no}/{len(oof_folds)}...",
-                spinner="dots",
-            ):
-                vals, rows_ex = _shap_values_for_data(
-                    fold["estimator"],
-                    fold["X_train"],
-                    fold["X_test"],
-                    feature_names,
-                    dataset.class_labels,
-                    random_state=sweep.explainability.random_state + fold_no * 997,
-                    max_background=sweep.explainability.shap_background,
-                    max_explain=sweep.explainability.shap_max_samples,
-                    force_explain_rows=force_rows,
-                )
-            shap_blocks.append(vals)
-            proba = np.asarray(fold.get("proba"), dtype=float)
-            pred = (
-                np.argmax(proba, axis=1)
-                if proba.ndim == 2 and proba.shape[0] == len(test_idx)
-                else np.full(len(test_idx), -1)
-            )
-            for local_value_row, local_test_row in enumerate(rows_ex):
-                global_i = int(test_idx[int(local_test_row)])
-                p_pos = (
-                    float(proba[int(local_test_row), 1])
-                    if proba.ndim == 2 and proba.shape[1] > 1
-                    else float("nan")
-                )
-                shap_oof_rows.append(
-                    {
-                        "split_key": str(fold.get("split_key", "")),
-                        "sample_id": str(dataset.sample_ids[global_i]),
-                        "sample_index": global_i,
-                        "true_class": int(dataset.y[global_i]),
-                        "predicted_class": int(pred[int(local_test_row)])
-                        if int(local_test_row) < len(pred)
-                        else -1,
-                        "p_positive": p_pos,
-                        "values": vals[local_value_row],
-                    }
-                )
-        shap_frame = _importance_frame_from_value_blocks(
-            "shap", shap_blocks, feature_names, "mean_abs_oof_shap"
-        )
-        method_frames.append(shap_frame)
-        with console.status("Writing OOF SHAP tables and figures...", spinner="dots"):
-            method_outputs.update(
-                _write_method_outputs(
-                    shap_frame,
-                    target_dir=target_dir,
-                    figures_dir=figures_dir,
-                    X_base=X_base,
-                    y=dataset.y,
-                    feature_names=feature_names,
-                    class_labels=dataset.class_labels,
-                    top_k=sweep.explainability.top_k,
-                )
-            )
-        if (
-            sweep.explainability.representative_instances
-            or sweep.explainability.instance_sample_ids
-        ):
-            info("Running OOF SHAP instance-level explanations")
-            inst_top, inst_sel = _select_oof_instance_explanations(
-                dataset,
-                feature_names,
-                shap_oof_rows,
-                sample_ids=sweep.explainability.instance_sample_ids,
-                representative=sweep.explainability.representative_instances,
-                top_features_per_direction=sweep.explainability.top_instance_features,
-            )
-            inst_top.to_csv(
-                target_dir / "instance_explanations_shap_top_features.tsv",
-                sep="\t",
-                index=False,
-            )
-            inst_sel.to_csv(
-                target_dir / "instance_explanations_shap_selected.tsv",
-                sep="\t",
-                index=False,
-            )
-            _plot_instance_explanations(
-                inst_top,
-                figures_dir / "instance_explanations_shap",
-                top_features_per_direction=sweep.explainability.top_instance_features,
-            )
-            method_outputs["instance_explanations_shap"] = (
-                target_dir / "instance_explanations_shap_top_features.tsv"
-            )
-            method_outputs["instance_explanations_shap_figure"] = (
-                figures_dir / "instance_explanations_shap.png"
-            )
-        success("OOF SHAP completed")
-
-    if "lime" in methods:
-        info("Running OOF LIME feature attribution")
-        lime_blocks: list[np.ndarray] = []
-        for fold_no, fold in enumerate(oof_folds, start=1):
-            with console.status(
-                f"Computing LIME explanations for outer fold {fold_no}/{len(oof_folds)}...",
-                spinner="dots",
-            ):
-                coeffs, _rows = _lime_values_for_data(
-                    fold["estimator"],
-                    fold["X_train"],
-                    fold["X_test"],
-                    feature_names,
-                    dataset.class_labels,
-                    random_state=sweep.explainability.random_state + fold_no * 997,
-                    n_samples=sweep.explainability.lime_samples,
-                    max_explain=sweep.explainability.lime_max_samples,
-                )
-            lime_blocks.append(coeffs)
-        label = 1 if len(dataset.class_labels) == 2 else 0
-        lime_frame = _importance_frame_from_value_blocks(
-            "lime",
-            lime_blocks,
-            feature_names,
-            f"mean_abs_oof_lime_coefficients_label_{label}",
-        )
-        method_frames.append(lime_frame)
-        with console.status("Writing OOF LIME tables and figures...", spinner="dots"):
-            method_outputs.update(
-                _write_method_outputs(
-                    lime_frame,
-                    target_dir=target_dir,
-                    figures_dir=figures_dir,
-                    X_base=X_base,
-                    y=dataset.y,
-                    feature_names=feature_names,
-                    class_labels=dataset.class_labels,
-                    top_k=sweep.explainability.top_k,
-                )
-            )
-        success("OOF LIME completed")
-
-    if "permutation" in methods:
-        info("Running OOF permutation importance")
-        perm_frames: list[pd.DataFrame] = []
-        for fold_no, fold in enumerate(oof_folds, start=1):
-            with console.status(
-                f"Computing permutation importance for outer fold {fold_no}/{len(oof_folds)}...",
-                spinner="dots",
-            ):
-                perm_frames.append(
-                    _permutation_feature_importance(
-                        fold["estimator"],
+    if "shap" in methods and "shap" not in reusable_methods:
+        spec = specs_by_name["shap"]
+        info("Running global class-specific OOF SHAP feature attribution")
+        shap_fold_frames: list[pd.DataFrame] = []
+        if execution.workers == 1:
+            with progress() as prog:
+                for fold_no, fold in enumerate(oof_folds, start=1):
+                    test_idx = np.asarray(fold["test_idx"], dtype=int)
+                    expected_rows = max(1, min(int(spec.max_explain), len(test_idx)))
+                    prefix = (
+                        f"SHAP fold {fold_no}/{len(oof_folds)} · "
+                        f"{expected_rows} samples · {len(feature_names)} features · {len(class_indices)} classes"
+                    )
+                    task = prog.add_task(f"{prefix} · preparing", total=expected_rows)
+                    vals, rows_ex, backend = _shap_values_for_data(
+                        configure_estimator_threads(
+                            fold["estimator"], int(execution.threads_per_worker)
+                        ),
+                        fold["X_train"],
                         fold["X_test"],
-                        fold["y_test"],
                         feature_names,
                         dataset.class_labels,
-                        n_repeats=sweep.explainability.n_repeats,
                         random_state=sweep.explainability.random_state + fold_no * 997,
+                        spec=spec,
+                        force_explain_rows=[],
+                        show_progress=False,
+                        progress_callback=_progress_callback(prog, task, prefix),
                     )
+                    fold_frame = _value_frame_for_fold(
+                        "shap",
+                        vals,
+                        feature_names,
+                        class_indices,
+                        dataset.class_labels,
+                        "mean_abs_probability_shap_within_outer_fold",
+                    )
+                    fold_frame["fold_key"] = str(fold.get("split_key", ""))
+                    fold_frame["fold_no"] = int(fold_no)
+                    fold_frame["shap_backend"] = str(backend)
+                    shap_fold_frames.append(fold_frame)
+                    shap_oof_rows.extend([])
+        else:
+            fold_totals = {
+                fold_no: max(
+                    1,
+                    min(
+                        int(spec.max_explain),
+                        len(np.asarray(fold["test_idx"], dtype=int)),
+                    ),
                 )
-        perm_scoring = "mean_outer_test_permutation_importance"
-        permutation_frame = _mean_feature_importance_frames(
-            "permutation", perm_frames, feature_names, perm_scoring
+                for fold_no, fold in enumerate(oof_folds, start=1)
+            }
+            info(
+                f"SHAP workload · {sum(fold_totals.values()):,} explained samples · "
+                f"{len(oof_folds)} folds × up to {int(spec.max_explain)} samples"
+            )
+            with Manager() as manager:
+                progress_queue = manager.Queue()
+                shap_tasks = [
+                    (
+                        _shap_fold_parallel_task,
+                        (
+                            fold_no,
+                            fold,
+                            feature_names,
+                            dataset.class_labels,
+                            class_indices,
+                            dataset.sample_ids,
+                            dataset.y,
+                            sweep.explainability.instance_sample_ids,
+                            False,
+                            sweep.explainability.random_state + fold_no * 997,
+                            spec,
+                            int(execution.threads_per_worker),
+                            progress_queue,
+                        ),
+                        {},
+                    )
+                    for fold_no, fold in enumerate(oof_folds, start=1)
+                ]
+                parallel_results = _parallel_progress_results(
+                    shap_tasks,
+                    execution,
+                    progress_queue,
+                    label="SHAP",
+                    unit_label="samples",
+                    fold_totals=fold_totals,
+                )
+            fold_results: dict[
+                int, tuple[pd.DataFrame, list[dict[str, Any]], int, str]
+            ] = {}
+            for fold_no, fold_frame, rows, explained_count, backend in parallel_results:
+                fold_results[int(fold_no)] = (
+                    fold_frame,
+                    rows,
+                    int(explained_count),
+                    str(backend),
+                )
+            for fold_no in sorted(fold_results):
+                fold_frame, rows, _, _ = fold_results[fold_no]
+                shap_fold_frames.append(fold_frame)
+                shap_oof_rows.extend(rows)
+        backend_counts: dict[str, int] = {}
+        for frame in shap_fold_frames:
+            if "shap_backend" not in frame.columns or frame.empty:
+                continue
+            backend = str(frame["shap_backend"].iloc[0])
+            backend_counts[backend] = backend_counts.get(backend, 0) + 1
+        if backend_counts:
+            resolved_shap_backends.update(backend_counts)
+            info(
+                "SHAP backend routing · "
+                + ", ".join(f"{k}={v}" for k, v in sorted(backend_counts.items()))
+            )
+        info("Aggregating SHAP global importance and cross-fold stability")
+        shap_frame = _aggregate_fold_feature_importance(
+            "shap",
+            shap_fold_frames,
+            feature_names,
+            class_indices,
+            dataset.class_labels,
+            "outer_fold_mean_abs_probability_shap",
+            sweep.explainability.top_k,
+        )
+        if backend_counts:
+            shap_frame["shap_backend"] = ",".join(sorted(backend_counts))
+        method_frames.append(shap_frame)
+        fold_path, fold_long = _write_fold_feature_importance(
+            "shap", shap_fold_frames, target_dir
+        )
+        method_outputs["shap_by_outer_fold"] = fold_path
+        fold_importance_frames.append(fold_long)
+        method_outputs.update(
+            _write_method_outputs(
+                shap_frame,
+                target_dir=target_dir,
+                figures_dir=figures_dir,
+                X_base=X_base,
+                y=dataset.y,
+                feature_names=feature_names,
+                class_labels=dataset.class_labels,
+                top_k=sweep.explainability.top_k,
+            )
+        )
+        _persist_method_cache_entry(
+            meta_path, previous_meta, "shap", current_method_entries["shap"]
+        )
+        previous_method_cache["shap"] = current_method_entries["shap"]
+        success("Class-specific OOF SHAP completed")
+
+    if "lime" in methods and "lime" not in reusable_methods:
+        spec = specs_by_name["lime"]
+        info("Running global class-specific OOF LIME feature attribution")
+        lime_fold_frames: list[pd.DataFrame] = []
+        lime_oof_rows: list[dict[str, Any]] = []
+        if execution.workers == 1:
+            prog = progress()
+            prog.start()
+            for fold_no, fold in enumerate(oof_folds, start=1):
+                prefix = f"LIME fold {fold_no}/{len(oof_folds)} · {len(feature_names)} features · {len(class_indices)} classes"
+                task = prog.add_task(f"{prefix} · preparing", total=1)
+                force_rows = []
+                coeffs, rows_ex = _lime_values_for_data(
+                    configure_estimator_threads(
+                        fold["estimator"], int(execution.threads_per_worker)
+                    ),
+                    fold["X_train"],
+                    fold["X_test"],
+                    feature_names,
+                    dataset.class_labels,
+                    class_indices,
+                    random_state=sweep.explainability.random_state + fold_no * 997,
+                    spec=spec,
+                    force_explain_rows=force_rows,
+                    progress_callback=_progress_callback(prog, task, prefix),
+                )
+                fold_frame = _value_frame_for_fold(
+                    "lime",
+                    coeffs,
+                    feature_names,
+                    class_indices,
+                    dataset.class_labels,
+                    "mean_abs_lime_coefficient_within_outer_fold",
+                )
+                fold_frame["fold_key"] = str(fold.get("split_key", ""))
+                fold_frame["fold_no"] = int(fold_no)
+                lime_fold_frames.append(fold_frame)
+                lime_oof_rows.extend([])
+            prog.stop()
+        else:
+            fold_totals = {
+                fold_no: max(
+                    1,
+                    min(
+                        int(spec.max_explain),
+                        len(np.asarray(fold["test_idx"], dtype=int)),
+                    ),
+                )
+                for fold_no, fold in enumerate(oof_folds, start=1)
+            }
+            info(
+                f"LIME workload · {sum(fold_totals.values()):,} explained samples · "
+                f"{len(oof_folds)} folds × up to {int(spec.max_explain)} samples"
+            )
+            with Manager() as manager:
+                progress_queue = manager.Queue()
+                tasks = [
+                    (
+                        _lime_fold_parallel_task,
+                        (
+                            fold_no,
+                            fold,
+                            feature_names,
+                            dataset.class_labels,
+                            class_indices,
+                            dataset.sample_ids,
+                            dataset.y,
+                            sweep.explainability.instance_sample_ids,
+                            False,
+                            sweep.explainability.random_state + fold_no * 997,
+                            spec,
+                            int(execution.threads_per_worker),
+                            progress_queue,
+                        ),
+                        {},
+                    )
+                    for fold_no, fold in enumerate(oof_folds, start=1)
+                ]
+                parallel_results = _parallel_progress_results(
+                    tasks,
+                    execution,
+                    progress_queue,
+                    label="LIME",
+                    unit_label="samples",
+                    fold_totals=fold_totals,
+                )
+            results: dict[int, tuple[pd.DataFrame, list[dict[str, Any]]]] = {}
+            for fold_no, frame, rows in parallel_results:
+                results[int(fold_no)] = (frame, rows)
+            lime_fold_frames = [results[i][0] for i in sorted(results)]
+            for i in sorted(results):
+                lime_oof_rows.extend(results[i][1])
+        info("Aggregating LIME global importance and cross-fold stability")
+        lime_frame = _aggregate_fold_feature_importance(
+            "lime",
+            lime_fold_frames,
+            feature_names,
+            class_indices,
+            dataset.class_labels,
+            "outer_fold_mean_abs_lime_coefficient",
+            sweep.explainability.top_k,
+        )
+        method_frames.append(lime_frame)
+        fold_path, fold_long = _write_fold_feature_importance(
+            "lime", lime_fold_frames, target_dir
+        )
+        method_outputs["lime_by_outer_fold"] = fold_path
+        fold_importance_frames.append(fold_long)
+        method_outputs.update(
+            _write_method_outputs(
+                lime_frame,
+                target_dir=target_dir,
+                figures_dir=figures_dir,
+                X_base=X_base,
+                y=dataset.y,
+                feature_names=feature_names,
+                class_labels=dataset.class_labels,
+                top_k=sweep.explainability.top_k,
+            )
+        )
+        _persist_method_cache_entry(
+            meta_path, previous_meta, "lime", current_method_entries["lime"]
+        )
+        previous_method_cache["lime"] = current_method_entries["lime"]
+        success("Class-specific OOF LIME completed")
+
+    if "permutation" in methods and "permutation" not in reusable_methods:
+        spec = specs_by_name["permutation"]
+        info("Running global class-specific OOF permutation importance")
+        perm_frames: list[pd.DataFrame] = []
+        if execution.workers == 1:
+            prog = progress()
+            prog.start()
+            for fold_no, fold in enumerate(oof_folds, start=1):
+                prefix = f"Permutation fold {fold_no}/{len(oof_folds)} · {len(feature_names)} features · {len(class_indices)} classes"
+                task = prog.add_task(f"{prefix} · preparing", total=1)
+                frame = _permutation_feature_importance(
+                    configure_estimator_threads(
+                        fold["estimator"], int(execution.threads_per_worker)
+                    ),
+                    fold["X_test"],
+                    fold["y_test"],
+                    feature_names,
+                    dataset.class_labels,
+                    class_indices,
+                    spec=spec,
+                    random_state=sweep.explainability.random_state + fold_no * 997,
+                    progress_callback=_progress_callback(prog, task, prefix),
+                )
+                frame["fold_key"] = str(fold.get("split_key", ""))
+                frame["fold_no"] = int(fold_no)
+                perm_frames.append(frame)
+            prog.stop()
+        else:
+            total_per_fold = max(1, len(feature_names) * int(spec.n_repeats))
+            fold_totals = {
+                fold_no: total_per_fold for fold_no, _ in enumerate(oof_folds, start=1)
+            }
+            info(
+                f"Permutation workload · {sum(fold_totals.values()):,} feature-repeat jobs · "
+                f"{len(feature_names):,} features × {int(spec.n_repeats)} repeats × {len(oof_folds)} folds"
+            )
+            with Manager() as manager:
+                progress_queue = manager.Queue()
+                tasks = [
+                    (
+                        _permutation_fold_parallel_task,
+                        (
+                            fold_no,
+                            fold,
+                            feature_names,
+                            dataset.class_labels,
+                            class_indices,
+                            sweep.explainability.random_state + fold_no * 997,
+                            spec,
+                            int(execution.threads_per_worker),
+                            progress_queue,
+                        ),
+                        {},
+                    )
+                    for fold_no, fold in enumerate(oof_folds, start=1)
+                ]
+                parallel_results = _parallel_progress_results(
+                    tasks,
+                    execution,
+                    progress_queue,
+                    label="Permutation",
+                    unit_label="feature-repeat jobs",
+                    fold_totals=fold_totals,
+                )
+            results: dict[int, pd.DataFrame] = {}
+            for fold_no, frame in parallel_results:
+                results[int(fold_no)] = frame
+            perm_frames = [results[i] for i in sorted(results)]
+        info("Aggregating permutation global importance and cross-fold stability")
+        permutation_frame = _aggregate_fold_feature_importance(
+            "permutation",
+            perm_frames,
+            feature_names,
+            class_indices,
+            dataset.class_labels,
+            f"outer_fold_increase_in_one_vs_rest_{spec.scoring}",
+            sweep.explainability.top_k,
         )
         method_frames.append(permutation_frame)
-        with console.status(
-            "Writing OOF permutation tables and figures...", spinner="dots"
-        ):
-            method_outputs.update(
-                _write_method_outputs(
-                    permutation_frame,
-                    target_dir=target_dir,
-                    figures_dir=figures_dir,
-                    X_base=X_base,
-                    y=dataset.y,
-                    feature_names=feature_names,
-                    class_labels=dataset.class_labels,
-                    top_k=sweep.explainability.top_k,
-                )
+        fold_path, fold_long = _write_fold_feature_importance(
+            "permutation", perm_frames, target_dir
+        )
+        method_outputs["permutation_by_outer_fold"] = fold_path
+        fold_importance_frames.append(fold_long)
+        method_outputs.update(
+            _write_method_outputs(
+                permutation_frame,
+                target_dir=target_dir,
+                figures_dir=figures_dir,
+                X_base=X_base,
+                y=dataset.y,
+                feature_names=feature_names,
+                class_labels=dataset.class_labels,
+                top_k=sweep.explainability.top_k,
             )
-        success("OOF permutation importance completed")
+        )
+        _persist_method_cache_entry(
+            meta_path,
+            previous_meta,
+            "permutation",
+            current_method_entries["permutation"],
+        )
+        previous_method_cache["permutation"] = current_method_entries["permutation"]
+        success("Class-specific OOF permutation importance completed")
 
-    preliminary = (
-        _combine_feature_importance(method_frames) if method_frames else pd.DataFrame()
-    )
-    top_for_ale = (
-        preliminary.head(sweep.explainability.top_k)["feature"].tolist()
-        if not preliminary.empty
-        else list(feature_names[: sweep.explainability.top_k])
-    )
-
-    if "ale" in methods:
-        info("Running OOF ALE feature effects")
+    if "ale" in methods and "ale" not in reusable_methods:
+        spec = specs_by_name["ale"]
+        info("Running global class-specific OOF ALE feature effects")
         ale_frames: list[pd.DataFrame] = []
         curve_frames: list[pd.DataFrame] = []
         skipped_frames: list[pd.DataFrame] = []
-        for fold_no, fold in enumerate(oof_folds, start=1):
-            with console.status(
-                f"Computing ALE curves for outer fold {fold_no}/{len(oof_folds)}...",
-                spinner="dots",
-            ):
+        if execution.workers == 1:
+            prog = progress()
+            prog.start()
+            for fold_no, fold in enumerate(oof_folds, start=1):
+                prefix = f"ALE fold {fold_no}/{len(oof_folds)} · {len(feature_names)} features · {len(class_indices)} classes"
+                task = prog.add_task(f"{prefix} · preparing", total=1)
                 frame = _ale_feature_importance(
-                    fold["estimator"],
+                    configure_estimator_threads(
+                        fold["estimator"], int(execution.threads_per_worker)
+                    ),
                     fold["X_test"],
                     feature_names,
                     dataset.class_labels,
-                    n_bins=sweep.explainability.ale_bins,
-                    top_features=top_for_ale,
+                    class_indices,
+                    spec=spec,
+                    top_features=None,
+                    progress_callback=_progress_callback(prog, task, prefix),
                 )
-            skipped = frame.attrs.get("skipped_features")
-            if isinstance(skipped, pd.DataFrame) and not skipped.empty:
-                skipped = skipped.copy()
-                skipped["fold_key"] = str(fold.get("split_key", ""))
-                skipped["fold_no"] = int(fold_no)
-                skipped_frames.append(skipped)
-            if frame.empty:
-                continue
-            frame = frame.copy()
-            frame["fold_key"] = str(fold.get("split_key", ""))
-            frame["fold_no"] = int(fold_no)
-            ale_frames.append(frame)
-            curves = frame.attrs.get("curves")
-            if isinstance(curves, pd.DataFrame) and not curves.empty:
-                curves = curves.copy()
-                curves["fold_key"] = str(fold.get("split_key", ""))
-                curves["fold_no"] = int(fold_no)
-                curve_frames.append(curves)
+                skipped = frame.attrs.get("skipped_features")
+                if isinstance(skipped, pd.DataFrame) and not skipped.empty:
+                    skipped = skipped.copy()
+                    skipped["fold_key"] = str(fold.get("split_key", ""))
+                    skipped["fold_no"] = int(fold_no)
+                    skipped_frames.append(skipped)
+                if frame.empty:
+                    continue
+                curves = frame.attrs.get("curves")
+                frame = frame.copy()
+                frame["fold_key"] = str(fold.get("split_key", ""))
+                frame["fold_no"] = int(fold_no)
+                ale_frames.append(frame)
+                if isinstance(curves, pd.DataFrame) and not curves.empty:
+                    curves = curves.copy()
+                    curves["fold_key"] = str(fold.get("split_key", ""))
+                    curves["fold_no"] = int(fold_no)
+                    curve_frames.append(curves)
+            prog.stop()
+        else:
+            total_per_fold = max(1, len(feature_names) * len(class_indices))
+            total_work = max(1, len(oof_folds) * total_per_fold)
+            info(
+                f"ALE workload · {total_work:,} feature-class jobs · "
+                f"{len(feature_names):,} features × {len(class_indices)} classes × {len(oof_folds)} folds"
+            )
+            results: dict[
+                int, tuple[pd.DataFrame, pd.DataFrame | None, pd.DataFrame | None]
+            ] = {}
+            with Manager() as manager:
+                progress_queue = manager.Queue()
+                tasks = [
+                    (
+                        _ale_fold_parallel_task,
+                        (
+                            fold_no,
+                            fold,
+                            feature_names,
+                            dataset.class_labels,
+                            class_indices,
+                            spec,
+                            int(execution.threads_per_worker),
+                            progress_queue,
+                        ),
+                        {},
+                    )
+                    for fold_no, fold in enumerate(oof_folds, start=1)
+                ]
+                fold_progress = {fold_no: 0 for fold_no in range(1, len(oof_folds) + 1)}
+                stop_monitor = Event()
+                with progress() as prog:
+                    task = prog.add_task(
+                        f"ALE · 0/{total_work:,} feature-class jobs · {execution.workers} workers",
+                        total=total_work,
+                    )
+
+                    def monitor() -> None:
+                        while not stop_monitor.is_set():
+                            try:
+                                fold_no, completed, total, detail = progress_queue.get(
+                                    timeout=0.25
+                                )
+                            except Empty:
+                                continue
+                            fold_no = int(fold_no)
+                            fold_progress[fold_no] = max(
+                                fold_progress.get(fold_no, 0),
+                                min(max(0, int(completed)), max(1, int(total))),
+                            )
+                            overall = min(total_work, sum(fold_progress.values()))
+                            prog.update(
+                                task,
+                                completed=overall,
+                                description=(
+                                    f"ALE · {overall:,}/{total_work:,} feature-class jobs · "
+                                    f"fold {fold_no}/{len(oof_folds)} · {detail}"
+                                ),
+                            )
+
+                    monitor_thread = Thread(target=monitor, daemon=True)
+                    monitor_thread.start()
+                    try:
+                        for fold_no, frame, curves, skipped in _xai_task_iterator(
+                            tasks, execution
+                        ):
+                            results[int(fold_no)] = (frame, curves, skipped)
+                            fold_progress[int(fold_no)] = total_per_fold
+                            overall = min(total_work, sum(fold_progress.values()))
+                            prog.update(
+                                task,
+                                completed=overall,
+                                description=(
+                                    f"ALE · {overall:,}/{total_work:,} feature-class jobs · "
+                                    f"completed fold {fold_no}/{len(oof_folds)}"
+                                ),
+                            )
+                    finally:
+                        stop_monitor.set()
+                        monitor_thread.join(timeout=2.0)
+                    prog.update(
+                        task,
+                        completed=total_work,
+                        description=f"ALE · completed {total_work:,}/{total_work:,} feature-class jobs",
+                    )
+            for fold_no in sorted(results):
+                frame, curves, skipped = results[fold_no]
+                if skipped is not None and not skipped.empty:
+                    skipped_frames.append(skipped)
+                if not frame.empty:
+                    ale_frames.append(frame)
+                if curves is not None and not curves.empty:
+                    curve_frames.append(curves)
+        info("Aggregating ALE global effects and cross-fold stability")
         if skipped_frames:
             pd.concat(skipped_frames, ignore_index=True).to_csv(
-                target_dir / "ale_skipped_features.tsv", sep="	", index=False
+                target_dir / "ale_skipped_features.tsv", sep="\t", index=False
             )
         if not ale_frames:
             raise ExplainabilityConfigurationError(
-                "ALE was requested, but no candidate feature was estimable in any outer-test fold. No fallback method will be used."
+                "ALE was requested, but no candidate feature was estimable in any outer-test fold."
             )
-        ale_frame = _mean_feature_importance_frames(
+        ale_frame = _aggregate_fold_feature_importance(
             "ale",
             ale_frames,
             feature_names,
-            "mean_estimable_outer_fold_rms_centered_ale",
+            class_indices,
+            dataset.class_labels,
+            "outer_fold_rms_centered_class_probability_ale",
+            sweep.explainability.top_k,
         )
         if curve_frames:
             curves_all = pd.concat(curve_frames, ignore_index=True)
-            curves_all.to_csv(target_dir / "ale_curves.tsv", sep="	", index=False)
-            _plot_ale_curves(
-                curves_all,
-                top_for_ale,
-                figures_dir / "ale_curves",
-                max_panels=min(12, sweep.explainability.top_k),
-            )
-        method_frames.append(ale_frame)
-        with console.status("Writing OOF ALE tables and figures...", spinner="dots"):
-            method_outputs.update(
-                _write_method_outputs(
-                    ale_frame,
-                    target_dir=target_dir,
-                    figures_dir=figures_dir,
-                    X_base=X_base,
-                    y=dataset.y,
-                    feature_names=feature_names,
-                    class_labels=dataset.class_labels,
-                    top_k=sweep.explainability.top_k,
+            curves_all.to_csv(target_dir / "ale_curves.tsv", sep="\t", index=False)
+            for class_index in class_indices:
+                label = str(dataset.class_labels[int(class_index)])
+                slug = _class_slug(label)
+                class_imp = ale_frame[ale_frame["class_index"].eq(int(class_index))]
+                top_features = (
+                    class_imp.dropna(subset=["importance_mean"])
+                    .sort_values("importance_mean", ascending=False)
+                    .head(sweep.explainability.top_k)["feature"]
+                    .astype(str)
+                    .tolist()
                 )
+                class_curves = curves_all[
+                    curves_all["class_index"].eq(int(class_index))
+                ]
+                curve_stem = figures_dir / f"ale_curves__{slug}"
+                _plot_ale_curves(
+                    class_curves,
+                    top_features,
+                    curve_stem,
+                    max_panels=min(12, sweep.explainability.top_k),
+                )
+                method_outputs[f"ale_curves_{slug}"] = curve_stem.with_suffix(".png")
+        method_frames.append(ale_frame)
+        fold_path, fold_long = _write_fold_feature_importance(
+            "ale", ale_frames, target_dir
+        )
+        method_outputs["ale_by_outer_fold"] = fold_path
+        fold_importance_frames.append(fold_long)
+        method_outputs.update(
+            _write_method_outputs(
+                ale_frame,
+                target_dir=target_dir,
+                figures_dir=figures_dir,
+                X_base=X_base,
+                y=dataset.y,
+                feature_names=feature_names,
+                class_labels=dataset.class_labels,
+                top_k=sweep.explainability.top_k,
             )
-        success("OOF ALE completed")
+        )
+        _persist_method_cache_entry(
+            meta_path, previous_meta, "ale", current_method_entries["ale"]
+        )
+        previous_method_cache["ale"] = current_method_entries["ale"]
+        success("Class-specific OOF ALE completed")
 
     if not method_frames:
         raise ExplainabilityConfigurationError(
-            "No feature-importance method was executed. No fallback method will be used."
+            "No feature-importance method was executed."
         )
 
     imp = _combine_feature_importance(method_frames)
     imp.to_csv(target_dir / "feature_importance.tsv", sep="\t", index=False)
+    stability_all = pd.concat(
+        [
+            frame.assign(method=str(frame["method"].iloc[0]))
+            for frame in method_frames
+            if not frame.empty
+        ],
+        ignore_index=True,
+    )
+    stability_columns = [
+        "method",
+        "class_index",
+        "class_label",
+        "feature",
+        "importance_mean",
+        "importance_sd",
+        "importance_median",
+        "importance_q25",
+        "importance_q75",
+        "mean_rank",
+        "median_rank",
+        "rank_iqr",
+        "top_k_frequency",
+        "n_estimable_folds",
+        "n_outer_folds_total",
+        "fold_coverage",
+        "signed_importance_mean",
+        "sign_positive_fraction",
+        "sign_negative_fraction",
+        "sign_consistency",
+    ]
+    stability_all[[c for c in stability_columns if c in stability_all.columns]].to_csv(
+        target_dir / "feature_stability.tsv", sep="\t", index=False
+    )
+    method_outputs["feature_stability"] = target_dir / "feature_stability.tsv"
+    fold_all = (
+        pd.concat(fold_importance_frames, ignore_index=True)
+        if fold_importance_frames
+        else pd.DataFrame()
+    )
+    fold_all.to_csv(
+        target_dir / "feature_importance_by_outer_fold.tsv", sep="\t", index=False
+    )
+    method_outputs["feature_importance_by_outer_fold"] = (
+        target_dir / "feature_importance_by_outer_fold.tsv"
+    )
 
-    if "interactions" in methods:
-        info("Running OOF ALE interaction analysis")
-        score_series = imp.set_index("feature")["importance_mean"]
+    if "interactions" in methods and "interactions" not in reusable_methods:
+        spec = specs_by_name["interactions"]
+        info("Running class-specific OOF ALE interaction analysis")
         by_method: dict[str, list[pd.DataFrame]] = {
             m: [] for m in ("current", "corrected", "fixed_pairs", "corrected_fixed")
         }
         all_raw: list[pd.DataFrame] = []
-        for fold_no, fold in enumerate(oof_folds, start=1):
-            with console.status(
-                f"Computing pairwise interactions for outer fold {fold_no}/{len(oof_folds)}...",
-                spinner="dots",
-            ):
-                tables = _ale_interactions(
-                    fold["estimator"],
-                    fold["X_test"],
-                    feature_names,
-                    dataset.class_labels,
-                    n_bins=sweep.explainability.ale_bins,
-                    top_k_interactions=sweep.explainability.top_k_interactions,
-                    scores=score_series,
-                )
-            for name, tab in tables.items():
-                tab = tab.copy()
-                tab["fold_key"] = str(fold.get("split_key", ""))
-                if name == "all_methods":
-                    all_raw.append(tab)
-                elif name in by_method:
-                    by_method[name].append(tab)
-        interaction_tables: dict[str, pd.DataFrame] = {}
-        for name, frames in by_method.items():
-            interaction_tables[name] = _aggregate_oof_interactions(frames, name)
+        prog = progress()
+        prog.start()
+        for class_index in class_indices:
+            score_series = imp[imp["class_index"].eq(int(class_index))].set_index(
+                "feature"
+            )["importance_mean"]
+            for fold_no, fold in enumerate(oof_folds, start=1):
+                prefix = f"Interactions · {dataset.class_labels[int(class_index)]} · fold {fold_no}/{len(oof_folds)}"
+                task = prog.add_task(f"{prefix} · preparing", total=1)
+                try:
+                    tables = _ale_interactions(
+                        fold["estimator"],
+                        fold["X_test"],
+                        feature_names,
+                        dataset.class_labels,
+                        int(class_index),
+                        spec=spec,
+                        scores=score_series,
+                        progress_callback=_progress_callback(prog, task, prefix),
+                    )
+                except ExplainabilityConfigurationError:
+                    prog.update(
+                        task, completed=1, total=1, description=f"{prefix} · skipped"
+                    )
+                    continue
+                for name, tab in tables.items():
+                    tab = tab.copy()
+                    tab["fold_key"] = str(fold.get("split_key", ""))
+                    if name == "all_methods":
+                        all_raw.append(tab)
+                    elif name in by_method:
+                        by_method[name].append(tab)
+        prog.stop()
+        info("Aggregating interaction stability and writing outputs")
+        interaction_tables = {
+            name: _aggregate_oof_interactions(frames, name)
+            for name, frames in by_method.items()
+            if frames
+        }
         if all_raw:
             all_path = target_dir / "feature_interactions_by_target_all_methods.csv"
             pd.concat(all_raw, ignore_index=True).to_csv(all_path, index=False)
@@ -2589,60 +4643,87 @@ def _explain_one(
             path = target_dir / f"feature_interactions_{name}.csv"
             tab.to_csv(path, index=False)
             interaction_outputs[f"interactions_{name}"] = path
-        dist_for_network = _feature_distribution_stats(
-            imp.head(sweep.explainability.top_k)["feature"].astype(str).tolist(),
-            feature_names,
-            X_base,
-            dataset.y,
-            dataset.class_labels,
+        _persist_method_cache_entry(
+            meta_path,
+            previous_meta,
+            "interactions",
+            current_method_entries["interactions"],
         )
-        with console.status(
-            "Writing OOF ALE interaction network figures...", spinner="dots"
-        ):
-            for net_name in ("current", "corrected", "fixed_pairs", "corrected_fixed"):
-                if net_name in interaction_tables:
-                    ok = _plot_interaction_network(
-                        interaction_tables[net_name],
-                        dist_for_network,
-                        figures_dir / f"interaction_network_{net_name}",
-                        top_k=sweep.explainability.top_k_interactions,
-                        class_labels=dataset.class_labels,
-                        layout="default",
-                    )
-                    if ok:
-                        interaction_outputs[f"interaction_network_{net_name}"] = (
-                            figures_dir / f"interaction_network_{net_name}.png"
-                        )
-        success("OOF interaction analysis completed")
+        previous_method_cache["interactions"] = current_method_entries["interactions"]
+        success("Class-specific OOF interaction analysis completed")
 
-    with console.status(
-        "Writing feature-distribution summaries and figures...", spinner="dots"
-    ):
-        dist = _feature_distribution_stats(
-            imp.head(sweep.explainability.top_k)["feature"].tolist(),
-            feature_names,
-            X_base,
-            dataset.y,
-            dataset.class_labels,
+    if "interactions" in methods:
+        interaction_outputs.update(
+            _ensure_interaction_network_outputs(
+                target_dir,
+                figures_dir,
+                X_base,
+                dataset.y,
+                feature_names,
+                dataset.class_labels,
+                class_indices,
+                int(specs_by_name["interactions"].top_k),
+            )
         )
-    dist.to_csv(target_dir / "feature_distribution_stats.tsv", sep="\t", index=False)
+
+    method_outputs.update(
+        _ensure_local_explanation_outputs(
+            target_dir,
+            source_signature,
+            sweep,
+            specs_by_name,
+            methods,
+            oof_folds,
+            dataset,
+            feature_names,
+            class_indices,
+            int(execution.threads_per_worker),
+        )
+    )
+
     top_features = _method_support_table(
         method_frames, imp, top_k=sweep.explainability.top_k
     )
     top_features.to_csv(target_dir / "top_features.tsv", sep="\t", index=False)
-    _plot_feature_importance(
-        top_features,
-        dist,
-        figures_dir / "feature_importance",
-        sweep.explainability.top_k,
-        dataset.class_labels,
+    dist_frames: list[pd.DataFrame] = []
+    class_figure_paths: dict[str, Path] = {}
+    for class_index, class_top in top_features.groupby("class_index", sort=True):
+        c = int(class_index)
+        label = str(dataset.class_labels[c])
+        slug = _class_slug(label)
+        dist = _feature_distribution_stats(
+            class_top["feature"].astype(str).tolist(),
+            feature_names,
+            X_base,
+            dataset.y,
+            dataset.class_labels,
+        )
+        dist.insert(0, "class_label", label)
+        dist.insert(0, "class_index", c)
+        dist_frames.append(dist)
+        imp_stem = figures_dir / f"feature_importance__{slug}"
+        support_stem = figures_dir / f"feature_support__{slug}"
+        _plot_feature_importance(
+            class_top,
+            dist,
+            imp_stem,
+            sweep.explainability.top_k,
+            dataset.class_labels,
+        )
+        _plot_feature_importance(
+            class_top,
+            dist,
+            support_stem,
+            sweep.explainability.top_k,
+            dataset.class_labels,
+        )
+        class_figure_paths[f"figure_{slug}"] = imp_stem.with_suffix(".png")
+        class_figure_paths[f"feature_support_{slug}"] = support_stem.with_suffix(".png")
+    dist_all = (
+        pd.concat(dist_frames, ignore_index=True) if dist_frames else pd.DataFrame()
     )
-    _plot_feature_importance(
-        top_features,
-        dist,
-        figures_dir / "feature_support",
-        sweep.explainability.top_k,
-        dataset.class_labels,
+    dist_all.to_csv(
+        target_dir / "feature_distribution_stats.tsv", sep="\t", index=False
     )
 
     dump_json_standard(
@@ -2651,12 +4732,59 @@ def _explain_one(
             "target_label": target_label,
             "config": row.to_dict(),
             "methods": list(methods),
+            "method_parameters": [method_to_dict(x) for x in method_specs],
+            "method_cache": {
+                **previous_method_cache,
+                **current_method_entries,
+            },
+            "explanation_source_signature": source_signature,
+            "explainability_config": _explainability_config_payload(
+                sweep.explainability
+            ),
+            "explainability_config_signature": _explainability_config_signature(
+                sweep.explainability
+            ),
+            "explained_class_indices": [int(x) for x in class_indices],
+            "explained_class_labels": [
+                str(dataset.class_labels[int(x)]) for x in class_indices
+            ],
+            "class_target": "class_probability",
+            "explanation_layers": ["global", "cross_fold_stability", "local"],
+            "local_explanations": local_mode,
+            "local_methods": [
+                x for x in ("shap", "lime") if x in methods and local_enabled
+            ],
+            "global_methods": [x for x in methods if x != "interactions"],
+            "interaction_scope": "global_exploratory"
+            if "interactions" in methods
+            else "not_requested",
+            "shap_backends": sorted(resolved_shap_backends),
             "default_suite": ["shap", "lime", "ale", "permutation", "interactions"],
             "strict": True,
             "fallbacks": False,
             "cross_validation_explanations": "outer_test_folds",
             "out_of_fold": True,
             "n_outer_folds_explained": len(oof_folds),
+            "ale_feature_scope": "all_estimable_features",
+            "consensus_strategy": "mean_within_method_rank_support_available_methods",
+            "consensus_missing_values": "excluded_not_zero",
+            "stability_unit": "outer_fold",
+            "stability_interpretation": "descriptive_cross_fit_variability_not_independent_fold_confidence_intervals",
+            "stability_statistics": [
+                "importance_sd",
+                "rank_iqr",
+                "top_k_frequency",
+                "fold_coverage",
+                "sign_consistency",
+            ],
+            "fold_level_importance_file": "feature_importance_by_outer_fold.tsv",
+            "execution": {
+                "workers": int(execution.workers),
+                "threads_per_worker": int(execution.threads_per_worker),
+                "backend": str(execution.backend),
+                "logical_cpus": int(execution.logical_cpus),
+                "physical_cpus": int(execution.physical_cpus),
+            },
         },
         target_dir / "explained_unit.json",
     )
@@ -2668,9 +4796,9 @@ def _explain_one(
     outputs = {
         "explainability_dir": target_dir,
         "importance": target_dir / "feature_importance.tsv",
-        "figure": figures_dir / "feature_importance.png",
-        "feature_support": figures_dir / "feature_support.png",
+        "stability": target_dir / "feature_stability.tsv",
     }
+    outputs.update(class_figure_paths)
     outputs.update(method_outputs)
     outputs.update(interaction_outputs)
     path_table("Explainability outputs", outputs)
@@ -2938,70 +5066,72 @@ def _method_display(method: str) -> str:
     }.get(m, str(method))
 
 
-def _support_from_importance(frame: pd.DataFrame) -> pd.Series:
-    vals = pd.to_numeric(
-        frame.set_index("feature")["importance_mean"], errors="coerce"
-    ).replace([np.inf, -np.inf], np.nan)
-    vals = vals.fillna(0.0)
-    if len(vals) == 0:
-        return vals
-    if not vals.index.is_unique:
-        vals = vals.groupby(level=0, sort=False).sum()
-    vmin, vmax = float(vals.min()), float(vals.max())
-    if vmax <= vmin + 1e-12:
-        return pd.Series(np.zeros(len(vals), dtype=float), index=vals.index)
-    return (vals - vmin) / (vmax - vmin)
-
-
 def _method_support_table(
     frames: Sequence[pd.DataFrame], imp: pd.DataFrame, top_k: int
 ) -> pd.DataFrame:
-    top = imp.head(int(top_k)).copy()
-    if "mean_rank" not in top.columns:
-        top["mean_rank"] = np.arange(1, len(top) + 1, dtype=float)
-    top["rank"] = np.arange(1, len(top) + 1, dtype=int)
-    top["consensus"] = (
-        _support_from_importance(
-            top.rename(columns={"importance_mean": "importance_mean"})
-        )
-        .reindex(top["feature"])
-        .fillna(0)
-        .to_numpy()
-    )
+    if "class_index" not in imp.columns:
+        imp = imp.copy()
+        imp["class_index"] = 0
+        imp["class_label"] = "class_0"
+    pieces: list[pd.DataFrame] = []
+    supports: dict[str, pd.Series] = {}
     for frame in frames:
         method = _method_display(frame["method"].iloc[0])
-        support = _support_from_importance(frame)
-        top[method] = top["feature"].map(support).fillna(0.0).astype(float)
-    for col in ("SHAP", "LIME", "ALE", "Permutation"):
-        if col not in top.columns:
-            top[col] = 0.0
-    top["consensus"] = top[["SHAP", "LIME", "ALE", "Permutation"]].mean(axis=1)
-    return top[
-        [
-            "rank",
-            "feature",
-            "SHAP",
-            "LIME",
-            "ALE",
-            "Permutation",
-            "consensus",
-            "importance_mean",
-            "mean_rank",
-            "n_methods",
+        supports[method] = _rank_support_from_importance(frame)
+    for class_index, class_imp in imp.groupby("class_index", sort=True):
+        top = (
+            class_imp.sort_values("importance_mean", ascending=False)
+            .head(int(top_k))
+            .copy()
+        )
+        top["rank"] = np.arange(1, len(top) + 1, dtype=int)
+        keys = pd.MultiIndex.from_arrays(
+            [
+                np.full(len(top), int(class_index), dtype=int),
+                top["feature"].astype(str).to_numpy(),
+            ]
+        )
+        for method, support in supports.items():
+            top[method] = support.reindex(keys).to_numpy(dtype=float)
+        present_columns = [
+            col for col in ("SHAP", "LIME", "ALE", "Permutation") if col in top.columns
         ]
-        if "n_methods" in top.columns
-        else [
-            "rank",
-            "feature",
-            "SHAP",
-            "LIME",
-            "ALE",
-            "Permutation",
-            "consensus",
-            "importance_mean",
-            "mean_rank",
-        ]
+        for col in ("SHAP", "LIME", "ALE", "Permutation"):
+            if col not in top.columns:
+                top[col] = np.nan
+        top["consensus"] = (
+            top[present_columns].mean(axis=1, skipna=True)
+            if present_columns
+            else np.nan
+        )
+        top["n_methods"] = (
+            top[present_columns].notna().sum(axis=1) if present_columns else 0
+        )
+        top["n_methods_total"] = len(present_columns)
+        top["method_coverage"] = (
+            top["n_methods"] / float(len(present_columns))
+            if present_columns
+            else np.nan
+        )
+        pieces.append(top)
+    out = pd.concat(pieces, ignore_index=True) if pieces else pd.DataFrame()
+    cols = [
+        "class_index",
+        "class_label",
+        "rank",
+        "feature",
+        "SHAP",
+        "LIME",
+        "ALE",
+        "Permutation",
+        "consensus",
+        "importance_mean",
+        "mean_rank",
+        "n_methods",
+        "n_methods_total",
+        "method_coverage",
     ]
+    return out[[c for c in cols if c in out.columns]]
 
 
 def _plain_taxon_label(feature_name: str, max_len: int = 34) -> str:
@@ -3129,6 +5259,102 @@ def _write_unavailable_interaction_network(out_stem: Path, message: str) -> None
 def _short_taxon(name: str, max_len: int = 70) -> str:
     s = str(name).split("|")[-1].split("___")[-1]
     return s if len(s) <= max_len else s[: max_len - 1] + "…"
+
+
+def _interaction_distribution_stats_for_class(
+    features: Sequence[str],
+    feature_names: Sequence[str],
+    X: np.ndarray,
+    y: np.ndarray,
+    class_index: int,
+) -> pd.DataFrame:
+    index = {str(feature): i for i, feature in enumerate(feature_names)}
+    target_mask = np.asarray(y, dtype=int) == int(class_index)
+    other_mask = ~target_mask
+    rows: list[dict[str, Any]] = []
+    for feature in features:
+        key = str(feature)
+        if key not in index:
+            continue
+        values = np.asarray(X[:, index[key]], dtype=float)
+        target = values[target_mask]
+        other = values[other_mask]
+        target_mean = float(np.nanmean(target)) if target.size else np.nan
+        other_mean = float(np.nanmean(other)) if other.size else np.nan
+        rows.append(
+            {
+                "feature": key,
+                "case_mean_pct": target_mean * 100.0
+                if np.isfinite(target_mean)
+                else np.nan,
+                "control_mean_pct": other_mean * 100.0
+                if np.isfinite(other_mean)
+                else np.nan,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _ensure_interaction_network_outputs(
+    target_dir: Path,
+    figures_dir: Path,
+    X: np.ndarray,
+    y: np.ndarray,
+    feature_names: Sequence[str],
+    class_labels: Sequence[str],
+    class_indices: Sequence[int],
+    top_k: int,
+) -> dict[str, Path]:
+    path = target_dir / "feature_interactions_current.csv"
+    if not path.exists():
+        return {}
+    table = pd.read_csv(path)
+    if table.empty or "class_index" not in table.columns:
+        return {}
+    outputs: dict[str, Path] = {}
+    for class_index in class_indices:
+        c = int(class_index)
+        class_table = table[table["class_index"].eq(c)].copy()
+        class_table["interaction_strength"] = pd.to_numeric(
+            class_table.get("interaction_strength", np.nan), errors="coerce"
+        )
+        class_table = class_table.replace([np.inf, -np.inf], np.nan).dropna(
+            subset=["interaction_strength"]
+        )
+        if class_table.empty:
+            continue
+        class_table = class_table.sort_values(
+            "interaction_strength", ascending=False
+        ).head(int(top_k))
+        features = list(
+            dict.fromkeys(
+                class_table.get("feature_1", pd.Series(dtype=object))
+                .astype(str)
+                .tolist()
+                + class_table.get("feature_2", pd.Series(dtype=object))
+                .astype(str)
+                .tolist()
+            )
+        )
+        stats = _interaction_distribution_stats_for_class(
+            features, feature_names, X, y, c
+        )
+        label = str(class_labels[c])
+        other_labels = [str(v) for i, v in enumerate(class_labels) if i != c]
+        reference_label = other_labels[0] if len(other_labels) == 1 else "Other classes"
+        slug = _class_slug(label)
+        for layout, suffix in (("default", ""), ("kamada_kawai", "_kamada_kawai")):
+            stem = figures_dir / f"interaction_network_current{suffix}__{slug}"
+            _plot_interaction_network(
+                class_table,
+                stats,
+                stem,
+                int(top_k),
+                (reference_label, label),
+                layout=layout,
+            )
+            outputs[stem.name] = stem.with_suffix(".png")
+    return outputs
 
 
 def _feature_distribution_stats(

@@ -19,6 +19,7 @@ from .configs_sweep import (
 )
 from .data import Data, Dataset, load_dataset
 from .ensemble_sweep import sweep_ensemble
+from .explainability_methods import ALE, ALEInteractions, LIME, Permutation, SHAP
 from .explainability import (
     ExplainabilityConfigurationError,
     ExplainabilityDependencyError,
@@ -52,6 +53,11 @@ __all__ = [
     "Explainability",
     "ExplainabilityConfigurationError",
     "ExplainabilityDependencyError",
+    "SHAP",
+    "Permutation",
+    "ALE",
+    "LIME",
+    "ALEInteractions",
     "MPDR",
     "MPMA",
     "mll",

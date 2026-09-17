@@ -10,6 +10,8 @@ import pandas as pd
 from mllabiome import explainability as core
 from mllabiome import final_explainability as final_xai
 from mllabiome import mpma_e_explainability as mpmae_xai
+from mllabiome.configs_sweep import Explainability
+from mllabiome.explainability_methods import Permutation
 
 
 class IdentityTransformation:
@@ -67,7 +69,12 @@ def _sweep(root: Path, targets=("mpma_b", "mpma_e")):
         root=lambda: root,
         data=SimpleNamespace(group_col=None, stratify_col=None),
         evaluation=SimpleNamespace(protocol="repeated_nested_cv"),
-        explainability=SimpleNamespace(targets=targets, methods=()),
+        explainability=Explainability(
+            targets=targets,
+            methods=(Permutation(),),
+            classes="auto",
+            representative_instances=False,
+        ),
     )
 
 
@@ -84,7 +91,9 @@ def test_final_mpma_b_specification_is_the_explanation_target(tmp_path, monkeypa
     seen = {}
 
     monkeypatch.setattr(final_xai, "build_final_models", lambda root: models)
-    monkeypatch.setattr(final_xai, "_invalidate_stale", lambda root, models: None)
+    monkeypatch.setattr(
+        final_xai, "_invalidate_stale", lambda root, models, explainability: None
+    )
     monkeypatch.setattr(
         final_xai._core,
         "_automatic_explainability_targets",
@@ -166,6 +175,7 @@ def test_final_mpma_e_specification_is_passed_to_oof_fitter(tmp_path, monkeypatc
     def fake_fit(sweep, rankings, received):
         seen["ensemble"] = received
         return {
+            "dataset": _dataset(),
             "reproduction": pd.DataFrame(),
             "linear_weights": np.asarray([0.7, 0.3], dtype=float),
         }

@@ -42,7 +42,7 @@ def _member_ids(value) -> list[str]:
     ]
 
 
-def _invalidate_stale(root: Path, models: dict) -> None:
+def _invalidate_stale(root: Path, models: dict, explainability) -> None:
     mpma_b_dir = root / "explainability" / "mpma_b"
     current_b = _read_explained(mpma_b_dir / "explained_unit.json")
     current_b_id = (
@@ -51,7 +51,11 @@ def _invalidate_stale(root: Path, models: dict) -> None:
         else ""
     )
     final_b_id = str(models["MPMA-B"]["config_id"])
-    if mpma_b_dir.exists() and current_b_id != final_b_id:
+    current_b_signature = str(current_b.get("explainability_config_signature", ""))
+    expected_signature = _core._explainability_config_signature(explainability)
+    if mpma_b_dir.exists() and (
+        current_b_id != final_b_id or current_b_signature != expected_signature
+    ):
         shutil.rmtree(mpma_b_dir)
 
     mpma_e = models.get("MPMA-E")
@@ -65,10 +69,12 @@ def _invalidate_stale(root: Path, models: dict) -> None:
     final_members = [str(member["config_id"]) for member in mpma_e["members"]]
     current_aggregation = str(current_e.get("aggregation_strategy", ""))
     final_aggregation = str(mpma_e["aggregation_strategy"])
+    current_e_signature = str(current_e.get("explainability_config_signature", ""))
     if mpma_e_dir.exists() and (
         (current_id and final_id and current_id != final_id)
         or current_members != final_members
         or current_aggregation != final_aggregation
+        or current_e_signature != expected_signature
     ):
         shutil.rmtree(mpma_e_dir)
 
@@ -76,7 +82,7 @@ def _invalidate_stale(root: Path, models: dict) -> None:
 def explain(sweep):
     root = Path(sweep.root())
     models = build_final_models(root)
-    _invalidate_stale(root, models)
+    _invalidate_stale(root, models, sweep.explainability)
     rankings_path = root / "tables" / "mpma_rankings.tsv"
     if not rankings_path.exists():
         raise FileNotFoundError("Run evaluate(sweep) before explain(sweep).")

@@ -1061,6 +1061,431 @@ def _side_by_side_explainability_blocks(
     return "".join(blocks), n_blocks
 
 
+def _xai_class_slug(label: Any) -> str:
+    text = str(label).strip().lower()
+    out = "".join(ch if ch.isalnum() else "_" for ch in text)
+    while "__" in out:
+        out = out.replace("__", "_")
+    return out.strip("_") or "class"
+
+
+def _xai_target_label(target_dir: Path) -> str:
+    aliases = {
+        "mpma_b": "MPMA-B",
+        "best_individual": "MPMA-B",
+        "best_mpma": "MPMA-B",
+        "mpma_e": "MPMA-E",
+        "ensemble": "MPMA-E",
+        "best_mpmas_ensemble": "MPMA-E",
+        "baseline_rf": "Baseline RF",
+        "baseline": "Baseline RF",
+        "rf_baseline": "Baseline RF",
+    }
+    return aliases.get(target_dir.name, target_dir.name.replace("_", " "))
+
+
+def _xai_method_display(method: str) -> str:
+    return {
+        "shap": "SHAP",
+        "permutation": "Permutation",
+        "ale": "ALE",
+        "lime": "LIME",
+        "interactions": "ALE interactions",
+    }.get(str(method).strip().lower(), str(method))
+
+
+def _xai_target_metadata(target_dir: Path) -> tuple[list[str], list[tuple[int, str]]]:
+    meta = _read_json(target_dir / "explained_unit.json")
+    methods = [
+        str(x).strip().lower() for x in meta.get("methods", []) if str(x).strip()
+    ]
+    for path in sorted(target_dir.glob("feature_stability_*.tsv")):
+        name = path.stem.removeprefix("feature_stability_").strip().lower()
+        if name and name not in methods:
+            methods.append(name)
+    if (
+        target_dir / "feature_interactions_current.csv"
+    ).exists() and "interactions" not in methods:
+        methods.append("interactions")
+    indices = list(meta.get("explained_class_indices", []))
+    labels = list(meta.get("explained_class_labels", []))
+    classes: list[tuple[int, str]] = []
+    for pos, label in enumerate(labels):
+        try:
+            idx = int(indices[pos]) if pos < len(indices) else int(pos)
+        except Exception:
+            idx = int(pos)
+        classes.append((idx, str(label)))
+    if not classes:
+        for path in [
+            target_dir / "feature_stability.tsv",
+            target_dir / "top_features.tsv",
+        ]:
+            tab = _read_tsv(path)
+            if tab.empty or "class_index" not in tab.columns:
+                continue
+            lab_col = "class_label" if "class_label" in tab.columns else None
+            seen: set[int] = set()
+            for _, row in tab.sort_values("class_index").iterrows():
+                try:
+                    idx = int(row.get("class_index"))
+                except Exception:
+                    continue
+                if idx in seen:
+                    continue
+                seen.add(idx)
+                label = (
+                    str(row.get(lab_col, f"class_{idx}")) if lab_col else f"class_{idx}"
+                )
+                classes.append((idx, label))
+            if classes:
+                break
+    return methods, classes
+
+
+def _xai_consensus_table(
+    target_dir: Path, class_index: int, top_n: int = 15
+) -> pd.DataFrame:
+    tab = _read_tsv(target_dir / "top_features.tsv")
+    if tab.empty or "feature" not in tab.columns:
+        return pd.DataFrame()
+    if "class_index" in tab.columns:
+        tab = tab[
+            pd.to_numeric(tab["class_index"], errors="coerce").eq(int(class_index))
+        ].copy()
+    if tab.empty:
+        return pd.DataFrame()
+    if "rank" in tab.columns:
+        tab = tab.sort_values("rank", ascending=True)
+    else:
+        tab = tab.head(int(top_n)).copy()
+        tab.insert(0, "rank", np.arange(1, len(tab) + 1))
+    rows: list[dict[str, Any]] = []
+    support_cols = [
+        c for c in ("SHAP", "Permutation", "ALE", "LIME") if c in tab.columns
+    ]
+    for _, row in tab.head(int(top_n)).iterrows():
+        item: dict[str, Any] = {
+            "Rank": int(_safe_float(row.get("rank", len(rows) + 1)))
+            if np.isfinite(_safe_float(row.get("rank", np.nan)))
+            else len(rows) + 1,
+            "Feature": _short_feature_label(row.get("feature", "")),
+        }
+        for col in support_cols:
+            val = _safe_float(row.get(col, np.nan))
+            item[col] = f"{val:.3f}" if np.isfinite(val) else ""
+        val = _safe_float(row.get("consensus", row.get("consensus_score", np.nan)))
+        item["Concordance"] = f"{val:.3f}" if np.isfinite(val) else ""
+        n_methods = _safe_float(row.get("n_methods", np.nan))
+        n_total = _safe_float(row.get("n_methods_total", np.nan))
+        item["Methods"] = (
+            f"{int(n_methods)}/{int(n_total)}"
+            if np.isfinite(n_methods) and np.isfinite(n_total)
+            else ""
+        )
+        coverage = _safe_float(row.get("method_coverage", np.nan))
+        item["Method coverage"] = f"{coverage:.2f}" if np.isfinite(coverage) else ""
+        rows.append(item)
+    return pd.DataFrame(rows)
+
+
+def _xai_stability_table(
+    target_dir: Path, method: str, class_index: int, top_n: int = 15
+) -> pd.DataFrame:
+    tab = _read_tsv(target_dir / f"feature_stability_{method}.tsv")
+    if tab.empty or "feature" not in tab.columns:
+        return pd.DataFrame()
+    if "class_index" in tab.columns:
+        tab = tab[
+            pd.to_numeric(tab["class_index"], errors="coerce").eq(int(class_index))
+        ].copy()
+    if tab.empty:
+        return pd.DataFrame()
+    if "mean_rank" in tab.columns:
+        tab["_sort_rank"] = pd.to_numeric(tab["mean_rank"], errors="coerce")
+        tab = tab.sort_values(
+            ["_sort_rank", "feature"], ascending=[True, True], na_position="last"
+        )
+    elif "importance_mean" in tab.columns:
+        tab["_sort_imp"] = pd.to_numeric(tab["importance_mean"], errors="coerce")
+        tab = tab.sort_values(
+            ["_sort_imp", "feature"], ascending=[False, True], na_position="last"
+        )
+    rows: list[dict[str, Any]] = []
+    for rank, (_, row) in enumerate(tab.head(int(top_n)).iterrows(), start=1):
+        item: dict[str, Any] = {
+            "Rank": rank,
+            "Feature": _short_feature_label(row.get("feature", "")),
+        }
+        for src, dst, fmt in [
+            ("importance_mean", "Importance mean", ".4g"),
+            ("importance_sd", "Importance SD", ".4g"),
+            ("median_rank", "Median rank", ".2f"),
+            ("rank_iqr", "Rank IQR", ".2f"),
+            ("top_k_frequency", "Top-k frequency", ".2f"),
+            ("fold_coverage", "Fold coverage", ".2f"),
+            ("sign_consistency", "Sign consistency", ".2f"),
+        ]:
+            if src not in tab.columns:
+                continue
+            val = _safe_float(row.get(src, np.nan))
+            item[dst] = format(val, fmt) if np.isfinite(val) else ""
+        rows.append(item)
+    return pd.DataFrame(rows)
+
+
+def _xai_figure_for_class(
+    target_dir: Path, stem: str, class_label: str, report_dir: Path, caption: str
+) -> str:
+    slug = _xai_class_slug(class_label)
+    return _fig(target_dir / "figures" / f"{stem}__{slug}", report_dir, caption)
+
+
+def _xai_method_global_text(method: str) -> str:
+    return {
+        "shap": "Aggregated absolute OOF SHAP attribution across held-out samples for the class probability. Signed local SHAP values are retained separately for local explanations and sign-stability summaries.",
+        "permutation": "OOF predictive importance measured by degradation in class-specific loss after disrupting one feature in held-out data.",
+        "ale": "Global accumulated local effects for the class probability. Importance summarizes the magnitude of the centered ALE effect; curves show effect shape across the observed feature distribution.",
+        "lime": "Aggregated absolute OOF LIME local-surrogate coefficients across held-out samples. Signed local coefficients are retained separately when local explanations are requested.",
+    }.get(str(method).strip().lower(), "Global OOF feature explanation.")
+
+
+def _xai_local_table(target_dir: Path, method: str, top_n: int = 5) -> pd.DataFrame:
+    selected = _read_tsv(target_dir / f"instance_explanations_{method}_selected.tsv")
+    top = _read_tsv(target_dir / f"instance_explanations_{method}_top_features.tsv")
+    if selected.empty or top.empty:
+        return pd.DataFrame()
+    rows: list[dict[str, Any]] = []
+    group_cols = [c for c in ("sample_id", "class_index") if c in top.columns]
+    grouped = top.groupby(group_cols, sort=False) if group_cols else [((), top)]
+    for _, group in grouped:
+        group = (
+            group.sort_values("rank", ascending=True)
+            if "rank" in group.columns
+            else group
+        )
+        for _, row in group.head(int(top_n)).iterrows():
+            item: dict[str, Any] = {
+                "Sample": str(row.get("sample_id", "")),
+                "Role": str(row.get("selection_role", "")),
+                "Class": str(row.get("class_label", row.get("class_index", ""))),
+                "Feature": _short_feature_label(row.get("feature", "")),
+            }
+            p = _safe_float(row.get("p_class_mean", np.nan))
+            item["P(class)"] = f"{p:.3f}" if np.isfinite(p) else ""
+            value = _safe_float(row.get("value", np.nan))
+            label = "SHAP contribution" if method == "shap" else "LIME coefficient"
+            item[label] = f"{value:+.4g}" if np.isfinite(value) else ""
+            sd = _safe_float(row.get("value_sd", np.nan))
+            if np.isfinite(sd):
+                item["Across-fold SD"] = f"{sd:.4g}"
+            rank = _safe_float(row.get("rank", np.nan))
+            item["Local rank"] = int(rank) if np.isfinite(rank) else ""
+            rows.append(item)
+    return pd.DataFrame(rows)
+
+
+def _xai_local_mode(target_dir: Path) -> str:
+    meta = _read_json(target_dir / "explained_unit.json")
+    cfg = meta.get("explainability_config", {}) if isinstance(meta, dict) else {}
+    value = str(cfg.get("local_explanations", "")).strip()
+    if value:
+        return value
+    representative = bool(cfg.get("representative_instances", False))
+    requested = bool(cfg.get("instance_sample_ids", []))
+    if representative and requested:
+        return "representative_and_requested"
+    if representative:
+        return "representative"
+    if requested:
+        return "requested"
+    return "none"
+
+
+def _explainability_report_blocks(
+    root: Path, report_dir: Path, top_n: int = 15
+) -> tuple[str, int]:
+    target_dirs = _target_dirs_by_label(root)
+    if not target_dirs:
+        return "", 0
+    parts: list[str] = []
+    blocks = 0
+    for label in ("MPMA-B", "MPMA-E", "Baseline RF"):
+        target_dir = target_dirs.get(label)
+        if target_dir is None:
+            continue
+        methods, classes = _xai_target_metadata(target_dir)
+        if not methods and not classes:
+            continue
+        blocks += 1
+        method_text = (
+            ", ".join(_xai_method_display(x) for x in methods)
+            if methods
+            else "available methods"
+        )
+        local_mode = _xai_local_mode(target_dir)
+        parts.append(f'<section class="xai-target"><h3>{html.escape(label)}</h3>')
+        parts.append(
+            f"<p>Cross-fitted OOF explanations of the final selected specification. Methods: {html.escape(method_text)}. Global explanation, cross-fold stability, and local sample explanation are reported as distinct layers.</p>"
+        )
+        parts.append("<h4>Global explanations</h4>")
+        parts.append(
+            "<p>Global results summarize held-out predictions across samples. SHAP and LIME global importance are aggregations of local OOF attributions; permutation importance and ALE are population-level quantities by construction.</p>"
+        )
+        for class_index, class_label in classes:
+            parts.append(
+                f'<section class="xai-class"><h5>{html.escape(class_label)}</h5>'
+            )
+            consensus_fig = _xai_figure_for_class(
+                target_dir,
+                "feature_support",
+                class_label,
+                report_dir,
+                f"{label} · {class_label}: cross-method rank-support concordance",
+            )
+            consensus_tab = _xai_consensus_table(target_dir, class_index, top_n=top_n)
+            if consensus_fig or not consensus_tab.empty:
+                parts.append("<h6>Cross-method concordance</h6>")
+                parts.append(
+                    "<p>Method-specific effect magnitudes are not averaged. Concordance is normalized within-method rank support among methods available for each feature.</p>"
+                )
+                if consensus_fig:
+                    parts.append(consensus_fig)
+                if not consensus_tab.empty:
+                    parts.append(_html_table(consensus_tab))
+            for method in methods:
+                if method == "interactions":
+                    continue
+                display = _xai_method_display(method)
+                global_fig = _xai_figure_for_class(
+                    target_dir,
+                    f"feature_importance_{method}",
+                    class_label,
+                    report_dir,
+                    f"{label} · {class_label}: global {display} explanation",
+                )
+                ale_curve = (
+                    _xai_figure_for_class(
+                        target_dir,
+                        "ale_curves",
+                        class_label,
+                        report_dir,
+                        f"{label} · {class_label}: ALE effect curves",
+                    )
+                    if method == "ale"
+                    else ""
+                )
+                if not global_fig and not ale_curve:
+                    continue
+                parts.append(f"<h6>{html.escape(display)}</h6>")
+                parts.append(f"<p>{html.escape(_xai_method_global_text(method))}</p>")
+                if global_fig:
+                    parts.append(global_fig)
+                if ale_curve:
+                    parts.append(ale_curve)
+            if "interactions" in methods:
+                interaction_figs_class = []
+                for stem, caption in [
+                    ("interaction_network_current", "2D ALE interaction network"),
+                    (
+                        "interaction_network_current_kamada_kawai",
+                        "2D ALE interaction network (Kamada-Kawai)",
+                    ),
+                ]:
+                    block = _xai_figure_for_class(
+                        target_dir,
+                        stem,
+                        class_label,
+                        report_dir,
+                        f"{label} · {class_label}: {caption}",
+                    )
+                    if block:
+                        interaction_figs_class.append(block)
+                if interaction_figs_class:
+                    parts.append("<h6>ALE interactions</h6>")
+                    parts.append(
+                        "<p>Exploratory class-specific OOF 2D ALE interaction strengths. Edge weight represents interaction magnitude; node abundance compares the target class with the remaining classes.</p>"
+                    )
+                    parts.extend(interaction_figs_class)
+            parts.append("</section>")
+        interaction_figs = []
+        for stem, caption in [
+            ("interaction_network_current", "2D ALE interaction network"),
+            (
+                "interaction_network_current_kamada_kawai",
+                "2D ALE interaction network (Kamada-Kawai)",
+            ),
+        ]:
+            block = _fig(
+                target_dir / "figures" / stem, report_dir, f"{label}: {caption}"
+            )
+            if block:
+                interaction_figs.append(block)
+        if interaction_figs:
+            parts.append("<h5>Global interactions</h5>")
+            parts.append(
+                "<p>Interaction outputs are exploratory population-level 2D ALE summaries and are not local sample explanations.</p>"
+            )
+            parts.extend(interaction_figs)
+        parts.append("<h4>Cross-fold stability</h4>")
+        parts.append(
+            "<p>Outer-fold feature stability describes variability of global feature conclusions across outer-fold refits. These are descriptive cross-fitted stability summaries, not confidence intervals from independent folds.</p>"
+        )
+        for class_index, class_label in classes:
+            class_parts: list[str] = []
+            for method in methods:
+                if method == "interactions":
+                    continue
+                stability = _xai_stability_table(
+                    target_dir, method, class_index, top_n=top_n
+                )
+                if stability.empty:
+                    continue
+                class_parts.append(
+                    f"<h6>{html.escape(_xai_method_display(method))}</h6>"
+                )
+                class_parts.append(_html_table(stability))
+            if class_parts:
+                parts.append(
+                    f'<section class="xai-class"><h5>{html.escape(class_label)}</h5>{"".join(class_parts)}</section>'
+                )
+        parts.append("<h4>Local explanations</h4>")
+        if local_mode == "none":
+            parts.append(
+                "<p>Local sample-level reporting was not requested for this run. SHAP/LIME may still compute local values internally to form global summaries, but individual samples are not presented.</p>"
+            )
+        else:
+            parts.append(
+                f"<p>Local OOF explanation mode: {html.escape(local_mode)}. Each displayed sample is explained only by outer-fold model(s) that did not train on that sample.</p>"
+            )
+            found_local = False
+            for method in ("shap", "lime"):
+                if method not in methods:
+                    continue
+                local_tab = _xai_local_table(target_dir, method, top_n=5)
+                if local_tab.empty:
+                    continue
+                found_local = True
+                parts.append(
+                    f"<h5>{html.escape(_xai_method_display(method))} local explanations</h5>"
+                )
+                if method == "shap":
+                    parts.append(
+                        "<p>Signed SHAP contributions indicate whether each feature pushes the class probability upward or downward relative to the SHAP baseline.</p>"
+                    )
+                else:
+                    parts.append(
+                        "<p>Signed LIME coefficients are local surrogate effects around the selected held-out sample and should not be interpreted as global model coefficients.</p>"
+                    )
+                parts.append(_html_table(local_tab))
+            if not found_local:
+                parts.append(
+                    "<p>No local SHAP/LIME table is available for the requested mode.</p>"
+                )
+        parts.append("</section>")
+    return "".join(parts), blocks
+
+
 def _strip_cell_markup(value: Any) -> str:
     text = _html_inline(value)
     text = text.replace("<strong>", "").replace("</strong>", "")
@@ -1378,50 +1803,9 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
     figs.append(
         _fig(root / "figures" / "mpma_e", report_dir, "Selected MPMA-E schematic")
     )
-    side_by_side_figs, side_by_side_count = _side_by_side_explainability_blocks(
-        root, report_dir
+    explainability_html, explainability_count = _explainability_report_blocks(
+        root, report_dir, top_n=int(getattr(sweep.explainability, "top_k", 15))
     )
-    exp_root = root / "explainability"
-    if side_by_side_count == 0:
-        for target_dir in sorted(exp_root.glob("*")):
-            if not target_dir.is_dir():
-                continue
-            label = (
-                "MPMA-B"
-                if target_dir.name in {"mpma_b", "best_individual"}
-                else target_dir.name
-            )
-            fdir = target_dir / "figures"
-            for stem, cap in [
-                ("feature_support", f"{label}: feature support"),
-                ("feature_support_shap", f"{label}: SHAP feature support"),
-                ("feature_support_lime", f"{label}: LIME feature support"),
-                ("feature_support_ale", f"{label}: ALE feature support"),
-                (
-                    "feature_support_permutation",
-                    f"{label}: permutation feature support",
-                ),
-                ("ale_curves", f"{label}: ALE curves"),
-                ("interaction_network_current", f"{label}: 2D ALE interaction network"),
-                (
-                    "instance_explanations_shap",
-                    f"{label}: instance-level SHAP explanations",
-                ),
-            ] + (
-                [
-                    (
-                        "interaction_network_current_kamada_kawai",
-                        f"{label}: 2D ALE interaction network (Kamada-Kawai)",
-                    ),
-                ]
-                if bool(
-                    getattr(sweep.explainability, "interaction_kamada_kawai", False)
-                )
-                else []
-            ):
-                block = _fig(fdir / stem, report_dir, cap)
-                if block:
-                    figs.append(block)
 
     css = """
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -1464,6 +1848,11 @@ h1 { font-size:26px; line-height:1.16; margin:0 0 8px; font-weight:800; letter-s
 h2 { font-size:16px; margin:38px 0 14px; font-weight:750; border-top:1px solid var(--track); padding-top:20px; letter-spacing:-0.025em; }
 h2.first-section { margin-top:0; border-top:0; padding-top:0; }
 h3 { font-size:13px; font-weight:700; margin:16px 0 10px; }
+h4 { font-size:13px; font-weight:750; margin:28px 0 10px; }
+h5 { font-size:12px; font-weight:750; margin:22px 0 8px; color:var(--ink); }
+h6 { font-size:12px; font-weight:650; margin:16px 0 7px; color:var(--mid); }
+.xai-target { margin:0 0 34px; }
+.xai-class { border-top:1px solid var(--track); margin-top:20px; padding-top:2px; }
 p, li { font-size:var(--font-body); color:var(--mid); line-height:1.56; }
 .report-path { margin-top:0; }
 figure { margin:18px 0 28px; overflow-x:auto; }
@@ -1531,8 +1920,8 @@ code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consol
 <h2 id="top-mpmas">Top 10 MPMA-B configurations</h2>
 {_html_table(top10_html, raw_html_cols=top_metric_cols)}
 
-<h2 id="explainability-comparison">Explainability comparison</h2>
-{side_by_side_figs if side_by_side_figs else "<p>No side-by-side explainability comparison is available yet.</p>"}
+<h2 id="explainability-comparison">Explainability</h2>
+{explainability_html if explainability_html else "<p>No explainability artefacts are available yet.</p>"}
 
 <h2 id="figures">Global figures</h2>
 {"".join(figs) if figs else "<p>No figure artefacts found yet.</p>"}
@@ -1547,7 +1936,7 @@ code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consol
         {
             "report_dir": report_dir,
             "figures_embedded": len([f for f in figs if f]),
-            "side_by_side_explainability_blocks": side_by_side_count,
+            "explainability_targets": explainability_count,
         },
         report_dir / "report_manifest.json",
     )

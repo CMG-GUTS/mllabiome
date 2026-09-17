@@ -269,9 +269,7 @@ def _feature_label(feature_name: str) -> str:
 
 def _mean_support_column(top: pd.DataFrame) -> np.ndarray:
     if "consensus" in top.columns:
-        return (
-            pd.to_numeric(top["consensus"], errors="coerce").fillna(0).to_numpy(float)
-        )
+        return pd.to_numeric(top["consensus"], errors="coerce").to_numpy(float)
     method_cols = [
         c for c in ("SHAP", "LIME", "Permutation", "ALE") if c in top.columns
     ]
@@ -280,8 +278,7 @@ def _mean_support_column(top: pd.DataFrame) -> np.ndarray:
     return (
         top[method_cols]
         .apply(pd.to_numeric, errors="coerce")
-        .fillna(0)
-        .mean(axis=1)
+        .mean(axis=1, skipna=True)
         .to_numpy(float)
     )
 
@@ -319,7 +316,9 @@ def plot_feature_support(
         m for m in ("SHAP", "LIME", "Permutation", "ALE") if m in top.columns
     ]
     solo_method = len(method_cols) == 1
-    mean_support = np.clip(_mean_support_column(top), 0, 1)
+    mean_support = np.nan_to_num(
+        np.clip(_mean_support_column(top), 0, 1), nan=0.0, posinf=0.0, neginf=0.0
+    )
 
     fig_h_mm = max(62.0, 3.85 * n + 27.0)
 
@@ -416,15 +415,13 @@ def plot_feature_support(
     _style_black_bottom_axis(ax_dir, show_left=False)
 
     if method_cols:
-        M = (
-            top[method_cols]
-            .apply(pd.to_numeric, errors="coerce")
-            .fillna(0)
-            .to_numpy(float)
-        )
+        M = top[method_cols].apply(pd.to_numeric, errors="coerce").to_numpy(float)
         M = np.clip(M, 0, 1)
+        M_masked = np.ma.masked_invalid(M)
+        cmap = SUPPORT_CMAP.copy()
+        cmap.set_bad(TRACK)
         ax_hm.imshow(
-            M, aspect="auto", interpolation="nearest", cmap=SUPPORT_CMAP, vmin=0, vmax=1
+            M_masked, aspect="auto", interpolation="nearest", cmap=cmap, vmin=0, vmax=1
         )
         ax_hm.set_xticks(np.arange(len(method_cols)))
         labels = [m.replace("Permutation", "Perm.") for m in method_cols]
@@ -438,15 +435,17 @@ def plot_feature_support(
             ax_hm.axhline(yline, color="white", lw=0.35)
         if solo_method:
             for yi in range(n):
-                val = float(M[yi, 0]) if M.shape[1] else 0.0
+                val = float(M[yi, 0]) if M.shape[1] else np.nan
+                text = f"{val:.2f}" if np.isfinite(val) else "NA"
+                color = _support_text_color(val) if np.isfinite(val) else DIM
                 ax_hm.text(
                     0,
                     yi,
-                    f"{val:.2f}",
+                    text,
                     ha="center",
                     va="center",
                     fontsize=4.65,
-                    color=_support_text_color(val),
+                    color=color,
                     zorder=5,
                 )
     else:
@@ -1085,7 +1084,10 @@ def plot_interaction_network(
     ax_leg2 = fig.add_axes([0.75, 0.17, 0.20, 0.28], zorder=12)
     try:
         s_min, s_max = _draw_network(ax_net, tab, stats, top_k, layout=layout)
-        _legend_size_colour_net(ax_leg1, ctrl_text="controls", case_text="cases")
+        labels = [str(x) for x in (class_labels or ())]
+        ctrl_text = labels[0] if len(labels) >= 1 else "controls"
+        case_text = labels[1] if len(labels) >= 2 else "cases"
+        _legend_size_colour_net(ax_leg1, ctrl_text=ctrl_text, case_text=case_text)
         _legend_edge_net(ax_leg2, s_min, s_max)
     except Exception as exc:
         ax_net.clear()

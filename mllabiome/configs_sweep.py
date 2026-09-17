@@ -20,6 +20,15 @@ from threadpoolctl import threadpool_limits
 from .data import Data, Dataset, load_dataset
 from .console import info, path_table, progress, stage, success, summary_table
 from .figures import _write_representation_impact_figure
+from .explainability_methods import (
+    ALE,
+    ALEInteractions,
+    LIME,
+    Permutation,
+    SHAP,
+    apply_profile,
+    normalise_profile,
+)
 from .learners import _learner_factory, _learner_name
 from .metrics import (
     _predict_proba_aligned as _metrics_predict_proba_aligned,
@@ -133,59 +142,47 @@ class Ensemble:
 class Explainability:
     targets: str | tuple[str, ...] = "auto"
     top_k: int = 30
-    methods: tuple[str, ...] = ("shap", "lime", "ale", "permutation", "interactions")
-    n_repeats: int = 10
+    methods: tuple[Any, ...] = (SHAP(), Permutation(), ALE())
+    classes: str | tuple[int | str, ...] = "auto"
+    profile: str = "standard"
     random_state: int = 42
-    shap_background: int = 50
-    shap_max_samples: int = 200
-    lime_samples: int = 500
-    lime_max_samples: int = 200
-    ale_bins: int = 8
-    top_k_interactions: int = 50
-    interaction_kamada_kawai: bool = False
     representative_instances: bool = True
     instance_sample_ids: tuple[str, ...] = ()
     top_instance_features: int = 5
+    n_jobs: int | str | None = None
+    parallel_backend: str | None = None
 
     def __init__(
         self,
         targets: str | Sequence[str] = "auto",
         top_k: int = 30,
-        methods: Sequence[str] = ("shap", "lime", "ale", "permutation", "interactions"),
-        n_repeats: int = 10,
+        methods: Sequence[Any] = (SHAP(), Permutation(), ALE()),
+        classes: str | Sequence[int | str] = "auto",
+        profile: str = "standard",
         random_state: int = 42,
-        shap_background: int = 50,
-        shap_max_samples: int = 200,
-        lime_samples: int = 500,
-        lime_max_samples: int = 200,
-        ale_bins: int = 8,
-        top_k_interactions: int = 50,
-        interaction_kamada_kawai: bool = False,
         representative_instances: bool = True,
         instance_sample_ids: Sequence[str] = (),
         top_instance_features: int = 5,
+        n_jobs: int | str | None = None,
+        parallel_backend: str | None = None,
         **unknown_options: Any,
     ) -> None:
         if unknown_options:
             unknown = ", ".join(sorted(unknown_options))
-            raise TypeError(
-                f"Unknown Explainability option(s): {unknown}. Use Explainability(targets=...) to select explainability targets."
-            )
+            raise TypeError(f"Unknown Explainability option(s): {unknown}.")
         self.targets = _normalise_explainability_targets_config(targets)
         self.top_k = int(top_k)
-        self.methods = tuple(str(m) for m in methods)
-        self.n_repeats = int(n_repeats)
+        self.profile = normalise_profile(profile)
+        self.methods = tuple(apply_profile(m, self.profile) for m in methods)
+        self.classes = _normalise_explainability_classes_config(classes)
         self.random_state = int(random_state)
-        self.shap_background = int(shap_background)
-        self.shap_max_samples = int(shap_max_samples)
-        self.lime_samples = int(lime_samples)
-        self.lime_max_samples = int(lime_max_samples)
-        self.ale_bins = int(ale_bins)
-        self.top_k_interactions = int(top_k_interactions)
-        self.interaction_kamada_kawai = bool(interaction_kamada_kawai)
         self.representative_instances = bool(representative_instances)
         self.instance_sample_ids = tuple(str(x) for x in instance_sample_ids)
         self.top_instance_features = int(top_instance_features)
+        self.n_jobs = n_jobs
+        self.parallel_backend = (
+            None if parallel_backend is None else str(parallel_backend)
+        )
 
 
 def _normalise_explainability_targets_config(
@@ -195,6 +192,16 @@ def _normalise_explainability_targets_config(
         text = targets.strip()
         return text or "auto"
     out = tuple(str(x).strip() for x in targets if str(x).strip())
+    return out or "auto"
+
+
+def _normalise_explainability_classes_config(
+    classes: str | Sequence[int | str],
+) -> str | tuple[int | str, ...]:
+    if isinstance(classes, str):
+        text = classes.strip()
+        return text or "auto"
+    out = tuple(x for x in classes if str(x).strip())
     return out or "auto"
 
 
