@@ -33,6 +33,10 @@ EXPECTED_TRANSFORMATIONS = {
     "centered_log_ratio_multiplicative_replacement",
     "additive_log_ratio_first_reference_multiplicative_replacement",
     "isometric_log_ratio_egozcue_multiplicative_replacement",
+    "standardize",
+    "robust_scale",
+    "power_yeo_johnson",
+    "quantile_normal_numeric",
     "standardized_centered_log_ratio_multiplicative_replacement",
     "yeo_johnson_relative_abundance",
     "quantile_normal_relative_abundance",
@@ -46,6 +50,14 @@ LOG_RATIO_COORDINATE_TRANSFORMATIONS = {
     "additive_log_ratio_first_reference_multiplicative_replacement",
     "isometric_log_ratio_egozcue_multiplicative_replacement",
 }
+
+GENERIC_NUMERIC_TRANSFORMATIONS = {
+    label.key for label in TRANSFORMATION_LABELS if label.category == "generic"
+}
+
+ABUNDANCE_TRANSFORMATIONS = (
+    EXPECTED_TRANSFORMATIONS - GENERIC_NUMERIC_TRANSFORMATIONS - {"identity"}
+)
 
 
 def _relative(X):
@@ -114,6 +126,51 @@ def _resolution_dataset():
 
 def test_every_builtin_transformation_has_an_explicit_correctness_contract():
     assert {label.key for label in TRANSFORMATION_LABELS} == EXPECTED_TRANSFORMATIONS
+
+
+@pytest.mark.parametrize(
+    ("name", "factory"),
+    [
+        ("standardize", lambda X: StandardScaler().fit(X)),
+        ("robust_scale", lambda X: RobustScaler().fit(X)),
+        (
+            "quantile_normal_numeric",
+            lambda X: QuantileTransformer(
+                n_quantiles=max(2, min(1000, X.shape[0])),
+                output_distribution="normal",
+                random_state=0,
+                subsample=None,
+            ).fit(X),
+        ),
+    ],
+)
+def test_generic_numeric_scalers_match_training_fitted_sklearn(name, factory):
+    X_train = _train_matrix()
+    X_test = _test_matrix()
+    transform = CountTransformation(name, random_state=0)
+    transform.fit(X_train)
+    observed = transform.apply(X_test)
+    expected = factory(X_train).transform(X_test).astype(np.float32)
+    np.testing.assert_allclose(observed, expected, rtol=0, atol=0)
+
+
+def test_generic_numeric_yeo_johnson_matches_training_fitted_sklearn_and_zeroes_constant_columns():
+    X_train = _train_matrix().copy()
+    X_test = _test_matrix().copy()
+    X_train[:, 3] = 2.0
+    X_test[:, 3] = 2.0
+    transform = CountTransformation("power_yeo_johnson")
+    transform.fit(X_train)
+    observed = transform.apply(X_test)
+    mask = np.ptp(X_train, axis=0) > 0
+    expected = np.zeros_like(X_test, dtype=float)
+    expected[:, mask] = (
+        PowerTransformer(method="yeo-johnson", standardize=True)
+        .fit(X_train[:, mask])
+        .transform(X_test[:, mask])
+    )
+    expected = expected.astype(np.float32)
+    np.testing.assert_allclose(observed, expected, rtol=0, atol=0)
 
 
 def test_canonical_aliases():
@@ -581,9 +638,18 @@ def test_compositional_log_transforms_reject_all_zero_samples():
 def test_all_abundance_based_transforms_reject_negative_values():
     X = _train_matrix().copy()
     X[0, 0] = -1.0
-    for name in EXPECTED_TRANSFORMATIONS - {"identity"}:
+    for name in ABUNDANCE_TRANSFORMATIONS:
         with pytest.raises(ValueError):
             CountTransformation(name).fit_apply(X)
+
+
+def test_generic_numeric_transforms_accept_negative_values():
+    X = _train_matrix().copy()
+    X[0, 0] = -1.0
+    for name in GENERIC_NUMERIC_TRANSFORMATIONS:
+        out = CountTransformation(name).fit_apply(X)
+        assert out.shape == X.shape
+        assert np.isfinite(out).all()
 
 
 def test_single_canonical_name_in_outputs():

@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 
 from .data import (
-    Data,
     Dataset,
     _dataset_from_feature_matrix,
     _encode_regression,
@@ -72,26 +71,6 @@ class ModalityDataset:
 
     def as_dataset(self, modality_name: str) -> Dataset:
         return self.modalities[str(modality_name)].dataset
-
-
-def samples_as_data(samples: Samples, abundance_path: Path | str, format: str) -> Data:
-    return Data(
-        abundance_path=abundance_path,
-        metadata_path=samples.path,
-        format=format,
-        sample_id_col=samples.sample_id_col,
-        target_col=samples.target_col,
-        task=samples.task,
-        target_tasks=samples.target_tasks,
-        group_col=samples.group_col,
-        stratify_col=samples.stratify_col,
-        metadata_cols=samples.metadata_cols,
-        label_map=samples.label_map,
-        class_labels=samples.class_labels,
-        positive_class=samples.positive_class,
-        target_class_labels=samples.target_class_labels,
-        target_positive_classes=samples.target_positive_classes,
-    )
 
 
 def _read_samples(

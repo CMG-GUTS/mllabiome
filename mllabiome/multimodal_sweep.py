@@ -17,7 +17,7 @@ from joblib import delayed
 from threadpoolctl import threadpool_limits
 
 from .compute import ResourceTracker, machine_profile
-from .console import info, path_table, progress, stage, success, summary_table
+from .console import path_table, progress, stage, success, summary_table
 from .integrations import Integration, IntegrationModel, integration_modality_sets
 from .metrics import _estimator_call, compute_metrics, compute_regression_metrics
 from .resolutions import materialize_mpdr

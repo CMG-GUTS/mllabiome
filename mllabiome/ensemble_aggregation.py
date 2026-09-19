@@ -38,7 +38,6 @@ def effective_aggregation_weights(
     n_members: int,
     weights: Iterable[float] | None = None,
 ) -> np.ndarray | None:
-    pass
     method = str(aggregation).strip()
     if method == "mean_proba":
         if int(n_members) < 1:
@@ -58,7 +57,6 @@ def aggregate_member_predictions(
     aggregation: str,
     weights: Iterable[float] | None = None,
 ) -> np.ndarray:
-    pass
     stack = np.asarray(stack, dtype=float)
     if stack.ndim != 3 or stack.shape[0] == 0:
         raise ValueError(

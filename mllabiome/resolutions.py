@@ -89,15 +89,6 @@ def _resolution_from_name(name: str) -> tuple[str, tuple[str, ...]]:
     raise ValueError(f"Cannot parse taxonomic resolution {raw_name!r}.")
 
 
-def _range_levels(lo: str, hi: str) -> tuple[str, ...]:
-    lo = _canonical_level(lo)
-    hi = _canonical_level(hi)
-    a, b = TAXONOMIC_LEVELS.index(lo), TAXONOMIC_LEVELS.index(hi)
-    if a > b:
-        a, b = b, a
-    return TAXONOMIC_LEVELS[a : b + 1]
-
-
 def _parse_resolution(item: Any) -> tuple[str, tuple[str, ...]]:
     if isinstance(item, tuple):
         name, levels = item

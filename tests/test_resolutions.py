@@ -15,7 +15,6 @@ from mllabiome.data import (
 from mllabiome.resolutions import (
     _manual_range,
     _parse_resolution,
-    _range_levels,
     _resolution_from_name,
     materialize_mpdr,
 )
@@ -198,8 +197,6 @@ def test_ranges_use_canonical_taxonomic_order():
     expected = ("phylum", "class", "order", "family", "genus")
     assert _manual_range("phylum", "genus") == expected
     assert _manual_range("genus", "phylum") == expected
-    assert _range_levels("phylum", "genus") == expected
-    assert _range_levels("genus", "phylum") == expected
 
 
 @pytest.mark.parametrize(

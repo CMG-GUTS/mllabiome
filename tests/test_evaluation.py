@@ -8,6 +8,7 @@ import pytest
 import mllabiome.configs_sweep as cs
 from mllabiome.configs_sweep import Evaluation, QualificationGate, Sweep, evaluate
 from mllabiome.data import Data, Dataset
+from mllabiome.storage import read_table
 
 
 class ConstantEstimator:
@@ -125,13 +126,11 @@ def _patch_runtime(monkeypatch, dataset, learner_factories, fit_log=None):
 
 def _read_eval_tables(root):
     return {
-        "outer": pd.read_csv(root / "results" / "outer_results.tsv", sep="\t"),
-        "inner": pd.read_csv(root / "inner_results" / "inner_results.tsv", sep="\t"),
-        "outer_pred": pd.read_csv(
-            root / "predictions" / "outer_predictions.tsv", sep="\t"
-        ),
-        "inner_pred": pd.read_csv(
-            root / "inner_predictions" / "inner_predictions.tsv", sep="\t"
+        "outer": read_table(root / "results" / "outer_results.parquet"),
+        "inner": read_table(root / "inner_results" / "inner_results.parquet"),
+        "outer_pred": read_table(root / "predictions" / "outer_predictions.parquet"),
+        "inner_pred": read_table(
+            root / "inner_predictions" / "inner_predictions.parquet"
         ),
     }
 
@@ -307,7 +306,7 @@ def test_evaluate_output_accounting_is_exact_and_predictions_align_to_samples(
     )
     evaluate(sweep)
     tables = _read_eval_tables(sweep.root())
-    configs = pd.read_csv(sweep.root() / "configs.tsv", sep="\t")
+    configs = read_table(sweep.root() / "configs.parquet")
     assert len(configs[configs["active"].eq(1)]) == 4
     assert len(tables["outer"]) == 12
     assert len(tables["inner"]) == 24
@@ -359,8 +358,8 @@ def test_gate_is_computed_from_inner_validation_and_unqualified_configs_skip_out
     )
     evaluate(sweep)
     tables = _read_eval_tables(sweep.root())
-    qual = pd.read_csv(sweep.root() / "tables" / "qualification_gate.tsv", sep="\t")
-    configs = pd.read_csv(sweep.root() / "configs.tsv", sep="\t")
+    qual = read_table(sweep.root() / "tables" / "qualification_gate.parquet")
+    configs = read_table(sweep.root() / "configs.parquet")
     signal_id = configs.loc[configs["learner"].eq("signal"), "config_id"].iloc[0]
     constant_id = configs.loc[configs["learner"].eq("constant"), "config_id"].iloc[0]
     assert len(qual) == 6
@@ -477,7 +476,7 @@ def test_outer_test_labels_cannot_change_inner_results_or_gate_decisions(
         )
         evaluate(sweep)
         tables = _read_eval_tables(sweep.root())
-        qual = pd.read_csv(sweep.root() / "tables" / "qualification_gate.tsv", sep="\t")
+        qual = read_table(sweep.root() / "tables" / "qualification_gate.parquet")
         outputs.append((tables, qual))
 
     inner_a = (

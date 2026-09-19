@@ -12,7 +12,6 @@ from typing import Any, Literal, Mapping, Sequence
 import numpy as np
 import pandas as pd
 from joblib import delayed
-from scipy.special import expit, softmax
 from sklearn.base import BaseEstimator
 from sklearn.model_selection import KFold, StratifiedKFold
 from threadpoolctl import threadpool_limits
@@ -24,8 +23,6 @@ from .console import info, path_table, progress, stage, success, summary_table
 from .figures import _write_representation_impact_figure
 from .explainability_methods import (
     ALE,
-    ALEInteractions,
-    LIME,
     Permutation,
     SHAP,
     apply_profile,
@@ -2552,36 +2549,6 @@ def _failed_metric_row(
     row["ok"] = 0
     row["error"] = f"{type(exc).__name__}: {exc}"
     return row
-
-
-def _prediction_rows(
-    key: str,
-    cid: str,
-    idx: np.ndarray,
-    dataset: Dataset,
-    pred: np.ndarray,
-    proba: np.ndarray,
-    stage: str,
-    outer_split_key: str,
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for row_no, sample_idx in enumerate(idx):
-        r = {
-            "stage": stage,
-            "split_key": key,
-            "outer_split_key": outer_split_key,
-            "sample_id": dataset.sample_ids[int(sample_idx)],
-            "sample_index": int(sample_idx),
-            "config_id": cid,
-            "y_true": int(dataset.y[int(sample_idx)]),
-            "y_pred": int(pred[row_no]),
-        }
-        for j, label in enumerate(dataset.class_labels):
-            r[f"proba_{label}"] = float(proba[row_no, j])
-        if len(dataset.class_labels) == 2:
-            r["y_proba_pos"] = float(proba[row_no, 1])
-        rows.append(r)
-    return rows
 
 
 def _write_tables(

@@ -367,7 +367,6 @@ def load_final_models(root: Path | str) -> dict[str, Any]:
 def aggregate_member_predictions(
     stack: np.ndarray, aggregation: str, weights: list[float] | None = None
 ) -> np.ndarray:
-    pass
     return _aggregate_member_predictions(stack, aggregation, weights)
 
 

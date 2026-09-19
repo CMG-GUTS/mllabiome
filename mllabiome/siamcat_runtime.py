@@ -369,7 +369,6 @@ def ensure_siamcat_runtime(
     runtime: str = "auto",
     rscript: str | os.PathLike[str] | None = None,
 ) -> SIAMCATRuntime:
-    pass
     chosen = _choose_rscript(runtime, rscript)
     r_version = _r_version(chosen)
     library = _cache_root() / "r-library" / f"R-{R_VERSION}_Bioc-{BIOCONDUCTOR_VERSION}"

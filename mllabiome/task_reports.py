@@ -410,54 +410,6 @@ def _regression_procedure(sweep: Sweep, root: Path) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["Field", "Value"])
 
 
-def _regression_explainability_html(
-    root: Path, report_dir: Path, top_k: int
-) -> tuple[str, int]:
-    blocks: list[str] = []
-    count = 0
-    for slug, label in (("mpma_e", "MPMA-E"), ("mpma_b", "MPMA-B")):
-        target_dir = root / "explainability" / slug
-        stability = _read_table(target_dir / "feature_stability.parquet")
-        if not target_dir.exists() or stability.empty:
-            continue
-        count += 1
-        _write_feature_support_figure(target_dir, stability, int(top_k))
-        fig = _report._fig(
-            target_dir / "figures" / "feature_support",
-            report_dir,
-            f"{label}: cross-method top-k support and fold stability",
-        )
-        table = stability.copy()
-        if "importance_mean" in table.columns:
-            table["importance_mean"] = pd.to_numeric(
-                table["importance_mean"], errors="coerce"
-            )
-            table = table.sort_values(
-                ["method", "importance_mean"], ascending=[True, False]
-            )
-        table = (
-            table.groupby("method", group_keys=False).head(int(top_k))
-            if "method" in table.columns
-            else table.head(int(top_k))
-        )
-        keep = [
-            c
-            for c in (
-                "method",
-                "feature",
-                "importance_mean",
-                "importance_sd",
-                "fold_coverage",
-                "scoring",
-            )
-            if c in table.columns
-        ]
-        blocks.append(
-            f'<section class="xai-target"><h3>{html.escape(label)}</h3>{fig}{_report._html_table(table[keep] if keep else table)}</section>'
-        )
-    return "".join(blocks), count
-
-
 def _regression_outer_unit_table(root: Path) -> pd.DataFrame:
     frames = []
     for strategy, frame in _regression_strategy_frames(root).items():

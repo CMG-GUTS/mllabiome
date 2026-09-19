@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import io
 import inspect
 import hashlib
 import json
 import logging
 import math
 import shutil
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import contextmanager
 from multiprocessing import Manager
 from pathlib import Path
 from queue import Empty
@@ -26,7 +25,7 @@ from .configs_sweep import (
     _outer_splits,
     _strata_from_metadata,
 )
-from .console import console, info, path_table, progress, stage, success, summary_table
+from .console import info, path_table, progress, stage, success, summary_table
 from .data import load_dataset
 from .explainability_visuals import plot_feature_support as _plot_feature_support_visual
 from .explainability_support import top_k_rank_support
@@ -44,7 +43,7 @@ from .explainability_visuals import (
     plot_interaction_network as _plot_interaction_network_visual,
 )
 from .learners import _learner_factory
-from .metrics import _estimator_call, _predict_proba_aligned
+from .metrics import _predict_proba_aligned
 from .resolutions import materialize_mpdr
 from .runtime import (
     configure_estimator_threads,
@@ -52,7 +51,7 @@ from .runtime import (
     resolve_execution_plan,
     thread_environment,
 )
-from .style import ACC_D, ACC_L, BG, COL_W_2, DIM, INK, MID, TRACK, UC_CASE, UC_CTRL
+from .style import ACC_D, ACC_L, BG, COL_W_2, DIM, INK, MID, TRACK
 from .style import apply as apply_style
 from .style import save_all
 from .transformations import CountTransformationAdapter, _count_transformation_factory
@@ -76,50 +75,6 @@ def _quiet_pyale_info():
 
 
 @contextmanager
-def _quiet_external_progress():
-    pass
-    buf_out = io.StringIO()
-    buf_err = io.StringIO()
-    patches: list[tuple[Any, str, Any]] = []
-
-    def _disabled_tqdm(*args, **kwargs):
-        kwargs["disable"] = True
-        return _ORIG_TQDM(*args, **kwargs)
-
-    try:
-        import tqdm as _tqdm_mod
-
-        _ORIG_TQDM = _tqdm_mod.tqdm
-        patches.append((_tqdm_mod, "tqdm", _ORIG_TQDM))
-        _tqdm_mod.tqdm = _disabled_tqdm
-        try:
-            import tqdm.auto as _tqdm_auto
-
-            patches.append((_tqdm_auto, "tqdm", _tqdm_auto.tqdm))
-            _tqdm_auto.tqdm = _disabled_tqdm
-        except Exception:
-            pass
-        try:
-            import tqdm.std as _tqdm_std
-
-            patches.append((_tqdm_std, "tqdm", _tqdm_std.tqdm))
-            _tqdm_std.tqdm = _disabled_tqdm
-        except Exception:
-            pass
-    except Exception:
-        _ORIG_TQDM = None
-
-    try:
-        with redirect_stdout(buf_out), redirect_stderr(buf_err):
-            yield
-    finally:
-        for obj, name, value in reversed(patches):
-            try:
-                setattr(obj, name, value)
-            except Exception:
-                pass
-
-
 class ExplainabilityConfigurationError(RuntimeError):
     pass
 
@@ -242,7 +197,6 @@ def _auto_ale_bins(n_samples: int, spec: ALE | ALEInteractions) -> int:
 
 
 def _preflight_explainability_dependencies(methods: Sequence[str]) -> None:
-    pass
     missing: list[str] = []
     if "shap" in methods:
         try:
@@ -644,7 +598,6 @@ def _require_pyale():
 def _ale_result_values(
     result: Any,
 ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None]:
-    pass
     x1 = x2 = None
     if isinstance(result, pd.DataFrame):
         df = result.copy()
@@ -1326,159 +1279,6 @@ def _write_method_outputs(
     return outputs
 
 
-def _select_instance_indices(
-    dataset: Any,
-    clf: BaseEstimator,
-    X: np.ndarray,
-    *,
-    sample_ids: Sequence[str],
-    representative: bool,
-) -> list[tuple[int, str]]:
-    pass
-    selected: list[tuple[int, str]] = []
-    sid_to_idx = {str(sid): i for i, sid in enumerate(dataset.sample_ids)}
-    for sid in sample_ids:
-        if str(sid) not in sid_to_idx:
-            raise ExplainabilityConfigurationError(
-                f"Requested instance sample_id {sid!r} was not found in the loaded dataset."
-            )
-        idx = sid_to_idx[str(sid)]
-        selected.append((idx, f"requested:{sid}"))
-    if representative:
-        proba = _predict_proba_aligned(
-            clf, X, np.arange(len(dataset.class_labels), dtype=int)
-        )
-        pos = proba[:, 1] if proba.shape[1] > 1 else proba[:, 0]
-        for cls in sorted(set(int(x) for x in dataset.y.tolist())):
-            idxs = np.where(dataset.y == cls)[0]
-            if len(idxs) == 0:
-                continue
-            cls_probs = pos[idxs]
-            centre = (
-                float(np.nanmedian(cls_probs)) if np.isfinite(cls_probs).any() else 0.5
-            )
-            local = int(idxs[int(np.nanargmin(np.abs(cls_probs - centre)))])
-            role = "representative_case" if cls == 1 else "representative_control"
-            if local not in [i for i, _ in selected]:
-                selected.append((local, role))
-
-    out: list[tuple[int, str]] = []
-    seen: set[int] = set()
-    for idx, role in selected:
-        if idx not in seen:
-            seen.add(idx)
-            out.append((idx, role))
-    return out
-
-
-def _shap_instance_explanations(
-    clf: BaseEstimator,
-    X: np.ndarray,
-    feature_names: Sequence[str],
-    dataset: Any,
-    *,
-    selected: list[tuple[int, str]],
-    max_background: int,
-    top_features_per_direction: int,
-    random_state: int,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    pass
-    if not selected:
-        return pd.DataFrame(), pd.DataFrame()
-    try:
-        import shap
-    except Exception as exc:
-        raise ExplainabilityDependencyError(
-            "SHAP instance explanations require shap. No fallback method will be used."
-        ) from exc
-    rows_bg = _sample_rows(X, max_rows=max_background, random_state=random_state)
-    background = X[rows_bg]
-    sample_idx = np.array([i for i, _ in selected], dtype=int)
-    X_sel = X[sample_idx]
-    classes = np.arange(len(dataset.class_labels), dtype=int)
-    if hasattr(clf, "predict_proba"):
-        model_fn = _explain_predict_proba(clf, classes)
-    elif hasattr(clf, "decision_function"):
-        model_fn = _explain_decision_function(clf)
-    else:
-        raise ExplainabilityConfigurationError(
-            "Selected learner exposes neither predict_proba nor decision_function for SHAP instance explanations."
-        )
-    min_max_evals = max(500, 2 * len(feature_names) + 1)
-    try:
-        with _quiet_external_progress():
-            explainer = shap.Explainer(
-                model_fn, background, feature_names=list(feature_names)
-            )
-            try:
-                values = explainer(X_sel, silent=True, max_evals=min_max_evals)
-            except TypeError:
-                try:
-                    values = explainer(X_sel, max_evals=min_max_evals)
-                except TypeError:
-                    try:
-                        values = explainer(X_sel, silent=True)
-                    except TypeError:
-                        values = explainer(X_sel)
-    except Exception as exc:
-        raise ExplainabilityConfigurationError(
-            "SHAP instance explanations failed. No fallback method will be used."
-        ) from exc
-    arr = np.asarray(values.values, dtype=float)
-    if arr.ndim == 3:
-        arr = arr[:, :, 1] if arr.shape[2] == 2 else np.mean(arr, axis=2)
-    if arr.ndim != 2 or arr.shape[1] != len(feature_names):
-        raise ExplainabilityConfigurationError(
-            f"Unexpected SHAP instance value shape {arr.shape}. No fallback method will be used."
-        )
-    proba = _predict_proba_aligned(
-        clf, X_sel, np.arange(len(dataset.class_labels), dtype=int)
-    )
-    pos = proba[:, 1] if proba.shape[1] > 1 else proba[:, 0]
-    pred = np.argmax(proba, axis=1)
-    selected_rows = []
-    top_rows = []
-    k = max(1, int(top_features_per_direction))
-    for local_row, (idx, role) in enumerate(selected):
-        sid = str(dataset.sample_ids[int(idx)])
-        selected_rows.append(
-            {
-                "sample_id": sid,
-                "sample_index": int(idx),
-                "selection_role": role,
-                "true_class": int(dataset.y[int(idx)]),
-                "predicted_class": int(pred[local_row]),
-                "p_positive": float(pos[local_row]),
-                "p_positive_mean": float(pos[local_row]),
-                "n_oof_explanations": 1,
-            }
-        )
-        vals = arr[local_row]
-        order_neg = np.argsort(vals)[:k]
-        order_pos = np.argsort(-vals)[:k]
-        chosen = list(
-            dict.fromkeys([int(i) for i in list(order_neg) + list(order_pos)])
-        )
-        chosen = sorted(chosen, key=lambda j: abs(float(vals[j])), reverse=True)
-        for rank, j in enumerate(chosen, start=1):
-            top_rows.append(
-                {
-                    "sample_id": sid,
-                    "sample_index": int(idx),
-                    "selection_role": role,
-                    "true_class": int(dataset.y[int(idx)]),
-                    "predicted_class": int(pred[local_row]),
-                    "p_positive": float(pos[local_row]),
-                    "p_positive_mean": float(pos[local_row]),
-                    "feature": str(feature_names[j]),
-                    "value": float(vals[j]),
-                    "abs_value": float(abs(vals[j])),
-                    "rank": int(rank),
-                }
-            )
-    return pd.DataFrame(top_rows), pd.DataFrame(selected_rows)
-
-
 def _plot_ale_curves(
     curves: pd.DataFrame,
     top_features: Sequence[str],
@@ -1486,7 +1286,6 @@ def _plot_ale_curves(
     *,
     max_panels: int = 12,
 ) -> None:
-    pass
     apply_style()
     import math as _math
 
@@ -1676,95 +1475,6 @@ def _plot_ale_curves(
             ax.locator_params(axis="y", nbins=3)
         except Exception:
             pass
-    save_all(fig, out_stem)
-    plt.close(fig)
-
-
-def _plot_instance_explanations(
-    inst_top: pd.DataFrame, out_stem: Path, *, top_features_per_direction: int
-) -> None:
-    pass
-    apply_style()
-    import matplotlib.patheffects as mpe
-    import matplotlib.pyplot as plt
-
-    from .style import ACC_L, BG, INK, MID, MM, TRACK, save_all
-
-    if inst_top is None or inst_top.empty:
-        fig = plt.figure(figsize=(112 * MM, 58 * MM))
-        ax = fig.add_axes([0.06, 0.10, 0.88, 0.80])
-        ax.axis("off")
-        ax.text(
-            0.5,
-            0.5,
-            "Instance explanations unavailable",
-            ha="center",
-            va="center",
-            fontsize=7,
-            color=MID,
-        )
-        save_all(fig, out_stem)
-        plt.close(fig)
-        return
-
-    samples = list(dict.fromkeys(inst_top["sample_id"].astype(str).tolist()))
-    n_panels = min(len(samples), 4)
-    fig_h = max(48, 28 * n_panels + 8)
-    fig = plt.figure(figsize=(118 * MM, fig_h * MM))
-    fig.patch.set_facecolor(BG)
-    panel_h = 0.90 / max(n_panels, 1)
-    for pi, sid in enumerate(samples[:n_panels]):
-        sub = inst_top[inst_top["sample_id"].astype(str).eq(sid)].copy()
-        sub = sub.sort_values("value", ascending=True)
-        y0 = 0.055 + (n_panels - 1 - pi) * panel_h
-
-        ax_lab = fig.add_axes([0.055, y0 + 0.085 * panel_h, 0.405, panel_h * 0.67])
-        ax_bar = fig.add_axes([0.475, y0 + 0.085 * panel_h, 0.455, panel_h * 0.67])
-        role = str(sub["selection_role"].iloc[0]) if len(sub) else "sample"
-        fig.text(
-            0.055,
-            y0 + panel_h * 0.86,
-            f"{role.replace('_', ' ')} · {sid}",
-            ha="left",
-            va="center",
-            fontsize=6.0,
-            color=INK,
-            weight="bold",
-        )
-        vals = pd.to_numeric(sub["value"], errors="coerce").fillna(0).to_numpy(float)
-        feats = sub["feature"].astype(str).tolist()
-        y = np.arange(len(sub))
-        for ax in (ax_lab, ax_bar):
-            ax.set_ylim(len(sub) - 0.5, -0.5)
-            ax.set_yticks([])
-            ax.set_facecolor(BG)
-            for sp in ax.spines.values():
-                sp.set_visible(False)
-            for yi in np.arange(len(sub) + 1) - 0.5:
-                ax.axhline(yi, color=TRACK, lw=0.22, zorder=0)
-        ax_lab.set_xlim(0, 1)
-        ax_lab.set_xticks([])
-        for i, feat in enumerate(feats):
-            ax_lab.text(
-                0.02,
-                i,
-                _plain_taxon_label(feat, 36),
-                ha="left",
-                va="center",
-                fontsize=4.95,
-                color=INK,
-                path_effects=[mpe.withStroke(linewidth=1.1, foreground="white")],
-            )
-        vmax = max(float(np.nanmax(np.abs(vals))) if len(vals) else 1.0, 1e-9)
-        ax_bar.barh(y, vals, height=0.52, color=ACC_L, edgecolor="none", zorder=2)
-        ax_bar.axvline(0, color="#000000", lw=0.45, zorder=3)
-        ax_bar.set_xlim(-1.12 * vmax, 1.12 * vmax)
-        ax_bar.set_xticks([-vmax, 0, vmax])
-        ax_bar.set_xticklabels(["−", "0", "+"], fontsize=4.7, color="#000000")
-        ax_bar.tick_params(axis="x", length=2.0, width=0.4, pad=1)
-        ax_bar.spines["bottom"].set_visible(True)
-        ax_bar.spines["bottom"].set_color("#000000")
-        ax_bar.spines["bottom"].set_linewidth(0.45)
     save_all(fig, out_stem)
     plt.close(fig)
 
@@ -1985,18 +1695,6 @@ def _method_cache_entry_status(
     if str(entry.get("signature", "")) != str(signature):
         return False, "method random state or cache schema changed"
     return True, "cache hit"
-
-
-def _method_cache_entry_valid(
-    entry: dict[str, Any],
-    signature: str,
-    source_signature: str,
-    spec: Any,
-    class_indices: Sequence[int],
-) -> bool:
-    return _method_cache_entry_status(
-        entry, signature, source_signature, spec, class_indices
-    )[0]
 
 
 def _method_cache_entry(
@@ -2796,54 +2494,6 @@ def _aggregate_fold_feature_importance(
     )
 
 
-def _mean_feature_importance_frames(
-    method: str,
-    frames: Sequence[pd.DataFrame],
-    feature_names: Sequence[str],
-    scoring: str,
-) -> pd.DataFrame:
-    class_indices = sorted(
-        {
-            int(x)
-            for frame in frames
-            if "class_index" in frame.columns
-            for x in pd.to_numeric(frame["class_index"], errors="coerce")
-            .dropna()
-            .astype(int)
-        }
-    )
-    if not class_indices:
-        class_indices = [0]
-        class_labels = ["class_0"]
-        prepared = []
-        for frame in frames:
-            d = frame.copy()
-            d["class_index"] = 0
-            d["class_label"] = "class_0"
-            prepared.append(d)
-        frames = prepared
-    else:
-        labels = {}
-        for frame in frames:
-            if {"class_index", "class_label"}.issubset(frame.columns):
-                for _, row in (
-                    frame[["class_index", "class_label"]].drop_duplicates().iterrows()
-                ):
-                    labels[int(row["class_index"])] = str(row["class_label"])
-        class_labels = [
-            labels.get(i, f"class_{i}") for i in range(max(class_indices) + 1)
-        ]
-    return _aggregate_fold_feature_importance(
-        method,
-        frames,
-        feature_names,
-        class_indices,
-        class_labels,
-        scoring,
-        top_k=min(30, len(feature_names)),
-    )
-
-
 def _explainability_outer_splits(sweep: Sweep, dataset: Any) -> list[dict[str, Any]]:
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
     y = np.asarray(dataset.y, dtype=int)
@@ -3154,130 +2804,6 @@ def _write_oof_prediction_summary(
     path = target_dir / "oof_predictions.parquet"
     write_table(path, pred_df)
     return path
-
-
-def _select_oof_instance_explanations(
-    dataset: Any,
-    feature_names: Sequence[str],
-    oof_rows: Sequence[dict[str, Any]],
-    *,
-    method: str,
-    sample_ids: Sequence[str],
-    representative: bool,
-    top_features_per_direction: int,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    if not oof_rows:
-        return pd.DataFrame(), pd.DataFrame()
-    meta = pd.DataFrame(oof_rows)
-    if meta.empty or "values" not in meta.columns:
-        return pd.DataFrame(), pd.DataFrame()
-    values = np.vstack(meta["values"].to_list())
-    sid_requested = {str(s) for s in sample_ids}
-    candidates: list[tuple[int, str]] = []
-    if sid_requested:
-        for sample_index, sid in enumerate(dataset.sample_ids):
-            if str(sid) in sid_requested:
-                candidates.append((sample_index, f"requested:{sid}"))
-    if representative:
-        for cls in sorted(set(int(x) for x in dataset.y.tolist())):
-            sub = meta[meta["true_class"].astype(int).eq(cls)].copy()
-            if sub.empty:
-                continue
-            own = sub[sub["class_index"].astype(int).eq(cls)]
-            if own.empty:
-                first_target = int(sub["class_index"].iloc[0])
-                own = sub[sub["class_index"].astype(int).eq(first_target)]
-            pred_summary = own.groupby("sample_index", as_index=False).agg(
-                p_class=("p_class", "mean")
-            )
-            if pred_summary.empty:
-                continue
-            centre = float(pred_summary["p_class"].median())
-            pred_summary["_dist"] = (
-                pd.to_numeric(pred_summary["p_class"], errors="coerce") - centre
-            ).abs()
-            r = pred_summary.sort_values(["_dist", "sample_index"]).iloc[0]
-            candidates.append((int(r["sample_index"]), f"representative_class_{cls}"))
-    seen: set[int] = set()
-    selected_pairs: list[tuple[int, str]] = []
-    for idx, role in candidates:
-        if idx not in seen:
-            seen.add(idx)
-            selected_pairs.append((idx, role))
-    if not selected_pairs:
-        return pd.DataFrame(), pd.DataFrame()
-
-    top_rows: list[dict[str, Any]] = []
-    selected_rows: list[dict[str, Any]] = []
-    k = max(1, int(top_features_per_direction))
-    for sample_index, role in selected_pairs:
-        sample_mask = meta["sample_index"].astype(int).eq(int(sample_index))
-        sample_meta = meta.loc[sample_mask].copy()
-        if sample_meta.empty:
-            continue
-        sid = str(dataset.sample_ids[int(sample_index)])
-        for class_index, class_meta in sample_meta.groupby("class_index", sort=True):
-            class_positions = class_meta.index.to_numpy(dtype=int)
-            vals = values[class_positions].mean(axis=0)
-            vals_sd = (
-                values[class_positions].std(axis=0, ddof=1)
-                if len(class_positions) > 1
-                else np.zeros(values.shape[1])
-            )
-            p_class = pd.to_numeric(class_meta["p_class"], errors="coerce")
-            pred_mode = pd.to_numeric(
-                class_meta.get("predicted_class", -1), errors="coerce"
-            ).dropna()
-            predicted = int(pred_mode.mode().iloc[0]) if not pred_mode.empty else -1
-            class_label = str(class_meta["class_label"].iloc[0])
-            selected_rows.append(
-                {
-                    "method": str(method),
-                    "sample_id": sid,
-                    "sample_index": int(sample_index),
-                    "selection_role": role,
-                    "true_class": int(dataset.y[int(sample_index)]),
-                    "predicted_class": predicted,
-                    "class_index": int(class_index),
-                    "class_label": class_label,
-                    "p_class_mean": float(p_class.mean())
-                    if not p_class.empty
-                    else np.nan,
-                    "p_class_sd": float(p_class.std(ddof=1))
-                    if len(p_class) > 1
-                    else 0.0,
-                    "n_oof_explanations": int(len(class_positions)),
-                }
-            )
-            order_neg = np.argsort(vals)[:k]
-            order_pos = np.argsort(-vals)[:k]
-            chosen = list(
-                dict.fromkeys([int(i) for i in list(order_neg) + list(order_pos)])
-            )
-            chosen = sorted(chosen, key=lambda j: abs(float(vals[j])), reverse=True)
-            for rank, j in enumerate(chosen, start=1):
-                top_rows.append(
-                    {
-                        "method": str(method),
-                        "sample_id": sid,
-                        "sample_index": int(sample_index),
-                        "selection_role": role,
-                        "true_class": int(dataset.y[int(sample_index)]),
-                        "predicted_class": predicted,
-                        "class_index": int(class_index),
-                        "class_label": class_label,
-                        "p_class_mean": float(p_class.mean())
-                        if not p_class.empty
-                        else np.nan,
-                        "feature": str(feature_names[j]),
-                        "value": float(vals[j]),
-                        "value_sd": float(vals_sd[j]),
-                        "abs_value": float(abs(vals[j])),
-                        "rank": int(rank),
-                        "n_oof_explanations": int(len(class_positions)),
-                    }
-                )
-    return pd.DataFrame(top_rows), pd.DataFrame(selected_rows)
 
 
 def _select_local_sample_pairs(
@@ -5157,99 +4683,6 @@ def _selected_ensemble_members(root: Path) -> tuple[list[str], str]:
     return members, aggregation
 
 
-def _fit_selected_mpma_e_for_explainability(
-    sweep: Sweep,
-    rankings: pd.DataFrame,
-) -> tuple[Any, np.ndarray, np.ndarray, list[str], BaseEstimator, pd.Series]:
-    root = sweep.root()
-    members, aggregation = _selected_ensemble_members(root)
-    config_path = root / "configs.parquet"
-    configs = read_table(config_path) if table_exists(config_path) else rankings
-    configs = configs.copy()
-    configs["config_id"] = configs["config_id"].astype(str)
-    member_rows = configs[configs["config_id"].isin([str(m) for m in members])].copy()
-    if member_rows.empty:
-        keep = []
-        for _, r in configs.iterrows():
-            cid = str(r.get("config_id", ""))
-            if any(cid.startswith(str(m)) or str(m).startswith(cid) for m in members):
-                keep.append(r)
-        member_rows = pd.DataFrame(keep)
-    if member_rows.empty:
-        raise ExplainabilityConfigurationError(
-            "MPMA-E members cannot be matched to configs.parquet."
-        )
-    member_rows = member_rows.drop_duplicates("config_id")
-    all_levels: list[str] = []
-    for _, r in member_rows.iterrows():
-        for lv in _row_levels(r):
-            if lv not in all_levels:
-                all_levels.append(lv)
-    if not all_levels:
-        all_levels = ["all"]
-    dataset = load_dataset(sweep.data, tuple(all_levels))
-    X_blocks: list[np.ndarray] = []
-    feature_names: list[str] = []
-    fitted_members: list[dict[str, Any]] = []
-    start = 0
-    total_members = len(member_rows)
-    for member_i, (_, r) in enumerate(member_rows.iterrows(), start=1):
-        info(
-            "Fitting MPMA-E member "
-            f"{member_i}/{total_members} · config={str(r.get('config_id', ''))} · "
-            f"{str(r.get('resolution', r.get('levels', 'MPDR')))} · "
-            f"{str(r.get('count_transformation', 'transformation'))} · "
-            f"{str(r.get('learner', 'learner'))}"
-        )
-        levels = _row_levels(r)
-        if not levels:
-            levels = ("all",)
-        X_base_member, names_member = materialize_mpdr(dataset, levels)
-        transformation_key = str(r["count_transformation"])
-        ct = _configured_count_transformation_factory(sweep, transformation_key)()
-        X_member, _ = ct.apply_pair(X_base_member, X_base_member)
-        learner_key = str(r["learner"])
-        clf_member = _configured_learner_factory(sweep, learner_key)()
-        clf_member.fit(X_member, dataset.y)
-        stop = start + X_member.shape[1]
-
-        label_prefix = (
-            f"{str(r.get('resolution', '+'.join(levels)))}"
-            f"|{transformation_key}"
-            f"|{learner_key}"
-            f"|{str(r.get('config_id', member_i))}"
-        )
-        transformed_names = ct.get_feature_names_out(list(names_member))
-        if X_member.shape[1] != len(transformed_names):
-            raise ExplainabilityConfigurationError(
-                f"Transformation {transformation_key!r} produced feature metadata inconsistent with its transformed matrix."
-            )
-        feature_names.extend([f"{label_prefix}|{name}" for name in transformed_names])
-        X_blocks.append(X_member)
-        fitted_members.append(
-            {
-                "config_id": str(r["config_id"]),
-                "slice": slice(start, stop),
-                "estimator": clf_member,
-                "classes": np.arange(len(dataset.class_labels), dtype=int),
-            }
-        )
-        start = stop
-    X = np.concatenate(X_blocks, axis=1)
-    ensemble = _FittedMpmaEnsemble(fitted_members, aggregation=aggregation)
-    row = pd.Series(
-        {
-            "unit": "MPMA-E",
-            "members": ",".join([m["config_id"] for m in fitted_members]),
-            "aggregation_strategy": aggregation,
-            "levels": ",".join(all_levels),
-            "count_transformation": "ensemble",
-            "learner": "MPMA-E",
-        }
-    )
-    return dataset, X, X, feature_names, ensemble, row
-
-
 def _standard_explainability_targets(sweep: Sweep, rankings: pd.DataFrame) -> list[str]:
     targets: list[str] = []
     if (sweep.root() / "ensembling" / "selected_unit.json").exists() and not getattr(
@@ -5422,13 +4855,6 @@ def _plain_taxon_label(feature_name: str, max_len: int = 34) -> str:
     return out if len(out) <= max_len else out[: max_len - 1].rstrip() + "…"
 
 
-def _class_colors(class_labels: Sequence[str]) -> tuple[str, str]:
-    labels = " ".join(str(x).lower() for x in class_labels)
-    if "mindset" in labels or "depression" in labels or "cde" in labels:
-        return "#B8B8B8", "#2FA7D6"
-    return UC_CTRL, UC_CASE
-
-
 def _plot_feature_importance(
     top_features: pd.DataFrame,
     stats: pd.DataFrame,
@@ -5437,47 +4863,9 @@ def _plot_feature_importance(
     class_labels: Sequence[str],
     stability: pd.DataFrame | None = None,
 ) -> None:
-    pass
     _plot_feature_support_visual(
         top_features, stats, out_stem, top_k, class_labels, stability
     )
-
-
-def _hash_float(text: str) -> float:
-    import hashlib
-
-    return int(hashlib.sha1(text.encode("utf-8")).hexdigest()[:8], 16) / 0xFFFFFFFF
-
-
-def _layout_graph(G):
-    import networkx as nx
-
-    nodes = list(G.nodes())
-    if not nodes:
-        return {}
-    if len(nodes) == 1:
-        return {nodes[0]: np.array([0.0, 0.0])}
-    try:
-        if nx.is_connected(G.to_undirected()):
-            pos = nx.kamada_kawai_layout(G, weight="distance", scale=1.0)
-        else:
-            pos = nx.spring_layout(G, weight="weight", seed=7, iterations=600)
-    except Exception:
-        pos = nx.spring_layout(G, weight="weight", seed=7, iterations=600)
-    arr = np.asarray([pos[n] for n in nodes], dtype=float)
-    arr = arr - arr.mean(axis=0)
-    maxabs = np.max(np.abs(arr)) if arr.size else 1.0
-    if maxabs <= 0:
-        maxabs = 1.0
-    return {n: arr[i] / maxabs for i, n in enumerate(nodes)}
-
-
-def _net_label(feature_name: str) -> str:
-    label = _plain_taxon_label(feature_name, max_len=28)
-    parts = label.split(". ", 1)
-    if len(parts) == 2:
-        return rf"$\mathit{{{parts[0]}.}}$ {parts[1]}"
-    return label
 
 
 def _plot_interaction_network(
@@ -5488,7 +4876,6 @@ def _plot_interaction_network(
     class_labels: Sequence[str],
     layout: str = "default",
 ) -> bool:
-    pass
     try:
         return bool(
             _plot_interaction_network_visual(
@@ -5531,11 +4918,6 @@ def _write_unavailable_interaction_network(out_stem: Path, message: str) -> None
     )
     save_all(fig, out_stem)
     plt.close(fig)
-
-
-def _short_taxon(name: str, max_len: int = 70) -> str:
-    s = str(name).split("|")[-1].split("___")[-1]
-    return s if len(s) <= max_len else s[: max_len - 1] + "…"
 
 
 def _standardized_group_shift(

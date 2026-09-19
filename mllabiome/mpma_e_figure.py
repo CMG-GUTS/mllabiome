@@ -198,13 +198,15 @@ def read_config_meta(
     table_path = experiment_dir / "configs.parquet"
     if db_path.exists():
         conn = sqlite3.connect(str(db_path))
-        query = (
-            "SELECT * FROM configs"
-            if include_inactive
-            else "SELECT * FROM configs WHERE active=1"
-        )
-        df = pd.read_sql(query, conn)
-        conn.close()
+        try:
+            query = (
+                "SELECT * FROM configs"
+                if include_inactive
+                else "SELECT * FROM configs WHERE active=1"
+            )
+            df = pd.read_sql(query, conn)
+        finally:
+            conn.close()
     elif table_exists(table_path):
         df = read_table(table_path, dtype=str)
         if not include_inactive and "active" in df.columns:
@@ -320,63 +322,6 @@ def model_family_display(model: Any, max_chars: int = 20) -> str:
     if not m:
         return "Unknown\nclassifier"
     return "\n".join(textwrap.wrap(m.replace("_", " "), width=max_chars))
-
-
-def selection_display(sel: Any, selected: dict[str, Any]) -> str:
-    s = str(sel or "?")
-    metric = str(selected.get("optimize_metric") or "nMCC")
-    threshold = selected.get("threshold_score")
-
-    if threshold is None and s == "threshold":
-        threshold = 0.30
-    max_members = selected.get("max_size", selected.get("ensemble_size"))
-    if s == "threshold":
-        return f"Selection: inner-validation threshold ({metric} ≥ {float(threshold):.2f}, max {int(max_members)})"
-    mapping = {
-        "top_k": "Selection: inner-validation top-k",
-        "diverse_top_k": "Selection: inner-validation diverse top-k",
-        "best_per_family": "Selection: inner-validation best per classifier family",
-        "stratified": "Selection: inner-validation stratified",
-        "best_per_resolution": "Selection: inner-validation best per rank set",
-        "resolution_diverse": "Selection: inner-validation rank-diverse",
-        "caruana": "Selection: inner-validation Caruana ensemble selection",
-        "super_learner": "Selection: inner-validation Super Learner",
-        "best_per_learner_type": "Selection: inner-validation best per learner type",
-        "greedy_diverse": "Selection: inner-validation greedy diverse search",
-        "hillclimb": "Selection: inner-validation hill-climbing search",
-    }
-    return mapping.get(s, f"Selection: inner-validation {s.replace('_', ' ')}")
-
-
-def aggregation_display(agg: Any) -> str:
-    a = str(agg or "?")
-    mapping = {
-        "mean_proba": "Aggregation: mean probability",
-        "weighted_mean_proba": "Aggregation: learned-weight mean probability",
-        "median_proba": "Aggregation: median probability",
-        "trimmed_mean": "Aggregation: trimmed mean probability",
-        "geometric_mean": "Aggregation: geometric mean probability",
-        "log_odds_mean": "Aggregation: mean log-odds",
-        "harmonic_mean": "Aggregation: harmonic mean probability",
-        "minmax": "Aggregation: mean of minimum and maximum probabilities",
-        "rank_mean": "Aggregation: mean probability rank",
-        "borda_count": "Aggregation: Borda-count rank aggregation",
-        "copeland": "Aggregation: Copeland-style rank aggregation",
-        "majority_vote": "Aggregation: majority vote",
-        "weighted_vote": "Aggregation: inner-score weighted vote",
-        "confidence_weighted": "Aggregation: confidence-weighted probability",
-        "softmax_mean": "Aggregation: softmax-weighted probability",
-        "bayesian_avg": "Aggregation: Bayesian model-averaged probability",
-        "power_mean_p3": "Aggregation: power mean (p=3)",
-        "power_mean_p05": "Aggregation: power mean (p=0.5)",
-        "dempster_shafer": "Aggregation: Dempster–Shafer combination",
-        "max_proba": "Aggregation: maximum probability",
-        "min_proba": "Aggregation: minimum probability",
-        "superlearner__lr": "Aggregation: logistic-regression super learner",
-        "superlearner__ridge": "Aggregation: ridge-regression super learner",
-        "superlearner__rf": "Aggregation: random-forest super learner",
-    }
-    return mapping.get(a, f"Aggregation: {a.replace('_', ' ')}")
 
 
 def cap_members(members: list[MemberRecord], max_members: int) -> list[MemberRecord]:
@@ -835,14 +780,6 @@ def apply_transform(
     return R, ABUND_CMAP, 0.0, max(float(np.nanmax(R)), 0.01)
 
 
-def select_demo_rows(X: np.ndarray, max_rows: int, seed: int = 42) -> np.ndarray:
-    if X.shape[0] <= max_rows:
-        return X
-
-    idx = np.linspace(0, X.shape[0] - 1, max_rows, dtype=int)
-    return X[idx]
-
-
 def compress_features_for_display(Z: np.ndarray, max_features: int) -> np.ndarray:
     if Z.shape[1] <= max_features:
         return Z
@@ -927,16 +864,7 @@ def text_box(
     )
 
 
-def wrap_plain(text: str, width: int) -> str:
-    return "\n".join(
-        textwrap.wrap(
-            str(text), width=width, break_long_words=False, break_on_hyphens=False
-        )
-    )
-
-
 def panel_height(n_units: int, unit_h: float = 8.4, gap: float = 1.4) -> float:
-    pass
     title_h = 10.0
     raw_h = 11.0
     units_h = n_units * unit_h + max(0, n_units - 1) * gap
@@ -945,7 +873,6 @@ def panel_height(n_units: int, unit_h: float = 8.4, gap: float = 1.4) -> float:
 
 
 def aggregation_endpoint_label(agg: Any) -> str:
-    pass
     a = str(agg or "?")
     mapping = {
         "mean_proba": "mean\nprobability",
@@ -980,7 +907,6 @@ def aggregation_endpoint_label(agg: Any) -> str:
 
 
 def visual_abundance_profile(n_features: int, seed: int = 42) -> np.ndarray:
-    pass
     n = max(int(n_features), 1)
     rng = np.random.default_rng(seed % (2**31))
     row = np.zeros(n, dtype=float)
@@ -1322,7 +1248,6 @@ def write_members_table(tasks: list[EnsembleTask], out_path: Path) -> None:
 
 
 def _normalise_selected_unit_for_figure(selected: dict[str, Any]) -> dict[str, Any]:
-    pass
     if "inner_val_best_ensemble" in selected:
         return selected
     out = dict(selected)
@@ -1346,7 +1271,6 @@ def write_single_task_mpma_e_figure(
     max_features: int = 80,
     seed: int = 42,
 ) -> dict[str, Path]:
-    pass
     experiment_dir = Path(experiment_dir)
     out_dir = Path(out_dir) if out_dir is not None else experiment_dir / "figures"
     selected = _normalise_selected_unit_for_figure(read_selected_unit(experiment_dir))

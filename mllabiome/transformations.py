@@ -695,8 +695,6 @@ class Transform:
 
 
 Transformation = Transform
-_Transform = Transform
-_Transformation = Transform
 
 
 def build_count_transformations(
@@ -785,10 +783,6 @@ def _count_transformation_spec(item: Any) -> tuple[str, Any | None]:
     if isinstance(item, tuple):
         return (transformation_label(str(item[0])).key, item[1])
     return (transformation_label(str(item)).key, None)
-
-
-def _count_transformation_reporting_fields(item: Any) -> dict[str, str]:
-    return {}
 
 
 class CountTransformationAdapter:

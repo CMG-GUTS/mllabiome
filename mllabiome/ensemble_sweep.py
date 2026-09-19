@@ -35,11 +35,6 @@ _SUPER_LEARNER_OPT_FTOL = 1e-12
 _CARUANA_IMPROVEMENT_TOL = 1e-10
 
 
-def _load_manifest(root: Path) -> dict[str, Any]:
-    with open(root / "manifest.json", "r", encoding="utf-8") as fh:
-        return json.load(fh)
-
-
 def _proba_cols(df: pd.DataFrame) -> list[str]:
     return [c for c in df.columns if c.startswith("proba_")]
 
@@ -106,7 +101,6 @@ def _plan_max_sizes(plan: Ensemble) -> tuple[int, ...]:
 
 
 def _resolved_super_learner_loss(plan: Ensemble) -> str:
-    pass
     metric = str(plan.optimize_metric).strip().casefold()
     if metric in {"brier", "brier_loss"}:
         return "brier"
@@ -114,7 +108,6 @@ def _resolved_super_learner_loss(plan: Ensemble) -> str:
 
 
 def _caruana_controls(max_members: int) -> dict[str, int | float]:
-    pass
     max_members = int(max_members)
 
     ceiling = min(1000, max(100, 25 * max_members))

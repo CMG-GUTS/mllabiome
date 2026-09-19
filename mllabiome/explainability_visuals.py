@@ -43,7 +43,6 @@ SUPPORT_CMAP = LinearSegmentedColormap.from_list(
 
 
 def _support_text_color(value: float) -> str:
-    pass
     try:
         v = float(value)
     except Exception:

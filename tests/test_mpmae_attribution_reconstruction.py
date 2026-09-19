@@ -10,6 +10,7 @@ from mllabiome.configs_sweep import Explainability
 from mllabiome.ensemble_aggregation import aggregate_member_predictions
 from mllabiome.explainability_methods import SHAP
 from mllabiome.transformations import TransformationCoordinate
+from mllabiome.storage import read_table
 from mllabiome.mpma_e_explainability import (
     _run_hierarchical_shap,
     _write_prediction_tables,
@@ -121,8 +122,8 @@ def test_member_probabilities_reconstruct_linear_ensemble(
         ],
     }
     outputs = _write_prediction_tables(bundle, mpma_e, tmp_path)
-    member = pd.read_csv(outputs["member_probability_decomposition"], sep="\t")
-    ensemble = pd.read_csv(outputs["oof_predictions"], sep="\t")
+    member = read_table(outputs["member_probability_decomposition"])
+    ensemble = read_table(outputs["oof_predictions"])
     reconstructed = (
         member.groupby(["sample_id", "class_label"], as_index=False)[
             "weighted_probability_contribution"
@@ -180,7 +181,7 @@ def test_weighted_signed_member_shap_reconstructs_ensemble_probability(
         fake_member_shap,
     )
     outputs = _run_hierarchical_shap(_sweep(tmp_path), bundle, mpma_e, tmp_path)
-    diagnostics = pd.read_csv(outputs["shap_additivity_diagnostics"], sep="\t")
+    diagnostics = read_table(outputs["shap_additivity_diagnostics"])
     ensemble_rows = diagnostics[diagnostics["config_id"].eq("__MPMA_E__")].copy()
     assert len(ensemble_rows) == 2
     assert set(ensemble_rows["class_index"].astype(int)) == {1}
@@ -193,7 +194,7 @@ def test_weighted_signed_member_shap_reconstructs_ensemble_probability(
         ensemble_rows["ensemble_base_value"].to_numpy(dtype=float)
         + ensemble_rows["ensemble_probability"].to_numpy(dtype=float) * 0.0
     )
-    member_raw = pd.read_csv(outputs["shap_member_attributions"], sep="\t")
+    member_raw = read_table(outputs["shap_member_attributions"])
     propagated = (
         member_raw.groupby(["sample_id", "class_index"], as_index=False)[
             "propagated_shap"
@@ -246,8 +247,8 @@ def test_taxon_net_shap_is_signed_weighted_sum_and_reports_cancellation(
         fake_member_shap,
     )
     outputs = _run_hierarchical_shap(_sweep(tmp_path), bundle, mpma_e, tmp_path)
-    raw = pd.read_csv(outputs["shap_member_attributions"], sep="\t")
-    taxon = pd.read_csv(outputs["shap_taxon_net_oof"], sep="\t")
+    raw = read_table(outputs["shap_member_attributions"])
+    taxon = read_table(outputs["shap_taxon_net_oof"])
     expected = (
         raw.groupby(["sample_id", "class_index", "biological_feature"], as_index=False)
         .agg(

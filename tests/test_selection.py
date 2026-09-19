@@ -1,10 +1,12 @@
 import json
+import sqlite3
 from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from mllabiome.storage import read_table, write_table
 from mllabiome.selection import (
     _eligible_config_ids,
     mpma_b_fold_metrics,
@@ -391,19 +393,23 @@ def test_write_outputs_keeps_nested_strategy_and_final_candidate_separate(tmp_pa
             },
         }
     )
-    inner.to_csv(root / "inner_results" / "inner_results.tsv", sep="\t", index=False)
-    outer.to_csv(root / "predictions" / "outer_predictions.tsv", sep="\t", index=False)
-    _configs().to_csv(root / "configs.tsv", sep="\t", index=False)
+    write_table(root / "inner_results" / "inner_results.parquet", inner)
+    write_table(root / "predictions" / "outer_predictions.parquet", outer)
+    conn = sqlite3.connect(root / "configs.db")
+    try:
+        _configs().to_sql("configs", conn, index=False)
+    finally:
+        conn.close()
     outputs = write_mpma_b_selection_outputs(root, "nMCC")
     for path in outputs.values():
         assert path.exists()
-    selection = pd.read_csv(outputs["mpma_b_selection"], sep="\t")
+    selection = read_table(outputs["mpma_b_selection"])
     assert dict(zip(selection["outer_split_key"], selection["config_id"])) == {
         "o0": "A",
         "o1": "B",
         "o2": "A",
     }
-    selected_predictions = pd.read_csv(outputs["mpma_b_predictions"], sep="\t")
+    selected_predictions = read_table(outputs["mpma_b_predictions"])
     assert {
         split: set(group["config_id"])
         for split, group in selected_predictions.groupby("outer_split_key")

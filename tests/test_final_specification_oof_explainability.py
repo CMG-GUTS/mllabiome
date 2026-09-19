@@ -12,6 +12,7 @@ from mllabiome import final_explainability as final_xai
 from mllabiome import mpma_e_explainability as mpmae_xai
 from mllabiome.configs_sweep import Explainability
 from mllabiome.explainability_methods import Permutation
+from mllabiome.storage import write_table
 from mllabiome.transformations import TransformationCoordinate
 
 
@@ -95,12 +96,15 @@ def _sweep(root: Path, targets=("mpma_b", "mpma_e")):
 def test_final_mpma_b_specification_is_the_explanation_target(tmp_path, monkeypatch):
     tables = tmp_path / "tables"
     tables.mkdir(parents=True)
-    pd.DataFrame(
-        [
-            {"config_id": "not_final", "score": 0.99},
-            {"config_id": "final_b", "score": 0.50},
-        ]
-    ).to_csv(tables / "mpma_rankings.tsv", sep="\t", index=False)
+    write_table(
+        tables / "mpma_rankings.parquet",
+        pd.DataFrame(
+            [
+                {"config_id": "not_final", "score": 0.99},
+                {"config_id": "final_b", "score": 0.50},
+            ]
+        ),
+    )
     models = {"MPMA-B": {"config_id": "final_b"}}
     seen = {}
 

@@ -178,10 +178,6 @@ def resolve_table_path(path: Path) -> Path:
     return parquet
 
 
-def canonical_table_path(path: Path) -> Path:
-    return _canonical_path(Path(path))
-
-
 def glob_tables(directory: Path, stem_pattern: str) -> list[Path]:
     directory = Path(directory)
     chosen: dict[str, Path] = {}

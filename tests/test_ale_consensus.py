@@ -3,11 +3,10 @@ import pandas as pd
 
 from mllabiome.explainability import (
     _combine_feature_importance,
-    _mean_feature_importance_frames,
+    _aggregate_fold_feature_importance,
     _method_support_table,
     _rank_support_from_importance,
 )
-from mllabiome.explainability_visuals import _mean_support_column
 
 
 def _frame(method, values):
@@ -27,14 +26,23 @@ def _frame(method, values):
 def test_ale_never_estimable_feature_remains_missing():
     fold1 = _frame("ale", {"A": 2.0})
     fold2 = _frame("ale", {"A": 4.0})
-    out = _mean_feature_importance_frames(
-        "ale", [fold1, fold2], ["A", "B"], "ale"
+    out = _aggregate_fold_feature_importance(
+        "ale",
+        [fold1, fold2],
+        ["A", "B"],
+        [0],
+        ["class_0"],
+        "ale",
+        2,
     ).set_index("feature")
     assert out.loc["A", "importance_mean"] == 3.0
     assert int(out.loc["A", "n_estimable_folds"]) == 2
+    assert np.isclose(out.loc["A", "fold_coverage"], 1.0)
     assert np.isnan(out.loc["B", "importance_mean"])
     assert np.isnan(out.loc["B", "importance_sd"])
+    assert np.isnan(out.loc["B", "top_k_frequency"])
     assert int(out.loc["B", "n_estimable_folds"]) == 0
+    assert np.isclose(out.loc["B", "fold_coverage"], 0.0)
 
 
 def test_consensus_uses_within_method_ranks_not_raw_scales():
@@ -74,20 +82,8 @@ def test_method_support_table_preserves_missing_ale():
         "feature"
     )
     assert np.isnan(table.loc["B", "ALE"])
-    assert np.isclose(table.loc["B", "consensus"], 0.75)
+    assert np.isclose(table.loc["B", "consensus"], 5.0 / 6.0)
     assert int(table.loc["B", "n_methods"]) == 2
-
-
-def test_visual_mean_support_ignores_missing_methods():
-    frame = pd.DataFrame(
-        {
-            "feature": ["A", "B"],
-            "SHAP": [1.0, 0.5],
-            "ALE": [np.nan, 0.5],
-        }
-    )
-    values = _mean_support_column(frame)
-    np.testing.assert_allclose(values, [1.0, 0.5])
 
 
 def test_rank_support_maps_best_to_one_and_worst_to_zero():

@@ -56,29 +56,7 @@ def _as_float_matrix(X: np.ndarray) -> np.ndarray:
     return X
 
 
-def _finite(X: np.ndarray) -> np.ndarray:
-    return np.nan_to_num(
-        np.asarray(X, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0
-    )
-
-
-def _relative(X: np.ndarray) -> np.ndarray:
-    X = np.clip(_finite(X), 0.0, None)
-    row_sum = X.sum(axis=1, keepdims=True)
-    row_sum = np.where(row_sum > 0, row_sum, 1.0)
-    return X / row_sum
-
-
-def _clr(X: np.ndarray, pseudo_count: float) -> np.ndarray:
-    R = _relative(X)
-    R = np.clip(R, pseudo_count, None)
-    R = R / R.sum(axis=1, keepdims=True)
-    L = np.log(R)
-    return L - L.mean(axis=1, keepdims=True)
-
-
 def _json_clean(obj: Any) -> Any:
-    pass
     if is_dataclass(obj):
         return _json_clean(asdict(obj))
     if isinstance(obj, dict):
@@ -107,7 +85,6 @@ def _json_clean(obj: Any) -> Any:
 
 
 def dump_json_standard(obj: Any, path: Path, *, indent: int = 2) -> None:
-    pass
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(_json_clean(obj), fh, indent=indent, allow_nan=False)

@@ -4,7 +4,6 @@ import json
 import shutil
 from pathlib import Path
 
-import pandas as pd
 
 from .console import info
 from .storage import read_table, table_exists

@@ -851,7 +851,7 @@ def _run_hierarchical_shap(
         .sort_values(["class_index", "importance_mean"], ascending=[True, False])
     )
     p = out_dir / "feature_importance_member_shap.parquet"
-    member_write_table(p, summary)
+    write_table(p, member_summary)
     outputs["feature_importance_member_shap"] = p
 
     participation_raw = pd.DataFrame(participation_records)
@@ -887,7 +887,7 @@ def _run_hierarchical_shap(
             "unsigned_nonadditive_logcontrast_component_participation"
         )
         p = out_dir / "feature_importance_taxon_participation.parquet"
-        participation_write_table(p, summary)
+        write_table(p, participation_summary)
         outputs["feature_importance_taxon_participation"] = p
 
     if linear:
@@ -921,7 +921,7 @@ def _run_hierarchical_shap(
             .sort_values(["class_index", "importance_mean"], ascending=[True, False])
         )
         p = out_dir / "feature_importance_mpdr_propagated_shap.parquet"
-        representation_write_table(p, summary)
+        write_table(p, representation_summary)
         outputs["feature_importance_mpdr_propagated_shap"] = p
 
         coordinate_fold_frames: list[pd.DataFrame] = []
@@ -1016,7 +1016,7 @@ def _run_hierarchical_shap(
                 else "all_members"
             )
             p = out_dir / "feature_importance_taxon_net_shap.parquet"
-            exact_taxon_write_table(p, summary)
+            write_table(p, exact_taxon_summary)
             outputs["feature_importance_taxon_net_shap"] = p
 
         if has_non_exact_coordinates:

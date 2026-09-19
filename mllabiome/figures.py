@@ -12,33 +12,6 @@ from .transformations import TRANSFORMATION_SPACE, transformation_label
 from .utils import TAXONOMIC_LEVELS
 
 
-def _plot_metric_bars(
-    rank: pd.DataFrame, metric_col: str, out: Path, top_n: int = 20
-) -> None:
-    if rank.empty or metric_col not in rank.columns:
-        return
-    import matplotlib.pyplot as plt
-
-    top = rank.head(top_n).copy()
-    labels = top.apply(
-        lambda r: (
-            f"{r['learner']}\n{r['resolution']} | {r.get('transformation_abbreviation', r['count_transformation'])}"
-        ),
-        axis=1,
-    )
-    fig_h = max(3.5, 0.34 * len(top))
-    fig, ax = plt.subplots(figsize=(9, fig_h))
-    ax.barh(np.arange(len(top)), top[metric_col].astype(float))
-    ax.set_yticks(np.arange(len(top)), labels)
-    ax.invert_yaxis()
-    ax.set_xlabel(metric_col.replace("_", " "))
-    fig.tight_layout()
-    out = Path(out).with_suffix(".svg")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out, dpi=220)
-    plt.close(fig)
-
-
 def _representation_metric_name(metric_col: str, df: pd.DataFrame) -> str:
     if metric_col in df.columns:
         return metric_col
@@ -98,7 +71,6 @@ def _eta2_one_way(df: pd.DataFrame, factor: str, metric: str) -> float:
 
 
 def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") -> None:
-    pass
     result_path = root / "results" / "outer_results.parquet"
     if not result_path.exists() or result_path.stat().st_size == 0:
         return
@@ -314,90 +286,3 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
     out_base.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_base.with_suffix(".svg"), dpi=300)
     plt.close(fig)
-
-
-def _plot_feature_importance(imp: pd.DataFrame, out: Path, top_k: int) -> None:
-    import matplotlib.pyplot as plt
-
-    top = imp.head(top_k).iloc[::-1]
-    fig, ax = plt.subplots(figsize=(8, max(3.5, 0.25 * len(top))))
-    ax.barh(
-        np.arange(len(top)),
-        top["importance_mean"].astype(float),
-        xerr=top["importance_sd"].astype(float),
-    )
-    ax.set_yticks(np.arange(len(top)), [_short_taxon(x) for x in top["feature"]])
-    ax.set_xlabel("Permutation importance")
-    fig.tight_layout()
-    fig.savefig(Path(out).with_suffix(".svg"), dpi=220)
-    plt.close(fig)
-
-
-def _plot_interaction_network(tab: pd.DataFrame, out: Path, top_k: int) -> None:
-    try:
-        import networkx as nx
-    except Exception as exc:
-        raise ExplainabilityDependencyError(
-            "Interaction-network plotting requires networkx. No fallback figure will be used."
-        ) from exc
-    import matplotlib.pyplot as plt
-
-    d = tab.dropna(subset=["interaction_strength"]).head(int(top_k)).copy()
-    if d.empty:
-        raise ExplainabilityConfigurationError(
-            "Interaction network was requested, but no finite interaction strengths were available. No fallback figure will be used."
-        )
-    G = nx.Graph()
-    for _, r in d.iterrows():
-        f1, f2 = str(r["feature_1"]), str(r["feature_2"])
-        w = float(r["interaction_strength"])
-        G.add_edge(f1, f2, weight=w)
-    pos = nx.spring_layout(G, seed=42, weight="weight")
-    weights = np.asarray([G[u][v]["weight"] for u, v in G.edges()], dtype=float)
-    if len(weights) == 0:
-        raise ExplainabilityConfigurationError(
-            "Interaction network had no edges after filtering. No fallback figure will be used."
-        )
-    scale = weights / max(float(weights.max()), 1e-12)
-    fig, ax = plt.subplots(figsize=(8, 6))
-    nx.draw_networkx_edges(G, pos, ax=ax, width=0.5 + 3.0 * scale, alpha=0.65)
-    nx.draw_networkx_nodes(G, pos, ax=ax, node_size=130)
-    nx.draw_networkx_labels(
-        G, pos, ax=ax, labels={n: _short_taxon(n, 28) for n in G.nodes()}, font_size=6
-    )
-    ax.axis("off")
-    fig.tight_layout()
-    fig.savefig(Path(out).with_suffix(".svg"), dpi=220)
-    plt.close(fig)
-
-
-def _short_taxon(name: str, max_len: int = 70) -> str:
-    s = str(name).split("|")[-1].split("___")[-1]
-    return s if len(s) <= max_len else s[: max_len - 1] + "…"
-
-
-def _feature_distribution_stats(
-    features: list[str],
-    feature_names: list[str],
-    X: np.ndarray,
-    y: np.ndarray,
-    labels: list[str],
-) -> pd.DataFrame:
-    idx = {f: i for i, f in enumerate(feature_names)}
-    rows = []
-    for feat in features:
-        if feat not in idx:
-            continue
-        vals = X[:, idx[feat]].astype(float)
-        row = {
-            "feature": feat,
-            "overall_mean": float(np.mean(vals)),
-            "overall_median": float(np.median(vals)),
-            "prevalence": float(np.mean(vals > 0)),
-        }
-        for c, label in enumerate(labels):
-            sub = vals[y == c]
-            row[f"mean_{label}"] = float(np.mean(sub)) if len(sub) else np.nan
-            row[f"prevalence_{label}"] = float(np.mean(sub > 0)) if len(sub) else np.nan
-        rows.append(row)
-    return pd.DataFrame(rows)

@@ -201,10 +201,6 @@ def _strategy_statistics_summary(root: Path) -> pd.DataFrame:
     )
 
 
-def _strategy_pairwise_tests(root: Path) -> pd.DataFrame:
-    return _read_table(root / "report" / "tables" / "strategy_pairwise_tests.parquet")
-
-
 def _mean_std_from_cols(
     row: pd.Series | dict[str, Any], prefix: str, metric: str
 ) -> tuple[float, float]:
@@ -838,23 +834,6 @@ def _html_table(df: pd.DataFrame, *, raw_html_cols: set[str] | None = None) -> s
     return "".join(parts)
 
 
-def _available_strategy_labels(root: Path) -> list[str]:
-    labels: list[str] = []
-    for row in _strategy_rows(root):
-        label = str(row.get("Strategy", "")).strip()
-        if not label:
-            continue
-        has_metric = False
-        for metric, _ in _METRICS:
-            m, _ = _mean_std_from_cols(row, "outer", metric)
-            if np.isfinite(m):
-                has_metric = True
-                break
-        if has_metric and label not in labels:
-            labels.append(label)
-    return labels
-
-
 def _target_dirs_by_label(root: Path) -> dict[str, Path]:
     exp_root = root / "explainability"
     if not exp_root.exists():
@@ -874,90 +853,12 @@ def _target_dirs_by_label(root: Path) -> dict[str, Path]:
     return out
 
 
-def _has_target_figure(target_dir: Path, stem: str) -> bool:
-    fdir = target_dir / "figures"
-    return any(
-        (fdir / stem).with_suffix(ext).exists() for ext in (".svg", ".png", ".pdf")
-    )
-
-
-def _side_by_side_explainability_blocks(
-    root: Path, report_dir: Path
-) -> tuple[str, int]:
-    target_dirs = _target_dirs_by_label(root)
-    available_labels = _available_strategy_labels(root)
-    preferred_order = [
-        x for x in ("MPMA-E", "MPMA-B", "Baseline RF") if x in available_labels
-    ]
-    if len(preferred_order) < 2:
-        preferred_order = [
-            x for x in ("MPMA-E", "MPMA-B", "Baseline RF") if x in target_dirs
-        ]
-    if len(preferred_order) < 2:
-        return "", 0
-    figure_sets = (
-        ("feature_support", "Feature support"),
-        ("feature_support_shap", "SHAP feature support"),
-        ("feature_support_lime", "LIME feature support"),
-        ("feature_support_ale", "ALE feature support"),
-        ("feature_support_permutation", "Permutation feature support"),
-        ("ale_curves", "ALE curves"),
-        ("interaction_network_current", "2D ALE interaction network"),
-        ("instance_explanations_shap", "Instance-level SHAP explanations"),
-    )
-    blocks: list[str] = []
-    n_blocks = 0
-    for stem, title in figure_sets:
-        if not any(
-            label in target_dirs and _has_target_figure(target_dirs[label], stem)
-            for label in preferred_order
-        ):
-            continue
-        cells: list[str] = []
-        for label in preferred_order:
-            target_dir = target_dirs.get(label)
-            fig_html = (
-                _fig((target_dir / "figures" / stem), report_dir, "")
-                if target_dir is not None
-                else ""
-            )
-            if fig_html:
-                body = fig_html
-            else:
-                body = '<div class="missing-figure">Not computed</div>'
-            cells.append(
-                f'<div class="compare-cell"><h3>{html.escape(label)}</h3>{body}</div>'
-            )
-        n_blocks += 1
-        blocks.append(
-            f'<section class="compare-block"><h3>{html.escape(title)}</h3><div class="compare-grid" style="--compare-columns:{len(preferred_order)}">{"".join(cells)}</div></section>'
-        )
-    if not blocks:
-        return "", 0
-    return "".join(blocks), n_blocks
-
-
 def _xai_class_slug(label: Any) -> str:
     text = str(label).strip().lower()
     out = "".join(ch if ch.isalnum() else "_" for ch in text)
     while "__" in out:
         out = out.replace("__", "_")
     return out.strip("_") or "class"
-
-
-def _xai_target_label(target_dir: Path) -> str:
-    aliases = {
-        "mpma_b": "MPMA-B",
-        "best_individual": "MPMA-B",
-        "best_mpma": "MPMA-B",
-        "mpma_e": "MPMA-E",
-        "ensemble": "MPMA-E",
-        "best_mpmas_ensemble": "MPMA-E",
-        "baseline_rf": "Baseline RF",
-        "baseline": "Baseline RF",
-        "rf_baseline": "Baseline RF",
-    }
-    return aliases.get(target_dir.name, target_dir.name.replace("_", " "))
 
 
 def _xai_method_display(method: str) -> str:
