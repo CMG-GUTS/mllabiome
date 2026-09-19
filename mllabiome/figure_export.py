@@ -29,9 +29,7 @@ def export_svg_tree(
     cairosvg = _converter()
     export_root = root / "exports"
     sources = [
-        path
-        for path in sorted(root.rglob("*.svg"))
-        if export_root not in path.parents
+        path for path in sorted(root.rglob("*.svg")) if export_root not in path.parents
     ]
     total = len(sources) * len(requested)
     completed = 0

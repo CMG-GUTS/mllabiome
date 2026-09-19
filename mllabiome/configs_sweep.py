@@ -33,6 +33,7 @@ from .explainability_methods import (
 )
 from .learners import _learner_factory, _learner_name
 from .metrics import (
+    _estimator_call,
     _predict_proba_aligned as _metrics_predict_proba_aligned,
     compute_metrics,
     compute_regression_metrics,
@@ -1179,7 +1180,9 @@ def _evaluate_regression_split_task(
                 X_tr, X_va = fitted.apply_pair(X_inner_train, X_inner_val)
                 reg = configure_estimator_threads(learner_factory(), threads_per_worker)
                 reg.fit(X_tr, y[tr_idx])
-                pred = np.asarray(reg.predict(X_va), dtype=float).reshape(-1)
+                pred = np.asarray(
+                    _estimator_call(reg, "predict", X_va), dtype=float
+                ).reshape(-1)
                 metrics = compute_regression_metrics(y[va_idx], pred)
                 row = _regression_metric_row(
                     metrics, split_key, inner_key, cid, mpdr, learner_name, "inner"
@@ -1249,7 +1252,9 @@ def _evaluate_regression_split_task(
                 X_train, X_test = fitted_outer.apply_pair(X_outer_train, X_outer_test)
                 reg = configure_estimator_threads(learner_factory(), threads_per_worker)
                 reg.fit(X_train, y[train_idx])
-                pred = np.asarray(reg.predict(X_test), dtype=float).reshape(-1)
+                pred = np.asarray(
+                    _estimator_call(reg, "predict", X_test), dtype=float
+                ).reshape(-1)
                 metrics = compute_regression_metrics(y[test_idx], pred)
                 row = _regression_metric_row(
                     metrics, split_key, None, cid, mpdr, learner_name, "outer"

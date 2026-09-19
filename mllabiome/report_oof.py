@@ -202,13 +202,13 @@ def _format_ci_cell(row: pd.Series, metric: str) -> str:
     if not np.isfinite(estimate):
         return "—"
     if metric in _PERCENT_METRICS:
-        body = f"{100.0 * estimate:.2f}"
+        body = f"{100.0 * estimate:.3f}"
         if np.isfinite(low) and np.isfinite(high):
-            body += f" [{100.0 * low:.2f}, {100.0 * high:.2f}]"
+            body += f" [{100.0 * low:.3f}, {100.0 * high:.3f}]"
         return body
-    body = f"{estimate:.4f}"
+    body = f"{estimate:.3f}"
     if np.isfinite(low) and np.isfinite(high):
-        body += f" [{low:.4f}, {high:.4f}]"
+        body += f" [{low:.3f}, {high:.3f}]"
     return body
 
 
@@ -287,7 +287,18 @@ def _html_table(df: pd.DataFrame) -> str:
         parts.append("<tr>")
         for col in cols:
             value = row.get(col, "")
-            text = "" if pd.isna(value) else html.escape(str(value))
+            if pd.isna(value):
+                text = ""
+            elif isinstance(value, (int, np.integer)) and not isinstance(
+                value, (bool, np.bool_)
+            ):
+                text = str(int(value))
+            elif isinstance(value, (float, np.floating)) and not isinstance(
+                value, (bool, np.bool_)
+            ):
+                text = f"{float(value):.3f}" if np.isfinite(float(value)) else ""
+            else:
+                text = html.escape(str(value))
             parts.append(f"<td>{text}</td>")
         parts.append("</tr>")
     parts.append("</tbody></table></div>")
@@ -363,8 +374,8 @@ def _format_contrast_value(value: Any, metric: str) -> str:
     if not np.isfinite(v):
         return "—"
     if metric in _PERCENT_METRICS:
-        return f"{100.0 * v:.2f}"
-    return f"{v:.4f}"
+        return f"{100.0 * v:.3f}"
+    return f"{v:.3f}"
 
 
 def _contrast_display(

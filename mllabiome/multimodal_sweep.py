@@ -19,7 +19,7 @@ from threadpoolctl import threadpool_limits
 from .compute import ResourceTracker, machine_profile
 from .console import info, path_table, progress, stage, success, summary_table
 from .integrations import Integration, IntegrationModel, integration_modality_sets
-from .metrics import compute_metrics, compute_regression_metrics
+from .metrics import _estimator_call, compute_metrics, compute_regression_metrics
 from .resolutions import materialize_mpdr
 from .runtime import (
     configure_estimator_threads,
@@ -342,7 +342,9 @@ class _IntegratedRegressionPredictor:
             modality: arr[:, slc] for modality, slc in self.modality_slices.items()
         }
         return np.asarray(
-            self.estimator.predict(self.integration_model.transform(blocks)),
+            _estimator_call(
+                self.estimator, "predict", self.integration_model.transform(blocks)
+            ),
             dtype=float,
         )
 
@@ -360,7 +362,9 @@ class _IntegratedClassificationPredictor:
             modality: arr[:, slc] for modality, slc in self.modality_slices.items()
         }
         return np.asarray(
-            self.estimator.predict(self.integration_model.transform(blocks))
+            _estimator_call(
+                self.estimator, "predict", self.integration_model.transform(blocks)
+            )
         )
 
     def predict_proba(self, X):
@@ -369,7 +373,11 @@ class _IntegratedClassificationPredictor:
             modality: arr[:, slc] for modality, slc in self.modality_slices.items()
         }
         return np.asarray(
-            self.estimator.predict_proba(self.integration_model.transform(blocks)),
+            _estimator_call(
+                self.estimator,
+                "predict_proba",
+                self.integration_model.transform(blocks),
+            ),
             dtype=float,
         )
 
@@ -833,7 +841,7 @@ def _regression_task(
                 )
                 reg = configure_estimator_threads(learner_factory(), threads_per_worker)
                 reg.fit(Xtr, y[tr_idx])
-                pred = np.asarray(reg.predict(Xva), dtype=float)
+                pred = np.asarray(_estimator_call(reg, "predict", Xva), dtype=float)
                 metrics = compute_regression_metrics(y[va_idx], pred)
                 result["inner_metrics"].append(
                     _meta_row(
@@ -929,7 +937,7 @@ def _regression_task(
                 )
                 reg = configure_estimator_threads(learner_factory(), threads_per_worker)
                 reg.fit(Xtr, y[train_idx])
-                pred = np.asarray(reg.predict(Xte), dtype=float)
+                pred = np.asarray(_estimator_call(reg, "predict", Xte), dtype=float)
                 metrics = compute_regression_metrics(y[test_idx], pred)
                 result["outer_metrics"].append(
                     _meta_row(
@@ -1590,9 +1598,9 @@ def fit_modality_regression_candidate_folds(sweep, row, progress_callback=None):
         )
         model = configure_estimator_threads(learner_lookup[spec.learner](), 1)
         model.fit(details["X_train"], dataset.y[train_idx])
-        direct_pred = np.asarray(model.predict(details["X_test"]), dtype=float).reshape(
-            -1
-        )
+        direct_pred = np.asarray(
+            _estimator_call(model, "predict", details["X_test"]), dtype=float
+        ).reshape(-1)
         if spec.integration.stage == "intermediate":
             estimator = _IntegratedRegressionPredictor(
                 model, details["integration_model"], details["modality_slices"]
@@ -1600,7 +1608,9 @@ def fit_modality_regression_candidate_folds(sweep, row, progress_callback=None):
             X_train = details["X_train_source"]
             X_test = details["X_test_source"]
             coords = details["source_coordinates"]
-            pred = np.asarray(estimator.predict(X_test), dtype=float).reshape(-1)
+            pred = np.asarray(
+                _estimator_call(estimator, "predict", X_test), dtype=float
+            ).reshape(-1)
             if not np.allclose(pred, direct_pred, rtol=1e-10, atol=1e-12):
                 raise RuntimeError(
                     "Input-space regression explanation wrapper does not reproduce the fitted integrated model predictions."

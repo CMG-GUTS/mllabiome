@@ -13,7 +13,6 @@ from . import report as _report
 from .configs_sweep import Sweep, _normalise_sweep_task, _target_task, target_sweeps
 from .console import info, path_table, phase_progress, stage, success
 from .final_models import build_final_models
-from .explainability_support import top_k_rank_support
 from .metrics import metric_is_loss
 from .report_compute import run_compute_accounting
 from .report_oof import _mpma_b_composition, oof_section_html, write_report
@@ -202,11 +201,11 @@ def _format_metric(
     estimate_f, std_f, low_f, high_f = values
     if not np.isfinite(estimate_f):
         return "—"
-    body = f"{estimate_f:.4f}"
+    body = f"{estimate_f:.3f}"
     if np.isfinite(std_f):
-        body += f" ± {std_f:.4f}"
+        body += f" ± {std_f:.3f}"
     if np.isfinite(low_f) and np.isfinite(high_f):
-        body += f" [{low_f:.4f}, {high_f:.4f}]"
+        body += f" [{low_f:.3f}, {high_f:.3f}]"
     return f"<strong>{body}</strong>" if bold else body
 
 
@@ -259,8 +258,8 @@ def _regression_mean_std_cell(mean: Any, std: Any) -> str:
     if not np.isfinite(mean_f):
         return "—"
     if np.isfinite(std_f):
-        return f"{mean_f:.4f} ± {std_f:.4f}"
-    return f"{mean_f:.4f}"
+        return f"{mean_f:.3f} ± {std_f:.3f}"
+    return f"{mean_f:.3f}"
 
 
 def _regression_top_mpmas(root: Path, metric: str, n: int = 5) -> pd.DataFrame:
@@ -426,7 +425,7 @@ def _regression_explainability_html(
         fig = _report._fig(
             target_dir / "figures" / "feature_support",
             report_dir,
-            f"{label}: cross-method top-k rank support",
+            f"{label}: cross-method top-k support and fold stability",
         )
         table = stability.copy()
         if "importance_mean" in table.columns:
@@ -479,18 +478,7 @@ def _regression_outer_unit_table(root: Path) -> pd.DataFrame:
     )
 
 
-def _regression_method_label(value: Any) -> str:
-    text = str(value).strip()
-    labels = {
-        "shap": "SHAP",
-        "permutation": "Permutation",
-        "lime": "LIME",
-        "ale": "ALE",
-    }
-    return labels.get(text.casefold(), text.replace("_", " ").strip().title())
-
-
-def _regression_fixed(value: Any, digits: int = 4) -> str:
+def _regression_fixed(value: Any, digits: int = 3) -> str:
     try:
         number = float(value)
     except Exception:
@@ -498,90 +486,6 @@ def _regression_fixed(value: Any, digits: int = 4) -> str:
     if not np.isfinite(number):
         return ""
     return f"{number:.{int(digits)}f}"
-
-
-def _regression_concordance_table(table: pd.DataFrame, top_k: int) -> pd.DataFrame:
-    if table.empty or "feature" not in table.columns:
-        return pd.DataFrame()
-    excluded = {"feature", "mean_rank", "methods_available"}
-    methods = []
-    values: dict[str, pd.Series] = {}
-    for column in table.columns:
-        if column in excluded:
-            continue
-        numeric = pd.to_numeric(table[column], errors="coerce")
-        if numeric.notna().any():
-            methods.append(column)
-            values[column] = numeric
-    if not methods:
-        return pd.DataFrame()
-    support = pd.DataFrame(index=table.index)
-    for method in methods:
-        numeric = values[method]
-        valid = numeric.notna()
-        count = int(valid.sum())
-        if count:
-            scores = top_k_rank_support(numeric[valid], int(top_k))
-            support.loc[valid, method] = scores.to_numpy(dtype=float)
-    support["Mean support"] = support[methods].mean(axis=1, skipna=True)
-    support["Methods"] = support[methods].notna().sum(axis=1)
-    support["Feature"] = table["feature"].astype(str)
-    support = support.sort_values(
-        ["Mean support", "Methods", "Feature"],
-        ascending=[False, False, True],
-        na_position="last",
-    ).head(int(top_k))
-    rows = []
-    total = len(methods)
-    for rank, (_, item) in enumerate(support.iterrows(), start=1):
-        row: dict[str, Any] = {
-            "Rank": rank,
-            "Feature": _report._short_feature_label(item.get("Feature", "")),
-        }
-        for method in methods:
-            row[_regression_method_label(method)] = _regression_fixed(
-                item.get(method), 3
-            )
-        row["Mean support"] = _regression_fixed(item.get("Mean support"), 3)
-        available = pd.to_numeric(
-            pd.Series([item.get("Methods")]), errors="coerce"
-        ).iloc[0]
-        row["Methods"] = f"{int(available)}/{total}" if pd.notna(available) else ""
-        rows.append(row)
-    return pd.DataFrame(rows)
-
-
-def _regression_stability_table(table: pd.DataFrame, top_k: int) -> pd.DataFrame:
-    if table.empty:
-        return pd.DataFrame()
-    out = table.copy()
-    if "importance_mean" in out.columns:
-        out["importance_mean"] = pd.to_numeric(out["importance_mean"], errors="coerce")
-        sort_columns = [c for c in ("method", "importance_mean") if c in out.columns]
-        ascending = [True, False] if len(sort_columns) == 2 else [False]
-        out = out.sort_values(sort_columns, ascending=ascending, na_position="last")
-    if "method" in out.columns:
-        out = out.groupby("method", group_keys=False).head(int(top_k))
-    rows = []
-    for _, item in out.iterrows():
-        row: dict[str, Any] = {}
-        if "method" in out.columns:
-            row["Method"] = _regression_method_label(item.get("method", ""))
-        if "feature" in out.columns:
-            row["Feature"] = _report._short_feature_label(item.get("feature", ""))
-        for source, label, digits in (
-            ("importance_mean", "Importance mean", 4),
-            ("importance_sd", "Importance SD", 4),
-            ("importance_median", "Importance median", 4),
-            ("signed_importance_mean", "Signed importance mean", 4),
-            ("fold_coverage", "Fold coverage", 2),
-        ):
-            if source in out.columns:
-                row[label] = _regression_fixed(item.get(source), digits)
-        if "scoring" in out.columns:
-            row["Scoring"] = str(item.get("scoring", "")).replace("_", " ")
-        rows.append(row)
-    return pd.DataFrame(rows)
 
 
 def _regression_numeric_table(table: pd.DataFrame, limit: int) -> pd.DataFrame:
@@ -607,7 +511,7 @@ def _regression_numeric_table(table: pd.DataFrame, limit: int) -> pd.DataFrame:
             if numeric.dropna().map(lambda x: float(x).is_integer()).all():
                 out[column] = numeric.map(lambda x: "" if pd.isna(x) else str(int(x)))
             else:
-                out[column] = numeric.map(lambda x: _regression_fixed(x, 4))
+                out[column] = numeric.map(lambda x: _regression_fixed(x, 3))
     return out
 
 
@@ -634,27 +538,14 @@ def _regression_explainability_blocks(
         figure = _report._fig(
             target_dir / "figures" / "feature_support",
             report_dir,
-            f"{label}: cross-method top-k rank support",
+            f"{label}: cross-method top-k support and fold stability",
         )
         if figure:
             parts.append("<h4>Global explanations</h4>")
+            parts.append(
+                "<p>Top-k support is a within-method rank score: rank 1 scores 1, rank k scores 1/k, and ranks below k score 0. Fold stability is the fraction of estimable outer folds in which a feature ranks within the method-specific top k. Both are scale-free 0–1 summaries; method-specific effect magnitudes are not compared across methods.</p>"
+            )
             parts.append(figure)
-        if not combined.empty:
-            table = _regression_concordance_table(combined, int(top_k))
-            if not table.empty:
-                parts.append("<h4>Cross-method rank support</h4>")
-                parts.append(
-                    "<p>Method-specific effect magnitudes are not averaged. Support is based on within-method top-k rank: rank 1 scores 1, rank k scores 1/k, and ranks below the configured top k score 0.</p>"
-                )
-                parts.append(_report._html_table(table))
-        if not stability.empty:
-            table = _regression_stability_table(stability, 5)
-            if not table.empty:
-                parts.append("<h4>Cross-fold stability</h4>")
-                parts.append(
-                    "<p>Compact outer-fold stability summary for the five leading features per method.</p>"
-                )
-                parts.append(_report._stability_compact_html(table, max_features=5))
         curves = _read_table(target_dir / "ale_curves.parquet")
         if not curves.empty:
             parts.append("<h4>ALE</h4>")
@@ -757,12 +648,12 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
             if column in primary_pairwise.columns:
                 primary_pairwise[column] = pd.to_numeric(
                     primary_pairwise[column], errors="coerce"
-                ).map(lambda x: f"{x:.4f}" if np.isfinite(x) else "")
+                ).map(lambda x: f"{x:.3f}" if np.isfinite(x) else "")
         for column in ("p", "Holm p"):
             if column in primary_pairwise.columns:
                 primary_pairwise[column] = pd.to_numeric(
                     primary_pairwise[column], errors="coerce"
-                ).map(lambda x: f"{x:.4g}" if np.isfinite(x) else "")
+                ).map(lambda x: _report._format_p_value(x))
     procedure_path = tables_dir / "evaluation_procedure.parquet"
     statistics_path = tables_dir / "strategy_metrics_bootstrap.parquet"
     pairwise_path = tables_dir / "strategy_pairwise_tests.parquet"
@@ -897,7 +788,7 @@ def _target_primary_summary(child: Sweep) -> dict[str, Any]:
         rows[strategy] = (
             "—"
             if len(values) == 0
-            else f"{float(np.mean(values)):.4f} ± {float(np.std(values, ddof=1)) if len(values) > 1 else 0.0:.4f}"
+            else f"{float(np.mean(values)):.3f} ± {float(np.std(values, ddof=1)) if len(values) > 1 else 0.0:.3f}"
         )
     return rows
 
@@ -1061,9 +952,14 @@ def write_multi_target_report(
                 ["Task", sweep.title],
                 [
                     "Task type",
-                    "Multilabel" if task == "multilabel" else "Heterogeneous multi-output",
+                    "Multilabel"
+                    if task == "multilabel"
+                    else "Heterogeneous multi-output",
                 ],
-                ["Targets", ", ".join(str(child.data.target_col) for child in children)],
+                [
+                    "Targets",
+                    ", ".join(str(child.data.target_col) for child in children),
+                ],
                 ["Target count", len(children)],
                 ["Procedure", sweep.evaluation.protocol],
                 ["Outer folds", sweep.evaluation.outer_folds],
@@ -1080,7 +976,9 @@ def write_multi_target_report(
         procedure_path = tables_dir / "evaluation_procedure.parquet"
         write_table(procedure_path, procedure)
         phase.phase("target report sections")
-        sections = "".join(_target_report_section(child, report_dir) for child in children)
+        sections = "".join(
+            _target_report_section(child, report_dir) for child in children
+        )
     nav_targets = "".join(
         f'<a href="#target-{_section_slug(str(child.data.target_col))}">{html.escape(str(child.data.target_col))}</a>'
         for child in children

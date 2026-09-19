@@ -245,13 +245,13 @@ def run_compute_accounting(
         )
         display["CPU core-hours"] = pd.to_numeric(
             display["CPU core-hours"], errors="coerce"
-        ).map(lambda x: f"{x:.4f}" if np.isfinite(x) else "")
+        ).map(lambda x: f"{x:.3f}" if np.isfinite(x) else "")
         display["Peak job RAM (GiB)"] = pd.to_numeric(
             display["Peak job RAM (GiB)"], errors="coerce"
-        ).map(lambda x: f"{x:.2f}" if np.isfinite(x) else "")
+        ).map(lambda x: f"{x:.3f}" if np.isfinite(x) else "")
         display["Accounting coverage"] = pd.to_numeric(
             display["Accounting coverage"], errors="coerce"
-        ).map(lambda x: f"{100 * x:.1f}%" if np.isfinite(x) else "")
+        ).map(lambda x: f"{100 * x:.3f}%" if np.isfinite(x) else "")
     return {
         "strategy_compute": frame,
         "display": display,

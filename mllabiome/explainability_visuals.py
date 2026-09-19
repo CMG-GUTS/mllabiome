@@ -284,22 +284,6 @@ def _feature_label(feature_name: str) -> str:
         return _plain_taxon_label(str(feature_name), 42)
 
 
-def _mean_support_column(top: pd.DataFrame) -> np.ndarray:
-    if "consensus" in top.columns:
-        return pd.to_numeric(top["consensus"], errors="coerce").to_numpy(float)
-    method_cols = [
-        c for c in ("SHAP", "LIME", "Permutation", "ALE") if c in top.columns
-    ]
-    if not method_cols:
-        return np.zeros(len(top), dtype=float)
-    return (
-        top[method_cols]
-        .apply(pd.to_numeric, errors="coerce")
-        .mean(axis=1, skipna=True)
-        .to_numpy(float)
-    )
-
-
 def _deduplicate_top_features(top: pd.DataFrame, max_features: int) -> pd.DataFrame:
     if "rank" in top.columns:
         top = top.sort_values("rank", ascending=True)
@@ -308,12 +292,53 @@ def _deduplicate_top_features(top: pd.DataFrame, max_features: int) -> pd.DataFr
     return top
 
 
+def _method_key(value: str) -> str:
+    text = str(value).strip().casefold().replace(".", "")
+    if text in {"perm", "permutation"}:
+        return "permutation"
+    return text
+
+
+def _fold_stability_matrix(
+    stability: pd.DataFrame | None,
+    features: Sequence[str],
+    methods: Sequence[str],
+    class_index: int | None = None,
+) -> np.ndarray:
+    matrix = np.full((len(features), len(methods)), np.nan, dtype=float)
+    if stability is None or stability.empty:
+        return matrix
+    if not {"method", "feature", "top_k_frequency"}.issubset(stability.columns):
+        return matrix
+    d = stability.copy()
+    if class_index is not None and "class_index" in d.columns:
+        values = pd.to_numeric(d["class_index"], errors="coerce")
+        d = d[values.eq(int(class_index))].copy()
+    if d.empty:
+        return matrix
+    d["_method_key"] = d["method"].map(_method_key)
+    d["_feature_key"] = d["feature"].astype(str)
+    d["_stability"] = pd.to_numeric(d["top_k_frequency"], errors="coerce")
+    lookup = (
+        d.dropna(subset=["_stability"])
+        .drop_duplicates(["_method_key", "_feature_key"], keep="first")
+        .set_index(["_method_key", "_feature_key"])["_stability"]
+    )
+    for i, feature in enumerate(features):
+        for j, method in enumerate(methods):
+            key = (_method_key(method), str(feature))
+            if key in lookup.index:
+                matrix[i, j] = float(np.clip(lookup.loc[key], 0.0, 1.0))
+    return matrix
+
+
 def plot_feature_support(
     top_features: pd.DataFrame,
     stats: pd.DataFrame,
     out_stem: Path,
     top_k: int,
     class_labels: Sequence[str] | None = None,
+    stability: pd.DataFrame | None = None,
 ) -> bool:
     apply_style()
     raw_top = top_features.copy()
@@ -333,39 +358,41 @@ def plot_feature_support(
         m for m in ("SHAP", "LIME", "Permutation", "ALE") if m in top.columns
     ]
     solo_method = len(method_cols) == 1
-    mean_support = np.nan_to_num(
-        np.clip(_mean_support_column(top), 0, 1), nan=0.0, posinf=0.0, neginf=0.0
+    class_index = None
+    if "class_index" in top.columns:
+        values = pd.to_numeric(top["class_index"], errors="coerce").dropna().unique()
+        if len(values) == 1:
+            class_index = int(values[0])
+    fold_stability = _fold_stability_matrix(
+        stability, features, method_cols, class_index=class_index
     )
 
     fig_h_mm = max(62.0, 3.85 * n + 27.0)
-
     fig_w = (108.0 * MM) if solo_method else COL_W_2
     fig = plt.figure(figsize=(fig_w, fig_h_mm * MM))
     fig.patch.set_facecolor(BG)
     panel = [0.045, 0.075, 0.910, 0.840]
 
     if solo_method:
-        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.050, 0.440, 0.670), zorder=5)
-        ax_dir = fig.add_axes(_bbox(panel, 0.462, 0.050, 0.205, 0.670), zorder=5)
-        ax_hm = fig.add_axes(_bbox(panel, 0.750, 0.050, 0.090, 0.670), zorder=5)
-        ax_bar = None
-        bracket_lab = (0.020, 0.444)
-        bracket_dir = (0.462, 0.667)
-        bracket_hm = (0.750, 0.840)
-    else:
         ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.050, 0.385, 0.670), zorder=5)
-        ax_dir = fig.add_axes(_bbox(panel, 0.420, 0.050, 0.148, 0.670), zorder=5)
-        ax_hm = fig.add_axes(_bbox(panel, 0.635, 0.050, 0.195, 0.670), zorder=5)
-        ax_bar = fig.add_axes(_bbox(panel, 0.872, 0.050, 0.112, 0.670), zorder=5)
+        ax_dir = fig.add_axes(_bbox(panel, 0.410, 0.050, 0.180, 0.670), zorder=5)
+        ax_hm = fig.add_axes(_bbox(panel, 0.665, 0.050, 0.100, 0.670), zorder=5)
+        ax_stab = fig.add_axes(_bbox(panel, 0.845, 0.050, 0.100, 0.670), zorder=5)
         bracket_lab = (0.020, 0.385)
-        bracket_dir = (0.420, 0.568)
-        bracket_hm = (0.635, 0.830)
+        bracket_dir = (0.410, 0.590)
+        bracket_hm = (0.665, 0.765)
+        bracket_stab = (0.845, 0.945)
+    else:
+        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.050, 0.330, 0.670), zorder=5)
+        ax_dir = fig.add_axes(_bbox(panel, 0.360, 0.050, 0.130, 0.670), zorder=5)
+        ax_hm = fig.add_axes(_bbox(panel, 0.555, 0.050, 0.180, 0.670), zorder=5)
+        ax_stab = fig.add_axes(_bbox(panel, 0.790, 0.050, 0.180, 0.670), zorder=5)
+        bracket_lab = (0.020, 0.330)
+        bracket_dir = (0.360, 0.490)
+        bracket_hm = (0.555, 0.735)
+        bracket_stab = (0.790, 0.970)
 
-    y = np.arange(n)
-    axes_to_style = (
-        (ax_lab, ax_dir, ax_hm) if ax_bar is None else (ax_lab, ax_dir, ax_hm, ax_bar)
-    )
-    for ax in axes_to_style:
+    for ax in (ax_lab, ax_dir, ax_hm, ax_stab):
         ax.set_facecolor(BG)
         ax.set_ylim(n - 0.5, -0.5)
         ax.set_yticks([])
@@ -434,68 +461,56 @@ def plot_feature_support(
     _style_black_bottom_axis(ax_dir, show_left=False)
 
     if method_cols:
-        M = top[method_cols].apply(pd.to_numeric, errors="coerce").to_numpy(float)
-        M = np.clip(M, 0, 1)
-        M_masked = np.ma.masked_invalid(M)
+        support_matrix = (
+            top[method_cols].apply(pd.to_numeric, errors="coerce").to_numpy(float)
+        )
+        support_matrix = np.clip(support_matrix, 0, 1)
         cmap = SUPPORT_CMAP.copy()
         cmap.set_bad(TRACK)
-        ax_hm.imshow(
-            M_masked, aspect="auto", interpolation="nearest", cmap=cmap, vmin=0, vmax=1
-        )
-        ax_hm.set_xticks(np.arange(len(method_cols)))
-        labels = [m.replace("Permutation", "Perm.") for m in method_cols]
-        ax_hm.set_xticklabels(labels, fontsize=4.05, color="#000000", rotation=0)
-        ax_hm.tick_params(axis="x", length=0, pad=2, colors="#000000")
-        for lab in ax_hm.get_xticklabels():
-            lab.set_clip_on(False)
-        for x in np.arange(-0.5, len(method_cols) + 0.5, 1):
-            ax_hm.axvline(x, color="white", lw=0.45)
-        for yline in np.arange(-0.5, n + 0.5, 1):
-            ax_hm.axhline(yline, color="white", lw=0.35)
+        for axis, matrix in ((ax_hm, support_matrix), (ax_stab, fold_stability)):
+            masked = np.ma.masked_invalid(matrix)
+            axis.imshow(
+                masked,
+                aspect="auto",
+                interpolation="nearest",
+                cmap=cmap,
+                vmin=0,
+                vmax=1,
+            )
+            axis.set_xticks(np.arange(len(method_cols)))
+            labels = [m.replace("Permutation", "Perm.") for m in method_cols]
+            axis.set_xticklabels(labels, fontsize=4.05, color="#000000", rotation=0)
+            axis.tick_params(axis="x", length=0, pad=2, colors="#000000")
+            for lab in axis.get_xticklabels():
+                lab.set_clip_on(False)
+            for x in np.arange(-0.5, len(method_cols) + 0.5, 1):
+                axis.axvline(x, color="white", lw=0.45)
+            for yline in np.arange(-0.5, n + 0.5, 1):
+                axis.axhline(yline, color="white", lw=0.35)
         if solo_method:
-            for yi in range(n):
-                val = float(M[yi, 0]) if M.shape[1] else np.nan
-                text = f"{val:.2f}" if np.isfinite(val) else "NA"
-                color = _support_text_color(val) if np.isfinite(val) else DIM
-                ax_hm.text(
-                    0,
-                    yi,
-                    text,
-                    ha="center",
-                    va="center",
-                    fontsize=4.65,
-                    color=color,
-                    zorder=5,
-                )
+            for axis, matrix in ((ax_hm, support_matrix), (ax_stab, fold_stability)):
+                for yi in range(n):
+                    val = float(matrix[yi, 0]) if matrix.shape[1] else np.nan
+                    text = f"{val:.3f}" if np.isfinite(val) else "NA"
+                    color = _support_text_color(val) if np.isfinite(val) else DIM
+                    axis.text(
+                        0,
+                        yi,
+                        text,
+                        ha="center",
+                        va="center",
+                        fontsize=4.65,
+                        color=color,
+                        zorder=5,
+                    )
     else:
         _soft_missing(ax_hm, "no method\nscores")
-
-    if ax_bar is not None:
-        ax_bar.set_xlim(0, 1.0)
-        ax_bar.set_xticks([0, 1])
-        ax_bar.set_xticklabels(["0", "1"], fontsize=4.25, color="#000000")
-        _style_black_bottom_axis(ax_bar, show_left=False)
-        for i, v in enumerate(mean_support):
-            ax_bar.plot(
-                [0, 1], [i, i], color=TRACK, lw=3.0, solid_capstyle="round", zorder=1
-            )
-            ax_bar.plot(
-                [0, v], [i, i], color=ACC_L, lw=3.0, solid_capstyle="round", zorder=2
-            )
-            ax_bar.plot(
-                [v, v],
-                [i - 0.16, i + 0.16],
-                color=ACC_D,
-                lw=0.55,
-                zorder=3,
-                clip_on=False,
-            )
+        _soft_missing(ax_stab, "no fold\nstability")
 
     _bracket(fig, panel, bracket_lab[0], bracket_lab[1], 0.765, "Ranked feature")
     _bracket(fig, panel, bracket_dir[0], bracket_dir[1], 0.765, "Class shift")
     _bracket(fig, panel, bracket_hm[0], bracket_hm[1], 0.765, "Top-k support")
-    if not solo_method:
-        _bracket(fig, panel, 0.872, 0.984, 0.765, "Mean support")
+    _bracket(fig, panel, bracket_stab[0], bracket_stab[1], 0.765, "Fold stability")
     save_all(fig, out_stem)
     plt.close(fig)
     return True
@@ -550,6 +565,8 @@ def plot_regression_feature_support(
     if top.empty:
         return False
     top = top.reset_index(drop=True)
+    features = top["feature"].astype(str).tolist()
+    fold_stability = _fold_stability_matrix(d, features, methods)
     n = len(top)
     solo_method = len(methods) == 1
     fig_h_mm = max(58.0, 3.85 * n + 24.0)
@@ -558,19 +575,20 @@ def plot_regression_feature_support(
     fig.patch.set_facecolor(BG)
     panel = [0.045, 0.075, 0.910, 0.840]
     if solo_method:
-        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.050, 0.640, 0.670), zorder=5)
-        ax_hm = fig.add_axes(_bbox(panel, 0.760, 0.050, 0.100, 0.670), zorder=5)
-        ax_bar = None
-        bracket_lab = (0.020, 0.640)
-        bracket_hm = (0.760, 0.860)
+        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.050, 0.530, 0.670), zorder=5)
+        ax_hm = fig.add_axes(_bbox(panel, 0.640, 0.050, 0.130, 0.670), zorder=5)
+        ax_stab = fig.add_axes(_bbox(panel, 0.840, 0.050, 0.130, 0.670), zorder=5)
+        bracket_lab = (0.020, 0.530)
+        bracket_hm = (0.640, 0.770)
+        bracket_stab = (0.840, 0.970)
     else:
-        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.050, 0.515, 0.670), zorder=5)
-        ax_hm = fig.add_axes(_bbox(panel, 0.600, 0.050, 0.235, 0.670), zorder=5)
-        ax_bar = fig.add_axes(_bbox(panel, 0.875, 0.050, 0.105, 0.670), zorder=5)
-        bracket_lab = (0.020, 0.515)
-        bracket_hm = (0.600, 0.835)
-    axes = (ax_lab, ax_hm) if ax_bar is None else (ax_lab, ax_hm, ax_bar)
-    for ax in axes:
+        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.050, 0.470, 0.670), zorder=5)
+        ax_hm = fig.add_axes(_bbox(panel, 0.560, 0.050, 0.180, 0.670), zorder=5)
+        ax_stab = fig.add_axes(_bbox(panel, 0.800, 0.050, 0.180, 0.670), zorder=5)
+        bracket_lab = (0.020, 0.470)
+        bracket_hm = (0.560, 0.740)
+        bracket_stab = (0.800, 0.980)
+    for ax in (ax_lab, ax_hm, ax_stab):
         ax.set_facecolor(BG)
         ax.set_ylim(n - 0.5, -0.5)
         ax.set_yticks([])
@@ -580,7 +598,7 @@ def plot_regression_feature_support(
             ax.axhline(yi, color=TRACK, lw=0.22, zorder=0)
     ax_lab.set_xlim(0, 1)
     ax_lab.set_xticks([])
-    for i, feature in enumerate(top["feature"].astype(str)):
+    for i, feature in enumerate(features):
         ax_lab.text(
             0.010,
             i,
@@ -602,15 +620,12 @@ def plot_regression_feature_support(
             path_effects=[mpe.withStroke(linewidth=1.65, foreground="white")],
             clip_on=False,
         )
-    matrix = top[methods].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
-    matrix = np.clip(matrix, 0, 1)
-    masked = np.ma.masked_invalid(matrix)
+    support_matrix = (
+        top[methods].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    )
+    support_matrix = np.clip(support_matrix, 0, 1)
     cmap = SUPPORT_CMAP.copy()
     cmap.set_bad(TRACK)
-    ax_hm.imshow(
-        masked, aspect="auto", interpolation="nearest", cmap=cmap, vmin=0, vmax=1
-    )
-    ax_hm.set_xticks(np.arange(len(methods)))
     display_names = {
         "shap": "SHAP",
         "lime": "LIME",
@@ -618,64 +633,39 @@ def plot_regression_feature_support(
         "ale": "ALE",
     }
     labels = [display_names.get(m.casefold(), m) for m in methods]
-    ax_hm.set_xticklabels(labels, fontsize=4.05, color="#000000", rotation=0)
-    ax_hm.tick_params(axis="x", length=0, pad=2, colors="#000000")
-    for lab in ax_hm.get_xticklabels():
-        lab.set_clip_on(False)
-    for x in np.arange(-0.5, len(methods) + 0.5, 1):
-        ax_hm.axvline(x, color="white", lw=0.45)
-    for yline in np.arange(-0.5, n + 0.5, 1):
-        ax_hm.axhline(yline, color="white", lw=0.35)
-    if solo_method:
-        for yi in range(n):
-            value = float(matrix[yi, 0]) if matrix.shape[1] else np.nan
-            label = f"{value:.2f}" if np.isfinite(value) else "NA"
-            color = _support_text_color(value) if np.isfinite(value) else DIM
-            ax_hm.text(
-                0,
-                yi,
-                label,
-                ha="center",
-                va="center",
-                fontsize=4.65,
-                color=color,
-                zorder=5,
-            )
-    if ax_bar is not None:
-        mean_support = (
-            pd.to_numeric(top["mean_support"], errors="coerce")
-            .fillna(0.0)
-            .to_numpy(dtype=float)
+    for axis, matrix in ((ax_hm, support_matrix), (ax_stab, fold_stability)):
+        masked = np.ma.masked_invalid(matrix)
+        axis.imshow(
+            masked, aspect="auto", interpolation="nearest", cmap=cmap, vmin=0, vmax=1
         )
-        mean_support = np.clip(mean_support, 0, 1)
-        ax_bar.set_xlim(0, 1.0)
-        ax_bar.set_xticks([0, 1])
-        ax_bar.set_xticklabels(["0", "1"], fontsize=4.25, color="#000000")
-        _style_black_bottom_axis(ax_bar, show_left=False)
-        for i, value in enumerate(mean_support):
-            ax_bar.plot(
-                [0, 1], [i, i], color=TRACK, lw=3.0, solid_capstyle="round", zorder=1
-            )
-            ax_bar.plot(
-                [0, value],
-                [i, i],
-                color=ACC_L,
-                lw=3.0,
-                solid_capstyle="round",
-                zorder=2,
-            )
-            ax_bar.plot(
-                [value, value],
-                [i - 0.16, i + 0.16],
-                color=ACC_D,
-                lw=0.55,
-                zorder=3,
-                clip_on=False,
-            )
+        axis.set_xticks(np.arange(len(methods)))
+        axis.set_xticklabels(labels, fontsize=4.05, color="#000000", rotation=0)
+        axis.tick_params(axis="x", length=0, pad=2, colors="#000000")
+        for lab in axis.get_xticklabels():
+            lab.set_clip_on(False)
+        for x in np.arange(-0.5, len(methods) + 0.5, 1):
+            axis.axvline(x, color="white", lw=0.45)
+        for yline in np.arange(-0.5, n + 0.5, 1):
+            axis.axhline(yline, color="white", lw=0.35)
+    if solo_method:
+        for axis, matrix in ((ax_hm, support_matrix), (ax_stab, fold_stability)):
+            for yi in range(n):
+                value = float(matrix[yi, 0]) if matrix.shape[1] else np.nan
+                label = f"{value:.3f}" if np.isfinite(value) else "NA"
+                color = _support_text_color(value) if np.isfinite(value) else DIM
+                axis.text(
+                    0,
+                    yi,
+                    label,
+                    ha="center",
+                    va="center",
+                    fontsize=4.65,
+                    color=color,
+                    zorder=5,
+                )
     _bracket(fig, panel, bracket_lab[0], bracket_lab[1], 0.765, "Ranked feature")
     _bracket(fig, panel, bracket_hm[0], bracket_hm[1], 0.765, "Top-k support")
-    if ax_bar is not None:
-        _bracket(fig, panel, 0.875, 0.980, 0.765, "Mean support")
+    _bracket(fig, panel, bracket_stab[0], bracket_stab[1], 0.765, "Fold stability")
     save_all(fig, out_stem)
     plt.close(fig)
     return True
@@ -1244,7 +1234,7 @@ def _legend_edge_net(ax: plt.Axes, s_min: float, s_max: float) -> None:
     ax.text(
         xc,
         fy1 + 0.040,
-        f"{s_max:.3g}",
+        f"{s_max:.3f}",
         ha="center",
         va="bottom",
         fontsize=6.5,
@@ -1253,7 +1243,7 @@ def _legend_edge_net(ax: plt.Axes, s_min: float, s_max: float) -> None:
     ax.text(
         xc,
         fy0 - 0.040,
-        f"{s_min:.3g}",
+        f"{s_min:.3f}",
         ha="center",
         va="top",
         fontsize=6.5,

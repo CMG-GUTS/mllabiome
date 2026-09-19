@@ -1314,8 +1314,12 @@ def _write_method_outputs(
         write_table(dist_path, dist)
         importance_stem = figures_dir / f"feature_importance_{method}__{slug}"
         support_stem = figures_dir / f"feature_support_{method}__{slug}"
-        _plot_feature_importance(class_top, dist, importance_stem, top_k, class_labels)
-        _plot_feature_importance(class_top, dist, support_stem, top_k, class_labels)
+        _plot_feature_importance(
+            class_top, dist, importance_stem, top_k, class_labels, frame
+        )
+        _plot_feature_importance(
+            class_top, dist, support_stem, top_k, class_labels, frame
+        )
         outputs[f"feature_distribution_{method}_{slug}"] = dist_path
         outputs[f"figure_{method}_{slug}"] = importance_stem.with_suffix(".svg")
         outputs[f"feature_support_{method}_{slug}"] = support_stem.with_suffix(".svg")
@@ -4951,6 +4955,7 @@ def _explain_one(
             imp_stem,
             sweep.explainability.top_k,
             dataset.class_labels,
+            stability_all,
         )
         _plot_feature_importance(
             class_top,
@@ -4958,6 +4963,7 @@ def _explain_one(
             support_stem,
             sweep.explainability.top_k,
             dataset.class_labels,
+            stability_all,
         )
         class_figure_paths[f"figure_{slug}"] = imp_stem.with_suffix(".svg")
         class_figure_paths[f"feature_support_{slug}"] = support_stem.with_suffix(".svg")
@@ -5429,9 +5435,12 @@ def _plot_feature_importance(
     out_stem: Path,
     top_k: int,
     class_labels: Sequence[str],
+    stability: pd.DataFrame | None = None,
 ) -> None:
     pass
-    _plot_feature_support_visual(top_features, stats, out_stem, top_k, class_labels)
+    _plot_feature_support_visual(
+        top_features, stats, out_stem, top_k, class_labels, stability
+    )
 
 
 def _hash_float(text: str) -> float:

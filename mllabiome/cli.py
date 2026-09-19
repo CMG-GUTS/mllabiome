@@ -68,7 +68,9 @@ def main(argv: list[str] | None = None) -> None:
         help="After --stage report, convert canonical SVG figures to mirrored PDF files under exports/pdf/.",
     )
     args = parser.parse_args(argv)
-    if (args.export_tsv or args.export_png or args.export_pdf) and args.stage != "report":
+    if (
+        args.export_tsv or args.export_png or args.export_pdf
+    ) and args.stage != "report":
         parser.error("Export flags are only valid with --stage report.")
     try:
         sweep = _load_sweep(args.config)
@@ -91,9 +93,7 @@ def main(argv: list[str] | None = None) -> None:
                     description=f"TSV export · {detail}",
                 )
 
-            exported = export_tsv_tree(
-                sweep.root(), progress_callback=export_progress
-            )
+            exported = export_tsv_tree(sweep.root(), progress_callback=export_progress)
             exported_count = max(1, len(exported["files"]))
             prog.update(
                 task,
@@ -103,7 +103,9 @@ def main(argv: list[str] | None = None) -> None:
             )
         stage("TSV export", str(exported["directory"]))
     figure_formats = [
-        fmt for enabled, fmt in ((args.export_png, "png"), (args.export_pdf, "pdf")) if enabled
+        fmt
+        for enabled, fmt in ((args.export_png, "png"), (args.export_pdf, "pdf"))
+        if enabled
     ]
     if figure_formats:
         label = "+".join(fmt.upper() for fmt in figure_formats)

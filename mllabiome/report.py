@@ -16,6 +16,7 @@ from .storage import read_table, write_table, table_exists, glob_tables
 from .metrics import compute_metrics
 from .report_statistics import run_report_statistics
 from .report_compute import run_compute_accounting
+from .explainability_visuals import plot_feature_support
 
 _METRICS = [
     ("AUC", "ROC-AUC"),
@@ -30,9 +31,11 @@ _BASELINE_RANK_PRIORITY = ("strain", "species", "genus")
 
 _FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect x="1" y="1" width="62" height="62" rx="14" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/><text x="32" y="39" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="22" font-weight="700" fill="#0f172a">mll</text></svg>"""
 
+
 def _favicon_href() -> str:
     payload = base64.b64encode(_FAVICON_SVG.encode("utf-8")).decode("ascii")
     return f"data:image/svg+xml;base64,{payload}"
+
 
 def _single_rank_label(row: pd.Series | dict[str, Any]) -> str | None:
     res = str(row.get("resolution", "")).strip().lower()
@@ -64,7 +67,9 @@ def _pick_deepest_single_rank(sub: pd.DataFrame, *, sort_col: str) -> dict[str, 
 
 def _asset_uri(path: Path) -> str:
     suffix = path.suffix.lower()
-    mime = {".png": "image/png", ".pdf": "application/pdf"}.get(suffix, "application/octet-stream")
+    mime = {".png": "image/png", ".pdf": "application/pdf"}.get(
+        suffix, "application/octet-stream"
+    )
     payload = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{mime};base64,{payload}"
 
@@ -125,6 +130,27 @@ def _safe_float(x: Any) -> float:
         return float("nan")
 
 
+def _format_p_value(value: Any) -> str:
+    v = _safe_float(value)
+    if not np.isfinite(v):
+        return ""
+    if 0 <= v < 0.001:
+        return "<0.001"
+    return f"{v:.3f}"
+
+
+def _html_number(value: Any) -> str | None:
+    if isinstance(value, (bool, np.bool_)):
+        return None
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
+    if isinstance(value, (float, np.floating)):
+        if not np.isfinite(float(value)):
+            return ""
+        return f"{float(value):.3f}"
+    return None
+
+
 def _pct_cell(
     mean: Any, std: Any, *, bold: bool = False, html_mode: bool = False
 ) -> str:
@@ -134,9 +160,9 @@ def _pct_cell(
         body = "—" if html_mode else r"--"
         return body
 
-    body = f"{100 * m:.2f}"
+    body = f"{100 * m:.3f}"
     if np.isfinite(s):
-        sd = f"{100 * s:.2f}" if html_mode else f"{100 * s:05.2f}"
+        sd = f"{100 * s:.3f}" if html_mode else f"{100 * s:06.3f}"
         body += (" ± " if html_mode else r"$\pm$") + sd
     if bold:
         return f"<strong>{body}</strong>" if html_mode else rf"\textbf{{{body}}}"
@@ -158,12 +184,12 @@ def _pct_ci_cell(
     hi = _safe_float(high)
     if not np.isfinite(e):
         return "—" if html_mode else r"--"
-    body = f"{100 * e:.2f}"
+    body = f"{100 * e:.3f}"
     if np.isfinite(sd):
-        sd_text = f"{100 * sd:.2f}" if html_mode else f"{100 * sd:05.2f}"
+        sd_text = f"{100 * sd:.3f}" if html_mode else f"{100 * sd:06.3f}"
         body += (" ± " if html_mode else r"$\pm$") + sd_text
     if np.isfinite(lo) and np.isfinite(hi):
-        body += f" [{100 * lo:.2f}, {100 * hi:.2f}]"
+        body += f" [{100 * lo:.3f}, {100 * hi:.3f}]"
     if bold:
         return f"<strong>{body}</strong>" if html_mode else rf"\textbf{{{body}}}"
     return body
@@ -804,7 +830,8 @@ def _html_table(df: pd.DataFrame, *, raw_html_cols: set[str] | None = None) -> s
             elif c in raw_html_cols:
                 txt = str(val)
             else:
-                txt = html.escape(_html_inline(val))
+                number = _html_number(val)
+                txt = html.escape(number if number is not None else _html_inline(val))
             parts.append(f"<td>{txt}</td>")
         parts.append("</tr>")
     parts.append("</tbody></table></div>")
@@ -1002,168 +1029,42 @@ def _xai_target_metadata(target_dir: Path) -> tuple[list[str], list[tuple[int, s
     return methods, classes
 
 
-def _xai_consensus_table(
-    target_dir: Path, class_index: int, top_n: int = 15
-) -> pd.DataFrame:
-    tab = _read_table(target_dir / "top_features.parquet")
-    if tab.empty or "feature" not in tab.columns:
-        return pd.DataFrame()
-    if "class_index" in tab.columns:
-        tab = tab[
-            pd.to_numeric(tab["class_index"], errors="coerce").eq(int(class_index))
-        ].copy()
-    if tab.empty:
-        return pd.DataFrame()
-    if "rank" in tab.columns:
-        tab = tab.sort_values("rank", ascending=True)
+def _refresh_xai_support_figures(target_dir: Path, fallback_top_k: int) -> None:
+    top = _read_table(target_dir / "top_features.parquet")
+    if top.empty or "feature" not in top.columns:
+        return
+    meta = _read_json(target_dir / "explained_unit.json")
+    try:
+        top_k = max(1, int(meta.get("top_k", fallback_top_k)))
+    except Exception:
+        top_k = max(1, int(fallback_top_k))
+    stats = _read_table(target_dir / "feature_distribution_stats.parquet")
+    stability = _read_table(target_dir / "feature_stability.parquet")
+    figures = target_dir / "figures"
+    figures.mkdir(parents=True, exist_ok=True)
+    if "class_index" in top.columns:
+        groups = top.groupby("class_index", sort=True)
     else:
-        tab = tab.head(int(top_n)).copy()
-        tab.insert(0, "rank", np.arange(1, len(tab) + 1))
-    rows: list[dict[str, Any]] = []
-    feature_column = _xai_coordinate_column(target_dir)
-    support_cols = [
-        c for c in ("SHAP", "Permutation", "ALE", "LIME") if c in tab.columns
-    ]
-    for _, row in tab.head(int(top_n)).iterrows():
-        item: dict[str, Any] = {
-            "Rank": int(_safe_float(row.get("rank", len(rows) + 1)))
-            if np.isfinite(_safe_float(row.get("rank", np.nan)))
-            else len(rows) + 1,
-            feature_column: _short_feature_label(row.get("feature", "")),
-        }
-        for col in support_cols:
-            val = _safe_float(row.get(col, np.nan))
-            item[col] = f"{val:.3f}" if np.isfinite(val) else ""
-        val = _safe_float(row.get("consensus", row.get("consensus_score", np.nan)))
-        item["Mean support"] = f"{val:.3f}" if np.isfinite(val) else ""
-        n_methods = _safe_float(row.get("n_methods", np.nan))
-        n_total = _safe_float(row.get("n_methods_total", np.nan))
-        item["Methods"] = (
-            f"{int(n_methods)}/{int(n_total)}"
-            if np.isfinite(n_methods) and np.isfinite(n_total)
-            else ""
+        groups = [(0, top)]
+    for class_index, class_top in groups:
+        label = (
+            str(class_top["class_label"].dropna().iloc[0])
+            if "class_label" in class_top.columns
+            and not class_top["class_label"].dropna().empty
+            else f"class_{int(class_index)}"
         )
-        coverage = _safe_float(row.get("method_coverage", np.nan))
-        item["Method coverage"] = f"{coverage:.2f}" if np.isfinite(coverage) else ""
-        rows.append(item)
-    return pd.DataFrame(rows)
-
-
-def _xai_stability_table(
-    target_dir: Path, method: str, class_index: int, top_n: int = 15
-) -> pd.DataFrame:
-    tab = _read_table(target_dir / f"feature_stability_{method}.parquet")
-    if tab.empty or "feature" not in tab.columns:
-        return pd.DataFrame()
-    if "class_index" in tab.columns:
-        tab = tab[
-            pd.to_numeric(tab["class_index"], errors="coerce").eq(int(class_index))
-        ].copy()
-    if tab.empty:
-        return pd.DataFrame()
-    if "mean_rank" in tab.columns:
-        tab["_sort_rank"] = pd.to_numeric(tab["mean_rank"], errors="coerce")
-        tab = tab.sort_values(
-            ["_sort_rank", "feature"], ascending=[True, True], na_position="last"
+        class_stats = stats
+        if not stats.empty and "class_index" in stats.columns:
+            idx = pd.to_numeric(stats["class_index"], errors="coerce")
+            class_stats = stats[idx.eq(int(class_index))].copy()
+        plot_feature_support(
+            class_top,
+            class_stats,
+            figures / f"feature_support__{_xai_class_slug(label)}",
+            top_k,
+            [label],
+            stability,
         )
-    elif "importance_mean" in tab.columns:
-        tab["_sort_imp"] = pd.to_numeric(tab["importance_mean"], errors="coerce")
-        tab = tab.sort_values(
-            ["_sort_imp", "feature"], ascending=[False, True], na_position="last"
-        )
-    rows: list[dict[str, Any]] = []
-    feature_column = _xai_coordinate_column(target_dir)
-    for rank, (_, row) in enumerate(tab.head(int(top_n)).iterrows(), start=1):
-        item: dict[str, Any] = {
-            "Rank": rank,
-            feature_column: _short_feature_label(row.get("feature", "")),
-        }
-        for src, dst, fmt in [
-            ("importance_mean", "Importance mean", ".4g"),
-            ("importance_sd", "Importance SD", ".4g"),
-            ("median_rank", "Median rank", ".2f"),
-            ("rank_iqr", "Rank IQR", ".2f"),
-            ("top_k_frequency", "Top-k frequency", ".2f"),
-            ("fold_coverage", "Fold coverage", ".2f"),
-            ("sign_consistency", "Sign consistency", ".2f"),
-        ]:
-            if src not in tab.columns:
-                continue
-            val = _safe_float(row.get(src, np.nan))
-            item[dst] = format(val, fmt) if np.isfinite(val) else ""
-        rows.append(item)
-    return pd.DataFrame(rows)
-
-
-def _stability_compact_html(table: pd.DataFrame, max_features: int = 5) -> str:
-    if table.empty:
-        return ""
-    feature_col = next(
-        (
-            c
-            for c in ("Feature", "Model coordinate", "Taxon", "feature")
-            if c in table.columns
-        ),
-        None,
-    )
-    if feature_col is None:
-        excluded = {
-            "Method",
-            "Rank",
-            "Importance mean",
-            "Importance SD",
-            "Importance median",
-            "Signed importance mean",
-            "Median rank",
-            "Rank IQR",
-            "Top-k frequency",
-            "Fold coverage",
-            "Sign consistency",
-            "Scoring",
-        }
-        feature_col = next((c for c in table.columns if c not in excluded), None)
-    if feature_col is None:
-        return ""
-    groups = (
-        table.groupby("Method", sort=False, dropna=False)
-        if "Method" in table.columns
-        else [("Stability", table)]
-    )
-    parts = ['<div class="stability-summary">']
-    for method, group in groups:
-        parts.append('<div class="stability-method">')
-        parts.append(f'<div class="stability-method-name">{html.escape(str(method))}</div>')
-        parts.append('<div class="stability-items">')
-        for _, row in group.head(int(max_features)).iterrows():
-            feature = html.escape(_short_feature_label(row.get(feature_col, "")))
-            details: list[str] = []
-            topk = _safe_float(row.get("Top-k frequency", np.nan))
-            coverage = _safe_float(row.get("Fold coverage", np.nan))
-            rank_iqr = _safe_float(row.get("Rank IQR", np.nan))
-            imp = _safe_float(row.get("Importance mean", np.nan))
-            imp_sd = _safe_float(row.get("Importance SD", np.nan))
-            sign = _safe_float(row.get("Sign consistency", np.nan))
-            if np.isfinite(topk):
-                details.append(f"top-k {100.0 * topk:.0f}%")
-            elif np.isfinite(coverage):
-                details.append(f"coverage {100.0 * coverage:.0f}%")
-            if np.isfinite(rank_iqr):
-                details.append(f"rank IQR {rank_iqr:.2f}")
-            if np.isfinite(imp):
-                if np.isfinite(imp_sd):
-                    details.append(f"importance {imp:.4g} ± {imp_sd:.3g}")
-                else:
-                    details.append(f"importance {imp:.4g}")
-            if np.isfinite(sign):
-                details.append(f"sign {100.0 * sign:.0f}%")
-            detail = html.escape(" · ".join(details))
-            parts.append(
-                f'<div class="stability-item"><span class="stability-feature">{feature}</span>'
-                f'<span class="stability-detail">{detail}</span></div>'
-            )
-        parts.append("</div></div>")
-    parts.append("</div>")
-    return "".join(parts)
 
 
 def _xai_figure_for_class(
@@ -1212,10 +1113,10 @@ def _xai_local_table(target_dir: Path, method: str, top_n: int = 5) -> pd.DataFr
             item["P(class)"] = f"{p:.3f}" if np.isfinite(p) else ""
             value = _safe_float(row.get("value", np.nan))
             label = "SHAP contribution" if method == "shap" else "LIME coefficient"
-            item[label] = f"{value:+.4g}" if np.isfinite(value) else ""
+            item[label] = f"{value:+.3f}" if np.isfinite(value) else ""
             sd = _safe_float(row.get("value_sd", np.nan))
             if np.isfinite(sd):
-                item["Across-fold SD"] = f"{sd:.4g}"
+                item["Across-fold SD"] = f"{sd:.3f}"
             rank = _safe_float(row.get("rank", np.nan))
             item["Local rank"] = int(rank) if np.isfinite(rank) else ""
             rows.append(item)
@@ -1260,13 +1161,14 @@ def _explainability_report_blocks(
             if methods
             else "available methods"
         )
+        _refresh_xai_support_figures(target_dir, top_n)
         local_mode = _xai_local_mode(target_dir)
         coordinate_mode = _xai_coordinate_column(target_dir) == "Model coordinate"
         unit_singular = "model coordinate" if coordinate_mode else "feature"
         unit_plural = "model coordinates" if coordinate_mode else "features"
         parts.append(f'<section class="xai-target"><h3>{html.escape(label)}</h3>')
         parts.append(
-            f"<p>Cross-fitted OOF explanations of the final selected specification. Methods: {html.escape(method_text)}. Global explanation, cross-fold stability, and local sample explanation are reported as distinct layers.</p>"
+            f"<p>Cross-fitted OOF explanations of the final selected specification. Methods: {html.escape(method_text)}. Global explanation with fold stability and local sample explanation are reported as distinct layers.</p>"
         )
         parts.append("<h4>Global explanations</h4>")
         parts.append(
@@ -1281,18 +1183,14 @@ def _explainability_report_blocks(
                 "feature_support",
                 class_label,
                 report_dir,
-                f"{label} · {class_label}: cross-method top-k rank support",
+                f"{label} · {class_label}: cross-method top-k support and fold stability",
             )
-            consensus_tab = _xai_consensus_table(target_dir, class_index, top_n=top_n)
-            if consensus_fig or not consensus_tab.empty:
-                parts.append("<h6>Cross-method rank support</h6>")
+            if consensus_fig:
+                parts.append("<h6>Cross-method support and fold stability</h6>")
                 parts.append(
-                    f"<p>Method-specific effect magnitudes are not averaged. Support uses within-method top-k ranks among methods available for each {html.escape(unit_singular)}: rank 1 scores 1, rank k scores 1/k, and ranks below k score 0.</p>"
+                    f"<p>Top-k support is a within-method rank score for each {html.escape(unit_singular)}: rank 1 scores 1, rank k scores 1/k, and ranks below k score 0. Fold stability is the fraction of estimable outer folds in which that {html.escape(unit_singular)} ranks within the method-specific top k. Both are scale-free 0–1 summaries; method-specific effect magnitudes are not compared across methods.</p>"
                 )
-                if consensus_fig:
-                    parts.append(consensus_fig)
-                if not consensus_tab.empty:
-                    parts.append(_html_table(consensus_tab))
+                parts.append(consensus_fig)
             for method in methods:
                 if method == "interactions":
                     continue
@@ -1359,27 +1257,6 @@ def _explainability_report_blocks(
                 "<p>Interaction outputs are exploratory population-level 2D ALE summaries and are not local sample explanations.</p>"
             )
             parts.extend(interaction_figs)
-        parts.append("<h4>Cross-fold stability</h4>")
-        parts.append(
-            "<p>Outer-fold feature stability is summarized compactly for the five leading features per method. These are descriptive cross-fitted stability summaries, not confidence intervals from independent folds.</p>"
-        )
-        for class_index, class_label in classes:
-            stability_frames: list[pd.DataFrame] = []
-            for method in methods:
-                if method == "interactions":
-                    continue
-                stability = _xai_stability_table(
-                    target_dir, method, class_index, top_n=5
-                )
-                if stability.empty:
-                    continue
-                stability.insert(0, "Method", _xai_method_display(method))
-                stability_frames.append(stability)
-            if stability_frames:
-                stability_table = pd.concat(stability_frames, ignore_index=True)
-                parts.append(
-                    f'<section class="xai-class"><h5>{html.escape(class_label)}</h5>{_stability_compact_html(stability_table, max_features=5)}</section>'
-                )
         parts.append("<h4>Local explanations</h4>")
         if local_mode == "none":
             parts.append(
@@ -1550,7 +1427,7 @@ def _feature_support_terminal(root: Path, *, top_n: int = 8) -> None:
                     pd.Series([r.get(c) for c in methods]), errors="coerce"
                 ).dropna()
                 if not vals.empty:
-                    support = f"{float(vals.mean()):.2f}"
+                    support = f"{float(vals.mean()):.3f}"
             rows.append(
                 {
                     "Strategy": label,
@@ -1665,6 +1542,7 @@ def _publication_layout_css() -> str:
 
 def _report_css() -> str:
     return """
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 :root {
   --ink:#0f172a; --mid:#64748b; --dim:#94a3b8; --track:#e2e8f0; --soft:#f8fafc;
   --bg:#ffffff; --blue:#2563eb; --blue-hover:#0ea5e9; --blue-soft:#eff6ff; --blue-hover-soft:#f0f9ff;
@@ -1674,7 +1552,7 @@ def _report_css() -> str:
 *, *::before, *::after { box-sizing:border-box; }
 html {
   background:var(--bg); color:var(--ink);
-  font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+  font-family:'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
   letter-spacing:-0.01em; scroll-behavior:smooth;
 }
@@ -1722,19 +1600,11 @@ figcaption { font-size:var(--font-small); color:var(--mid); margin-top:7px; }
 .compare-cell figcaption { display:none; }
 .compare-cell img, .compare-cell .embedded-svg svg { min-width:430px; }
 .missing-figure { border:1px solid var(--track); color:var(--mid); font-size:12px; padding:36px 12px; text-align:center; background:#fff; border-radius:10px; }
-
-.stability-summary { margin:10px 0 24px; border-top:1px solid var(--track); }
-.stability-method { display:grid; grid-template-columns:minmax(90px, 130px) 1fr; gap:12px; padding:10px 0; border-bottom:1px solid var(--track); }
-.stability-method-name { font-size:var(--font-small); font-weight:750; color:var(--ink); }
-.stability-items { display:flex; flex-wrap:wrap; gap:7px 12px; }
-.stability-item { min-width:180px; max-width:300px; }
-.stability-feature { display:block; font-size:var(--font-small); font-weight:650; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.stability-detail { display:block; margin-top:1px; font-size:11px; color:var(--dim); }
 .table-wrap { overflow-x:auto; margin:12px 0 24px; }
 table { border-collapse:collapse; width:100%; font-size:var(--font-table); }
 th, td { border-bottom:1px solid var(--track); padding:7px 7px; text-align:left; vertical-align:top; line-height:1.38; }
 th { color:var(--mid); font-weight:700; background:#fff; }
-code { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
+code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
 .report-footer { border-top:1px solid var(--track); margin-top:42px; padding-top:16px; color:var(--dim); font-size:12px; }
 @media (max-width: 860px) {
   .report-nav-inner { padding:0 16px; }
@@ -1744,7 +1614,6 @@ code { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fon
   h1 { font-size:22px; }
   .compare-grid { grid-template-columns:repeat(var(--compare-columns), minmax(360px, 1fr)); }
   .compare-cell img, .compare-cell .embedded-svg svg { min-width:360px; }
-  .stability-method { grid-template-columns:1fr; gap:5px; }
 }
 """ + _publication_layout_css()
 
@@ -1825,12 +1694,12 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
                 if c in primary_pairwise.columns:
                     primary_pairwise[c] = pd.to_numeric(
                         primary_pairwise[c], errors="coerce"
-                    ).map(lambda x: f"{x:.4f}" if np.isfinite(x) else "")
+                    ).map(lambda x: f"{x:.3f}" if np.isfinite(x) else "")
             for c in ("p", "Holm p"):
                 if c in primary_pairwise.columns:
                     primary_pairwise[c] = pd.to_numeric(
                         primary_pairwise[c], errors="coerce"
-                    ).map(lambda x: f"{x:.4g}" if np.isfinite(x) else "")
+                    ).map(lambda x: _format_p_value(x))
         phase.phase("ensemble summaries")
         ensemble_summary = _ensemble_summary_table(root)
         ensemble_members = _ensemble_members_table(root)
@@ -1844,7 +1713,7 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
     memory_text = ""
     try:
         if total_memory is not None and np.isfinite(float(total_memory)):
-            memory_text = f"{float(total_memory) / (1024**3):.1f} GiB RAM"
+            memory_text = f"{float(total_memory) / (1024**3):.3f} GiB RAM"
     except Exception:
         memory_text = ""
     hardware_parts = [

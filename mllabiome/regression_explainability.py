@@ -41,7 +41,7 @@ from .explainability_methods import (
     method_name,
 )
 from .learners import _learner_factory
-from .metrics import compute_regression_metrics, metric_is_loss
+from .metrics import _estimator_call, compute_regression_metrics, metric_is_loss
 from .regression_ensemble import aggregate_regression_predictions
 from .resolutions import materialize_mpdr
 from .runtime import configure_estimator_threads
@@ -91,7 +91,10 @@ class _FittedRegressionEnsemble(BaseEstimator):
         stack = np.vstack(
             [
                 np.asarray(
-                    member["estimator"].predict(arr[:, member["slice"]]), dtype=float
+                    _estimator_call(
+                        member["estimator"], "predict", arr[:, member["slice"]]
+                    ),
+                    dtype=float,
                 ).reshape(-1)
                 for member in self.members
             ]
@@ -250,7 +253,9 @@ def _fit_individual_folds(
         names = transform.get_feature_names_out(names)
         model = configure_estimator_threads(learners[learner_key](), 1)
         model.fit(X_train, dataset.y[train_idx])
-        pred = np.asarray(model.predict(X_test), dtype=float).reshape(-1)
+        pred = np.asarray(
+            _estimator_call(model, "predict", X_test), dtype=float
+        ).reshape(-1)
         folds.append(
             {
                 "split_key": str(split["split_key"]),
@@ -411,9 +416,9 @@ def _permutation_importance(
     indices = _sample_indices(len(X), n, seed)
     X_eval = X[indices]
     y_eval = y[indices]
-    baseline_pred = np.asarray(fold["estimator"].predict(X_eval), dtype=float).reshape(
-        -1
-    )
+    baseline_pred = np.asarray(
+        _estimator_call(fold["estimator"], "predict", X_eval), dtype=float
+    ).reshape(-1)
     baseline = compute_regression_metrics(y_eval, baseline_pred)[metric]
     rng = np.random.default_rng(seed)
     rows: list[dict[str, Any]] = []
@@ -422,9 +427,9 @@ def _permutation_importance(
         for _ in range(int(spec.n_repeats)):
             permuted = X_eval.copy()
             permuted[:, j] = permuted[rng.permutation(len(permuted)), j]
-            pred = np.asarray(fold["estimator"].predict(permuted), dtype=float).reshape(
-                -1
-            )
+            pred = np.asarray(
+                _estimator_call(fold["estimator"], "predict", permuted), dtype=float
+            ).reshape(-1)
             score = compute_regression_metrics(y_eval, pred)[metric]
             values.append(
                 float(score - baseline if metric_is_loss(metric) else baseline - score)
@@ -466,7 +471,9 @@ def _shap_importance(
     background = X_train[bg_rows]
     X_explain = X_test[ex_rows]
     if progress_callback is not None:
-        progress_callback(1, 4, f"background {len(background)} · explain {len(X_explain)}")
+        progress_callback(
+            1, 4, f"background {len(background)} · explain {len(X_explain)}"
+        )
     model = fold["estimator"]
     requested = str(spec.algorithm).strip().casefold()
     values = None
@@ -501,7 +508,8 @@ def _shap_importance(
         max_evals = max(minimum, minimum * max(1, int(spec.permutation_rounds)))
         explainer = shap.Explainer(
             lambda x: np.asarray(
-                model.predict(np.asarray(x, dtype=float)), dtype=float
+                _estimator_call(model, "predict", np.asarray(x, dtype=float)),
+                dtype=float,
             ),
             masker,
             algorithm=algorithm,
@@ -580,7 +588,8 @@ def _lime_importance(
         exp = explainer.explain_instance(
             X_test[int(index)],
             lambda x: np.asarray(
-                model.predict(np.asarray(x, dtype=float)), dtype=float
+                _estimator_call(model, "predict", np.asarray(x, dtype=float)),
+                dtype=float,
             ),
             **call_kwargs,
         )
@@ -626,7 +635,8 @@ def _ale_importance(
     frame = pd.DataFrame(X, columns=names)
     wrapper = _AleModelWrapper(
         lambda x: np.asarray(
-            fold["estimator"].predict(np.asarray(x, dtype=float)), dtype=float
+            _estimator_call(fold["estimator"], "predict", np.asarray(x, dtype=float)),
+            dtype=float,
         )
     )
     bins = _auto_ale_bins(len(X), spec)
@@ -725,7 +735,8 @@ def _interaction_importance(
     frame = pd.DataFrame(X, columns=names)
     wrapper = _AleModelWrapper(
         lambda x: np.asarray(
-            fold["estimator"].predict(np.asarray(x, dtype=float)), dtype=float
+            _estimator_call(fold["estimator"], "predict", np.asarray(x, dtype=float)),
+            dtype=float,
         )
     )
     bins = _auto_ale_bins(len(X), spec)
@@ -772,22 +783,39 @@ def _interaction_importance(
     )
 
 
-def _aggregate_frames(
-    frames: list[pd.DataFrame], n_folds: int, top_k: int
+def _aggregate_long_importance(
+    long: pd.DataFrame, n_folds: int, top_k: int
 ) -> pd.DataFrame:
-    if not frames:
+    if long.empty:
         return pd.DataFrame()
-    long = pd.concat(frames, ignore_index=True, sort=False)
+    d = long.copy()
+    d["method"] = d["method"].astype(str)
+    d["feature"] = d["feature"].astype(str)
+    d["_importance"] = pd.to_numeric(d["importance_mean"], errors="coerce")
+    fold_col = "fold_key" if "fold_key" in d.columns else "fold_no"
+    if fold_col not in d.columns:
+        d["fold_no"] = 1
+        fold_col = "fold_no"
+    d["_rank"] = d.groupby(["method", fold_col], sort=False)["_importance"].rank(
+        ascending=False, method="average"
+    )
+    d["_top_k"] = d["_rank"].le(max(1, int(top_k)))
     rows: list[dict[str, Any]] = []
-    for (method, feature), group in long.groupby(["method", "feature"], sort=True):
-        values = (
-            pd.to_numeric(group["importance_mean"], errors="coerce")
+    for (method, feature), group in d.groupby(["method", "feature"], sort=True):
+        valid = group["_importance"].notna() & np.isfinite(
+            group["_importance"].to_numpy(dtype=float)
+        )
+        values = group.loc[valid, "_importance"].to_numpy(dtype=float)
+        ranks = (
+            pd.to_numeric(group.loc[valid, "_rank"], errors="coerce")
             .dropna()
             .to_numpy(dtype=float)
         )
         signed = (
             pd.to_numeric(
-                group.get("signed_importance_mean", pd.Series(dtype=float)),
+                group.loc[valid, "signed_importance_mean"]
+                if "signed_importance_mean" in group.columns
+                else pd.Series(dtype=float),
                 errors="coerce",
             )
             .dropna()
@@ -795,6 +823,10 @@ def _aggregate_frames(
         )
         if not len(values):
             continue
+        if ranks.size:
+            rq25, rmed, rq75 = np.quantile(ranks, [0.25, 0.5, 0.75])
+        else:
+            rq25 = rmed = rq75 = np.nan
         rows.append(
             {
                 "method": str(method),
@@ -807,11 +839,17 @@ def _aggregate_frames(
                 "signed_importance_mean": float(np.mean(signed))
                 if len(signed)
                 else np.nan,
+                "mean_rank": float(np.mean(ranks)) if ranks.size else np.nan,
+                "median_rank": float(rmed),
+                "rank_iqr": float(rq75 - rq25) if ranks.size else np.nan,
+                "top_k_frequency": float(
+                    group.loc[valid, "_top_k"].astype(float).mean()
+                ),
                 "n_estimable_folds": int(len(values)),
                 "n_outer_folds_total": int(n_folds),
-                "fold_coverage": float(len(values) / max(1, n_folds)),
+                "fold_coverage": float(len(values) / max(1, int(n_folds))),
                 "scoring": str(group["scoring"].dropna().iloc[0])
-                if "scoring" in group and not group["scoring"].dropna().empty
+                if "scoring" in group.columns and not group["scoring"].dropna().empty
                 else "",
             }
         )
@@ -825,6 +863,15 @@ def _aggregate_frames(
     return out.sort_values(
         ["method", "importance_mean", "feature"], ascending=[True, False, True]
     )
+
+
+def _aggregate_frames(
+    frames: list[pd.DataFrame], n_folds: int, top_k: int
+) -> pd.DataFrame:
+    if not frames:
+        return pd.DataFrame()
+    long = pd.concat(frames, ignore_index=True, sort=False)
+    return _aggregate_long_importance(long, int(n_folds), int(top_k))
 
 
 def _combined_feature_table(importance: pd.DataFrame) -> pd.DataFrame:
@@ -925,6 +972,20 @@ def _write_regression_explainability_figures(
         path = target_dir / "feature_stability.parquet"
         if table_exists(path) and path.stat().st_size:
             frame = read_table(path)
+    if not frame.empty and "top_k_frequency" not in frame.columns:
+        fold_path = target_dir / "fold_feature_importance.parquet"
+        if table_exists(fold_path) and fold_path.stat().st_size:
+            fold_table = read_table(fold_path)
+            if not fold_table.empty:
+                fold_col = "fold_key" if "fold_key" in fold_table.columns else "fold_no"
+                n_folds = (
+                    int(fold_table[fold_col].astype(str).nunique())
+                    if fold_col in fold_table.columns
+                    else 1
+                )
+                frame = _aggregate_long_importance(
+                    fold_table, max(1, n_folds), int(top_k)
+                )
     outputs = (
         _write_feature_support_figure(target_dir, frame, int(top_k))
         if not frame.empty
@@ -1133,7 +1194,9 @@ def _explain_target(
                 )
     with phase_progress(f"{slug} explainability outputs", 4) as phase:
         phase.phase("aggregate feature attribution")
-        importance = _aggregate_frames(frames, len(folds), int(sweep.explainability.top_k))
+        importance = _aggregate_frames(
+            frames, len(folds), int(sweep.explainability.top_k)
+        )
         combined = _combined_feature_table(importance)
         importance_path = target_dir / "feature_stability.parquet"
         combined_path = target_dir / "feature_importance.parquet"
@@ -1143,7 +1206,9 @@ def _explain_target(
         fold_path = target_dir / "fold_feature_importance.parquet"
         write_table(
             fold_path,
-            pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame(),
+            pd.concat(frames, ignore_index=True, sort=False)
+            if frames
+            else pd.DataFrame(),
         )
         outputs: dict[str, Path] = {
             "explainability_dir": target_dir,
@@ -1160,7 +1225,9 @@ def _explain_target(
             outputs["ale_curves"] = curve_path
         if interaction_frames:
             interactions = pd.concat(interaction_frames, ignore_index=True, sort=False)
-            summary = interactions.groupby(["feature_1", "feature_2"], as_index=False).agg(
+            summary = interactions.groupby(
+                ["feature_1", "feature_2"], as_index=False
+            ).agg(
                 interaction_strength_mean=("interaction_strength", "mean"),
                 interaction_strength_sd=("interaction_strength", "std"),
                 n_folds=("interaction_strength", "count"),
