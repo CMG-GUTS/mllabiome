@@ -18,6 +18,8 @@ from .final_explainability import explain
 from .final_models import build_final_models
 from .task_reports import write_regression_report, write_task_report
 from .report import write_report
+from .console import info
+from .stage_results import print_stage_results
 from .utils import dump_json_standard
 
 
@@ -46,18 +48,27 @@ def _write_stage_manifest(
 
 
 def run_evaluate(sweep: Sweep) -> dict[str, Any]:
-    return evaluate(sweep)
+    outputs = evaluate(sweep)
+    print_stage_results(sweep, "evaluate")
+    return outputs
 
 
 def run_ensemble(sweep: Sweep) -> dict[str, Any]:
     if getattr(sweep, "uses_modalities", False):
         outputs = sweep_ensemble(sweep)
         build_final_models(sweep.root())
-        return {"ensemble": outputs, "final_models": sweep.root() / "final_models.json"}
+        result = {
+            "ensemble": outputs,
+            "final_models": sweep.root() / "final_models.json",
+        }
+        print_stage_results(sweep, "ensemble")
+        return result
     children = target_sweeps(sweep)
     records: list[dict[str, Any]] = []
     outputs: dict[str, Any] = {}
-    for child in children:
+    for index, child in enumerate(children, start=1):
+        if _is_multi_target(sweep, children):
+            info(f"Ensemble · target {index}/{len(children)} · {child.data.target_col}")
         child_outputs = sweep_ensemble(child)
         build_final_models(child.root())
         target = str(child.data.target_col)
@@ -69,48 +80,65 @@ def run_ensemble(sweep: Sweep) -> dict[str, Any]:
         records.append(_target_record(child, payload))
     if _is_multi_target(sweep, children):
         outputs["manifest"] = _write_stage_manifest(sweep, "ensemble", records)
-    return (
+    result = (
         outputs
         if _is_multi_target(sweep, children)
         else outputs[str(children[0].data.target_col)]
     )
+    print_stage_results(sweep, "ensemble")
+    return result
 
 
 def run_explain(sweep: Sweep) -> dict[str, Any]:
     if getattr(sweep, "uses_modalities", False):
-        return explain(sweep)
+        outputs = explain(sweep)
+        print_stage_results(sweep, "explain")
+        return outputs
     children = target_sweeps(sweep)
     records: list[dict[str, Any]] = []
     outputs: dict[str, Any] = {}
-    for child in children:
+    for index, child in enumerate(children, start=1):
+        if _is_multi_target(sweep, children):
+            info(
+                f"Explainability · target {index}/{len(children)} · {child.data.target_col}"
+            )
         child_outputs = explain(child)
         target = str(child.data.target_col)
         outputs[target] = child_outputs
         records.append(_target_record(child, child_outputs))
     if _is_multi_target(sweep, children):
         outputs["manifest"] = _write_stage_manifest(sweep, "explain", records)
-    return (
+    result = (
         outputs
         if _is_multi_target(sweep, children)
         else outputs[str(children[0].data.target_col)]
     )
+    print_stage_results(sweep, "explain")
+    return result
 
 
 def run_report(sweep: Sweep) -> dict[str, Any]:
     if getattr(sweep, "uses_modalities", False):
         task = sweep_task(sweep)
-        return (
+        outputs = (
             write_regression_report(sweep)
             if task == "regression"
             else write_report(sweep)
         )
-    return write_task_report(sweep)
+    else:
+        outputs = write_task_report(sweep)
+    print_stage_results(sweep, "report")
+    return outputs
 
 
 def run_all(sweep: Sweep) -> dict[str, Any]:
+    info("Pipeline · evaluate")
     evaluate_output = run_evaluate(sweep)
+    info("Pipeline · ensemble")
     ensemble_output = run_ensemble(sweep)
+    info("Pipeline · explain")
     explain_output = run_explain(sweep)
+    info("Pipeline · report")
     report_output = run_report(sweep)
     return {
         "evaluate": evaluate_output,

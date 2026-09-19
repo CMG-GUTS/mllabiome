@@ -1579,10 +1579,15 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
             qualification_rows.extend(result.get("qualification", []))
             job_resource_rows.extend(result.get("job_resources", []))
             split_key = str(result.get("split_key", ""))
+            config_id = str(result.get("config_id", ""))
             completed_by_split[split_key] = completed_by_split.get(split_key, 0) + 1
             if completed_by_split[split_key] == split_task_counts.get(split_key, 0):
                 prog.advance(split_task)
-            prog.advance(job_task)
+            prog.update(
+                job_task,
+                advance=1,
+                description=f"Regression MPMA/split jobs · {split_key} · {config_id}",
+            )
     _write_tables(
         root,
         outer_metric_rows,
@@ -1717,7 +1722,13 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
         return evaluate_modality_sweep(sweep)
     children = target_sweeps(sweep)
     if len(children) > 1 or children[0] is not sweep:
-        outputs = [evaluate(child) for child in children]
+        outputs = []
+        for index, child in enumerate(children, start=1):
+            info(
+                f"Multi-target evaluation · target {index}/{len(children)} · {child.data.target_col}"
+            )
+            outputs.append(evaluate(child))
+        info("Multi-target evaluation · aggregating target outputs")
         return _write_multi_target_summary(sweep, children, outputs)
     task = _target_task(sweep.data, _target_columns(sweep.data)[0])
     if task == "regression":
@@ -1975,10 +1986,15 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
             qualification_rows.extend(result.get("qualification", []))
             job_resource_rows.extend(result.get("job_resources", []))
             split_key = str(result.get("split_key", ""))
+            config_id = str(result.get("config_id", ""))
             completed_by_split[split_key] = completed_by_split.get(split_key, 0) + 1
             if completed_by_split[split_key] == split_task_counts.get(split_key, 0):
                 prog.advance(split_task)
-            prog.advance(job_task)
+            prog.update(
+                job_task,
+                advance=1,
+                description=f"MPMA/split jobs · {split_key} · {config_id}",
+            )
     _write_tables(
         root,
         outer_metric_rows,
@@ -2729,6 +2745,3 @@ def _write_rankings_and_figures(
     rank = rank.sort_values(sort_col, ascending=metric_is_loss(sort_metric))
     rank.insert(0, "rank", np.arange(1, len(rank) + 1))
     write_table(root / "tables" / "mpma_rankings.parquet", rank)
-    stale = root / "figures" / "mpma_top_metric.png"
-    if stale.exists():
-        stale.unlink()

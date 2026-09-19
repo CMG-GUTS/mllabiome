@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from .storage import read_table
 from . import report as _report_module
-from .console import console, path_table, stage, success
+from .console import console, path_table, phase_progress, stage, success
 from .final_models import load_final_models
 
 _PERCENT_METRICS = {
@@ -896,12 +896,15 @@ def write_report(sweep: Any) -> dict[str, Path]:
         raise RuntimeError(
             "Report statistics did not produce strategy_oof_performance.parquet."
         )
-    inserted = enhance_html_report(
-        report_dir,
-        n_classes=_task_class_count(sweep),
-    )
-    if inserted:
-        _terminal_oof_summary(report_dir)
+    with phase_progress("OOF report integration", 2) as phase:
+        phase.phase("HTML inference section")
+        inserted = enhance_html_report(
+            report_dir,
+            n_classes=_task_class_count(sweep),
+        )
+        phase.phase("terminal inference summary")
+        if inserted:
+            _terminal_oof_summary(report_dir)
     new_outputs = {
         "strategy_oof_performance": tables_dir / "strategy_oof_performance.parquet",
         "strategy_oof_performance_table": tables_dir

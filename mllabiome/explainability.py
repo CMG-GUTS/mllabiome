@@ -1317,8 +1317,8 @@ def _write_method_outputs(
         _plot_feature_importance(class_top, dist, importance_stem, top_k, class_labels)
         _plot_feature_importance(class_top, dist, support_stem, top_k, class_labels)
         outputs[f"feature_distribution_{method}_{slug}"] = dist_path
-        outputs[f"figure_{method}_{slug}"] = importance_stem.with_suffix(".png")
-        outputs[f"feature_support_{method}_{slug}"] = support_stem.with_suffix(".png")
+        outputs[f"figure_{method}_{slug}"] = importance_stem.with_suffix(".svg")
+        outputs[f"feature_support_{method}_{slug}"] = support_stem.with_suffix(".svg")
     return outputs
 
 
@@ -2083,20 +2083,22 @@ def _existing_method_outputs(target_dir: Path, method: str) -> dict[str, Path]:
     for path in glob_tables(target_dir, f"feature_distribution_stats_{method}__*"):
         outputs[path.stem] = path
     figures = target_dir / "figures"
-    for path in sorted(figures.glob(f"feature_importance_{method}__*.png")):
-        outputs[path.stem] = path
-    for path in sorted(figures.glob(f"feature_support_{method}__*.png")):
-        outputs[path.stem] = path
+    for pattern in (
+        f"feature_importance_{method}__*.svg",
+        f"feature_support_{method}__*.svg",
+    ):
+        for path in sorted(figures.glob(pattern)):
+            outputs[path.stem] = path
     if method == "ale":
         curve_table = target_dir / "ale_curves.parquet"
         if table_exists(curve_table):
             outputs["ale_curves"] = curve_table
-        for path in sorted(figures.glob("ale_curves__*.png")):
+        for path in sorted(figures.glob("ale_curves__*.svg")):
             outputs[path.stem] = path
     if method == "interactions":
         for path in glob_tables(target_dir, "feature_interactions_*"):
             outputs[path.stem] = path
-        for path in sorted(figures.glob("interaction_network_*.png")):
+        for path in sorted(figures.glob("interaction_network_*.svg")):
             outputs[path.stem] = path
     if method in {"shap", "lime"}:
         path = target_dir / f"instance_explanations_{method}_top_features.parquet"
@@ -2191,10 +2193,9 @@ def _refresh_target_visuals(target_dir: Path, sweep: Sweep) -> dict[str, Path]:
                 _plot_feature_importance(
                     class_top, stats, stem, top_k, class_labels or (label,)
                 )
-                for suffix in (".svg", ".pdf", ".png"):
-                    path = stem.with_suffix(suffix)
-                    if path.exists():
-                        outputs[path.stem + suffix.replace(".", "_")] = path
+                path = stem.with_suffix(".svg")
+                if path.exists():
+                    outputs[path.stem + "_svg"] = path
 
     render(
         target_dir / "top_features.parquet",
@@ -4753,7 +4754,7 @@ def _explain_one(
                     curve_stem,
                     max_panels=min(12, sweep.explainability.top_k),
                 )
-                method_outputs[f"ale_curves_{slug}"] = curve_stem.with_suffix(".png")
+                method_outputs[f"ale_curves_{slug}"] = curve_stem.with_suffix(".svg")
         method_frames.append(ale_frame)
         fold_path, fold_long = _write_fold_feature_importance(
             "ale", ale_frames, target_dir
@@ -4958,8 +4959,8 @@ def _explain_one(
             sweep.explainability.top_k,
             dataset.class_labels,
         )
-        class_figure_paths[f"figure_{slug}"] = imp_stem.with_suffix(".png")
-        class_figure_paths[f"feature_support_{slug}"] = support_stem.with_suffix(".png")
+        class_figure_paths[f"figure_{slug}"] = imp_stem.with_suffix(".svg")
+        class_figure_paths[f"feature_support_{slug}"] = support_stem.with_suffix(".svg")
     dist_all = (
         pd.concat(dist_frames, ignore_index=True) if dist_frames else pd.DataFrame()
     )
@@ -5643,17 +5644,16 @@ def _ensure_interaction_network_outputs(
         other_labels = [str(v) for i, v in enumerate(class_labels) if i != c]
         reference_label = other_labels[0] if len(other_labels) == 1 else "Other classes"
         slug = _class_slug(label)
-        for layout, suffix in (("default", ""), ("kamada_kawai", "_kamada_kawai")):
-            stem = figures_dir / f"interaction_network_current{suffix}__{slug}"
-            _plot_interaction_network(
-                class_table,
-                stats,
-                stem,
-                int(top_k),
-                (reference_label, label),
-                layout=layout,
-            )
-            outputs[stem.name] = stem.with_suffix(".png")
+        stem = figures_dir / f"interaction_network_current__{slug}"
+        _plot_interaction_network(
+            class_table,
+            stats,
+            stem,
+            int(top_k),
+            (reference_label, label),
+            layout="default",
+        )
+        outputs[stem.name] = stem.with_suffix(".svg")
     return outputs
 
 

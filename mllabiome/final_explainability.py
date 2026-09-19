@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .console import info
 from .storage import read_table, table_exists
 from . import explainability as _core
 from .final_models import build_final_models
@@ -100,7 +101,8 @@ def explain(sweep):
     mpma_e = models.get("MPMA-E")
 
     outputs = {}
-    for target in targets:
+    for target_no, target in enumerate(targets, start=1):
+        info(f"Explainability · target {target_no}/{len(targets)} · {target}")
         text = str(target)
         if text in {"best", "best_individual", "best_mpma", "mpma_b", "MPMA-B"}:
             out = _core._explain_one(

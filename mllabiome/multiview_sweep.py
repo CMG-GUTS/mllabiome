@@ -183,7 +183,7 @@ def build_view_candidates(
                 "integration": spec.integration.key,
                 "integration_n_components": ""
                 if spec.n_components is None
-                else int(spec.n_components),
+                else str(int(spec.n_components)),
             }
         )
     return specs, pd.DataFrame(rows)
@@ -369,7 +369,7 @@ def _meta_row(base: dict[str, Any], spec: CandidateSpec) -> dict[str, Any]:
             "integration": spec.integration.key,
             "integration_n_components": ""
             if spec.n_components is None
-            else int(spec.n_components),
+            else str(int(spec.n_components)),
         }
     )
     return base
@@ -1064,10 +1064,33 @@ def evaluate_view_sweep(sweep) -> dict[str, Path]:
     t0 = time.perf_counter()
     if prepared:
         payloads = [(fn, args, kwargs) for _, _, fn, args, kwargs in prepared]
-        for result in iter_parallel_tasks(payloads, execution):
-            _checkpoint_result(root, result)
-            for key in rows:
-                rows[key].extend(result.get(key, []))
+        completed_by_split: dict[str, int] = {}
+        with progress() as prog:
+            job_task = prog.add_task("View candidate/split jobs", total=len(prepared))
+            split_task = prog.add_task(
+                "Outer splits completed", total=max(1, len(split_counts))
+            )
+            for result in iter_parallel_tasks(payloads, execution):
+                _checkpoint_result(root, result)
+                for key in rows:
+                    rows[key].extend(result.get(key, []))
+                split_key = str(result.get("split_key", ""))
+                config_id = str(result.get("config_id", ""))
+                completed_by_split[split_key] = completed_by_split.get(split_key, 0) + 1
+                if completed_by_split[split_key] == split_counts.get(split_key, 0):
+                    prog.advance(split_task)
+                prog.update(
+                    job_task,
+                    advance=1,
+                    description=f"View candidate/split jobs · {split_key} · {config_id}",
+                )
+                prog.update(
+                    split_task,
+                    description=(
+                        f"Outer splits completed · {sum(1 for key, value in completed_by_split.items() if value == split_counts.get(key, 0))}"
+                        f"/{len(split_counts)}"
+                    ),
+                )
     _write_tables(
         root,
         rows["outer_metrics"],

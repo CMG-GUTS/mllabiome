@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import html
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from .configs_sweep import Sweep
-from .console import console, path_table, stage, success
+from .console import console, path_table, phase_progress, stage, success
 from .utils import dump_json_standard
 from .storage import read_table, write_table, table_exists, glob_tables
 from .metrics import compute_metrics
@@ -29,8 +28,11 @@ _METRICS = [
 
 _BASELINE_RANK_PRIORITY = ("strain", "species", "genus")
 
-_FAVICON_DATA_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACZElEQVR42u2bTWgTURSFz7w0jQvbRItm4uhCsSgUq6ilC0UUF7ULtYi6iyhFkVJBN0XciQhSFBX8hy4EbcWFLjShUlsFf4qgCHYh3RXcJKaNDIVYqHFcJcybmh8XQt68c3Z37mTI+d59Ny8w13Acx4HGqqt0w7e0rbTBVdFw2bxRqgJUN14tiL8C8JqvRLFWVY2PBQDcH1LVeDkQXk8SgMKNfjFeCoTbn/Drnq+2IsS/dk2/NUKh2+p7q0DosvqlPApoLgIgAAIgAAIgAAIgAAIgAAIgAAIgAA1VV6tfrMlqRT6fL8YjiUG0bdlYdZ4VQAAEQAD/rQlGzBYpHkkMYlEohP6rt/Hu/Uf8nJtD89rVOBY/jKPxQzAMA5npLK5cu4vE8BjS6QyWNi3B7p3bcK6vF9YKU+1fgefJUdy6dx/z87+K175MfMWZvvP49HkCPSfi2HewG9Mz2WI+lfqOh4+eYvTVW7x+8RimuVzdLXD95oBk3q0HQ0/Q2XVEMu9WKp3Bxf4bavcAIQQuXTiLqclxvEwOoaFhsZS37Vm0t23ChzfPMDU5jq69HVI+OTymNoAD+/fg5PE4IuFGbN3cih3b26V8IBDAwJ3LWNe8BpFwI06f6pbyM9kfsO1ZdQF0duySYjO6TIo3tKzHSitWjGNmdMEzcrmcugBingYWDAal2LLkLv/bdYQtyFF5C3gNexWqr68JszwIEQABEAABeGQ4juP4/fU4r9x+uQUIgAAIgAAIgAAIgAAIAHq8Nu/1KHT6D+BWwbOoRMjPqy8B0KkK3F45NsfBSY7Olp8e13Z4Whf9ATkE686w7OUiAAAAAElFTkSuQmCC"
+_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect x="1" y="1" width="62" height="62" rx="14" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/><text x="32" y="39" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="22" font-weight="700" fill="#0f172a">mll</text></svg>"""
 
+def _favicon_href() -> str:
+    payload = base64.b64encode(_FAVICON_SVG.encode("utf-8")).decode("ascii")
+    return f"data:image/svg+xml;base64,{payload}"
 
 def _single_rank_label(row: pd.Series | dict[str, Any]) -> str | None:
     res = str(row.get("resolution", "")).strip().lower()
@@ -60,15 +62,20 @@ def _pick_deepest_single_rank(sub: pd.DataFrame, *, sort_col: str) -> dict[str, 
     return {}
 
 
-def _rel(path: Path, start: Path) -> str:
-    try:
-        return os.path.relpath(path.resolve(), start.resolve()).replace(os.sep, "/")
-    except Exception:
-        return path.as_posix()
+def _asset_uri(path: Path) -> str:
+    suffix = path.suffix.lower()
+    mime = {".png": "image/png", ".pdf": "application/pdf"}.get(suffix, "application/octet-stream")
+    payload = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{payload}"
 
 
-def _normalise_svg_for_report(svg: str) -> str:
-    return svg
+def _inline_svg(path: Path) -> str:
+    text = path.read_text(encoding="utf-8")
+    start = text.find("<svg")
+    end = text.rfind("</svg>")
+    if start < 0 or end < 0:
+        return ""
+    return text[start : end + 6]
 
 
 def _fig(stem_or_path: Path, report_dir: Path, caption: str = "") -> str:
@@ -84,39 +91,14 @@ def _fig(stem_or_path: Path, report_dir: Path, caption: str = "") -> str:
     cap = f"<figcaption>{html.escape(caption)}</figcaption>" if caption else ""
     alt = html.escape(caption or path.stem)
     if path.suffix.lower() == ".svg":
-        try:
-            svg = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            svg = path.read_text(encoding="utf-8", errors="ignore")
-        svg = _normalise_svg_for_report(_strip_svg_preamble(svg))
+        svg = _inline_svg(path)
+        if not svg:
+            return ""
         return f'<figure><div class="embedded-svg" role="img" aria-label="{alt}">{svg}</div>{cap}</figure>'
+    uri = _asset_uri(path)
     if path.suffix.lower() == ".png":
-        data = base64.b64encode(path.read_bytes()).decode("ascii")
-        return f'<figure><img src="data:image/png;base64,{data}" alt="{alt}">{cap}</figure>'
-    return f'<figure><p><a href="{html.escape(_rel(path, report_dir))}">{alt}</a></p>{cap}</figure>'
-
-
-def _strip_svg_preamble(svg: str) -> str:
-    lines = svg.splitlines()
-    out: list[str] = []
-    in_doctype = False
-    for line in lines:
-        stripped = line.lstrip()
-        if stripped.startswith("<?xml"):
-            continue
-        if stripped.startswith("<!DOCTYPE"):
-            in_doctype = not stripped.rstrip().endswith(">")
-            continue
-        if in_doctype:
-            if stripped.rstrip().endswith(">"):
-                in_doctype = False
-            continue
-        out.append(line)
-    text = "\n".join(out).strip()
-    start = text.find("<svg")
-    if start > 0:
-        text = text[start:]
-    return text
+        return f'<figure><img src="{uri}" alt="{alt}" loading="lazy">{cap}</figure>'
+    return f'<figure><p><a href="{uri}">{alt}</a></p>{cap}</figure>'
 
 
 def _read_table(path: Path) -> pd.DataFrame:
@@ -239,7 +221,7 @@ def _agg_metrics(path: Path, prefix: str) -> pd.DataFrame:
     return g.reset_index()
 
 
-def _top_mpma_raw(root: Path, n: int = 10) -> pd.DataFrame:
+def _top_mpma_raw(root: Path, n: int = 5) -> pd.DataFrame:
     inner = _agg_metrics(root / "inner_results" / "inner_results.parquet", "inner")
     outer = _agg_metrics(root / "results" / "outer_results.parquet", "outer")
     if inner.empty and outer.empty:
@@ -777,217 +759,6 @@ def _procedure_table(sweep: Sweep, root: Path) -> pd.DataFrame:
     )
 
 
-def _latex_escape(s: Any) -> str:
-    s = str(s)
-    repl = {
-        "\\": r"\textbackslash{}",
-        "&": r"\&",
-        "%": r"\%",
-        "$": r"\$",
-        "#": r"\#",
-        "_": r"\_",
-        "{": r"\{",
-        "}": r"\}",
-        "~": r"\textasciitilde{}",
-        "^": r"\textasciicircum{}",
-    }
-    return "".join(repl.get(ch, ch) for ch in s)
-
-
-def _latex_tabular(
-    df: pd.DataFrame,
-    path: Path,
-    *,
-    caption: str,
-    label: str,
-    align: str | None = None,
-    already_latex_cols: set[str] | None = None,
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    already_latex_cols = already_latex_cols or set()
-    if df.empty:
-        path.write_text("% No rows available.\n", encoding="utf-8")
-        return
-    align = align or ("l" * len(df.columns))
-    lines = [
-        r"\begin{table}[htbp]",
-        r"\centering",
-        r"\ifdefined\captionsetup\captionsetup{justification=justified,singlelinecheck=false}\fi",
-        rf"\caption{{{caption}}}",
-        rf"\label{{{label}}}",
-        r"\scriptsize",
-        r"\renewcommand{\arraystretch}{1.10}",
-        r"\setlength{\tabcolsep}{2.5pt}",
-        rf"\begin{{tabular}}{{{align}}}",
-        r"\toprule",
-        " & ".join(rf"\textbf{{{_latex_escape(c)}}}" for c in df.columns) + r" \\",
-        r"\midrule",
-    ]
-    for _, row in df.iterrows():
-        cells = []
-        for c in df.columns:
-            val = row[c]
-            if pd.isna(val):
-                cells.append("")
-            elif c in already_latex_cols:
-                cells.append(str(val))
-            else:
-                cells.append(_latex_escape(val))
-        lines.append(" & ".join(cells) + r" \\")
-    lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}", ""]
-    path.write_text("\n".join(lines), encoding="utf-8")
-
-
-def _latex_task_name(title: str) -> str:
-    title = str(title).replace("MPMA sweep", "").strip()
-    parts = [x.strip() for x in title.split(" · ") if x.strip()]
-    return (
-        r"\\".join(_latex_escape(x) for x in parts) if parts else _latex_escape(title)
-    )
-
-
-def _strategy_latex_table(root: Path, path: Path, task_title: str) -> pd.DataFrame:
-    disp = _strategy_performance_display(root, html_mode=False)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if disp.empty:
-        path.write_text("% No performance rows available.\n", encoding="utf-8")
-        return disp
-    rows_by_strategy = {str(r["Strategy"]): r for _, r in disp.iterrows()}
-    strategies = ["MPMA-E", "MPMA-B", "AutoML", "Baseline RF", "SIAMCAT"]
-    metric_cols = ["ROC-AUC", "PR-AUC (AP)", "nMCC", "F1w", "Precision", "Recall"]
-
-    def _cell(strategy: str, metric: str) -> str:
-        row = rows_by_strategy.get(strategy)
-        if row is None:
-            return r"--"
-        return str(row.get(metric, r"--")) or r"--"
-
-    def _metric_block(metric: str) -> str:
-        vals = [_cell(s, metric) for s in strategies]
-        return r"\mllabiomemetricblock{" + "}{".join(vals) + "}"
-
-    task = _latex_task_name(task_title)
-    caption = (
-        r"Held-out performance for the configured task. "
-        r"MPMA-E = ensemble selected from inner-validation predictions; "
-        r"MPMA-B = single MPMA selected by inner-validation performance; "
-        r"AutoML = FLAML automated model search on raw abundances at the deepest available single rank; "
-        r"Baseline RF = 1000-tree random forest on arcsin-sqrt abundances at the deepest available single rank; "
-        r"SIAMCAT = SIAMCAT workflow on the complete original taxonomic lineage without a mllabiome abundance transformation. "
-        r"PR-AUC (AP) = average precision. "
-        r"F1\textsubscript{w} = weighted F1. "
-        r"Values are mean $\pm$ SD across outer evaluation units, followed by 95\% bootstrap confidence intervals for the mean. Bold = best mean per metric. All values are percentages."
-    )
-    lines = [
-        r"\begin{table}[htbp]",
-        r"\centering",
-        r"\ifdefined\captionsetup\captionsetup{justification=justified,singlelinecheck=false}\fi",
-        rf"\caption{{{caption}}}",
-        r"\label{tab:mllabiome-task-performance}",
-        "",
-        r"\scriptsize",
-        r"\renewcommand{\arraystretch}{1.10}",
-        r"\setlength{\tabcolsep}{1.2pt}",
-        "",
-        r"\makeatletter",
-        r"\@ifundefined{mllabiometaskcol}{\newlength{\mllabiometaskcol}}{}",
-        r"\@ifundefined{mllabiomestrategycol}{\newlength{\mllabiomestrategycol}}{}",
-        r"\@ifundefined{mllabiomemetriccol}{\newlength{\mllabiomemetriccol}}{}",
-        r"\makeatother",
-        "",
-        r"\setlength{\mllabiometaskcol}{3.00cm}",
-        r"\setlength{\mllabiomestrategycol}{1.75cm}",
-        r"\setlength{\mllabiomemetriccol}{%",
-        r"  \dimexpr(\linewidth-\mllabiometaskcol-\mllabiomestrategycol-14\tabcolsep)/6\relax",
-        r"}",
-        "",
-        r"\newcommand{\mllabiometaskblock}[1]{%",
-        r"  \parbox[c]{\mllabiometaskcol}{\raggedright #1}%",
-        r"}",
-        "",
-        r"\newcommand{\mllabiomestrategyblock}[5]{%",
-        r"  \begin{tabular}[t]{l}",
-        r"    #1\\",
-        r"    #2\\",
-        r"    #3\\",
-        r"    #4\\",
-        r"    #5",
-        r"  \end{tabular}%",
-        r"}",
-        "",
-        r"\newcommand{\mllabiomemetricblock}[5]{%",
-        r"  \makebox[\mllabiomemetriccol][c]{%",
-        r"    \begin{tabular}[t]{c}",
-        r"      #1\\",
-        r"      #2\\",
-        r"      #3\\",
-        r"      #4\\",
-        r"      #5",
-        r"    \end{tabular}%",
-        r"  }%",
-        r"}",
-        "",
-        r"\begin{tabular}{p{\mllabiometaskcol}p{\mllabiomestrategycol}p{\mllabiomemetriccol}p{\mllabiomemetriccol}p{\mllabiomemetriccol}p{\mllabiomemetriccol}p{\mllabiomemetriccol}p{\mllabiomemetriccol}}",
-        "",
-        r"\toprule",
-        r"\multicolumn{1}{l}{\textbf{Task}} &",
-        r"\multicolumn{1}{l}{\textbf{Strategy}} &",
-        r"\multicolumn{1}{c}{\textbf{ROC-AUC}} &",
-        r"\multicolumn{1}{c}{\textbf{PR-AUC}} &",
-        r"\multicolumn{1}{c}{\textbf{nMCC}} &",
-        r"\multicolumn{1}{c}{\textbf{F1\textsubscript{w}}} &",
-        r"\multicolumn{1}{c}{\textbf{Precision}} &",
-        r"\multicolumn{1}{c}{\textbf{Recall}} \\",
-        r"\midrule",
-        "",
-        rf"\mllabiometaskblock{{{task}}}",
-        r"&",
-        r"\mllabiomestrategyblock{\mbox{MPMA-E}}{\mbox{MPMA-B}}{AutoML}{\mbox{Baseline RF}}{SIAMCAT}",
-        r"&",
-        _metric_block("ROC-AUC"),
-        r"&",
-        _metric_block("PR-AUC (AP)"),
-        r"&",
-        _metric_block("nMCC"),
-        r"&",
-        _metric_block("F1w"),
-        r"&",
-        _metric_block("Precision"),
-        r"&",
-        _metric_block("Recall") + r" \\",
-        "",
-        r"\bottomrule",
-        r"\end{tabular}",
-        r"\end{table}",
-        "",
-    ]
-    path.write_text("\n".join(lines), encoding="utf-8")
-    return disp
-
-
-def _top10_latex_table(root: Path, path: Path, task_title: str) -> pd.DataFrame:
-    raw = _top_mpma_raw(root, 10)
-    disp = _top_mpma_display(raw, html_mode=False)
-    latex_cols = {
-        c for c in disp.columns if c.startswith("Inner") or c.startswith("Outer")
-    }
-    caption = (
-        f"Top 10 {task_title} MPMA configurations ranked by inner-validation nMCC. "
-        "Configurations are ranked by mean inner-validation nMCC; outer-fold metrics summarize held-out performance. "
-        "All metric values are percentages and reported as mean $\\pm$ standard deviation."
-    )
-    align = "r" + "l" * max(0, len(disp.columns) - 1)
-    _latex_tabular(
-        disp,
-        path,
-        caption=caption,
-        label="tab:mllabiome-top10-mpma",
-        align=align[: len(disp.columns)],
-        already_latex_cols=latex_cols,
-    )
-    return disp
-
-
 def _html_inline(value: Any) -> str:
     text = str(value)
     replacements = {
@@ -1324,6 +1095,77 @@ def _xai_stability_table(
     return pd.DataFrame(rows)
 
 
+def _stability_compact_html(table: pd.DataFrame, max_features: int = 5) -> str:
+    if table.empty:
+        return ""
+    feature_col = next(
+        (
+            c
+            for c in ("Feature", "Model coordinate", "Taxon", "feature")
+            if c in table.columns
+        ),
+        None,
+    )
+    if feature_col is None:
+        excluded = {
+            "Method",
+            "Rank",
+            "Importance mean",
+            "Importance SD",
+            "Importance median",
+            "Signed importance mean",
+            "Median rank",
+            "Rank IQR",
+            "Top-k frequency",
+            "Fold coverage",
+            "Sign consistency",
+            "Scoring",
+        }
+        feature_col = next((c for c in table.columns if c not in excluded), None)
+    if feature_col is None:
+        return ""
+    groups = (
+        table.groupby("Method", sort=False, dropna=False)
+        if "Method" in table.columns
+        else [("Stability", table)]
+    )
+    parts = ['<div class="stability-summary">']
+    for method, group in groups:
+        parts.append('<div class="stability-method">')
+        parts.append(f'<div class="stability-method-name">{html.escape(str(method))}</div>')
+        parts.append('<div class="stability-items">')
+        for _, row in group.head(int(max_features)).iterrows():
+            feature = html.escape(_short_feature_label(row.get(feature_col, "")))
+            details: list[str] = []
+            topk = _safe_float(row.get("Top-k frequency", np.nan))
+            coverage = _safe_float(row.get("Fold coverage", np.nan))
+            rank_iqr = _safe_float(row.get("Rank IQR", np.nan))
+            imp = _safe_float(row.get("Importance mean", np.nan))
+            imp_sd = _safe_float(row.get("Importance SD", np.nan))
+            sign = _safe_float(row.get("Sign consistency", np.nan))
+            if np.isfinite(topk):
+                details.append(f"top-k {100.0 * topk:.0f}%")
+            elif np.isfinite(coverage):
+                details.append(f"coverage {100.0 * coverage:.0f}%")
+            if np.isfinite(rank_iqr):
+                details.append(f"rank IQR {rank_iqr:.2f}")
+            if np.isfinite(imp):
+                if np.isfinite(imp_sd):
+                    details.append(f"importance {imp:.4g} ± {imp_sd:.3g}")
+                else:
+                    details.append(f"importance {imp:.4g}")
+            if np.isfinite(sign):
+                details.append(f"sign {100.0 * sign:.0f}%")
+            detail = html.escape(" · ".join(details))
+            parts.append(
+                f'<div class="stability-item"><span class="stability-feature">{feature}</span>'
+                f'<span class="stability-detail">{detail}</span></div>'
+            )
+        parts.append("</div></div>")
+    parts.append("</div>")
+    return "".join(parts)
+
+
 def _xai_figure_for_class(
     target_dir: Path, stem: str, class_label: str, report_dir: Path, caption: str
 ) -> str:
@@ -1485,10 +1327,6 @@ def _explainability_report_blocks(
                 interaction_figs_class = []
                 for stem, caption in [
                     ("interaction_network_current", "2D ALE interaction network"),
-                    (
-                        "interaction_network_current_kamada_kawai",
-                        "2D ALE interaction network (Kamada-Kawai)",
-                    ),
                 ]:
                     block = _xai_figure_for_class(
                         target_dir,
@@ -1509,10 +1347,6 @@ def _explainability_report_blocks(
         interaction_figs = []
         for stem, caption in [
             ("interaction_network_current", "2D ALE interaction network"),
-            (
-                "interaction_network_current_kamada_kawai",
-                "2D ALE interaction network (Kamada-Kawai)",
-            ),
         ]:
             block = _fig(
                 target_dir / "figures" / stem, report_dir, f"{label}: {caption}"
@@ -1527,25 +1361,24 @@ def _explainability_report_blocks(
             parts.extend(interaction_figs)
         parts.append("<h4>Cross-fold stability</h4>")
         parts.append(
-            "<p>Outer-fold feature stability describes variability of global feature conclusions across outer-fold refits. These are descriptive cross-fitted stability summaries, not confidence intervals from independent folds.</p>"
+            "<p>Outer-fold feature stability is summarized compactly for the five leading features per method. These are descriptive cross-fitted stability summaries, not confidence intervals from independent folds.</p>"
         )
         for class_index, class_label in classes:
-            class_parts: list[str] = []
+            stability_frames: list[pd.DataFrame] = []
             for method in methods:
                 if method == "interactions":
                     continue
                 stability = _xai_stability_table(
-                    target_dir, method, class_index, top_n=top_n
+                    target_dir, method, class_index, top_n=5
                 )
                 if stability.empty:
                     continue
-                class_parts.append(
-                    f"<h6>{html.escape(_xai_method_display(method))}</h6>"
-                )
-                class_parts.append(_html_table(stability))
-            if class_parts:
+                stability.insert(0, "Method", _xai_method_display(method))
+                stability_frames.append(stability)
+            if stability_frames:
+                stability_table = pd.concat(stability_frames, ignore_index=True)
                 parts.append(
-                    f'<section class="xai-class"><h5>{html.escape(class_label)}</h5>{"".join(class_parts)}</section>'
+                    f'<section class="xai-class"><h5>{html.escape(class_label)}</h5>{_stability_compact_html(stability_table, max_features=5)}</section>'
                 )
         parts.append("<h4>Local explanations</h4>")
         if local_mode == "none":
@@ -1739,14 +1572,14 @@ def _print_report_summary(
     root: Path,
     procedure: pd.DataFrame,
     strategy_html: pd.DataFrame,
-    top10_html: pd.DataFrame,
+    top_mpmas: pd.DataFrame,
     ensemble_summary: pd.DataFrame,
     ensemble_members: pd.DataFrame,
 ) -> None:
     stage("Run summary", str(root))
     _terminal_table("Evaluation procedure", _compact_procedure_for_terminal(procedure))
     _terminal_table("Task performance", strategy_html)
-    if not top10_html.empty:
+    if not top_mpmas.empty:
         cols = [
             c
             for c in [
@@ -1759,12 +1592,12 @@ def _print_report_summary(
                 "Inner ROC-AUC",
                 "Outer ROC-AUC",
             ]
-            if c in top10_html.columns
+            if c in top_mpmas.columns
         ]
         _terminal_table(
             "Top MPMA-B configurations",
-            top10_html[cols] if cols else top10_html,
-            max_rows=10,
+            top_mpmas[cols] if cols else top_mpmas,
+            max_rows=5,
         )
     _terminal_table("Final MPMA-E specification", ensemble_summary)
     if not ensemble_members.empty:
@@ -1784,12 +1617,6 @@ def _print_report_summary(
             "Final MPMA-E members", ensemble_members[cols] if cols else ensemble_members
         )
     _feature_support_terminal(root, top_n=8)
-
-
-def _tex_link(path: Path, report_dir: Path, label: str) -> str:
-    if not path.exists():
-        return ""
-    return f'<p><a href="{html.escape(_rel(path, report_dir))}">{html.escape(label)}</a></p>'
 
 
 def _procedure_grid_html(procedure: pd.DataFrame) -> str:
@@ -1838,7 +1665,6 @@ def _publication_layout_css() -> str:
 
 def _report_css() -> str:
     return """
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 :root {
   --ink:#0f172a; --mid:#64748b; --dim:#94a3b8; --track:#e2e8f0; --soft:#f8fafc;
   --bg:#ffffff; --blue:#2563eb; --blue-hover:#0ea5e9; --blue-soft:#eff6ff; --blue-hover-soft:#f0f9ff;
@@ -1848,7 +1674,7 @@ def _report_css() -> str:
 *, *::before, *::after { box-sizing:border-box; }
 html {
   background:var(--bg); color:var(--ink);
-  font-family:'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
   -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
   letter-spacing:-0.01em; scroll-behavior:smooth;
 }
@@ -1885,9 +1711,7 @@ h6 { font-size:12px; font-weight:650; margin:16px 0 7px; color:var(--mid); }
 p, li { font-size:var(--font-body); color:var(--mid); line-height:1.56; }
 .report-path { margin-top:0; }
 figure { margin:18px 0 28px; overflow-x:auto; }
-figure img { max-width:100%; width:auto; height:auto; display:block; }
-.embedded-svg { overflow-x:auto; }
-.embedded-svg svg { max-width:100%; height:auto; display:block; font-family:'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important; }
+figure img, .embedded-svg svg { max-width:100%; width:auto; height:auto; display:block; }
 figcaption { font-size:var(--font-small); color:var(--mid); margin-top:7px; }
 .compare-block { margin:17px 0 32px; overflow-x:auto; padding-bottom:2px; }
 .compare-block > h3 { font-size:13px; margin:18px 0 11px; color:var(--ink); }
@@ -1896,14 +1720,21 @@ figcaption { font-size:var(--font-small); color:var(--mid); margin-top:7px; }
 .compare-cell h3 { font-size:12px; color:var(--mid); margin:0 0 7px; font-weight:700; }
 .compare-cell figure { margin:0; }
 .compare-cell figcaption { display:none; }
-.compare-cell .embedded-svg svg { min-width:430px; }
+.compare-cell img, .compare-cell .embedded-svg svg { min-width:430px; }
 .missing-figure { border:1px solid var(--track); color:var(--mid); font-size:12px; padding:36px 12px; text-align:center; background:#fff; border-radius:10px; }
 
+.stability-summary { margin:10px 0 24px; border-top:1px solid var(--track); }
+.stability-method { display:grid; grid-template-columns:minmax(90px, 130px) 1fr; gap:12px; padding:10px 0; border-bottom:1px solid var(--track); }
+.stability-method-name { font-size:var(--font-small); font-weight:750; color:var(--ink); }
+.stability-items { display:flex; flex-wrap:wrap; gap:7px 12px; }
+.stability-item { min-width:180px; max-width:300px; }
+.stability-feature { display:block; font-size:var(--font-small); font-weight:650; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.stability-detail { display:block; margin-top:1px; font-size:11px; color:var(--dim); }
 .table-wrap { overflow-x:auto; margin:12px 0 24px; }
 table { border-collapse:collapse; width:100%; font-size:var(--font-table); }
 th, td { border-bottom:1px solid var(--track); padding:7px 7px; text-align:left; vertical-align:top; line-height:1.38; }
 th { color:var(--mid); font-weight:700; background:#fff; }
-code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
+code { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
 .report-footer { border-top:1px solid var(--track); margin-top:42px; padding-top:16px; color:var(--dim); font-size:12px; }
 @media (max-width: 860px) {
   .report-nav-inner { padding:0 16px; }
@@ -1912,7 +1743,8 @@ code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consol
   .report-links a { padding:7px 6px; }
   h1 { font-size:22px; }
   .compare-grid { grid-template-columns:repeat(var(--compare-columns), minmax(360px, 1fr)); }
-  .compare-cell .embedded-svg svg { min-width:360px; }
+  .compare-cell img, .compare-cell .embedded-svg svg { min-width:360px; }
+  .stability-method { grid-template-columns:1fr; gap:5px; }
 }
 """ + _publication_layout_css()
 
@@ -1925,81 +1757,83 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
     tables_dir.mkdir(exist_ok=True)
     stage("Report", str(report_dir))
 
-    procedure = _procedure_table(sweep, root)
-    top10_html = _top_mpma_display(_top_mpma_raw(root, 10), html_mode=True)
-    if getattr(sweep, "uses_modalities", False) and not top10_html.empty:
-        top10_html = top10_html.rename(
-            columns={
-                "Resolution": "Representation",
-                "Count transformation": "Transformation",
-            }
+    with phase_progress("Report analysis", 4) as phase:
+        phase.phase("procedure and rankings")
+        procedure = _procedure_table(sweep, root)
+        top_mpmas = _top_mpma_display(_top_mpma_raw(root, 5), html_mode=True)
+        if getattr(sweep, "uses_modalities", False) and not top_mpmas.empty:
+            top_mpmas = top_mpmas.rename(
+                columns={
+                    "Resolution": "Representation",
+                    "Count transformation": "Transformation",
+                }
+            )
+        strategy_rows = _strategy_rows(root)
+        phase.phase("compute accounting")
+        compute_accounting = run_compute_accounting(root, sweep, strategy_rows)
+        compute_display = compute_accounting.get("display", pd.DataFrame())
+        compute_environment = compute_accounting.get("environment", {})
+        phase.phase("statistics")
+        statistics = run_report_statistics(
+            root,
+            sweep.evaluation.protocol,
+            strategy_rows,
+            n_bootstrap=2000,
+            random_state=sweep.evaluation.random_state,
         )
-    strategy_rows = _strategy_rows(root)
-    compute_accounting = run_compute_accounting(root, sweep, strategy_rows)
-    compute_display = compute_accounting.get("display", pd.DataFrame())
-    compute_environment = compute_accounting.get("environment", {})
-    statistics = run_report_statistics(
-        root,
-        sweep.evaluation.protocol,
-        strategy_rows,
-        n_bootstrap=2000,
-        random_state=sweep.evaluation.random_state,
-    )
-    _strategy_latex_table(
-        root, tables_dir / "task_strategy_performance.tex", sweep.title
-    )
-    strategy_html = _strategy_performance_display(root, html_mode=True)
-    pairwise = statistics.get("pairwise", pd.DataFrame())
-    primary_pairwise = (
-        pairwise[
-            pairwise["metric"].astype(str).eq(str(sweep.evaluation.optimize_metric))
-        ].copy()
-        if not pairwise.empty and "metric" in pairwise.columns
-        else pd.DataFrame()
-    )
-    if not primary_pairwise.empty:
-        primary_pairwise = primary_pairwise[
-            [
-                c
-                for c in [
-                    "strategy_a",
-                    "strategy_b",
-                    "difference_a_minus_b",
-                    "difference_ci_low",
-                    "difference_ci_high",
-                    "test",
-                    "p_value",
-                    "p_holm",
-                    "significant_holm_0_05",
+        strategy_html = _strategy_performance_display(root, html_mode=True)
+        pairwise = statistics.get("pairwise", pd.DataFrame())
+        primary_pairwise = (
+            pairwise[
+                pairwise["metric"].astype(str).eq(str(sweep.evaluation.optimize_metric))
+            ].copy()
+            if not pairwise.empty and "metric" in pairwise.columns
+            else pd.DataFrame()
+        )
+        if not primary_pairwise.empty:
+            primary_pairwise = primary_pairwise[
+                [
+                    c
+                    for c in [
+                        "strategy_a",
+                        "strategy_b",
+                        "difference_a_minus_b",
+                        "difference_ci_low",
+                        "difference_ci_high",
+                        "test",
+                        "p_value",
+                        "p_holm",
+                        "significant_holm_0_05",
+                    ]
+                    if c in primary_pairwise.columns
                 ]
-                if c in primary_pairwise.columns
-            ]
-        ].copy()
-        primary_pairwise = primary_pairwise.rename(
-            columns={
-                "strategy_a": "Strategy A",
-                "strategy_b": "Strategy B",
-                "difference_a_minus_b": "Difference A-B",
-                "difference_ci_low": "95% CI low",
-                "difference_ci_high": "95% CI high",
-                "test": "Test",
-                "p_value": "p",
-                "p_holm": "Holm p",
-                "significant_holm_0_05": "Holm p<0.05",
-            }
-        )
-        for c in ("Difference A-B", "95% CI low", "95% CI high"):
-            if c in primary_pairwise.columns:
-                primary_pairwise[c] = pd.to_numeric(
-                    primary_pairwise[c], errors="coerce"
-                ).map(lambda x: f"{x:.4f}" if np.isfinite(x) else "")
-        for c in ("p", "Holm p"):
-            if c in primary_pairwise.columns:
-                primary_pairwise[c] = pd.to_numeric(
-                    primary_pairwise[c], errors="coerce"
-                ).map(lambda x: f"{x:.4g}" if np.isfinite(x) else "")
-    ensemble_summary = _ensemble_summary_table(root)
-    ensemble_members = _ensemble_members_table(root)
+            ].copy()
+            primary_pairwise = primary_pairwise.rename(
+                columns={
+                    "strategy_a": "Strategy A",
+                    "strategy_b": "Strategy B",
+                    "difference_a_minus_b": "Difference A-B",
+                    "difference_ci_low": "95% CI low",
+                    "difference_ci_high": "95% CI high",
+                    "test": "Test",
+                    "p_value": "p",
+                    "p_holm": "Holm p",
+                    "significant_holm_0_05": "Holm p<0.05",
+                }
+            )
+            for c in ("Difference A-B", "95% CI low", "95% CI high"):
+                if c in primary_pairwise.columns:
+                    primary_pairwise[c] = pd.to_numeric(
+                        primary_pairwise[c], errors="coerce"
+                    ).map(lambda x: f"{x:.4f}" if np.isfinite(x) else "")
+            for c in ("p", "Holm p"):
+                if c in primary_pairwise.columns:
+                    primary_pairwise[c] = pd.to_numeric(
+                        primary_pairwise[c], errors="coerce"
+                    ).map(lambda x: f"{x:.4g}" if np.isfinite(x) else "")
+        phase.phase("ensemble summaries")
+        ensemble_summary = _ensemble_summary_table(root)
+        ensemble_members = _ensemble_members_table(root)
 
     cpu_model = str(compute_environment.get("cpu_model", "")).strip()
     logical_cpus = compute_environment.get("logical_cpus", "")
@@ -2029,42 +1863,46 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
     ]
     hardware_text = " · ".join(hardware_parts)
 
-    write_table(tables_dir / "evaluation_procedure.parquet", procedure)
-    write_table(tables_dir / "top10_mpma_inner_outer_performance.parquet", top10_html)
-    write_table(tables_dir / "task_strategy_performance.parquet", strategy_html)
-    write_table(
-        tables_dir / "strategy_pairwise_primary_metric.parquet", primary_pairwise
-    )
-    write_table(tables_dir / "strategy_compute_display.parquet", compute_display)
-    write_table(tables_dir / "mpma_e_selection.parquet", ensemble_summary)
-    write_table(tables_dir / "mpma_e_members.parquet", ensemble_members)
-
-    figs = []
-    figs.append(
-        _fig(
-            root / "figures" / "representation_impact",
-            report_dir,
-            "MPDR representation impact overview",
+    with phase_progress("Report outputs", 3) as phase:
+        phase.phase("writing report tables")
+        write_table(tables_dir / "evaluation_procedure.parquet", procedure)
+        write_table(tables_dir / "top5_mpma_inner_outer_performance.parquet", top_mpmas)
+        write_table(tables_dir / "task_strategy_performance.parquet", strategy_html)
+        write_table(
+            tables_dir / "strategy_pairwise_primary_metric.parquet", primary_pairwise
         )
-    )
-    figs.append(
-        _fig(root / "figures" / "mpma_e", report_dir, "Selected MPMA-E schematic")
-    )
-    from .explainability import refresh_explainability_visuals
+        write_table(tables_dir / "strategy_compute_display.parquet", compute_display)
+        write_table(tables_dir / "mpma_e_selection.parquet", ensemble_summary)
+        write_table(tables_dir / "mpma_e_members.parquet", ensemble_members)
 
-    refresh_explainability_visuals(root, sweep)
-    explainability_html, explainability_count = _explainability_report_blocks(
-        root, report_dir, top_n=int(getattr(sweep.explainability, "top_k", 15))
-    )
+        phase.phase("global figures")
+        figs = []
+        figs.append(
+            _fig(
+                root / "figures" / "representation_impact",
+                report_dir,
+                "MPDR representation impact overview",
+            )
+        )
+        figs.append(
+            _fig(root / "figures" / "mpma_e", report_dir, "Selected MPMA-E schematic")
+        )
+        phase.phase("explainability visuals")
+        from .explainability import refresh_explainability_visuals
+
+        refresh_explainability_visuals(root, sweep)
+        explainability_html, explainability_count = _explainability_report_blocks(
+            root, report_dir, top_n=int(getattr(sweep.explainability, "top_k", 15))
+        )
 
     css = _report_css()
     top_metric_cols = {
-        c for c in top10_html.columns if c.startswith("Inner") or c.startswith("Outer")
+        c for c in top_mpmas.columns if c.startswith("Inner") or c.startswith("Outer")
     }
     strat_metric_cols = {c for c in strategy_html.columns if c != "Strategy"}
     html_text = f"""<!doctype html>
 <html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
-<title>mllabiome report</title><link rel="icon" type="image/png" sizes="64x64" href="{_FAVICON_DATA_URI}"><link rel="shortcut icon" type="image/png" href="{_FAVICON_DATA_URI}"><style>{css}</style></head>
+<title>mllabiome report</title><link rel="icon" type="image/svg+xml" href="{_favicon_href()}"><style>{css}</style></head>
 <body>
 <header class="report-nav"><div class="report-nav-inner"><a class="brand" href="#top" aria-label="mllabiome report"><span class="brand-mark">mll</span><span>mllabiome</span></a><nav class="report-links" aria-label="Report navigation">
 <a href="#procedure">Evaluation</a>
@@ -2086,12 +1924,11 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
 {_html_table(ensemble_summary)}
 {_html_table(ensemble_members)}
 </section>
-{_tex_link(tables_dir / "task_strategy_performance.tex", report_dir, "task_strategy_performance.tex")}
 <h3 id="statistics">Statistical comparisons</h3>
 <p>Pairwise differences are Strategy A minus Strategy B. The table shows the configured primary metric; complete pairwise results are available in strategy_pairwise_tests.parquet. Holm adjustment is applied across strategy pairs within each metric.</p>
 {_html_table(primary_pairwise)}
-<h2 id="top-mpmas">Top 10 MPMA-B configurations</h2>
-{_html_table(top10_html, raw_html_cols=top_metric_cols)}
+<h2 id="top-mpmas">Top 5 MPMA-B configurations</h2>
+{_html_table(top_mpmas, raw_html_cols=top_metric_cols)}
 
 <h2 id="explainability-comparison">Explainability</h2>
 {explainability_html if explainability_html else "<p>No explainability artefacts are available yet.</p>"}
@@ -2120,15 +1957,14 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
         root,
         procedure,
         strategy_html,
-        top10_html,
+        top_mpmas,
         ensemble_summary,
         ensemble_members,
     )
     success("Report completed")
     outputs = {
         "html_report": report_dir / "index.html",
-        "task_performance_latex": tables_dir / "task_strategy_performance.tex",
-        "top10_mpmas": tables_dir / "top10_mpma_inner_outer_performance.parquet",
+        "top5_mpmas": tables_dir / "top5_mpma_inner_outer_performance.parquet",
         "mpma_e_selection": tables_dir / "mpma_e_selection.parquet",
         "mpma_e_members": tables_dir / "mpma_e_members.parquet",
         "strategy_outer_unit_metrics": statistics.get(

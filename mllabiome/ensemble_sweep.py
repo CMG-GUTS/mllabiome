@@ -1358,9 +1358,6 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
     write_table(ensemble_dir / "final_model_comparison.parquet", comparison)
     resource_path = ensemble_dir / "mpma_e_selection_resources.json"
     dump_json_standard(resource_tracker.stop(), resource_path)
-    stale_candidate_plot = ensemble_dir / "ensemble_candidates.png"
-    if stale_candidate_plot.exists():
-        stale_candidate_plot.unlink()
     if getattr(sweep, "uses_modalities", False):
         mpma_e_outputs = {}
     else:

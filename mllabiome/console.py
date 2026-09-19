@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -57,15 +58,20 @@ def summary_table(
 def path_table(
     title: str, rows: Mapping[str, object] | Sequence[tuple[str, object]]
 ) -> None:
-    table = Table(title=title, show_lines=False)
-    table.add_column("Output", style="bold")
-    table.add_column("Path", overflow="fold")
     items = rows.items() if isinstance(rows, Mapping) else rows
-    for key, value in items:
+    directories = []
+    for _, value in items:
         if value is None:
             continue
-        table.add_row(str(key), str(value))
-    console.print(table)
+        path = Path(value)
+        directories.append(path if path.suffix == "" else path.parent)
+    if not directories:
+        return
+    try:
+        main = Path(os.path.commonpath([str(path) for path in directories]))
+    except ValueError:
+        main = directories[0]
+    console.print(f"[bold]{title}[/bold] · {main}")
 
 
 def progress() -> Progress:
@@ -79,6 +85,50 @@ def progress() -> Progress:
         console=console,
         transient=False,
     )
+
+
+class PhaseProgress:
+    def __init__(self, title: str, total: int):
+        self.title = str(title)
+        self.total = max(1, int(total))
+        self._context = None
+        self._progress = None
+        self._task = None
+        self._completed = 0
+        self._active = False
+
+    def __enter__(self):
+        self._context = progress()
+        self._progress = self._context.__enter__()
+        self._task = self._progress.add_task(self.title, total=self.total)
+        return self
+
+    def phase(self, label: str) -> None:
+        if self._progress is None or self._task is None:
+            return
+        if self._active:
+            self._completed = min(self.total, self._completed + 1)
+        self._active = True
+        self._progress.update(
+            self._task,
+            completed=self._completed,
+            description=f"{self.title} · {label}",
+        )
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._progress is not None and self._task is not None and exc is None:
+            self._progress.update(
+                self._task,
+                completed=self.total,
+                description=f"{self.title} · complete",
+            )
+        if self._context is not None:
+            return self._context.__exit__(exc_type, exc, tb)
+        return False
+
+
+def phase_progress(title: str, total: int) -> PhaseProgress:
+    return PhaseProgress(title, total)
 
 
 def _format_value(value: object) -> str:

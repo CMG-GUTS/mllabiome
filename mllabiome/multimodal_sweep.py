@@ -188,7 +188,7 @@ def build_modality_candidates(
                 "integration": spec.integration.key,
                 "integration_n_components": ""
                 if spec.n_components is None
-                else int(spec.n_components),
+                else str(int(spec.n_components)),
             }
         )
     return specs, pd.DataFrame(rows)
@@ -382,7 +382,7 @@ def _meta_row(base: dict[str, Any], spec: CandidateSpec) -> dict[str, Any]:
             "integration": spec.integration.key,
             "integration_n_components": ""
             if spec.n_components is None
-            else int(spec.n_components),
+            else str(int(spec.n_components)),
         }
     )
     return base
@@ -1554,7 +1554,7 @@ def fit_modality_candidate_oof_for_explainability(sweep, row):
     }
 
 
-def fit_modality_regression_candidate_folds(sweep, row):
+def fit_modality_regression_candidate_folds(sweep, row, progress_callback=None):
     from .configs_sweep import (
         _groups_from_metadata,
         _regression_outer_splits,
@@ -1574,7 +1574,7 @@ def fit_modality_regression_candidate_folds(sweep, row):
         _learner_factory(item, task="regression") for item in sweep.learners
     )
     folds = []
-    for split in splits:
+    for fold_no, split in enumerate(splits, start=1):
         train_idx = np.asarray(split["train_idx"], dtype=int)
         test_idx = np.asarray(split["test_idx"], dtype=int)
         details = _prepare_candidate_pair_details(
@@ -1629,4 +1629,6 @@ def fit_modality_regression_candidate_folds(sweep, row):
                 "integration": spec.integration.key,
             }
         )
+        if progress_callback is not None:
+            progress_callback(fold_no, len(splits), str(split["split_key"]))
     return dataset, folds

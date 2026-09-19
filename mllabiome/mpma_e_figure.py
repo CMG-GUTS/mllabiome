@@ -1292,8 +1292,6 @@ def render_figure(
 
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_prefix.with_suffix(".svg"))
-    fig.savefig(out_prefix.with_suffix(".pdf"))
-    fig.savefig(out_prefix.with_suffix(".png"), dpi=300)
     plt.close(fig)
 
 
@@ -1415,8 +1413,6 @@ def write_single_task_mpma_e_figure(
         )
     return {
         "mpma_e_svg": out_prefix.with_suffix(".svg"),
-        "mpma_e_pdf": out_prefix.with_suffix(".pdf"),
-        "mpma_e_png": out_prefix.with_suffix(".png"),
         "mpma_e_members": members_table,
         "mpma_e_diagnostics": diagnostics_json,
     }

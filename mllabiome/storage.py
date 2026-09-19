@@ -99,12 +99,48 @@ def read_table(path: Path, *, dtype=None) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def _coerce_mixed_text_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    out = frame
+    for column in frame.select_dtypes(include=["object"]).columns:
+        values = frame[column].dropna()
+        if values.empty:
+            continue
+        text = values.map(lambda value: isinstance(value, str))
+        if not bool(text.any()) or bool(text.all()):
+            continue
+        if out is frame:
+            out = frame.copy()
+        out[column] = frame[column].astype("string")
+    return out
+
+
 def write_table(path: Path, frame: pd.DataFrame) -> Path:
     require_parquet_engine()
     parquet = _canonical_path(Path(path))
     parquet.parent.mkdir(parents=True, exist_ok=True)
     tmp = parquet.with_name(parquet.stem + ".tmp.parquet")
-    frame.to_parquet(tmp, index=False, compression="zstd")
+    if tmp.exists():
+        tmp.unlink()
+    try:
+        frame.to_parquet(tmp, index=False, compression="zstd")
+    except Exception as exc:
+        if tmp.exists():
+            tmp.unlink()
+        if type(exc).__name__ not in {
+            "ArrowInvalid",
+            "ArrowNotImplementedError",
+            "ArrowTypeError",
+        }:
+            raise
+        compatible = _coerce_mixed_text_columns(frame)
+        if compatible is frame:
+            raise
+        try:
+            compatible.to_parquet(tmp, index=False, compression="zstd")
+        except Exception:
+            if tmp.exists():
+                tmp.unlink()
+            raise
     tmp.replace(parquet)
     return parquet
 
@@ -121,7 +157,9 @@ def table_exists(path: Path) -> bool:
 
 def remove_table(path: Path) -> None:
     path = Path(path)
-    for candidate in (_canonical_path(path), *_legacy_paths(path)):
+    parquet = _canonical_path(path)
+    tmp = parquet.with_name(parquet.stem + ".tmp.parquet")
+    for candidate in (parquet, tmp, *_legacy_paths(path)):
         if candidate.exists():
             candidate.unlink()
 
@@ -153,7 +191,9 @@ def glob_tables(directory: Path, stem_pattern: str) -> list[Path]:
     return [chosen[key] for key in sorted(chosen)]
 
 
-def export_tsv_tree(root: Path, output_dir: Path | None = None) -> dict[str, object]:
+def export_tsv_tree(
+    root: Path, output_dir: Path | None = None, progress_callback=None
+) -> dict[str, object]:
     require_parquet_engine()
     root = Path(root)
     output_dir = (
@@ -161,9 +201,16 @@ def export_tsv_tree(root: Path, output_dir: Path | None = None) -> dict[str, obj
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     exported = []
-    for source in sorted(root.rglob("*.parquet")):
-        if output_dir == source or output_dir in source.parents:
-            continue
+    sources = [
+        source
+        for source in sorted(root.rglob("*.parquet"))
+        if not source.name.endswith(".tmp.parquet")
+        and output_dir != source
+        and output_dir not in source.parents
+    ]
+    total = len(sources) + int((root / "configs.db").exists())
+    completed = 0
+    for source in sources:
         rel = source.relative_to(root).with_suffix(".tsv")
         target = output_dir / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -179,6 +226,9 @@ def export_tsv_tree(root: Path, output_dir: Path | None = None) -> dict[str, obj
                 "tsv_bytes": int(target.stat().st_size),
             }
         )
+        completed += 1
+        if progress_callback is not None:
+            progress_callback(completed, max(1, total), str(rel))
     db_path = root / "configs.db"
     if db_path.exists():
         conn = sqlite3.connect(db_path)
@@ -203,6 +253,9 @@ def export_tsv_tree(root: Path, output_dir: Path | None = None) -> dict[str, obj
                         "tsv_bytes": int(target.stat().st_size),
                     }
                 )
+                completed += 1
+                if progress_callback is not None:
+                    progress_callback(completed, max(1, total), "configs.tsv")
         finally:
             conn.close()
     manifest = output_dir / "export_manifest.json"

@@ -33,6 +33,7 @@ def _plot_metric_bars(
     ax.invert_yaxis()
     ax.set_xlabel(metric_col.replace("_", " "))
     fig.tight_layout()
+    out = Path(out).with_suffix(".svg")
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=220)
     plt.close(fig)
@@ -311,8 +312,7 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
 
     out_base = root / "figures" / "representation_impact"
     out_base.parent.mkdir(parents=True, exist_ok=True)
-    for ext in ("png", "pdf", "svg"):
-        fig.savefig(out_base.with_suffix(f".{ext}"), dpi=300)
+    fig.savefig(out_base.with_suffix(".svg"), dpi=300)
     plt.close(fig)
 
 
@@ -329,7 +329,7 @@ def _plot_feature_importance(imp: pd.DataFrame, out: Path, top_k: int) -> None:
     ax.set_yticks(np.arange(len(top)), [_short_taxon(x) for x in top["feature"]])
     ax.set_xlabel("Permutation importance")
     fig.tight_layout()
-    fig.savefig(out, dpi=220)
+    fig.savefig(Path(out).with_suffix(".svg"), dpi=220)
     plt.close(fig)
 
 
@@ -367,7 +367,7 @@ def _plot_interaction_network(tab: pd.DataFrame, out: Path, top_k: int) -> None:
     )
     ax.axis("off")
     fig.tight_layout()
-    fig.savefig(out, dpi=220)
+    fig.savefig(Path(out).with_suffix(".svg"), dpi=220)
     plt.close(fig)
 
 

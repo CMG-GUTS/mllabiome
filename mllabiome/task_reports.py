@@ -11,7 +11,7 @@ from scipy.stats import wilcoxon
 
 from . import report as _report
 from .configs_sweep import Sweep, _normalise_sweep_task, _target_task, target_sweeps
-from .console import path_table, stage, success
+from .console import info, path_table, phase_progress, stage, success
 from .final_models import build_final_models
 from .explainability_support import top_k_rank_support
 from .metrics import metric_is_loss
@@ -263,7 +263,7 @@ def _regression_mean_std_cell(mean: Any, std: Any) -> str:
     return f"{mean_f:.4f}"
 
 
-def _regression_top_mpmas(root: Path, metric: str, n: int = 10) -> pd.DataFrame:
+def _regression_top_mpmas(root: Path, metric: str, n: int = 5) -> pd.DataFrame:
     inner = _read_table(root / "inner_results" / "inner_results.parquet")
     outer = _read_table(root / "results" / "outer_results.parquet")
     if inner.empty:
@@ -479,22 +479,6 @@ def _regression_outer_unit_table(root: Path) -> pd.DataFrame:
     )
 
 
-def _strip_html(value: Any) -> str:
-    return str(value).replace("<strong>", "").replace("</strong>", "")
-
-
-def _write_regression_latex(performance: pd.DataFrame, path: Path, title: str) -> None:
-    clean = performance.copy()
-    for column in clean.columns:
-        clean[column] = clean[column].map(_strip_html)
-    _report._latex_tabular(
-        clean,
-        path,
-        caption=title,
-        label="tab:task_strategy_performance",
-    )
-
-
 def _regression_method_label(value: Any) -> str:
     text = str(value).strip()
     labels = {
@@ -664,10 +648,13 @@ def _regression_explainability_blocks(
                 )
                 parts.append(_report._html_table(table))
         if not stability.empty:
-            table = _regression_stability_table(stability, int(top_k))
+            table = _regression_stability_table(stability, 5)
             if not table.empty:
                 parts.append("<h4>Cross-fold stability</h4>")
-                parts.append(_report._html_table(table))
+                parts.append(
+                    "<p>Compact outer-fold stability summary for the five leading features per method.</p>"
+                )
+                parts.append(_report._stability_compact_html(table, max_features=5))
         curves = _read_table(target_dir / "ale_curves.parquet")
         if not curves.empty:
             parts.append("<h4>ALE</h4>")
@@ -681,12 +668,11 @@ def _regression_explainability_blocks(
             )
             if curve_figure:
                 parts.append(curve_figure)
-            curve_href = _report._rel(target_dir / "ale_curves.parquet", report_dir)
             parts.append(
                 "<p>The x-axis is the model-input feature coordinate and the y-axis is the centered ALE effect in target units. Positive values indicate predictions above the feature's average local effect and negative values indicate predictions below it. The thick curve is the cross-fold median; the band shows the interquartile range across outer folds where supported.</p>"
             )
             parts.append(
-                f'<p>Per-fold numerical ALE coordinates are retained in the technical artifact <a href="{html.escape(curve_href)}">ale_curves.parquet</a>.</p>'
+                "<p>Per-fold numerical ALE coordinates are retained in the technical artifact <code>ale_curves.parquet</code>.</p>"
             )
         interactions = _read_table(target_dir / "ale_interactions.parquet")
         if not interactions.empty:
@@ -696,10 +682,6 @@ def _regression_explainability_blocks(
             )
             for stem, caption in (
                 ("interaction_network_current", "2D ALE interaction network"),
-                (
-                    "interaction_network_current_kamada_kawai",
-                    "2D ALE interaction network (Kamada-Kawai)",
-                ),
             ):
                 block = _report._fig(
                     target_dir / "figures" / stem, report_dir, f"{label}: {caption}"
@@ -725,25 +707,32 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
     ):
         build_final_models(root)
     report_dir = root / "report"
+    report_dir.mkdir(parents=True, exist_ok=True)
     tables_dir = report_dir / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
     stage("Report", str(report_dir))
-    metric = str(sweep.evaluation.optimize_metric)
-    procedure = _regression_procedure(sweep, root)
-    statistics, pairwise = _regression_statistics(
-        root, int(sweep.evaluation.random_state)
-    )
-    performance = _regression_performance_table(statistics)
-    top_mpmas = _regression_top_mpmas(root, metric, 10)
-    ensemble_summary = _report._ensemble_summary_table(root)
-    ensemble_members = _report._ensemble_members_table(root)
-    strategy_rows = [{"Strategy": x} for x in _regression_strategy_frames(root)]
-    compute = run_compute_accounting(root, sweep, strategy_rows)
-    compute_display = compute.get("display", pd.DataFrame())
-    outer_units = _regression_outer_unit_table(root)
-    explainability_html, explainability_count = _regression_explainability_blocks(
-        root, report_dir, int(getattr(sweep.explainability, "top_k", 15))
-    )
+    with phase_progress("Regression report analysis", 5) as phase:
+        phase.phase("procedure and statistics")
+        metric = str(sweep.evaluation.optimize_metric)
+        procedure = _regression_procedure(sweep, root)
+        statistics, pairwise = _regression_statistics(
+            root, int(sweep.evaluation.random_state)
+        )
+        performance = _regression_performance_table(statistics)
+        phase.phase("rankings and ensemble summaries")
+        top_mpmas = _regression_top_mpmas(root, metric, 5)
+        ensemble_summary = _report._ensemble_summary_table(root)
+        ensemble_members = _report._ensemble_members_table(root)
+        strategy_rows = [{"Strategy": x} for x in _regression_strategy_frames(root)]
+        phase.phase("compute accounting")
+        compute = run_compute_accounting(root, sweep, strategy_rows)
+        compute_display = compute.get("display", pd.DataFrame())
+        phase.phase("outer-unit summaries")
+        outer_units = _regression_outer_unit_table(root)
+        phase.phase("explainability visuals")
+        explainability_html, explainability_count = _regression_explainability_blocks(
+            root, report_dir, int(getattr(sweep.explainability, "top_k", 15))
+        )
     primary_pairwise = (
         pairwise[pairwise["metric"].astype(str).eq(metric)].copy()
         if not pairwise.empty and "metric" in pairwise.columns
@@ -778,36 +767,38 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
     statistics_path = tables_dir / "strategy_metrics_bootstrap.parquet"
     pairwise_path = tables_dir / "strategy_pairwise_tests.parquet"
     performance_path = tables_dir / "task_strategy_performance.parquet"
-    latex_path = tables_dir / "task_strategy_performance.tex"
-    top_path = tables_dir / "top10_mpma_inner_outer_performance.parquet"
+    top_path = tables_dir / "top5_mpma_inner_outer_performance.parquet"
     selection_path = tables_dir / "mpma_e_selection.parquet"
     members_path = tables_dir / "mpma_e_members.parquet"
     primary_pairwise_path = tables_dir / "strategy_pairwise_primary_metric.parquet"
     outer_units_path = tables_dir / "strategy_outer_unit_metrics.parquet"
     compute_display_path = tables_dir / "strategy_compute_display.parquet"
     statistics_manifest_path = tables_dir / "strategy_statistics_manifest.json"
-    write_table(procedure_path, procedure)
-    write_table(statistics_path, statistics)
-    write_table(pairwise_path, pairwise)
-    write_table(performance_path, performance)
-    _write_regression_latex(performance, latex_path, sweep.title)
-    write_table(top_path, top_mpmas)
-    write_table(selection_path, ensemble_summary)
-    write_table(members_path, ensemble_members)
-    write_table(primary_pairwise_path, primary_pairwise)
-    write_table(outer_units_path, outer_units)
-    write_table(compute_display_path, compute_display)
-    dump_json_standard(
-        {
-            "task": "regression",
-            "primary_metric": metric,
-            "display_metrics": list(_REGRESSION_DISPLAY_METRICS),
-            "outer_unit_metrics": outer_units_path,
-            "summary": statistics_path,
-            "pairwise": pairwise_path,
-        },
-        statistics_manifest_path,
-    )
+    with phase_progress("Regression report outputs", 3) as phase:
+        phase.phase("parquet tables")
+        write_table(procedure_path, procedure)
+        write_table(statistics_path, statistics)
+        write_table(pairwise_path, pairwise)
+        write_table(performance_path, performance)
+        phase.phase("report tables")
+        write_table(top_path, top_mpmas)
+        write_table(selection_path, ensemble_summary)
+        write_table(members_path, ensemble_members)
+        write_table(primary_pairwise_path, primary_pairwise)
+        write_table(outer_units_path, outer_units)
+        write_table(compute_display_path, compute_display)
+        phase.phase("statistics manifest")
+        dump_json_standard(
+            {
+                "task": "regression",
+                "primary_metric": metric,
+                "display_metrics": list(_REGRESSION_DISPLAY_METRICS),
+                "outer_unit_metrics": outer_units_path,
+                "summary": statistics_path,
+                "pairwise": pairwise_path,
+            },
+            statistics_manifest_path,
+        )
     figs = [
         _report._fig(
             root / "figures" / "representation_impact",
@@ -836,7 +827,7 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
     )
     html_text = f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>mllabiome report</title><link rel="icon" type="image/png" sizes="64x64" href="{_report._FAVICON_DATA_URI}"><link rel="shortcut icon" type="image/png" href="{_report._FAVICON_DATA_URI}"><style>{css}</style></head>
+<title>mllabiome report</title><link rel="icon" type="image/svg+xml" href="{_report._favicon_href()}"><style>{css}</style></head>
 <body><header class="report-nav"><div class="report-nav-inner"><a class="brand" href="#top" aria-label="mllabiome report"><span class="brand-mark">mll</span><span>mllabiome</span></a><nav class="report-links" aria-label="Report navigation"><a href="#procedure">Evaluation</a><a href="#performance">Performance</a><a href="#mpma-b-composition">MPMA-B</a><a href="#mpma-e">MPMA-E</a><a href="#explainability-comparison">Explainability</a><a href="#figures">Figures</a><a href="#statistics">Statistics</a></nav></div></header>
 <div class="report-shell"><main id="top" class="report-content">
 <h2 id="procedure" class="first-section">Evaluation procedure</h2>{_report._procedure_grid_html(procedure)}
@@ -844,7 +835,7 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
 <section id="mpma-b-composition"><h3>Final MPMA-B specification</h3>{_report._html_table(mpma_b)}</section>
 <section id="mpma-e-specification"><h3 id="mpma-e">Final MPMA-E specification</h3>{ensemble_html}</section>
 <h3 id="statistics">Statistical comparisons</h3><p>Pairwise differences are Strategy A minus Strategy B on matched held-out outer units. Holm adjustment is applied across strategy pairs within each metric.</p>{pairwise_html}
-<h2 id="top-mpmas">Top 10 MPMA-B configurations</h2>{_report._html_table(top_mpmas)}
+<h2 id="top-mpmas">Top 5 MPMA-B configurations</h2>{_report._html_table(top_mpmas)}
 <h2 id="explainability-comparison">Explainability</h2>{explainability_html if explainability_html else "<p>No explainability artefacts are available yet.</p>"}
 <h2 id="figures">Global figures</h2>{"".join(figs) if figs else "<p>No figure artefacts found yet.</p>"}
 <h3 id="compute">Computational resources</h3><p>Compute is summarized by additive CPU core-hours, model-fit count, and peak resident memory for the worker process tree. MPMA-B and MPMA-E share the MPMA search pool, so their compute totals overlap.</p>{_report._html_table(compute_display)}
@@ -868,8 +859,7 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
     )
     outputs = {
         "html_report": html_path,
-        "task_performance_latex": latex_path,
-        "top10_mpmas": top_path,
+        "top5_mpmas": top_path,
         "mpma_e_selection": selection_path,
         "mpma_e_members": members_path,
         "strategy_outer_unit_metrics": outer_units_path,
@@ -930,7 +920,7 @@ def _target_report_section(child: Sweep, parent_report_dir: Path) -> str:
     selection = _read_table(tables_dir / "mpma_e_selection.parquet")
     members = _read_table(tables_dir / "mpma_e_members.parquet")
     pairwise = _read_table(tables_dir / "strategy_pairwise_primary_metric.parquet")
-    top_mpmas = _read_table(tables_dir / "top10_mpma_inner_outer_performance.parquet")
+    top_mpmas = _read_table(tables_dir / "top5_mpma_inner_outer_performance.parquet")
     compute = _read_table(tables_dir / "strategy_compute_display.parquet")
     if compute.empty:
         compute = _read_table(tables_dir / "strategy_compute.parquet")
@@ -983,7 +973,7 @@ def _target_report_section(child: Sweep, parent_report_dir: Path) -> str:
 <h3>Final MPMA-E specification</h3>{_report._html_table(selection)}{_report._html_table(members)}
 {oof}
 <h3>Statistical comparisons</h3>{_report._html_table(pairwise)}
-<h3>Top 10 MPMA-B configurations</h3>{_report._html_table(top_mpmas, raw_html_cols=top_raw)}
+<h3>Top 5 MPMA-B configurations</h3>{_report._html_table(top_mpmas, raw_html_cols=top_raw)}
 <h3>Explainability</h3>{xai if xai else "<p>No explainability artefacts are available yet.</p>"}
 <h3>Global figures</h3>{"".join(figures) if figures else "<p>No figure artefacts found yet.</p>"}
 <h3>Computational resources</h3>{_report._html_table(compute)}</section>'''
@@ -1036,63 +1026,68 @@ def write_multi_target_report(
     children = target_sweeps(sweep) if children is None else list(children)
     root = Path(sweep.root())
     report_dir = root / "report"
+    report_dir.mkdir(parents=True, exist_ok=True)
     tables_dir = report_dir / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
     stage("Report", str(report_dir))
-    overview = pd.DataFrame([_target_primary_summary(child) for child in children])
-    overview_path = tables_dir / "target_performance_overview.parquet"
-    write_table(overview_path, overview)
-    target_manifest = pd.DataFrame(
-        [
-            {
-                "target": str(child.data.target_col),
-                "task": _target_task(child.data, str(child.data.target_col)),
-                "experiment_dir": str(child.root()),
-                "primary_metric": str(child.evaluation.optimize_metric),
-                "report": str(child.root() / "report" / "index.html"),
-            }
-            for child in children
-        ]
-    )
-    targets_path = tables_dir / "targets.parquet"
-    write_table(targets_path, target_manifest)
-    task = _normalise_sweep_task(sweep.data.task)
-    macro = (
-        _multilabel_summary(children, tables_dir)
-        if task == "multilabel"
-        else pd.DataFrame()
-    )
-    procedure = pd.DataFrame(
-        [
-            ["Task", sweep.title],
+    with phase_progress("Combined report", 3) as phase:
+        phase.phase("target overview")
+        overview = pd.DataFrame([_target_primary_summary(child) for child in children])
+        overview_path = tables_dir / "target_performance_overview.parquet"
+        write_table(overview_path, overview)
+        target_manifest = pd.DataFrame(
             [
-                "Task type",
-                "Multilabel" if task == "multilabel" else "Heterogeneous multi-output",
-            ],
-            ["Targets", ", ".join(str(child.data.target_col) for child in children)],
-            ["Target count", len(children)],
-            ["Procedure", sweep.evaluation.protocol],
-            ["Outer folds", sweep.evaluation.outer_folds],
-            ["Inner folds", sweep.evaluation.inner_folds],
-            ["Repeats", sweep.evaluation.repeats],
-            ["Random seed", sweep.evaluation.random_state],
+                {
+                    "target": str(child.data.target_col),
+                    "task": _target_task(child.data, str(child.data.target_col)),
+                    "experiment_dir": str(child.root()),
+                    "primary_metric": str(child.evaluation.optimize_metric),
+                    "report": str(child.root() / "report" / "index.html"),
+                }
+                for child in children
+            ]
+        )
+        targets_path = tables_dir / "targets.parquet"
+        write_table(targets_path, target_manifest)
+        phase.phase("task summaries")
+        task = _normalise_sweep_task(sweep.data.task)
+        macro = (
+            _multilabel_summary(children, tables_dir)
+            if task == "multilabel"
+            else pd.DataFrame()
+        )
+        procedure = pd.DataFrame(
             [
-                "Selection rule",
-                "Each target is selected only from its inner-validation results. Held-out outer predictions are used for reported performance and statistical comparisons.",
+                ["Task", sweep.title],
+                [
+                    "Task type",
+                    "Multilabel" if task == "multilabel" else "Heterogeneous multi-output",
+                ],
+                ["Targets", ", ".join(str(child.data.target_col) for child in children)],
+                ["Target count", len(children)],
+                ["Procedure", sweep.evaluation.protocol],
+                ["Outer folds", sweep.evaluation.outer_folds],
+                ["Inner folds", sweep.evaluation.inner_folds],
+                ["Repeats", sweep.evaluation.repeats],
+                ["Random seed", sweep.evaluation.random_state],
+                [
+                    "Selection rule",
+                    "Each target is selected only from its inner-validation results. Held-out outer predictions are used for reported performance and statistical comparisons.",
+                ],
             ],
-        ],
-        columns=["Field", "Value"],
-    )
-    procedure_path = tables_dir / "evaluation_procedure.parquet"
-    write_table(procedure_path, procedure)
-    sections = "".join(_target_report_section(child, report_dir) for child in children)
+            columns=["Field", "Value"],
+        )
+        procedure_path = tables_dir / "evaluation_procedure.parquet"
+        write_table(procedure_path, procedure)
+        phase.phase("target report sections")
+        sections = "".join(_target_report_section(child, report_dir) for child in children)
     nav_targets = "".join(
         f'<a href="#target-{_section_slug(str(child.data.target_col))}">{html.escape(str(child.data.target_col))}</a>'
         for child in children
     )
     css = _report._report_css()
     html_text = f'''<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>mllabiome report</title><link rel="icon" type="image/png" sizes="64x64" href="{_report._FAVICON_DATA_URI}"><link rel="shortcut icon" type="image/png" href="{_report._FAVICON_DATA_URI}"><style>{css}</style></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>mllabiome report</title><link rel="icon" type="image/svg+xml" href="{_report._favicon_href()}"><style>{css}</style></head>
 <body><header class="report-nav"><div class="report-nav-inner"><a class="brand" href="#top" aria-label="mllabiome report"><span class="brand-mark">mll</span><span>mllabiome</span></a><nav class="report-links" aria-label="Report navigation"><a href="#procedure">Evaluation</a><a href="#overview">Overview</a>{nav_targets}</nav></div></header>
 <div class="report-shell"><main id="top" class="report-content"><h2 id="procedure" class="first-section">Evaluation procedure</h2>{_report._procedure_grid_html(procedure)}
 <h2 id="overview">Target performance overview</h2><p>Every target retains its task-appropriate primary metric. Values are mean ± SD across held-out outer evaluation units. Classification and regression metrics are intentionally not collapsed into a single heterogeneous score.</p>{_report._html_table(overview)}{_report._html_table(macro) if not macro.empty else ""}
@@ -1140,7 +1135,8 @@ def write_task_report(sweep: Sweep) -> dict[str, Any]:
     children = target_sweeps(sweep)
     if len(children) > 1 or children[0] is not sweep:
         target_outputs: dict[str, Any] = {}
-        for child in children:
+        for index, child in enumerate(children, start=1):
+            info(f"Report · target {index}/{len(children)} · {child.data.target_col}")
             if (child.root() / "ensembling" / "selected_unit.json").exists():
                 build_final_models(child.root())
             task = _target_task(child.data, str(child.data.target_col))

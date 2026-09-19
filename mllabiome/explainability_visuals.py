@@ -96,8 +96,7 @@ def apply_style() -> None:
 
 def save_all(fig: plt.Figure, stem: Path) -> None:
     stem.parent.mkdir(parents=True, exist_ok=True)
-    for ext in ("svg", "pdf", "png"):
-        fig.savefig(stem.with_suffix(f".{ext}"), dpi=300)
+    fig.savefig(stem.with_suffix(".svg"), dpi=300)
 
 
 def _bbox(

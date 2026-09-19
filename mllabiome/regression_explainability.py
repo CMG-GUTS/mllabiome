@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -14,7 +14,15 @@ from .configs_sweep import (
     _lodo_feature_pair,
     _regression_outer_splits,
 )
-from .console import info, path_table, stage, success, summary_table
+from .console import (
+    info,
+    path_table,
+    phase_progress,
+    progress,
+    stage,
+    success,
+    summary_table,
+)
 from .data import load_dataset
 from .explainability import (
     _AleModelWrapper,
@@ -181,12 +189,16 @@ def _coordinate_metadata_rows(
 
 
 def _fit_individual_folds(
-    sweep: Sweep, row: pd.Series
+    sweep: Sweep,
+    row: pd.Series,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> tuple[Any, list[dict[str, Any]]]:
     if getattr(sweep, "uses_modalities", False):
         from .multimodal_sweep import fit_modality_regression_candidate_folds
 
-        dataset, folds = fit_modality_regression_candidate_folds(sweep, row)
+        dataset, folds = fit_modality_regression_candidate_folds(
+            sweep, row, progress_callback=progress_callback
+        )
         for fold in folds:
             objects = fold.pop("coordinate_metadata_objects", [])
             fold["coordinate_metadata"] = [
@@ -225,7 +237,7 @@ def _fit_individual_folds(
             f"Configured regression learner {learner_key!r} is unavailable for explainability."
         )
     folds: list[dict[str, Any]] = []
-    for split in splits:
+    for fold_no, split in enumerate(splits, start=1):
         train_idx = np.asarray(split["train_idx"], dtype=int)
         test_idx = np.asarray(split["test_idx"], dtype=int)
         X_train0, X_test0, mask = _lodo_feature_pair(
@@ -253,11 +265,16 @@ def _fit_individual_folds(
                 "estimator": model,
             }
         )
+        if progress_callback is not None:
+            progress_callback(fold_no, len(splits), str(split["split_key"]))
     return dataset, folds
 
 
 def _fit_ensemble_folds(
-    sweep: Sweep, configs: pd.DataFrame, unit: dict[str, Any]
+    sweep: Sweep,
+    configs: pd.DataFrame,
+    unit: dict[str, Any],
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> tuple[Any, list[dict[str, Any]]]:
     if getattr(sweep, "uses_modalities", False):
         raise ValueError(
@@ -298,7 +315,7 @@ def _fit_ensemble_folds(
         else:
             raise ValueError("Regression weighted MPMA-E is missing weights.")
     folds: list[dict[str, Any]] = []
-    for split in splits:
+    for fold_no, split in enumerate(splits, start=1):
         train_idx = np.asarray(split["train_idx"], dtype=int)
         test_idx = np.asarray(split["test_idx"], dtype=int)
         train_blocks: list[np.ndarray] = []
@@ -349,6 +366,8 @@ def _fit_ensemble_folds(
                 "estimator": ensemble,
             }
         )
+        if progress_callback is not None:
+            progress_callback(fold_no, len(splits), str(split["split_key"]))
     return dataset, folds
 
 
@@ -375,7 +394,11 @@ def _sample_indices(n: int, max_rows: int, seed: int) -> np.ndarray:
 
 
 def _permutation_importance(
-    fold: dict[str, Any], spec: Permutation, fallback_metric: str, seed: int
+    fold: dict[str, Any],
+    spec: Permutation,
+    fallback_metric: str,
+    seed: int,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> pd.DataFrame:
     X = np.asarray(fold["X_test"], dtype=float)
     y = np.asarray(fold["y_test"], dtype=float)
@@ -420,10 +443,17 @@ def _permutation_importance(
                 else f"decrease_in_{metric}",
             }
         )
+        if progress_callback is not None:
+            progress_callback(j + 1, len(names), str(name))
     return pd.DataFrame(rows)
 
 
-def _shap_importance(fold: dict[str, Any], spec: SHAP, seed: int) -> pd.DataFrame:
+def _shap_importance(
+    fold: dict[str, Any],
+    spec: SHAP,
+    seed: int,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> pd.DataFrame:
     try:
         import shap
     except Exception as exc:
@@ -435,6 +465,8 @@ def _shap_importance(fold: dict[str, Any], spec: SHAP, seed: int) -> pd.DataFram
     ex_rows = _sample_indices(len(X_test), int(spec.max_explain), seed + 17)
     background = X_train[bg_rows]
     X_explain = X_test[ex_rows]
+    if progress_callback is not None:
+        progress_callback(1, 4, f"background {len(background)} · explain {len(X_explain)}")
     model = fold["estimator"]
     requested = str(spec.algorithm).strip().casefold()
     values = None
@@ -452,6 +484,8 @@ def _shap_importance(fold: dict[str, Any], spec: SHAP, seed: int) -> pd.DataFram
             )
             values = explainer(X_explain).values
             backend = "tree"
+            if progress_callback is not None:
+                progress_callback(3, 4, "tree attributions")
         except Exception:
             if requested == "tree":
                 raise
@@ -474,11 +508,15 @@ def _shap_importance(fold: dict[str, Any], spec: SHAP, seed: int) -> pd.DataFram
             feature_names=names,
             seed=int(seed),
         )
+        if progress_callback is not None:
+            progress_callback(2, 4, f"{algorithm} explainer")
         try:
             values = explainer(X_explain, max_evals=max_evals, silent=True).values
         except TypeError:
             values = explainer(X_explain, max_evals=max_evals).values
         backend = algorithm
+        if progress_callback is not None:
+            progress_callback(3, 4, f"{algorithm} attributions")
     arr = np.asarray(values, dtype=float)
     if arr.ndim == 3 and arr.shape[-1] == 1:
         arr = arr[:, :, 0]
@@ -500,10 +538,17 @@ def _shap_importance(fold: dict[str, Any], spec: SHAP, seed: int) -> pd.DataFram
                 "backend": backend,
             }
         )
+    if progress_callback is not None:
+        progress_callback(4, 4, f"{len(names)} features")
     return pd.DataFrame(rows)
 
 
-def _lime_importance(fold: dict[str, Any], spec: LIME, seed: int) -> pd.DataFrame:
+def _lime_importance(
+    fold: dict[str, Any],
+    spec: LIME,
+    seed: int,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> pd.DataFrame:
     try:
         from lime.lime_tabular import LimeTabularExplainer
     except Exception as exc:
@@ -525,7 +570,7 @@ def _lime_importance(fold: dict[str, Any], spec: LIME, seed: int) -> pd.DataFram
     explainer = LimeTabularExplainer(**kwargs)
     values: list[np.ndarray] = []
     model = fold["estimator"]
-    for index in rows:
+    for sample_no, index in enumerate(rows, start=1):
         call_kwargs: dict[str, Any] = {
             "num_features": len(names),
             "num_samples": int(spec.num_samples),
@@ -546,6 +591,8 @@ def _lime_importance(fold: dict[str, Any], spec: LIME, seed: int) -> pd.DataFram
             if 0 <= int(feature_index) < len(coeff):
                 coeff[int(feature_index)] = float(weight)
         values.append(coeff)
+        if progress_callback is not None:
+            progress_callback(sample_no, len(rows), f"sample {int(index)}")
     arr = np.vstack(values) if values else np.zeros((0, len(names)), dtype=float)
     return pd.DataFrame(
         [
@@ -569,7 +616,9 @@ def _lime_importance(fold: dict[str, Any], spec: LIME, seed: int) -> pd.DataFram
 
 
 def _ale_importance(
-    fold: dict[str, Any], spec: ALE
+    fold: dict[str, Any],
+    spec: ALE,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     pyale = _require_pyale()
     X = np.asarray(fold["X_test"], dtype=float)
@@ -583,10 +632,12 @@ def _ale_importance(
     bins = _auto_ale_bins(len(X), spec)
     rows: list[dict[str, Any]] = []
     curves: list[dict[str, Any]] = []
-    for name in names:
+    for feature_no, name in enumerate(names, start=1):
         col = frame[name].to_numpy(dtype=float)
         finite = col[np.isfinite(col)]
         if len(np.unique(finite)) < 2:
+            if progress_callback is not None:
+                progress_callback(feature_no, len(names), str(name))
             continue
         try:
             with _quiet_pyale_info():
@@ -600,10 +651,14 @@ def _ale_importance(
                 )
             vals, grid, _ = _ale_result_values(result)
         except Exception:
+            if progress_callback is not None:
+                progress_callback(feature_no, len(names), str(name))
             continue
         vals = np.asarray(vals, dtype=float)
         vals = vals[np.isfinite(vals)]
         if not len(vals):
+            if progress_callback is not None:
+                progress_callback(feature_no, len(names), str(name))
             continue
         centred = vals - float(np.mean(vals))
         rows.append(
@@ -627,11 +682,16 @@ def _ale_importance(
                         "ale_effect": float(effect),
                     }
                 )
+        if progress_callback is not None:
+            progress_callback(feature_no, len(names), str(name))
     return pd.DataFrame(rows), pd.DataFrame(curves)
 
 
 def _interaction_importance(
-    fold: dict[str, Any], spec: ALEInteractions, seed_scores: pd.DataFrame
+    fold: dict[str, Any],
+    spec: ALEInteractions,
+    seed_scores: pd.DataFrame,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> pd.DataFrame:
     pyale = _require_pyale()
     X = np.asarray(fold["X_test"], dtype=float)
@@ -670,7 +730,8 @@ def _interaction_importance(
     )
     bins = _auto_ale_bins(len(X), spec)
     rows: list[dict[str, Any]] = []
-    for _, i, j in candidates[: int(spec.top_k)]:
+    selected = candidates[: int(spec.top_k)]
+    for pair_no, (_, i, j) in enumerate(selected, start=1):
         f1, f2 = names[i], names[j]
         try:
             with _quiet_pyale_info():
@@ -684,10 +745,14 @@ def _interaction_importance(
                 )
             vals, _, _ = _ale_result_values(result)
         except Exception:
+            if progress_callback is not None:
+                progress_callback(pair_no, len(selected), f"{f1} × {f2}")
             continue
         vals = np.asarray(vals, dtype=float)
         vals = vals[np.isfinite(vals)]
         if not len(vals):
+            if progress_callback is not None:
+                progress_callback(pair_no, len(selected), f"{f1} × {f2}")
             continue
         centred = vals - float(np.mean(vals))
         rows.append(
@@ -698,6 +763,8 @@ def _interaction_importance(
                 "scoring": "rms_centered_regression_2d_ale",
             }
         )
+        if progress_callback is not None:
+            progress_callback(pair_no, len(selected), f"{f1} × {f2}")
     return (
         pd.DataFrame(rows).sort_values("interaction_strength", ascending=False)
         if rows
@@ -781,16 +848,7 @@ def _write_feature_support_figure(
     stem = target_dir / "figures" / "feature_support"
     if not plot_regression_feature_support(importance, stem, int(top_k)):
         return {}
-    old_stem = target_dir / "figures" / "feature_importance"
-    for ext in (".svg", ".pdf", ".png"):
-        old = old_stem.with_suffix(ext)
-        if old.exists():
-            old.unlink()
-    return {
-        "feature_support_svg": stem.with_suffix(".svg"),
-        "feature_support_pdf": stem.with_suffix(".pdf"),
-        "feature_support_png": stem.with_suffix(".png"),
-    }
+    return {"feature_support_svg": stem.with_suffix(".svg")}
 
 
 def _write_regression_ale_figure(
@@ -823,11 +881,7 @@ def _write_regression_ale_figure(
         ]
     stem = target_dir / "figures" / "ale_curves"
     _plot_ale_curves(curve_table, top_features, stem, max_panels=min(12, int(top_k)))
-    return {
-        "ale_curves_svg": stem.with_suffix(".svg"),
-        "ale_curves_pdf": stem.with_suffix(".pdf"),
-        "ale_curves_png": stem.with_suffix(".png"),
-    }
+    return {"ale_curves_svg": stem.with_suffix(".svg")}
 
 
 def _write_regression_interaction_figures(
@@ -855,17 +909,12 @@ def _write_regression_interaction_figures(
     )
     if table.empty:
         return {}
-    outputs: dict[str, Path] = {}
     figures = target_dir / "figures"
-    for layout, suffix in (("default", ""), ("kamada_kawai", "_kamada_kawai")):
-        stem = figures / f"interaction_network_current{suffix}"
-        plot_interaction_network(
-            table, pd.DataFrame(), stem, int(top_k), None, layout=layout
-        )
-        outputs[f"interaction_network_current{suffix}_svg"] = stem.with_suffix(".svg")
-        outputs[f"interaction_network_current{suffix}_pdf"] = stem.with_suffix(".pdf")
-        outputs[f"interaction_network_current{suffix}_png"] = stem.with_suffix(".png")
-    return outputs
+    stem = figures / "interaction_network_current"
+    plot_interaction_network(
+        table, pd.DataFrame(), stem, int(top_k), None, layout="default"
+    )
+    return {"interaction_network_current_svg": stem.with_suffix(".svg")}
 
 
 def _write_regression_explainability_figures(
@@ -904,7 +953,6 @@ def _explain_target(
     root = Path(sweep.root())
     if target == "mpma_b":
         row = _config_row(configs, str(models["MPMA-B"]["config_id"]))
-        dataset, folds = _fit_individual_folds(sweep, row)
         slug = "mpma_b"
         unit = {"type": "MPMA-B", "config_id": str(row["config_id"])}
     elif target == "mpma_e":
@@ -912,7 +960,6 @@ def _explain_target(
             raise ValueError(
                 "MPMA-E regression explainability was requested, but no final MPMA-E exists."
             )
-        dataset, folds = _fit_ensemble_folds(sweep, configs, models["MPMA-E"])
         slug = "mpma_e"
         unit = {
             "type": "MPMA-E",
@@ -923,9 +970,36 @@ def _explain_target(
         }
     else:
         row = _config_row(configs, target)
-        dataset, folds = _fit_individual_folds(sweep, row)
         slug = str(target)
         unit = {"type": "MPMA", "config_id": str(row["config_id"])}
+    with progress() as prog:
+        refit_task = prog.add_task(f"{slug} · refitting outer folds", total=1)
+
+        def refit_progress(completed: int, total: int, detail: str) -> None:
+            prog.update(
+                refit_task,
+                total=max(1, int(total)),
+                completed=int(completed),
+                description=f"{slug} · refit {int(completed)}/{int(total)} · {detail}",
+            )
+
+        if target == "mpma_e":
+            dataset, folds = _fit_ensemble_folds(
+                sweep,
+                configs,
+                models["MPMA-E"],
+                progress_callback=refit_progress,
+            )
+        else:
+            dataset, folds = _fit_individual_folds(
+                sweep, row, progress_callback=refit_progress
+            )
+        prog.update(
+            refit_task,
+            total=max(1, len(folds)),
+            completed=max(1, len(folds)),
+            description=f"{slug} · refit complete · {len(folds)} outer folds",
+        )
     target_dir = root / "explainability" / slug
     target_dir.mkdir(parents=True, exist_ok=True)
     coordinate_rows: list[dict[str, Any]] = []
@@ -947,83 +1021,162 @@ def _explain_target(
     curves: list[pd.DataFrame] = []
     interaction_frames: list[pd.DataFrame] = []
     fallback_metric = str(sweep.evaluation.optimize_metric)
-    for fold_no, fold in enumerate(folds, start=1):
-        info(f"Regression explainability · {slug} · fold {fold_no}/{len(folds)}")
-        fold_seed = int(sweep.explainability.random_state) + fold_no * 1009
-        seed_scores = pd.DataFrame()
-        for spec in sweep.explainability.methods:
-            name = method_name(spec)
-            if name == "permutation":
-                frame = _permutation_importance(fold, spec, fallback_metric, fold_seed)
-            elif name == "shap":
-                frame = _shap_importance(fold, spec, fold_seed)
-            elif name == "lime":
-                frame = _lime_importance(fold, spec, fold_seed)
-            elif name == "ale":
-                frame, curve = _ale_importance(fold, spec)
-                if not curve.empty:
-                    curve["fold_no"] = fold_no
-                    curve["fold_key"] = str(fold["split_key"])
-                    curves.append(curve)
-            elif name == "interactions":
-                frame = pd.DataFrame()
-                interactions = _interaction_importance(fold, spec, seed_scores)
-                if not interactions.empty:
-                    interactions["fold_no"] = fold_no
-                    interactions["fold_key"] = str(fold["split_key"])
-                    interaction_frames.append(interactions)
-            else:
-                raise ValueError(
-                    f"Unsupported regression explainability method {name!r}."
+    method_specs = tuple(sweep.explainability.methods)
+    with progress() as prog:
+        total_methods = max(1, len(folds) * len(method_specs))
+        overall_task = prog.add_task(
+            f"{slug} · explainability methods", total=total_methods
+        )
+        fold_task = prog.add_task("outer fold", total=max(1, len(method_specs)))
+        method_task = prog.add_task("method", total=1)
+        completed_methods = 0
+        for fold_no, fold in enumerate(folds, start=1):
+            split_key = str(fold["split_key"])
+            prog.update(
+                fold_task,
+                total=max(1, len(method_specs)),
+                completed=0,
+                description=f"{slug} · fold {fold_no}/{len(folds)} · {split_key}",
+            )
+            fold_seed = int(sweep.explainability.random_state) + fold_no * 1009
+            seed_scores = pd.DataFrame()
+            for method_no, spec in enumerate(method_specs, start=1):
+                name = method_name(spec)
+                prog.update(
+                    method_task,
+                    total=1,
+                    completed=0,
+                    description=f"{slug} · fold {fold_no}/{len(folds)} · {name} · starting",
                 )
-            if not frame.empty:
-                frame = frame.copy()
-                frame["fold_no"] = fold_no
-                frame["fold_key"] = str(fold["split_key"])
-                frames.append(frame)
-                if seed_scores.empty or name in {"shap", "permutation"}:
-                    seed_scores = frame
-    importance = _aggregate_frames(frames, len(folds), int(sweep.explainability.top_k))
-    combined = _combined_feature_table(importance)
-    importance_path = target_dir / "feature_stability.parquet"
-    combined_path = target_dir / "feature_importance.parquet"
-    write_table(importance_path, importance)
-    write_table(combined_path, combined)
-    fold_path = target_dir / "fold_feature_importance.parquet"
-    write_table(
-        fold_path,
-        pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame(),
-    )
-    outputs: dict[str, Path] = {
-        "explainability_dir": target_dir,
-        "importance": combined_path,
-        "stability": importance_path,
-        "fold_importance": fold_path,
-    }
-    if coordinate_path is not None:
-        outputs["coordinate_metadata"] = coordinate_path
-    if curves:
-        curve_path = target_dir / "ale_curves.parquet"
-        write_table(curve_path, pd.concat(curves, ignore_index=True, sort=False))
-        outputs["ale_curves"] = curve_path
-    if interaction_frames:
-        interactions = pd.concat(interaction_frames, ignore_index=True, sort=False)
-        summary = interactions.groupby(["feature_1", "feature_2"], as_index=False).agg(
-            interaction_strength_mean=("interaction_strength", "mean"),
-            interaction_strength_sd=("interaction_strength", "std"),
-            n_folds=("interaction_strength", "count"),
-        )
-        interaction_path = target_dir / "ale_interactions.parquet"
+
+                def method_progress(
+                    completed: int,
+                    total: int,
+                    detail: str,
+                    method_name_value: str = name,
+                    fold_number: int = fold_no,
+                ) -> None:
+                    total_value = max(1, int(total))
+                    completed_value = min(int(completed), total_value)
+                    stride = max(1, total_value // 100)
+                    if completed_value < total_value and completed_value % stride:
+                        return
+                    prog.update(
+                        method_task,
+                        total=total_value,
+                        completed=completed_value,
+                        description=(
+                            f"{slug} · fold {fold_number}/{len(folds)} · "
+                            f"{method_name_value} · {detail}"
+                        ),
+                    )
+
+                if name == "permutation":
+                    frame = _permutation_importance(
+                        fold,
+                        spec,
+                        fallback_metric,
+                        fold_seed,
+                        progress_callback=method_progress,
+                    )
+                elif name == "shap":
+                    frame = _shap_importance(
+                        fold, spec, fold_seed, progress_callback=method_progress
+                    )
+                elif name == "lime":
+                    frame = _lime_importance(
+                        fold, spec, fold_seed, progress_callback=method_progress
+                    )
+                elif name == "ale":
+                    frame, curve = _ale_importance(
+                        fold, spec, progress_callback=method_progress
+                    )
+                    if not curve.empty:
+                        curve["fold_no"] = fold_no
+                        curve["fold_key"] = split_key
+                        curves.append(curve)
+                elif name == "interactions":
+                    frame = pd.DataFrame()
+                    interactions = _interaction_importance(
+                        fold, spec, seed_scores, progress_callback=method_progress
+                    )
+                    if not interactions.empty:
+                        interactions["fold_no"] = fold_no
+                        interactions["fold_key"] = split_key
+                        interaction_frames.append(interactions)
+                else:
+                    raise ValueError(
+                        f"Unsupported regression explainability method {name!r}."
+                    )
+                if not frame.empty:
+                    frame = frame.copy()
+                    frame["fold_no"] = fold_no
+                    frame["fold_key"] = split_key
+                    frames.append(frame)
+                    if seed_scores.empty or name in {"shap", "permutation"}:
+                        seed_scores = frame
+                prog.update(
+                    method_task,
+                    total=1,
+                    completed=1,
+                    description=f"{slug} · fold {fold_no}/{len(folds)} · {name} · complete",
+                )
+                prog.update(fold_task, completed=method_no)
+                completed_methods += 1
+                prog.update(
+                    overall_task,
+                    completed=completed_methods,
+                    description=(
+                        f"{slug} · explainability · {completed_methods}/{total_methods} "
+                        f"fold-method units"
+                    ),
+                )
+    with phase_progress(f"{slug} explainability outputs", 4) as phase:
+        phase.phase("aggregate feature attribution")
+        importance = _aggregate_frames(frames, len(folds), int(sweep.explainability.top_k))
+        combined = _combined_feature_table(importance)
+        importance_path = target_dir / "feature_stability.parquet"
+        combined_path = target_dir / "feature_importance.parquet"
+        phase.phase("write fold and stability tables")
+        write_table(importance_path, importance)
+        write_table(combined_path, combined)
+        fold_path = target_dir / "fold_feature_importance.parquet"
         write_table(
-            interaction_path,
-            summary.sort_values("interaction_strength_mean", ascending=False),
+            fold_path,
+            pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame(),
         )
-        outputs["interactions"] = interaction_path
-    outputs.update(
-        _write_regression_explainability_figures(
-            target_dir, importance, int(sweep.explainability.top_k)
+        outputs: dict[str, Path] = {
+            "explainability_dir": target_dir,
+            "importance": combined_path,
+            "stability": importance_path,
+            "fold_importance": fold_path,
+        }
+        if coordinate_path is not None:
+            outputs["coordinate_metadata"] = coordinate_path
+        phase.phase("write ALE and interaction tables")
+        if curves:
+            curve_path = target_dir / "ale_curves.parquet"
+            write_table(curve_path, pd.concat(curves, ignore_index=True, sort=False))
+            outputs["ale_curves"] = curve_path
+        if interaction_frames:
+            interactions = pd.concat(interaction_frames, ignore_index=True, sort=False)
+            summary = interactions.groupby(["feature_1", "feature_2"], as_index=False).agg(
+                interaction_strength_mean=("interaction_strength", "mean"),
+                interaction_strength_sd=("interaction_strength", "std"),
+                n_folds=("interaction_strength", "count"),
+            )
+            interaction_path = target_dir / "ale_interactions.parquet"
+            write_table(
+                interaction_path,
+                summary.sort_values("interaction_strength_mean", ascending=False),
+            )
+            outputs["interactions"] = interaction_path
+        phase.phase("render explainability figures")
+        outputs.update(
+            _write_regression_explainability_figures(
+                target_dir, importance, int(sweep.explainability.top_k)
+            )
         )
-    )
     target_col = (
         sweep.samples.target_col
         if getattr(sweep, "uses_modalities", False)
@@ -1068,7 +1221,10 @@ def explain_regression(sweep: Sweep) -> dict[str, Path]:
         },
     )
     outputs: dict[str, Path] = {}
-    for target in targets:
+    for target_no, target in enumerate(targets, start=1):
+        info(
+            f"Regression explainability · target {target_no}/{len(targets)} · {target}"
+        )
         result = _explain_target(sweep, configs, models, target)
         for key, path in result.items():
             outputs[f"{target}_{key}"] = path
