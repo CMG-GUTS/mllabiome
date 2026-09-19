@@ -4,7 +4,7 @@ from .threading import configure_thread_limits
 
 configure_thread_limits()
 
-__version__ = "0.1.0rc23"
+__version__ = "0.1.0rc35"
 from .configs_sweep import (
     MPDR,
     MPMA,
@@ -18,6 +18,14 @@ from .configs_sweep import (
     evaluate,
 )
 from .data import Data, Dataset, load_dataset
+from .integrations import Integration, IntegratedCoordinate, IntegrationModel
+from .modalities import (
+    Samples,
+    Modality,
+    ModalityDataset,
+    ModalityMatrix,
+    load_modalities,
+)
 from .ensemble_sweep import sweep_ensemble
 from .explainability_methods import ALE, ALEInteractions, LIME, Permutation, SHAP
 from .explainability import (
@@ -53,6 +61,14 @@ from .utils import (
 
 __all__ = [
     "Data",
+    "Samples",
+    "Modality",
+    "ModalityDataset",
+    "ModalityMatrix",
+    "Integration",
+    "IntegratedCoordinate",
+    "IntegrationModel",
+    "load_modalities",
     "Dataset",
     "Ensemble",
     "Evaluation",

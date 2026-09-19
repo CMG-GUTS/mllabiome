@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 import numpy as np
 import pandas as pd
+from .storage import read_table
 from . import report as _report_module
 from .console import console, path_table, stage, success
 from .final_models import load_final_models
@@ -106,11 +107,9 @@ _MPMA_B_SECTION_START = '<section id="mpma-b-composition">'
 _MPMA_B_SECTION_END = "</section>"
 
 
-def _read_tsv(path: Path) -> pd.DataFrame:
-    if not path.exists() or path.stat().st_size == 0:
-        return pd.DataFrame()
+def _read_table(path: Path) -> pd.DataFrame:
     try:
-        return pd.read_csv(path, sep="\t")
+        return read_table(path)
     except Exception:
         return pd.DataFrame()
 
@@ -470,13 +469,13 @@ def _design_display(manifest: dict[str, Any]) -> pd.DataFrame:
 
 def _links_html(tables_dir: Path) -> str:
     names = [
-        ("strategy_oof_performance.tsv", "Long-form OOF estimates"),
-        ("strategy_oof_performance_table.tsv", "Wide OOF table"),
-        ("strategy_oof_calibration.tsv", "Reliability-curve data"),
-        ("strategy_oof_pairwise_contrasts.tsv", "Paired OOF contrasts"),
+        ("strategy_oof_performance.parquet", "Long-form OOF estimates"),
+        ("strategy_oof_performance_table.parquet", "Wide OOF table"),
+        ("strategy_oof_calibration.parquet", "Reliability-curve data"),
+        ("strategy_oof_pairwise_contrasts.parquet", "Paired OOF contrasts"),
         ("strategy_oof_statistics_manifest.json", "OOF methods manifest"),
-        ("strategy_oof_coverage.tsv", "OOF coverage"),
-        ("strategy_oof_pairwise_coverage.tsv", "Paired OOF coverage"),
+        ("strategy_oof_coverage.parquet", "OOF coverage"),
+        ("strategy_oof_pairwise_coverage.parquet", "Paired OOF coverage"),
     ]
     links = []
     for filename, label in names:
@@ -534,7 +533,7 @@ def _remove_mpma_b_section(text: str) -> str:
 
 
 def _replace_procedure_layout(text: str, report_dir: Path) -> str:
-    procedure = _read_tsv(report_dir / "tables" / "evaluation_procedure.tsv")
+    procedure = _read_table(report_dir / "tables" / "evaluation_procedure.parquet")
     grid = _procedure_grid_html(procedure)
     if not grid:
         return text
@@ -631,9 +630,9 @@ def oof_section_html(
 ) -> str:
     report_dir = Path(report_dir)
     tables_dir = report_dir / "tables"
-    performance = _read_tsv(tables_dir / "strategy_oof_performance.tsv")
-    calibration_curve = _read_tsv(tables_dir / "strategy_oof_calibration.tsv")
-    contrasts = _read_tsv(tables_dir / "strategy_oof_pairwise_contrasts.tsv")
+    performance = _read_table(tables_dir / "strategy_oof_performance.parquet")
+    calibration_curve = _read_table(tables_dir / "strategy_oof_calibration.parquet")
+    contrasts = _read_table(tables_dir / "strategy_oof_pairwise_contrasts.parquet")
     manifest = _read_json(tables_dir / "strategy_oof_statistics_manifest.json")
     if n_classes is None:
         try:
@@ -715,7 +714,7 @@ def oof_section_html(
             [
                 f'<{subheading} id="{prefix}oof-calibration-summary">Calibration</{subheading}>',
                 "<p>One-vs-rest reliability-curve data are available in "
-                "<code>strategy_oof_calibration.tsv</code>.</p>",
+                "<code>strategy_oof_calibration.parquet</code>.</p>",
             ]
         )
     if include_downloads:
@@ -804,7 +803,9 @@ def enhance_html_report(report_dir: Path | str, n_classes: int | None = None) ->
 
 
 def _terminal_oof_summary(report_dir: Path) -> None:
-    performance = _read_tsv(report_dir / "tables" / "strategy_oof_performance.tsv")
+    performance = _read_table(
+        report_dir / "tables" / "strategy_oof_performance.parquet"
+    )
     if performance.empty:
         return
     display = _performance_display(performance)
@@ -890,10 +891,10 @@ def write_report(sweep: Any) -> dict[str, Path]:
         _report_module._terminal_table = original_terminal
     report_dir = root / "report"
     tables_dir = report_dir / "tables"
-    performance_path = tables_dir / "strategy_oof_performance.tsv"
-    if _read_tsv(performance_path).empty:
+    performance_path = tables_dir / "strategy_oof_performance.parquet"
+    if _read_table(performance_path).empty:
         raise RuntimeError(
-            "Report statistics did not produce strategy_oof_performance.tsv."
+            "Report statistics did not produce strategy_oof_performance.parquet."
         )
     inserted = enhance_html_report(
         report_dir,
@@ -902,17 +903,17 @@ def write_report(sweep: Any) -> dict[str, Path]:
     if inserted:
         _terminal_oof_summary(report_dir)
     new_outputs = {
-        "strategy_oof_performance": tables_dir / "strategy_oof_performance.tsv",
+        "strategy_oof_performance": tables_dir / "strategy_oof_performance.parquet",
         "strategy_oof_performance_table": tables_dir
-        / "strategy_oof_performance_table.tsv",
-        "strategy_oof_calibration": tables_dir / "strategy_oof_calibration.tsv",
+        / "strategy_oof_performance_table.parquet",
+        "strategy_oof_calibration": tables_dir / "strategy_oof_calibration.parquet",
         "strategy_oof_pairwise_contrasts": tables_dir
-        / "strategy_oof_pairwise_contrasts.tsv",
+        / "strategy_oof_pairwise_contrasts.parquet",
         "strategy_oof_statistics_manifest": tables_dir
         / "strategy_oof_statistics_manifest.json",
-        "strategy_oof_coverage": tables_dir / "strategy_oof_coverage.tsv",
+        "strategy_oof_coverage": tables_dir / "strategy_oof_coverage.parquet",
         "strategy_oof_pairwise_coverage": tables_dir
-        / "strategy_oof_pairwise_coverage.tsv",
+        / "strategy_oof_pairwise_coverage.parquet",
     }
     existing = {name: path for name, path in new_outputs.items() if path.exists()}
     outputs.update(existing)

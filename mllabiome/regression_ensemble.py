@@ -10,6 +10,7 @@ import pandas as pd
 from scipy.optimize import minimize
 
 from .compute import ResourceTracker
+from .ensemble_progress import EnsembleSearchProgress
 from .configs_sweep import Ensemble, Sweep
 from .console import path_table, stage, success, summary_table
 from .metrics import compute_regression_metrics, metric_better, metric_is_loss
@@ -18,6 +19,7 @@ from .selection import (
     select_mpma_b_by_outer_fold,
     selected_mpma_b_outer_predictions,
 )
+from .storage import read_table, write_table, table_exists
 from .utils import dump_json_standard
 
 
@@ -504,6 +506,8 @@ def _candidate_table(
     plan: Ensemble,
     metric: str,
     outer_key: str | None,
+    progress_callback=None,
+    progress_scope: str | None = None,
 ) -> pd.DataFrame:
     eligible = _eligible_config_ids(configs, plan)
     scores = _complete_inner_scores(inner_results, outer_key, metric, eligible)
@@ -512,73 +516,98 @@ def _candidate_table(
     pred = _prediction_frame(inner_predictions, outer_key)
     pred = pred[pred["config_id"].isin(set(scores.index))]
     rows: list[dict[str, Any]] = []
-    for spec in _ensemble_configs(plan):
+    specs = _ensemble_configs(plan)
+    scope = str(progress_scope or outer_key or "__final__")
+    for index, spec in enumerate(specs, start=1):
+        if progress_callback is not None:
+            progress_callback(scope, "start", spec, index, len(specs), "evaluating")
         method = str(spec["selection_strategy"])
-        if method in {"top_k", "best_per_resolution", "best_per_learner_type"}:
-            members = _simple_members(method, scores, configs, int(spec["max_size"]))
-            if len(members) < 2:
-                continue
-            ordered, stack = _aligned_stack(pred, members, True)
-            if ordered is None or stack is None:
-                continue
-            row = _evaluate_candidate(
-                spec,
-                members,
-                stack,
-                ordered["y_true"].to_numpy(dtype=float),
-                metric,
-                extra={"inner_oof_rows": int(len(ordered))},
-            )
-        else:
-            library = [str(x) for x in scores.index.tolist()]
-            ordered, stack = _aligned_stack(pred, library, True)
-            if ordered is None or stack is None or len(library) < 2:
-                continue
-            y_true = ordered["y_true"].to_numpy(dtype=float)
-            if method == "caruana":
-                members, weights, trajectory = _caruana(
-                    library, stack, y_true, metric, int(spec["max_size"])
+        row = None
+        failed = False
+        try:
+            if method in {"top_k", "best_per_resolution", "best_per_learner_type"}:
+                members = _simple_members(
+                    method, scores, configs, int(spec["max_size"])
                 )
                 if len(members) < 2:
                     continue
-                selected = stack[[library.index(cid) for cid in members]]
-                row = _evaluate_candidate(
-                    spec,
-                    members,
-                    selected,
-                    y_true,
-                    metric,
-                    weights,
-                    {
-                        "inner_oof_rows": int(len(ordered)),
-                        "weight_source": "caruana_selection_frequency",
-                        "caruana_trajectory": json.dumps(
-                            [float(x) for x in trajectory]
-                        ),
-                    },
-                )
-            elif method == "super_learner":
-                members, weights = _fit_super_learner(
-                    library, stack, y_true, metric, int(spec["max_size"])
-                )
-                if len(members) < 2:
+                ordered, stack = _aligned_stack(pred, members, True)
+                if ordered is None or stack is None:
                     continue
-                selected = stack[[library.index(cid) for cid in members]]
                 row = _evaluate_candidate(
                     spec,
                     members,
-                    selected,
-                    y_true,
+                    stack,
+                    ordered["y_true"].to_numpy(dtype=float),
                     metric,
-                    weights,
-                    {
-                        "inner_oof_rows": int(len(ordered)),
-                        "weight_source": f"convex_{metric}",
-                    },
+                    extra={"inner_oof_rows": int(len(ordered))},
                 )
             else:
-                raise ValueError(method)
-        rows.append(row)
+                library = [str(x) for x in scores.index.tolist()]
+                ordered, stack = _aligned_stack(pred, library, True)
+                if ordered is None or stack is None or len(library) < 2:
+                    continue
+                y_true = ordered["y_true"].to_numpy(dtype=float)
+                if method == "caruana":
+                    members, weights, trajectory = _caruana(
+                        library, stack, y_true, metric, int(spec["max_size"])
+                    )
+                    if len(members) < 2:
+                        continue
+                    selected = stack[[library.index(cid) for cid in members]]
+                    row = _evaluate_candidate(
+                        spec,
+                        members,
+                        selected,
+                        y_true,
+                        metric,
+                        weights,
+                        {
+                            "inner_oof_rows": int(len(ordered)),
+                            "weight_source": "caruana_selection_frequency",
+                            "caruana_trajectory": json.dumps(
+                                [float(x) for x in trajectory]
+                            ),
+                        },
+                    )
+                elif method == "super_learner":
+                    members, weights = _fit_super_learner(
+                        library, stack, y_true, metric, int(spec["max_size"])
+                    )
+                    if len(members) < 2:
+                        continue
+                    selected = stack[[library.index(cid) for cid in members]]
+                    row = _evaluate_candidate(
+                        spec,
+                        members,
+                        selected,
+                        y_true,
+                        metric,
+                        weights,
+                        {
+                            "inner_oof_rows": int(len(ordered)),
+                            "weight_source": f"convex_{metric}",
+                        },
+                    )
+                else:
+                    raise ValueError(method)
+            if row is not None:
+                rows.append(row)
+        except Exception as exc:
+            failed = True
+            if progress_callback is not None:
+                progress_callback(scope, "error", spec, index, len(specs), str(exc))
+            raise
+        finally:
+            if not failed and progress_callback is not None:
+                progress_callback(
+                    scope,
+                    "done",
+                    spec,
+                    index,
+                    len(specs),
+                    "valid" if row is not None else "skipped",
+                )
     if not rows:
         return pd.DataFrame()
     out = pd.DataFrame(rows)
@@ -652,19 +681,19 @@ def sweep_regression_ensemble(sweep: Sweep) -> dict[str, Path]:
     root = Path(sweep.root())
     ensemble_dir = root / "ensembling"
     ensemble_dir.mkdir(parents=True, exist_ok=True)
-    outer_path = root / "predictions" / "outer_predictions.tsv"
-    inner_result_path = root / "inner_results" / "inner_results.tsv"
-    inner_prediction_path = root / "inner_predictions" / "inner_predictions.tsv"
-    config_path = root / "configs.tsv"
+    outer_path = root / "predictions" / "outer_predictions.parquet"
+    inner_result_path = root / "inner_results" / "inner_results.parquet"
+    inner_prediction_path = root / "inner_predictions" / "inner_predictions.parquet"
+    config_path = root / "configs.parquet"
     if any(
-        not path.exists()
+        not table_exists(path)
         for path in (outer_path, inner_result_path, inner_prediction_path, config_path)
     ):
         raise FileNotFoundError("Run evaluate(sweep) before sweep_ensemble(sweep).")
-    outer = pd.read_csv(outer_path, sep="\t")
-    inner_results = pd.read_csv(inner_result_path, sep="\t")
-    inner_predictions = pd.read_csv(inner_prediction_path, sep="\t")
-    configs = pd.read_csv(config_path, sep="\t")
+    outer = read_table(outer_path)
+    inner_results = read_table(inner_result_path)
+    inner_predictions = read_table(inner_prediction_path)
+    configs = read_table(config_path)
     metric = str(sweep.ensemble.optimize_metric)
     if metric not in inner_results.columns:
         metric = str(sweep.evaluation.optimize_metric)
@@ -730,15 +759,11 @@ def sweep_regression_ensemble(sweep: Sweep) -> dict[str, Path]:
     tables_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)
     predictions_dir.mkdir(parents=True, exist_ok=True)
-    mpma_b_selection.to_csv(
-        tables_dir / "mpma_b_outer_selection.tsv", sep="\t", index=False
+    write_table(tables_dir / "mpma_b_outer_selection.parquet", mpma_b_selection)
+    write_table(
+        predictions_dir / "mpma_b_outer_predictions.parquet", mpma_b_predictions
     )
-    mpma_b_predictions.to_csv(
-        predictions_dir / "mpma_b_outer_predictions.tsv", sep="\t", index=False
-    )
-    mpma_b_metrics.to_csv(
-        results_dir / "mpma_b_outer_results.tsv", sep="\t", index=False
-    )
+    write_table(results_dir / "mpma_b_outer_results.parquet", mpma_b_metrics)
     mpma_b_summary: dict[str, Any] = {
         "Strategy": "MPMA-B",
         "task": "regression",
@@ -772,43 +797,79 @@ def sweep_regression_ensemble(sweep: Sweep) -> dict[str, Path]:
     prediction_frames: list[pd.DataFrame] = []
     metric_rows: list[dict[str, Any]] = []
     outer_keys = sorted(set(inner_results["split_key"].astype(str)))
-    for outer_key in outer_keys:
-        candidates = _candidate_table(
-            inner_results, inner_predictions, configs, sweep.ensemble, metric, outer_key
-        )
-        if candidates.empty:
-            raise RuntimeError(
-                f"No valid regression ensemble candidate was produced for outer fold {outer_key!r}."
+    ensemble_specs = _ensemble_configs(sweep.ensemble)
+    with EnsembleSearchProgress(
+        outer_keys + ["__final__"], len(ensemble_specs)
+    ) as live:
+        for outer_key in outer_keys:
+            candidates = _candidate_table(
+                inner_results,
+                inner_predictions,
+                configs,
+                sweep.ensemble,
+                metric,
+                outer_key,
+                progress_callback=live.update,
+                progress_scope=outer_key,
             )
-        winner = candidates.iloc[0].to_dict()
-        pred_frame, metrics = _apply_candidate(winner, outer, outer_key)
-        selections.append(
-            {
-                "outer_split_key": outer_key,
-                "ensemble_config_id": str(winner["ensemble_config_id"]),
-                "selection_basis": "outer_fold_inner_oof_predictions_only",
-                "selection_metric": metric,
-                "inner_score": float(winner[f"{metric}_mean"]),
-                "selection_strategy": str(winner["selection_strategy"]),
-                "aggregation_strategy": str(winner["aggregation_strategy"]),
-                "max_size": int(winner["max_size"]),
-                "member_count": int(winner["member_count"]),
-                "members": str(winner["members"]),
-                "weights": str(winner["weights"]),
-            }
+            if candidates.empty:
+                raise RuntimeError(
+                    f"No valid regression ensemble candidate was produced for outer fold {outer_key!r}."
+                )
+            winner = candidates.iloc[0].to_dict()
+            pred_frame, metrics = _apply_candidate(winner, outer, outer_key)
+            live.update(
+                outer_key,
+                "selected",
+                winner,
+                len(ensemble_specs),
+                len(ensemble_specs),
+                f"inner {metric}={float(winner[f'{metric}_mean']):.4f}",
+            )
+            selections.append(
+                {
+                    "outer_split_key": outer_key,
+                    "ensemble_config_id": str(winner["ensemble_config_id"]),
+                    "selection_basis": "outer_fold_inner_oof_predictions_only",
+                    "selection_metric": metric,
+                    "inner_score": float(winner[f"{metric}_mean"]),
+                    "selection_strategy": str(winner["selection_strategy"]),
+                    "aggregation_strategy": str(winner["aggregation_strategy"]),
+                    "max_size": int(winner["max_size"]),
+                    "member_count": int(winner["member_count"]),
+                    "members": str(winner["members"]),
+                    "weights": str(winner["weights"]),
+                }
+            )
+            pred_frame["outer_split_key"] = outer_key
+            prediction_frames.append(pred_frame)
+            metric_rows.append(
+                {
+                    "outer_split_key": outer_key,
+                    "ensemble_config_id": str(winner["ensemble_config_id"]),
+                    **metrics,
+                }
+            )
+        all_candidates = _candidate_table(
+            inner_results,
+            inner_predictions,
+            configs,
+            sweep.ensemble,
+            metric,
+            None,
+            progress_callback=live.update,
+            progress_scope="__final__",
         )
-        pred_frame["outer_split_key"] = outer_key
-        prediction_frames.append(pred_frame)
-        metric_rows.append(
-            {
-                "outer_split_key": outer_key,
-                "ensemble_config_id": str(winner["ensemble_config_id"]),
-                **metrics,
-            }
-        )
-    all_candidates = _candidate_table(
-        inner_results, inner_predictions, configs, sweep.ensemble, metric, None
-    )
+        if not all_candidates.empty:
+            pooled = all_candidates.iloc[0].to_dict()
+            live.update(
+                "__final__",
+                "selected",
+                pooled,
+                len(ensemble_specs),
+                len(ensemble_specs),
+                f"inner {metric}={float(pooled[f'{metric}_mean']):.4f}",
+            )
     if all_candidates.empty:
         raise RuntimeError(
             "No valid final regression ensemble candidate was produced from inner OOF predictions."
@@ -840,16 +901,16 @@ def sweep_regression_ensemble(sweep: Sweep) -> dict[str, Path]:
         else pd.DataFrame()
     )
     metrics_df = pd.DataFrame(metric_rows)
-    selection_path = ensemble_dir / "mpma_e_outer_selection.tsv"
-    prediction_path = ensemble_dir / "ensemble_predictions.tsv"
-    result_path = ensemble_dir / "mpma_e_outer_results.tsv"
-    candidate_path = ensemble_dir / "ensemble_candidate_scores.tsv"
+    selection_path = ensemble_dir / "mpma_e_outer_selection.parquet"
+    prediction_path = ensemble_dir / "ensemble_predictions.parquet"
+    result_path = ensemble_dir / "mpma_e_outer_results.parquet"
+    candidate_path = ensemble_dir / "ensemble_candidate_scores.parquet"
     final_path = ensemble_dir / "mpma_e_final_candidate.json"
     summary_path = ensemble_dir / "mpma_e_strategy_summary.json"
-    selection_df.to_csv(selection_path, sep="\t", index=False)
-    predictions_df.to_csv(prediction_path, sep="\t", index=False)
-    metrics_df.to_csv(result_path, sep="\t", index=False)
-    all_candidates.to_csv(candidate_path, sep="\t", index=False)
+    write_table(selection_path, selection_df)
+    write_table(prediction_path, predictions_df)
+    write_table(result_path, metrics_df)
+    write_table(candidate_path, all_candidates)
     dump_json_standard(final_ensemble, final_path)
     summary = {
         "Strategy": "MPMA-E",
@@ -907,27 +968,30 @@ def sweep_regression_ensemble(sweep: Sweep) -> dict[str, Path]:
             },
         ]
     )
-    comparison_path = ensemble_dir / "final_model_comparison.tsv"
-    comparison.to_csv(comparison_path, sep="\t", index=False)
+    comparison_path = ensemble_dir / "final_model_comparison.parquet"
+    write_table(comparison_path, comparison)
     resource_path = ensemble_dir / "mpma_e_selection_resources.json"
     dump_json_standard(tracker.stop(), resource_path)
-    from .ensemble_sweep import _matrix_for_mpma_e_figure
-    from .mpma_e_figure import write_single_task_mpma_e_figure
+    if getattr(sweep, "uses_modalities", False):
+        mpma_e_outputs = {}
+    else:
+        from .ensemble_sweep import _matrix_for_mpma_e_figure
+        from .mpma_e_figure import write_single_task_mpma_e_figure
 
-    X_fig, taxa_fig, source_fig = _matrix_for_mpma_e_figure(sweep)
-    mpma_e_outputs = write_single_task_mpma_e_figure(
-        root,
-        task_key=root.name,
-        task_title=sweep.title,
-        X=X_fig,
-        taxa=taxa_fig,
-        source=source_fig,
-        out_dir=root / "figures",
-        out_name="mpma_e",
-        include_inactive_configs=True,
-        max_members=20,
-        seed=sweep.evaluation.random_state,
-    )
+        X_fig, taxa_fig, source_fig = _matrix_for_mpma_e_figure(sweep)
+        mpma_e_outputs = write_single_task_mpma_e_figure(
+            root,
+            task_key=root.name,
+            task_title=sweep.title,
+            X=X_fig,
+            taxa=taxa_fig,
+            source=source_fig,
+            out_dir=root / "figures",
+            out_name="mpma_e",
+            include_inactive_configs=True,
+            max_members=20,
+            seed=sweep.evaluation.random_state,
+        )
     success(
         f"Regression ensemble sweep completed · final candidate={final_ensemble['ensemble_config_id']} · inner {metric}={final_ensemble['inner_score']:.4f}"
     )

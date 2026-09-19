@@ -3,11 +3,12 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
+from itertools import count
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from joblib import cpu_count
+from joblib import Parallel, cpu_count, parallel_backend
 
 
 @dataclass(frozen=True)
@@ -160,7 +161,7 @@ def resolve_execution_plan(
         text = n_jobs.strip().lower()
         if text not in {"auto", "all"}:
             raise ValueError("Evaluation.n_jobs must be an integer, 'auto', or 'all'.")
-        desired = physical if text == "auto" else logical
+        desired = min(physical, 8) if text == "auto" else logical
     else:
         requested = int(n_jobs)
         if requested == 0:
@@ -186,6 +187,50 @@ def resolve_execution_plan(
         threads_per_worker=threads,
         backend=str(backend),
     )
+
+
+_WAVE_COUNTER = count()
+
+
+def _loky_wave_initializer(token: int) -> None:
+    os.environ["MLLABIOME_WORKER_WAVE"] = str(int(token))
+
+
+def iter_parallel_tasks(tasks: list[Any], execution: ExecutionPlan):
+    items = list(tasks)
+    if not items:
+        return
+    workers = max(1, min(int(execution.workers), len(items)))
+    if workers == 1:
+        for fn, args, kwargs in items:
+            yield fn(*args, **kwargs)
+        return
+    if str(execution.backend) == "loky":
+        for start in range(0, len(items), workers):
+            wave = items[start : start + workers]
+            wave_workers = max(1, min(workers, len(wave)))
+            token = next(_WAVE_COUNTER)
+            yield from Parallel(
+                n_jobs=wave_workers,
+                backend="loky",
+                return_as="generator_unordered",
+                pre_dispatch=wave_workers,
+                batch_size=1,
+                max_nbytes="1M",
+                mmap_mode="r",
+                inner_max_num_threads=max(1, int(execution.threads_per_worker)),
+                initializer=_loky_wave_initializer,
+                initargs=(token,),
+            )(wave)
+        return
+    with parallel_backend(str(execution.backend), n_jobs=workers):
+        yield from Parallel(
+            n_jobs=workers,
+            backend=str(execution.backend),
+            return_as="generator_unordered",
+            pre_dispatch=workers,
+            batch_size=1,
+        )(items)
 
 
 @contextmanager
@@ -223,8 +268,14 @@ def configure_estimator_threads(estimator: Any, threads: int) -> Any:
     names = {"n_jobs", "nthread", "thread_count", "num_threads", "n_threads"}
     updates = {}
     for key in params:
-        if key.rsplit("__", 1)[-1] in names:
-            updates[key] = int(max(1, threads))
+        leaf = key.rsplit("__", 1)[-1]
+        if leaf not in names:
+            continue
+        owner_key = key.rsplit("__", 1)[0] if "__" in key else ""
+        owner = params.get(owner_key, estimator) if owner_key else estimator
+        if leaf == "n_jobs" and owner.__class__.__name__ == "LogisticRegression":
+            continue
+        updates[key] = int(max(1, threads))
     if updates:
         try:
             estimator.set_params(**updates)

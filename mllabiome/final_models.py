@@ -7,6 +7,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .storage import read_table, table_exists
+
 from .ensemble_aggregation import (
     PROBABILITY_PRESERVING_AGGREGATIONS,
     SUPPORTED_AGGREGATIONS,
@@ -32,10 +34,10 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def _read_tsv(path: Path) -> pd.DataFrame:
-    if not path.exists():
+def _read_table(path: Path) -> pd.DataFrame:
+    if not table_exists(path):
         raise FileNotFoundError(path)
-    frame = pd.read_csv(path, sep="\t")
+    frame = read_table(path)
     if frame.empty:
         raise ValueError(f"Expected non-empty table: {path}")
     return frame
@@ -93,9 +95,9 @@ def _core_config(row: pd.Series) -> dict[str, Any]:
 
 
 def _member_scores(root: Path, member_ids: list[str], metric: str) -> dict[str, float]:
-    inner = _read_tsv(root / "inner_results" / "inner_results.tsv")
+    inner = _read_table(root / "inner_results" / "inner_results.parquet")
     if "config_id" not in inner.columns or metric not in inner.columns:
-        raise ValueError(f"inner_results.tsv must contain config_id and {metric!r}")
+        raise ValueError(f"inner_results.parquet must contain config_id and {metric!r}")
     inner = inner.copy()
     inner["config_id"] = inner["config_id"].astype(str)
     if "ok" in inner.columns:
@@ -280,9 +282,9 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
 
 
 def _validate_outer_predictions(root: Path, models: dict[str, Any]) -> None:
-    outer = _read_tsv(root / "predictions" / "outer_predictions.tsv")
+    outer = _read_table(root / "predictions" / "outer_predictions.parquet")
     if "config_id" not in outer.columns:
-        raise ValueError("outer_predictions.tsv has no config_id")
+        raise ValueError("outer_predictions.parquet has no config_id")
     available = set(outer["config_id"].astype(str))
     mpma_b = models["MPMA-B"]
     if str(mpma_b["config_id"]) not in available:
@@ -304,9 +306,9 @@ def _validate_outer_predictions(root: Path, models: dict[str, Any]) -> None:
 
 def build_final_models(root: Path | str) -> dict[str, Any]:
     root = Path(root)
-    configs = _read_tsv(root / "configs.tsv").copy()
+    configs = _read_table(root / "configs.parquet").copy()
     if "config_id" not in configs.columns:
-        raise ValueError("configs.tsv has no config_id")
+        raise ValueError("configs.parquet has no config_id")
     configs["config_id"] = configs["config_id"].astype(str)
     if configs["config_id"].duplicated().any():
         duplicates = sorted(
@@ -315,7 +317,7 @@ def build_final_models(root: Path | str) -> dict[str, Any]:
             .tolist()
         )
         raise ValueError(
-            f"configs.tsv contains duplicate config_id values: {duplicates}"
+            f"configs.parquet contains duplicate config_id values: {duplicates}"
         )
     models: dict[str, Any] = {
         "schema_version": _SCHEMA_VERSION,
@@ -370,14 +372,14 @@ def aggregate_member_predictions(
 
 
 def _outer_predictions(root: Path) -> pd.DataFrame:
-    frame = _read_tsv(root / "predictions" / "outer_predictions.tsv").copy()
+    frame = _read_table(root / "predictions" / "outer_predictions.parquet").copy()
     if "outer_split_key" not in frame.columns and "split_key" in frame.columns:
         frame["outer_split_key"] = frame["split_key"]
     required = {"outer_split_key", "sample_id", "y_true", "config_id"}
     missing = sorted(required - set(frame.columns))
     if missing:
         raise ValueError(
-            f"outer_predictions.tsv is missing required columns: {missing}"
+            f"outer_predictions.parquet is missing required columns: {missing}"
         )
     frame["outer_split_key"] = frame["outer_split_key"].astype(str)
     frame["sample_id"] = frame["sample_id"].astype(str)
@@ -415,7 +417,7 @@ def fixed_strategy_predictions(root: Path | str, strategy: str) -> pd.DataFrame:
     )
     pcols = [column for column in outer.columns if column.startswith("proba_")]
     if not pcols:
-        raise ValueError("outer_predictions.tsv has no probability columns")
+        raise ValueError("outer_predictions.parquet has no probability columns")
     rows: list[pd.DataFrame] = []
     selected = outer[outer["config_id"].isin(member_ids)].copy()
     for split_key, split in selected.groupby("outer_split_key", sort=False):

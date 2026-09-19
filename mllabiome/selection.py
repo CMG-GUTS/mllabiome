@@ -9,6 +9,7 @@ import pandas as pd
 
 from .metrics import compute_metrics, compute_regression_metrics, metric_is_loss
 from .utils import dump_json_standard
+from .storage import read_table, write_table, table_exists
 
 
 def _eligible_config_ids(configs: pd.DataFrame, plan: Any | None = None) -> set[str]:
@@ -161,6 +162,10 @@ def select_mpma_b_by_outer_fold(
             "resolution",
             "levels",
             "learner",
+            "candidate_family",
+            "modalities",
+            "integration",
+            "integration_n_components",
         ):
             if key in meta:
                 row[key] = meta[key]
@@ -376,23 +381,21 @@ def write_mpma_b_selection_outputs(
     plan: Any | None = None,
 ) -> dict[str, Path]:
     root = Path(root)
-    inner_path = root / "inner_results" / "inner_results.tsv"
-    outer_pred_path = root / "predictions" / "outer_predictions.tsv"
-    configs_path = root / "configs.tsv"
+    inner_path = root / "inner_results" / "inner_results.parquet"
+    outer_pred_path = root / "predictions" / "outer_predictions.parquet"
+    configs_path = root / "configs.parquet"
     if (
-        not inner_path.exists()
-        or not outer_pred_path.exists()
-        or not configs_path.exists()
+        not table_exists(inner_path)
+        or not table_exists(outer_pred_path)
+        or not table_exists(configs_path)
     ):
         return {}
-    inner = pd.read_csv(inner_path, sep="\t")
-    outer_predictions = pd.read_csv(outer_pred_path, sep="\t")
-    configs = pd.read_csv(configs_path, sep="\t")
-    qualification_path = root / "tables" / "qualification_gate.tsv"
+    inner = read_table(inner_path)
+    outer_predictions = read_table(outer_pred_path)
+    configs = read_table(configs_path)
+    qualification_path = root / "tables" / "qualification_gate.parquet"
     qualification = (
-        pd.read_csv(qualification_path, sep="\t")
-        if qualification_path.exists()
-        else None
+        read_table(qualification_path) if table_exists(qualification_path) else None
     )
     selection = select_mpma_b_by_outer_fold(
         inner,
@@ -413,14 +416,14 @@ def write_mpma_b_selection_outputs(
     tables_dir.mkdir(parents=True, exist_ok=True)
     predictions_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)
-    selection_path = tables_dir / "mpma_b_outer_selection.tsv"
-    prediction_path = predictions_dir / "mpma_b_outer_predictions.tsv"
-    fold_metrics_path = results_dir / "mpma_b_outer_results.tsv"
+    selection_path = tables_dir / "mpma_b_outer_selection.parquet"
+    prediction_path = predictions_dir / "mpma_b_outer_predictions.parquet"
+    fold_metrics_path = results_dir / "mpma_b_outer_results.parquet"
     summary_path = tables_dir / "mpma_b_strategy_summary.json"
     final_path = tables_dir / "mpma_b_final_candidate.json"
-    selection.to_csv(selection_path, sep="\t", index=False)
-    selected_predictions.to_csv(prediction_path, sep="\t", index=False)
-    fold_metrics.to_csv(fold_metrics_path, sep="\t", index=False)
+    write_table(selection_path, selection)
+    write_table(prediction_path, selected_predictions)
+    write_table(fold_metrics_path, fold_metrics)
     dump_json_standard(summary, summary_path)
     dump_json_standard(final_candidate, final_path)
     return {

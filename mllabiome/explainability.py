@@ -16,7 +16,6 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 import pandas as pd
-from joblib import Parallel, delayed, parallel_backend
 from scipy.stats import rankdata
 from sklearn.base import BaseEstimator
 from threadpoolctl import threadpool_limits
@@ -30,6 +29,7 @@ from .configs_sweep import (
 from .console import console, info, path_table, progress, stage, success, summary_table
 from .data import load_dataset
 from .explainability_visuals import plot_feature_support as _plot_feature_support_visual
+from .explainability_support import top_k_rank_support
 from .explainability_methods import (
     ALE,
     ALEInteractions,
@@ -48,6 +48,7 @@ from .metrics import _estimator_call, _predict_proba_aligned
 from .resolutions import materialize_mpdr
 from .runtime import (
     configure_estimator_threads,
+    iter_parallel_tasks,
     resolve_execution_plan,
     thread_environment,
 )
@@ -56,6 +57,7 @@ from .style import apply as apply_style
 from .style import save_all
 from .transformations import CountTransformationAdapter, _count_transformation_factory
 from .utils import _as_float_matrix, dump_json_standard
+from .storage import read_table, write_table, table_exists, glob_tables
 
 
 for _logger_name in ("PyALE", "PyALE._ALE_generic"):
@@ -406,27 +408,15 @@ def _xai_task_iterator(
     tasks: Sequence[tuple[Callable[..., Any], tuple[Any, ...], dict[str, Any]]],
     execution: Any,
 ):
-    if execution.workers == 1:
-        for fn, args, kwargs in tasks:
-            yield _run_xai_task(fn, args, kwargs, int(execution.threads_per_worker))
-        return
-    delayed_tasks = [
-        delayed(_run_xai_task)(fn, args, kwargs, int(execution.threads_per_worker))
+    payloads = [
+        (
+            _run_xai_task,
+            (fn, args, kwargs, int(execution.threads_per_worker)),
+            {},
+        )
         for fn, args, kwargs in tasks
     ]
-    backend_kwargs = {"n_jobs": int(execution.workers)}
-    if str(execution.backend) == "loky":
-        backend_kwargs["inner_max_num_threads"] = int(execution.threads_per_worker)
-    with parallel_backend(str(execution.backend), **backend_kwargs):
-        yield from Parallel(
-            n_jobs=int(execution.workers),
-            backend=str(execution.backend),
-            return_as="generator_unordered",
-            pre_dispatch=max(int(execution.workers), int(execution.workers) * 2),
-            batch_size=1,
-            max_nbytes="1M",
-            mmap_mode="r",
-        )(delayed_tasks)
+    yield from iter_parallel_tasks(payloads, execution)
 
 
 def _progress_callback(
@@ -1083,7 +1073,9 @@ def _collapse_duplicate_feature_importance(frame: pd.DataFrame) -> pd.DataFrame:
     return d.groupby(keys, as_index=False, sort=False).agg(agg)
 
 
-def _rank_support_from_importance(frame: pd.DataFrame) -> pd.Series:
+def _rank_support_from_importance(
+    frame: pd.DataFrame, top_k: int | None = None
+) -> pd.Series:
     d = _collapse_duplicate_feature_importance(frame).copy()
     if "class_index" not in d.columns:
         d["class_index"] = 0
@@ -1097,11 +1089,14 @@ def _rank_support_from_importance(frame: pd.DataFrame) -> pd.Series:
             continue
         ranked = values.loc[valid].rank(ascending=False, method="average")
         n = int(valid.sum())
-        support = (
-            pd.Series(1.0, index=ranked.index, dtype=float)
-            if n == 1
-            else 1.0 - (ranked - 1.0) / float(n - 1)
-        )
+        if top_k is None:
+            support = (
+                pd.Series(1.0, index=ranked.index, dtype=float)
+                if n == 1
+                else 1.0 - (ranked - 1.0) / float(n - 1)
+            )
+        else:
+            support = top_k_rank_support(values.loc[valid], int(top_k))
         index = pd.MultiIndex.from_arrays(
             [
                 np.full(len(support), int(class_index), dtype=int),
@@ -1197,7 +1192,7 @@ def _single_method_support_table(frame: pd.DataFrame, top_k: int) -> pd.DataFram
         frame["class_index"] = 0
         frame["class_label"] = "class_0"
     method = _method_display(str(frame["method"].iloc[0]))
-    support = _rank_support_from_importance(frame)
+    support = _rank_support_from_importance(frame, top_k=top_k)
     pieces: list[pd.DataFrame] = []
     for class_index, sub in frame.groupby("class_index", sort=True):
         top = (
@@ -1249,8 +1244,8 @@ def _write_fold_feature_importance(
             d["fold_key"] = str(fold_no)
         prepared.append(d)
     out = pd.concat(prepared, ignore_index=True) if prepared else pd.DataFrame()
-    path = target_dir / f"feature_importance_{method}_by_outer_fold.tsv"
-    out.to_csv(path, sep="\t", index=False)
+    path = target_dir / f"feature_importance_{method}_by_outer_fold.parquet"
+    write_table(path, out)
     return path, out
 
 
@@ -1266,8 +1261,8 @@ def _write_method_outputs(
     top_k: int,
 ) -> dict[str, Path]:
     method = str(frame["method"].iloc[0]).strip().lower()
-    table_path = target_dir / f"feature_importance_{method}.tsv"
-    frame.to_csv(table_path, sep="\t", index=False)
+    table_path = target_dir / f"feature_importance_{method}.parquet"
+    write_table(table_path, frame)
     stability_columns = [
         "method",
         "class_index",
@@ -1290,13 +1285,13 @@ def _write_method_outputs(
         "sign_negative_fraction",
         "sign_consistency",
     ]
-    stability_path = target_dir / f"feature_stability_{method}.tsv"
-    frame[[c for c in stability_columns if c in frame.columns]].to_csv(
-        stability_path, sep="\t", index=False
+    stability_path = target_dir / f"feature_stability_{method}.parquet"
+    write_table(
+        stability_path, frame[[c for c in stability_columns if c in frame.columns]]
     )
     top = _single_method_support_table(frame, top_k=top_k)
-    top_path = target_dir / f"top_features_{method}.tsv"
-    top.to_csv(top_path, sep="\t", index=False)
+    top_path = target_dir / f"top_features_{method}.parquet"
+    write_table(top_path, top)
     outputs: dict[str, Path] = {
         f"importance_{method}": table_path,
         f"stability_{method}": stability_path,
@@ -1315,8 +1310,8 @@ def _write_method_outputs(
             y,
             class_labels,
         )
-        dist_path = target_dir / f"feature_distribution_stats_{method}__{slug}.tsv"
-        dist.to_csv(dist_path, sep="\t", index=False)
+        dist_path = target_dir / f"feature_distribution_stats_{method}__{slug}.parquet"
+        write_table(dist_path, dist)
         importance_stem = figures_dir / f"feature_importance_{method}__{slug}"
         support_stem = figures_dir / f"feature_support_{method}__{slug}"
         _plot_feature_importance(class_top, dist, importance_stem, top_k, class_labels)
@@ -1559,21 +1554,98 @@ def _plot_ale_curves(
                 transform=ax.transAxes,
             )
         else:
-            x = d["grid"].to_numpy(float)
-            y = d["ale_effect"].to_numpy(float)
-            y = y - float(np.nanmean(y))
+            fold_col = next(
+                (c for c in ("fold_key", "fold_no", "outer_fold") if c in d.columns),
+                None,
+            )
+            grouped = (
+                list(d.groupby(fold_col, sort=False, dropna=False))
+                if fold_col is not None
+                else [("all", d)]
+            )
+            fold_curves: list[tuple[np.ndarray, np.ndarray]] = []
             ax.axhline(0, color=TRACK, lw=0.55, zorder=1)
-            ax.plot(x, y, color=ACC_D, lw=0.95, zorder=3, solid_capstyle="round")
-            ax.fill_between(x, 0, y, color=ACC_L, alpha=0.72, zorder=2, linewidth=0)
-            if len(x):
-                ax.scatter(
-                    [x[0], x[-1]],
-                    [y[0], y[-1]],
-                    s=5,
-                    color=ACC_D,
-                    linewidths=0,
-                    zorder=4,
+            for _, fold_frame in grouped:
+                fold_frame = (
+                    fold_frame.groupby("grid", as_index=False)["ale_effect"]
+                    .mean()
+                    .sort_values("grid")
                 )
+                x_fold = fold_frame["grid"].to_numpy(float)
+                y_fold = fold_frame["ale_effect"].to_numpy(float)
+                finite = np.isfinite(x_fold) & np.isfinite(y_fold)
+                x_fold = x_fold[finite]
+                y_fold = y_fold[finite]
+                if not len(x_fold):
+                    continue
+                y_fold = y_fold - float(np.mean(y_fold))
+                fold_curves.append((x_fold, y_fold))
+                if len(grouped) > 1:
+                    ax.plot(
+                        x_fold,
+                        y_fold,
+                        color=TRACK,
+                        lw=0.55,
+                        alpha=0.85,
+                        zorder=2,
+                        solid_capstyle="round",
+                    )
+            if len(fold_curves) == 1:
+                x, y = fold_curves[0]
+                ax.plot(
+                    x,
+                    y,
+                    color=ACC_D,
+                    lw=0.95,
+                    zorder=4,
+                    solid_capstyle="round",
+                )
+                ax.fill_between(x, 0, y, color=ACC_L, alpha=0.42, zorder=3, linewidth=0)
+            elif len(fold_curves) > 1:
+                lower = max(float(np.min(x)) for x, _ in fold_curves)
+                upper = min(float(np.max(x)) for x, _ in fold_curves)
+                if not np.isfinite(lower) or not np.isfinite(upper) or lower >= upper:
+                    lower = min(float(np.min(x)) for x, _ in fold_curves)
+                    upper = max(float(np.max(x)) for x, _ in fold_curves)
+                if np.isfinite(lower) and np.isfinite(upper) and lower < upper:
+                    grid_size = max(
+                        32, min(128, max(len(x) for x, _ in fold_curves) * 4)
+                    )
+                    x_common = np.linspace(lower, upper, grid_size)
+                    stack = np.full((len(fold_curves), grid_size), np.nan, dtype=float)
+                    for fold_index, (x_fold, y_fold) in enumerate(fold_curves):
+                        supported = (x_common >= float(np.min(x_fold))) & (
+                            x_common <= float(np.max(x_fold))
+                        )
+                        if np.any(supported):
+                            stack[fold_index, supported] = np.interp(
+                                x_common[supported], x_fold, y_fold
+                            )
+                    required = min(2, len(fold_curves))
+                    supported_columns = np.sum(np.isfinite(stack), axis=0) >= required
+                    if np.any(supported_columns):
+                        x_plot = x_common[supported_columns]
+                        values = stack[:, supported_columns]
+                        median = np.nanmedian(values, axis=0)
+                        q25 = np.nanquantile(values, 0.25, axis=0)
+                        q75 = np.nanquantile(values, 0.75, axis=0)
+                        ax.fill_between(
+                            x_plot,
+                            q25,
+                            q75,
+                            color=ACC_L,
+                            alpha=0.52,
+                            zorder=3,
+                            linewidth=0,
+                        )
+                        ax.plot(
+                            x_plot,
+                            median,
+                            color=ACC_D,
+                            lw=1.05,
+                            zorder=4,
+                            solid_capstyle="round",
+                        )
         ax.text(
             0.0,
             1.055,
@@ -1805,14 +1877,14 @@ def _method_cache_signature(
 
 def _method_cache_files_complete(target_dir: Path, method: str) -> bool:
     if method == "interactions":
-        return (target_dir / "feature_interactions_current.csv").exists()
+        return table_exists(target_dir / "feature_interactions_current.parquet")
     required = [
-        target_dir / f"feature_importance_{method}.tsv",
-        target_dir / f"feature_stability_{method}.tsv",
-        target_dir / f"feature_importance_{method}_by_outer_fold.tsv",
-        target_dir / f"top_features_{method}.tsv",
+        target_dir / f"feature_importance_{method}.parquet",
+        target_dir / f"feature_stability_{method}.parquet",
+        target_dir / f"feature_importance_{method}_by_outer_fold.parquet",
+        target_dir / f"top_features_{method}.parquet",
     ]
-    return all(path.exists() for path in required)
+    return all(table_exists(path) for path in required)
 
 
 def _source_config_compatible(meta: dict[str, Any], row: pd.Series) -> bool:
@@ -1991,26 +2063,24 @@ def _persist_method_cache_entry(
 def _cached_method_frame(
     target_dir: Path, method: str
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    frame = pd.read_csv(target_dir / f"feature_importance_{method}.tsv", sep="\t")
-    fold = pd.read_csv(
-        target_dir / f"feature_importance_{method}_by_outer_fold.tsv", sep="\t"
-    )
+    frame = read_table(target_dir / f"feature_importance_{method}.parquet")
+    fold = read_table(target_dir / f"feature_importance_{method}_by_outer_fold.parquet")
     return frame, fold
 
 
 def _existing_method_outputs(target_dir: Path, method: str) -> dict[str, Path]:
     outputs: dict[str, Path] = {}
     mapping = {
-        f"importance_{method}": target_dir / f"feature_importance_{method}.tsv",
-        f"stability_{method}": target_dir / f"feature_stability_{method}.tsv",
-        f"top_features_{method}": target_dir / f"top_features_{method}.tsv",
+        f"importance_{method}": target_dir / f"feature_importance_{method}.parquet",
+        f"stability_{method}": target_dir / f"feature_stability_{method}.parquet",
+        f"top_features_{method}": target_dir / f"top_features_{method}.parquet",
         f"{method}_by_outer_fold": target_dir
-        / f"feature_importance_{method}_by_outer_fold.tsv",
+        / f"feature_importance_{method}_by_outer_fold.parquet",
     }
     for key, path in mapping.items():
-        if path.exists():
+        if table_exists(path):
             outputs[key] = path
-    for path in sorted(target_dir.glob(f"feature_distribution_stats_{method}__*.tsv")):
+    for path in glob_tables(target_dir, f"feature_distribution_stats_{method}__*"):
         outputs[path.stem] = path
     figures = target_dir / "figures"
     for path in sorted(figures.glob(f"feature_importance_{method}__*.png")):
@@ -2018,19 +2088,19 @@ def _existing_method_outputs(target_dir: Path, method: str) -> dict[str, Path]:
     for path in sorted(figures.glob(f"feature_support_{method}__*.png")):
         outputs[path.stem] = path
     if method == "ale":
-        curve_table = target_dir / "ale_curves.tsv"
-        if curve_table.exists():
+        curve_table = target_dir / "ale_curves.parquet"
+        if table_exists(curve_table):
             outputs["ale_curves"] = curve_table
         for path in sorted(figures.glob("ale_curves__*.png")):
             outputs[path.stem] = path
     if method == "interactions":
-        for path in sorted(target_dir.glob("feature_interactions_*.csv")):
+        for path in glob_tables(target_dir, "feature_interactions_*"):
             outputs[path.stem] = path
         for path in sorted(figures.glob("interaction_network_*.png")):
             outputs[path.stem] = path
     if method in {"shap", "lime"}:
-        path = target_dir / f"instance_explanations_{method}_top_features.tsv"
-        if path.exists():
+        path = target_dir / f"instance_explanations_{method}_top_features.parquet"
+        if table_exists(path):
             outputs[f"instance_explanations_{method}"] = path
     return outputs
 
@@ -2079,10 +2149,10 @@ def _refresh_target_visuals(target_dir: Path, sweep: Sweep) -> dict[str, Path]:
     def render(
         top_path: Path, stats_path_for: Callable[[str], Path], stem_prefix: str
     ) -> None:
-        if not top_path.exists():
+        if not table_exists(top_path):
             return
         try:
-            top = pd.read_csv(top_path, sep="\t")
+            top = read_table(top_path)
         except Exception:
             return
         if top.empty or "feature" not in top.columns:
@@ -2104,10 +2174,10 @@ def _refresh_target_visuals(target_dir: Path, sweep: Sweep) -> dict[str, Path]:
                 label = f"class_{c}"
             slug = _class_slug(label)
             stats_path = stats_path_for(slug)
-            if not stats_path.exists():
+            if not table_exists(stats_path):
                 continue
             try:
-                stats = pd.read_csv(stats_path, sep="\t")
+                stats = read_table(stats_path)
             except Exception:
                 continue
             if "class_index" in stats.columns:
@@ -2127,18 +2197,18 @@ def _refresh_target_visuals(target_dir: Path, sweep: Sweep) -> dict[str, Path]:
                         outputs[path.stem + suffix.replace(".", "_")] = path
 
     render(
-        target_dir / "top_features.tsv",
-        lambda slug: target_dir / "feature_distribution_stats.tsv",
+        target_dir / "top_features.parquet",
+        lambda slug: target_dir / "feature_distribution_stats.parquet",
         "",
     )
-    for top_path in sorted(target_dir.glob("top_features_*.tsv")):
+    for top_path in glob_tables(target_dir, "top_features_*"):
         method = top_path.stem[len("top_features_") :]
         if not method:
             continue
         render(
             top_path,
             lambda slug, method=method: (
-                target_dir / f"feature_distribution_stats_{method}__{slug}.tsv"
+                target_dir / f"feature_distribution_stats_{method}__{slug}.parquet"
             ),
             f"_{method}",
         )
@@ -2167,9 +2237,9 @@ def _safe_cache_name(value: str | None) -> str:
 def _explainability_cache_complete(target_dir: Path, explainability: Any) -> bool:
     if not (target_dir / "explained_unit.json").exists():
         return False
-    if not (target_dir / "feature_importance.tsv").exists():
+    if not table_exists(target_dir / "feature_importance.parquet"):
         return False
-    if not (target_dir / "top_features.tsv").exists():
+    if not table_exists(target_dir / "top_features.parquet"):
         return False
     figs = target_dir / "figures"
     if (
@@ -2189,18 +2259,17 @@ def _explainability_cache_complete(target_dir: Path, explainability: Any) -> boo
         return False
     normalised = set(_normalise_explainability_methods(explainability.methods))
     for method in ("shap", "lime", "ale", "permutation"):
-        if (
-            method in normalised
-            and not (target_dir / f"feature_importance_{method}.tsv").exists()
+        if method in normalised and not table_exists(
+            target_dir / f"feature_importance_{method}.parquet"
         ):
             return False
     if "interactions" in normalised and not any(
         (target_dir / name).exists()
         for name in (
-            "feature_interactions_current.csv",
-            "feature_interactions_corrected.csv",
-            "feature_interactions_fixed_pairs.csv",
-            "feature_interactions_corrected_fixed.csv",
+            "feature_interactions_current.parquet",
+            "feature_interactions_corrected.parquet",
+            "feature_interactions_fixed_pairs.parquet",
+            "feature_interactions_corrected_fixed.parquet",
         )
     ):
         return False
@@ -2238,7 +2307,7 @@ def _ensure_mpma_member_explanations(
             continue
         if matches.empty:
             raise ExplainabilityConfigurationError(
-                f"MPMA-E member {member!r} cannot be matched to mpma_rankings.tsv for cached explanation."
+                f"MPMA-E member {member!r} cannot be matched to mpma_rankings.parquet for cached explanation."
             )
         row = matches.iloc[0]
         desc = " · ".join(
@@ -2785,8 +2854,8 @@ def _explainability_outer_splits(sweep: Sweep, dataset: Any) -> list[dict[str, A
 def _ordered_member_rows(
     root: Path, rankings: pd.DataFrame, members: Sequence[str]
 ) -> pd.DataFrame:
-    config_path = root / "configs.tsv"
-    configs = pd.read_csv(config_path, sep="\t") if config_path.exists() else rankings
+    config_path = root / "configs.parquet"
+    configs = read_table(config_path) if table_exists(config_path) else rankings
     configs = configs.copy()
     configs["config_id"] = configs["config_id"].astype(str)
     rows: list[pd.Series] = []
@@ -2801,7 +2870,7 @@ def _ordered_member_rows(
             ]
         if match.empty:
             raise ExplainabilityConfigurationError(
-                f"MPMA-E member {member!r} cannot be matched to configs.tsv."
+                f"MPMA-E member {member!r} cannot be matched to configs.parquet."
             )
         rows.append(match.iloc[0])
     return pd.DataFrame(rows).drop_duplicates("config_id")
@@ -2842,6 +2911,10 @@ def _fit_oof_single_for_explainability(
     sweep: Sweep,
     row: pd.Series,
 ) -> dict[str, Any]:
+    if getattr(sweep, "uses_modalities", False):
+        from .multimodal_sweep import fit_modality_candidate_oof_for_explainability
+
+        return fit_modality_candidate_oof_for_explainability(sweep, row)
     levels = tuple(str(row["levels"]).split(","))
     dataset = load_dataset(sweep.data, levels)
     X_base, feature_names = materialize_mpdr(dataset, levels)
@@ -3073,8 +3146,8 @@ def _write_oof_prediction_summary(
     dataset: Any, folds: Sequence[dict[str, Any]], target_dir: Path
 ) -> Path:
     pred_df = _aggregate_oof_predictions(dataset, folds)
-    path = target_dir / "oof_predictions.tsv"
-    pred_df.to_csv(path, sep="\t", index=False)
+    path = target_dir / "oof_predictions.parquet"
+    write_table(path, pred_df)
     return path
 
 
@@ -3497,13 +3570,13 @@ def _ensure_local_explanation_outputs(
             class_indices,
             selected_pairs,
         )
-        top_path = target_dir / f"instance_explanations_{method}_top_features.tsv"
-        selected_path = target_dir / f"instance_explanations_{method}_selected.tsv"
+        top_path = target_dir / f"instance_explanations_{method}_top_features.parquet"
+        selected_path = target_dir / f"instance_explanations_{method}_selected.parquet"
         entry = cache.get(method, {}) if isinstance(cache, dict) else {}
         if (
             str(entry.get("signature", "")) == signature
-            and top_path.exists()
-            and selected_path.exists()
+            and table_exists(top_path)
+            and table_exists(selected_path)
         ):
             info(
                 f"Reusing cached local {method.upper()} explanations · selected samples unchanged"
@@ -3532,8 +3605,8 @@ def _ensure_local_explanation_outputs(
             method=method,
             top_features_per_direction=sweep.explainability.top_instance_features,
         )
-        top.to_csv(top_path, sep="\t", index=False)
-        selected.to_csv(selected_path, sep="\t", index=False)
+        write_table(top_path, top)
+        write_table(selected_path, selected)
         outputs[f"instance_explanations_{method}"] = top_path
         cache[method] = {
             "signature": signature,
@@ -3852,10 +3925,10 @@ def _explain_one(
             "fallbacks": "off",
         },
     )
-    rankings_path = root / "tables" / "mpma_rankings.tsv"
-    if not rankings_path.exists():
+    rankings_path = root / "tables" / "mpma_rankings.parquet"
+    if not table_exists(rankings_path):
         raise FileNotFoundError("Run evaluate(sweep) before explain(sweep).")
-    rankings = pd.read_csv(rankings_path, sep="\t")
+    rankings = read_table(rankings_path)
     if rankings.empty:
         raise RuntimeError("No ranked MPMA is available for explainability.")
     target = target_override or _single_configured_explainability_target(
@@ -3918,8 +3991,8 @@ def _explain_one(
         info(f"Reusing existing explainability for {target_label}")
         return {
             "explainability_dir": target_dir,
-            "importance": target_dir / "feature_importance.tsv",
-            "stability": target_dir / "feature_stability.tsv",
+            "importance": target_dir / "feature_importance.parquet",
+            "stability": target_dir / "feature_stability.parquet",
         }
     if (
         not ensemble_explain
@@ -3935,8 +4008,8 @@ def _explain_one(
         )
         return {
             "explainability_dir": target_dir,
-            "importance": target_dir / "feature_importance.tsv",
-            "stability": target_dir / "feature_stability.tsv",
+            "importance": target_dir / "feature_importance.parquet",
+            "stability": target_dir / "feature_stability.parquet",
         }
 
     coordinate_metadata: list[Any] = []
@@ -4000,8 +4073,8 @@ def _explain_one(
                 for item in coordinate_metadata
             ]
         )
-        coordinate_metadata_path = target_dir / "coordinate_metadata.tsv"
-        coordinate_frame.to_csv(coordinate_metadata_path, sep="\t", index=False)
+        coordinate_metadata_path = target_dir / "coordinate_metadata.parquet"
+        write_table(coordinate_metadata_path, coordinate_frame)
 
     source_signature = _explainability_source_signature(
         target_slug, row, oof_folds, feature_names, dataset.class_labels
@@ -4639,8 +4712,9 @@ def _explain_one(
                     curve_frames.append(curves)
         info("Aggregating ALE global effects and cross-fold stability")
         if skipped_frames:
-            pd.concat(skipped_frames, ignore_index=True).to_csv(
-                target_dir / "ale_skipped_features.tsv", sep="\t", index=False
+            write_table(
+                target_dir / "ale_skipped_features.parquet",
+                pd.concat(skipped_frames, ignore_index=True),
             )
         if not ale_frames:
             raise ExplainabilityConfigurationError(
@@ -4657,7 +4731,7 @@ def _explain_one(
         )
         if curve_frames:
             curves_all = pd.concat(curve_frames, ignore_index=True)
-            curves_all.to_csv(target_dir / "ale_curves.tsv", sep="\t", index=False)
+            write_table(target_dir / "ale_curves.parquet", curves_all)
             for class_index in class_indices:
                 label = str(dataset.class_labels[int(class_index)])
                 slug = _class_slug(label)
@@ -4710,7 +4784,7 @@ def _explain_one(
         )
 
     imp = _combine_feature_importance(method_frames)
-    imp.to_csv(target_dir / "feature_importance.tsv", sep="\t", index=False)
+    write_table(target_dir / "feature_importance.parquet", imp)
     stability_all = pd.concat(
         [
             frame.assign(method=str(frame["method"].iloc[0]))
@@ -4741,20 +4815,19 @@ def _explain_one(
         "sign_negative_fraction",
         "sign_consistency",
     ]
-    stability_all[[c for c in stability_columns if c in stability_all.columns]].to_csv(
-        target_dir / "feature_stability.tsv", sep="\t", index=False
+    write_table(
+        target_dir / "feature_stability.parquet",
+        stability_all[[c for c in stability_columns if c in stability_all.columns]],
     )
-    method_outputs["feature_stability"] = target_dir / "feature_stability.tsv"
+    method_outputs["feature_stability"] = target_dir / "feature_stability.parquet"
     fold_all = (
         pd.concat(fold_importance_frames, ignore_index=True)
         if fold_importance_frames
         else pd.DataFrame()
     )
-    fold_all.to_csv(
-        target_dir / "feature_importance_by_outer_fold.tsv", sep="\t", index=False
-    )
+    write_table(target_dir / "feature_importance_by_outer_fold.parquet", fold_all)
     method_outputs["feature_importance_by_outer_fold"] = (
-        target_dir / "feature_importance_by_outer_fold.tsv"
+        target_dir / "feature_importance_by_outer_fold.parquet"
     )
 
     if "interactions" in methods and "interactions" not in reusable_methods:
@@ -4804,12 +4877,12 @@ def _explain_one(
             if frames
         }
         if all_raw:
-            all_path = target_dir / "feature_interactions_by_target_all_methods.csv"
-            pd.concat(all_raw, ignore_index=True).to_csv(all_path, index=False)
+            all_path = target_dir / "feature_interactions_by_target_all_methods.parquet"
+            write_table(all_path, pd.concat(all_raw, ignore_index=True))
             interaction_outputs["interactions_all_methods"] = all_path
         for name, tab in interaction_tables.items():
-            path = target_dir / f"feature_interactions_{name}.csv"
-            tab.to_csv(path, index=False)
+            path = target_dir / f"feature_interactions_{name}.parquet"
+            write_table(path, tab)
             interaction_outputs[f"interactions_{name}"] = path
         _persist_method_cache_entry(
             meta_path,
@@ -4852,7 +4925,7 @@ def _explain_one(
     top_features = _method_support_table(
         method_frames, imp, top_k=sweep.explainability.top_k
     )
-    top_features.to_csv(target_dir / "top_features.tsv", sep="\t", index=False)
+    write_table(target_dir / "top_features.parquet", top_features)
     dist_frames: list[pd.DataFrame] = []
     class_figure_paths: dict[str, Path] = {}
     for class_index, class_top in top_features.groupby("class_index", sort=True):
@@ -4890,9 +4963,7 @@ def _explain_one(
     dist_all = (
         pd.concat(dist_frames, ignore_index=True) if dist_frames else pd.DataFrame()
     )
-    dist_all.to_csv(
-        target_dir / "feature_distribution_stats.tsv", sep="\t", index=False
-    )
+    write_table(target_dir / "feature_distribution_stats.parquet", dist_all)
 
     dump_json_standard(
         {
@@ -4945,7 +5016,7 @@ def _explain_one(
                 "fold_coverage",
                 "sign_consistency",
             ],
-            "fold_level_importance_file": "feature_importance_by_outer_fold.tsv",
+            "fold_level_importance_file": "feature_importance_by_outer_fold.parquet",
             "execution": {
                 "workers": int(execution.workers),
                 "threads_per_worker": int(execution.threads_per_worker),
@@ -4963,8 +5034,8 @@ def _explain_one(
     )
     outputs = {
         "explainability_dir": target_dir,
-        "importance": target_dir / "feature_importance.tsv",
-        "stability": target_dir / "feature_stability.tsv",
+        "importance": target_dir / "feature_importance.parquet",
+        "stability": target_dir / "feature_stability.parquet",
     }
     if coordinate_metadata_path is not None:
         outputs["coordinate_metadata"] = coordinate_metadata_path
@@ -5085,8 +5156,8 @@ def _fit_selected_mpma_e_for_explainability(
 ) -> tuple[Any, np.ndarray, np.ndarray, list[str], BaseEstimator, pd.Series]:
     root = sweep.root()
     members, aggregation = _selected_ensemble_members(root)
-    config_path = root / "configs.tsv"
-    configs = pd.read_csv(config_path, sep="\t") if config_path.exists() else rankings
+    config_path = root / "configs.parquet"
+    configs = read_table(config_path) if table_exists(config_path) else rankings
     configs = configs.copy()
     configs["config_id"] = configs["config_id"].astype(str)
     member_rows = configs[configs["config_id"].isin([str(m) for m in members])].copy()
@@ -5099,7 +5170,7 @@ def _fit_selected_mpma_e_for_explainability(
         member_rows = pd.DataFrame(keep)
     if member_rows.empty:
         raise ExplainabilityConfigurationError(
-            "MPMA-E members cannot be matched to configs.tsv."
+            "MPMA-E members cannot be matched to configs.parquet."
         )
     member_rows = member_rows.drop_duplicates("config_id")
     all_levels: list[str] = []
@@ -5174,7 +5245,9 @@ def _fit_selected_mpma_e_for_explainability(
 
 def _standard_explainability_targets(sweep: Sweep, rankings: pd.DataFrame) -> list[str]:
     targets: list[str] = []
-    if (sweep.root() / "ensembling" / "selected_unit.json").exists():
+    if (sweep.root() / "ensembling" / "selected_unit.json").exists() and not getattr(
+        sweep, "uses_modalities", False
+    ):
         targets.append("mpma_e")
     targets.append("mpma_b")
     if _resolve_baseline_rf_row(rankings) is not None:
@@ -5205,10 +5278,10 @@ def _automatic_explainability_targets(
 
 def explain(sweep: Sweep) -> dict[str, Path]:
     root = sweep.root()
-    rankings_path = root / "tables" / "mpma_rankings.tsv"
-    if not rankings_path.exists():
+    rankings_path = root / "tables" / "mpma_rankings.parquet"
+    if not table_exists(rankings_path):
         raise FileNotFoundError("Run evaluate(sweep) before explain(sweep).")
-    rankings = pd.read_csv(rankings_path, sep="\t")
+    rankings = read_table(rankings_path)
     targets = _automatic_explainability_targets(sweep, rankings)
     outputs: dict[str, Path] = {}
     for target in targets:
@@ -5252,14 +5325,9 @@ def _method_support_table(
     supports: dict[str, pd.Series] = {}
     for frame in frames:
         method = _method_display(frame["method"].iloc[0])
-        supports[method] = _rank_support_from_importance(frame)
+        supports[method] = _rank_support_from_importance(frame, top_k=top_k)
     for class_index, class_imp in imp.groupby("class_index", sort=True):
-        top = (
-            class_imp.sort_values("importance_mean", ascending=False)
-            .head(int(top_k))
-            .copy()
-        )
-        top["rank"] = np.arange(1, len(top) + 1, dtype=int)
+        top = class_imp.copy()
         keys = pd.MultiIndex.from_arrays(
             [
                 np.full(len(top), int(class_index), dtype=int),
@@ -5288,6 +5356,12 @@ def _method_support_table(
             if present_columns
             else np.nan
         )
+        top = top.sort_values(
+            ["consensus", "n_methods", "importance_mean", "feature"],
+            ascending=[False, False, False, True],
+            na_position="last",
+        ).head(int(top_k))
+        top["rank"] = np.arange(1, len(top) + 1, dtype=int)
         pieces.append(top)
     out = pd.concat(pieces, ignore_index=True) if pieces else pd.DataFrame()
     cols = [
@@ -5531,10 +5605,10 @@ def _ensure_interaction_network_outputs(
     class_indices: Sequence[int],
     top_k: int,
 ) -> dict[str, Path]:
-    path = target_dir / "feature_interactions_current.csv"
-    if not path.exists():
+    path = target_dir / "feature_interactions_current.parquet"
+    if not table_exists(path):
         return {}
-    table = pd.read_csv(path)
+    table = read_table(path)
     if table.empty or "class_index" not in table.columns:
         return {}
     outputs: dict[str, Path] = {}

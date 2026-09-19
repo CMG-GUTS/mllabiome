@@ -7,14 +7,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .storage import read_table, write_table, table_exists
 from .utils import dump_json_standard
 
 
-def _read_tsv(path: Path) -> pd.DataFrame:
-    if not path.exists() or path.stat().st_size == 0:
-        return pd.DataFrame()
+def _read_table(path: Path) -> pd.DataFrame:
     try:
-        return pd.read_csv(path, sep="\t")
+        return read_table(path)
     except Exception:
         return pd.DataFrame()
 
@@ -56,10 +55,10 @@ def _outer_keys(root: Path, resources: pd.DataFrame) -> set[str]:
     if not resources.empty and "split_key" in resources.columns:
         keys |= set(resources["split_key"].dropna().astype(str))
     for path in (
-        root / "results" / "outer_results.tsv",
-        root / "tables" / "qualification_gate.tsv",
+        root / "results" / "outer_results.parquet",
+        root / "tables" / "qualification_gate.parquet",
     ):
-        frame = _read_tsv(path)
+        frame = _read_table(path)
         if not frame.empty and "split_key" in frame.columns:
             keys |= set(frame["split_key"].dropna().astype(str))
     return keys
@@ -122,12 +121,12 @@ def run_compute_accounting(
 ) -> dict[str, Any]:
     tables_dir = root / "report" / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
-    resources = _read_tsv(root / "tables" / "job_resources.tsv")
-    configs = _read_tsv(root / "configs.tsv")
+    resources = _read_table(root / "tables" / "job_resources.parquet")
+    configs = _read_table(root / "configs.parquet")
     if resources.empty or configs.empty:
         empty = pd.DataFrame()
-        compute_path = tables_dir / "strategy_compute.tsv"
-        empty.to_csv(compute_path, sep="\t", index=False)
+        compute_path = tables_dir / "strategy_compute.parquet"
+        write_table(compute_path, empty)
         manifest_path = tables_dir / "compute_accounting_manifest.json"
         dump_json_standard(
             {
@@ -151,7 +150,7 @@ def run_compute_accounting(
     rows = []
     for strategy in ("MPMA-E", "MPMA-B", "AutoML", "Baseline RF", "SIAMCAT"):
         if strategy == "MPMA-E":
-            if not (root / "ensembling" / "ensemble_predictions.tsv").exists():
+            if not table_exists(root / "ensembling" / "ensemble_predictions.parquet"):
                 continue
             ids = pool_ids
             overhead = mpma_e_overhead
@@ -200,8 +199,8 @@ def run_compute_accounting(
             }
         )
     frame = pd.DataFrame(rows)
-    compute_path = tables_dir / "strategy_compute.tsv"
-    frame.to_csv(compute_path, sep="\t", index=False)
+    compute_path = tables_dir / "strategy_compute.parquet"
+    write_table(compute_path, frame)
     run_summary = _read_json(root / "run_summary.json")
     environment = (
         run_summary.get("machine", {})

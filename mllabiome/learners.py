@@ -60,27 +60,6 @@ def _as_named_frame(X: Any, feature_names: list[str]):
     return pd.DataFrame(arr, columns=list(feature_names))
 
 
-def _quiet_known_flaml_sklearn_warnings():
-    warnings.filterwarnings(
-        "ignore",
-        message=r"'penalty' was deprecated.*",
-        category=FutureWarning,
-        module=r"sklearn\.linear_model\._logistic",
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message=r"Inconsistent values: penalty=.*",
-        category=UserWarning,
-        module=r"sklearn\.linear_model\._logistic",
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message=r"'n_jobs' has no effect since 1\.8.*",
-        category=FutureWarning,
-        module=r"sklearn\.linear_model\._logistic",
-    )
-
-
 def _logistic_regression(*, kind: str = "l2", **kwargs) -> LogisticRegression:
     params = dict(kwargs)
     default = inspect.signature(LogisticRegression).parameters["penalty"].default
@@ -210,7 +189,7 @@ class FLAMLClassifier(BaseEstimator):
         if self.estimator_list is not None:
             fit_kwargs["estimator_list"] = self.estimator_list
         with warnings.catch_warnings():
-            _quiet_known_flaml_sklearn_warnings()
+            warnings.simplefilter("error")
             self.model_.fit(**fit_kwargs)
         if not callable(getattr(self.model_, "predict_proba", None)):
             raise TypeError(

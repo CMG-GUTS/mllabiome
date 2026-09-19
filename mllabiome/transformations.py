@@ -99,6 +99,16 @@ TRANSFORMATION_LABELS: tuple[TransformationLabel, ...] = (
         "log_ratio_coordinate",
     ),
     TransformationLabel(
+        "standardize", ("zscore", "z_score", "standard_scale"), "generic"
+    ),
+    TransformationLabel("robust_scale", ("robust_numeric", "median_iqr"), "generic"),
+    TransformationLabel(
+        "power_yeo_johnson", ("yeo_johnson_numeric", "power_numeric"), "generic"
+    ),
+    TransformationLabel(
+        "quantile_normal_numeric", ("rank_gauss_numeric", "qnorm_numeric"), "generic"
+    ),
+    TransformationLabel(
         "standardized_centered_log_ratio_multiplicative_replacement",
         ("clr_std", "clr_epsilon_z", "clr_eps_z", "clr-mult+z"),
         "extended",
@@ -344,6 +354,24 @@ class _BuiltinTransformer:
                     "Cannot estimate a log-relative-abundance pseudocount without positive abundances."
                 )
             self.pseudocount_ = float(positive.min()) / 2.0
+        elif name == "standardize":
+            self.scaler_ = StandardScaler().fit(raw)
+        elif name == "robust_scale":
+            self.scaler_ = RobustScaler().fit(raw)
+        elif name == "power_yeo_johnson":
+            mask = np.ptp(raw, axis=0) > 0
+            self.variable_mask_ = mask
+            if np.any(mask):
+                self.scaler_ = PowerTransformer(
+                    method="yeo-johnson", standardize=True
+                ).fit(raw[:, mask])
+        elif name == "quantile_normal_numeric":
+            self.scaler_ = QuantileTransformer(
+                n_quantiles=max(2, min(1000, raw.shape[0])),
+                output_distribution="normal",
+                random_state=self.random_state,
+                subsample=None,
+            ).fit(raw)
         elif name == "standardized_centered_log_ratio_multiplicative_replacement":
             base = _clr_matrix(X)
             self.scaler_ = StandardScaler().fit(base)
@@ -406,6 +434,45 @@ class _BuiltinTransformer:
         }:
             return _finite_output(
                 self._base_transform(X),
+                expected_shape=expected_shape,
+                context=f"Built-in transformation {name!r}",
+            )
+        if name == "standardize":
+            if self.scaler_ is None:
+                raise RuntimeError("Transformation has not been fitted.")
+            return _finite_output(
+                self.scaler_.transform(_matrix(X)),
+                expected_shape=expected_shape,
+                context=f"Built-in transformation {name!r}",
+            )
+        if name == "robust_scale":
+            if self.scaler_ is None:
+                raise RuntimeError("Transformation has not been fitted.")
+            return _finite_output(
+                self.scaler_.transform(_matrix(X)),
+                expected_shape=expected_shape,
+                context=f"Built-in transformation {name!r}",
+            )
+        if name == "power_yeo_johnson":
+            raw = _matrix(X)
+            out = np.zeros_like(raw, dtype=np.float64)
+            mask = self.variable_mask_
+            if mask is None:
+                raise RuntimeError("Transformation has not been fitted.")
+            if np.any(mask):
+                if self.scaler_ is None:
+                    raise RuntimeError("Transformation has not been fitted.")
+                out[:, mask] = self.scaler_.transform(raw[:, mask])
+            return _finite_output(
+                out,
+                expected_shape=expected_shape,
+                context=f"Built-in transformation {name!r}",
+            )
+        if name == "quantile_normal_numeric":
+            if self.scaler_ is None:
+                raise RuntimeError("Transformation has not been fitted.")
+            return _finite_output(
+                self.scaler_.transform(_matrix(X)),
                 expected_shape=expected_shape,
                 context=f"Built-in transformation {name!r}",
             )

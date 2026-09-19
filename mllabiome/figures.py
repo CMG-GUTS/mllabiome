@@ -6,6 +6,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .storage import read_table, write_table
+from .metrics import metric_is_loss
 from .transformations import TRANSFORMATION_SPACE, transformation_label
 from .utils import TAXONOMIC_LEVELS
 
@@ -62,6 +64,20 @@ def _resolution_order_key(x: Any) -> tuple[int, int, int, str]:
     return (9, 9, 9, lab)
 
 
+def _best_cell_indices(values: np.ndarray, k: int, lower_is_better: bool) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    finite = np.flatnonzero(np.isfinite(arr))
+    if finite.size == 0:
+        return np.asarray([], dtype=int)
+    k = max(1, min(int(k), int(finite.size)))
+    vals = arr[finite]
+    if lower_is_better:
+        threshold = np.partition(vals, k - 1)[k - 1]
+        return finite[vals <= threshold]
+    threshold = np.partition(vals, finite.size - k)[finite.size - k]
+    return finite[vals >= threshold]
+
+
 def _eta2_one_way(df: pd.DataFrame, factor: str, metric: str) -> float:
     if factor not in df.columns or metric not in df.columns:
         return 0.0
@@ -82,10 +98,10 @@ def _eta2_one_way(df: pd.DataFrame, factor: str, metric: str) -> float:
 
 def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") -> None:
     pass
-    result_path = root / "results" / "outer_results.tsv"
+    result_path = root / "results" / "outer_results.parquet"
     if not result_path.exists() or result_path.stat().st_size == 0:
         return
-    df = pd.read_csv(result_path, sep="\t")
+    df = read_table(result_path)
     if df.empty or "ok" not in df.columns:
         return
     df = df[df["ok"].eq(1)].copy()
@@ -114,9 +130,7 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
         .rename(columns={metric: f"{metric}_mean"})
     )
     (root / "tables").mkdir(parents=True, exist_ok=True)
-    cells.to_csv(
-        root / "tables" / "representation_impact_cells.tsv", sep="\t", index=False
-    )
+    write_table(root / "tables" / "representation_impact_cells.parquet", cells)
 
     import matplotlib as mpl
     import matplotlib.gridspec as gridspec
@@ -204,6 +218,14 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
 
+    is_modality_sweep = "candidate_family" in df.columns or "modalities" in df.columns
+    representation_label = (
+        "Modality representation" if is_modality_sweep else "Taxonomic resolution"
+    )
+    learner_label = "Learner" if is_modality_sweep else "Classifier"
+    transformation_factor_label = (
+        "Transformation" if is_modality_sweep else "Feature representation"
+    )
     res_summary = (
         df.groupby("resolution", dropna=False)[metric]
         .agg(["mean", "std", "count"])
@@ -218,17 +240,17 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
     ax_a.plot(xs, yv, color=C_DARK, marker="o", markersize=3.5, linewidth=1.0)
     ax_a.set_xticks(xs)
     ax_a.set_xticklabels([str(x) for x in res_summary.index], rotation=35, ha="right")
-    ax_a.set_xlabel("Taxonomic resolution", labelpad=3)
+    ax_a.set_xlabel(representation_label, labelpad=3)
     ax_a.set_ylabel(metric.replace("_", "-"), labelpad=3)
     tag(ax_a, "a")
     trim(ax_a)
 
     factors = [
-        ("Feature representation", "count_transformation"),
-        ("Taxonomic resolution", "resolution"),
+        (transformation_factor_label, "count_transformation"),
+        (representation_label, "resolution"),
     ]
     if "learner" in df.columns and df["learner"].astype(str).nunique(dropna=True) > 1:
-        factors.append(("Classifier", "learner"))
+        factors.append((learner_label, "learner"))
     eta_vals = [_eta2_one_way(df, col, metric) for _, col in factors]
     ypos = np.arange(len(factors))
     colors = [C_DARK, C_MID, C_SKY][: len(factors)]
@@ -252,14 +274,13 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
         vmax=vmax,
         interpolation="nearest",
     )
+    lower_is_better = metric_is_loss(metric)
     for ri in range(mat.shape[0]):
-        finite_idx = np.flatnonzero(np.isfinite(mat[ri]))
-        if finite_idx.size:
-            k = max(1, int(np.ceil(0.10 * finite_idx.size)))
-            thr = np.partition(mat[ri, finite_idx], finite_idx.size - k)[
-                finite_idx.size - k
-            ]
-            for ci in finite_idx[mat[ri, finite_idx] >= thr]:
+        finite_count = int(np.isfinite(mat[ri]).sum())
+        if finite_count:
+            k = max(1, int(np.ceil(0.10 * finite_count)))
+            selected = _best_cell_indices(mat[ri], k, lower_is_better)
+            for ci in selected:
                 ax_c.add_patch(
                     plt.Rectangle(
                         (ci - 0.5, ri - 0.5),
@@ -275,7 +296,7 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
     ax_c.set_xticks(np.arange(len(tr_labels)))
     ax_c.set_xticklabels(tr_labels, rotation=50, ha="right")
     ax_c.set_xlabel("Feature representation", labelpad=3)
-    ax_c.set_ylabel("Taxonomic resolution", labelpad=3)
+    ax_c.set_ylabel(representation_label, labelpad=3)
     tag(ax_c, "c")
     for sp in ax_c.spines.values():
         sp.set_visible(False)

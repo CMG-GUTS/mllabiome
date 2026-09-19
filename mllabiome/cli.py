@@ -7,6 +7,7 @@ from rich.traceback import install as install_rich_traceback
 from .configs_sweep import Sweep, build_sweep_from_module
 from .console import error, stage
 from .pipeline import run_stage
+from .storage import export_tsv_tree
 
 
 def _load_sweep(path: Path) -> Sweep:
@@ -37,7 +38,14 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--redo", action="store_true", help="Recompute completed evaluation outputs."
     )
+    parser.add_argument(
+        "--export-tsv",
+        action="store_true",
+        help="After the report stage, export canonical Parquet tables to mirrored TSV files under exports/tsv/.",
+    )
     args = parser.parse_args(argv)
+    if args.export_tsv and args.stage not in {"report", "all"}:
+        parser.error("--export-tsv is only valid with --stage report or --stage all.")
     try:
         sweep = _load_sweep(args.config)
     except Exception as exc:
@@ -47,6 +55,9 @@ def main(argv: list[str] | None = None) -> None:
     if args.redo:
         sweep.evaluation.redo = True
     run_stage(sweep, args.stage)
+    if args.export_tsv:
+        exported = export_tsv_tree(sweep.root())
+        stage("TSV export", str(exported["directory"]))
 
 
 if __name__ == "__main__":

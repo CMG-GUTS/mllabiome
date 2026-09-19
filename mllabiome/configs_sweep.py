@@ -7,17 +7,19 @@ import time
 import zlib
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
-from joblib import Parallel, delayed, parallel_backend
+from joblib import delayed
 from scipy.special import expit, softmax
 from sklearn.base import BaseEstimator
 from sklearn.model_selection import KFold, StratifiedKFold
 from threadpoolctl import threadpool_limits
 
 from .data import Data, Dataset, load_dataset
+from .integrations import Integration
+from .modalities import Samples, Modality
 from .console import info, path_table, progress, stage, success, summary_table
 from .figures import _write_representation_impact_figure
 from .explainability_methods import (
@@ -46,8 +48,10 @@ from .transformations import (
     _count_transformation_spec,
 )
 from .selection import write_mpma_b_selection_outputs
+from .storage import read_table, write_table, table_exists, remove_table
 from .runtime import (
     configure_estimator_threads,
+    iter_parallel_tasks,
     resolve_execution_plan,
     thread_environment,
 )
@@ -208,7 +212,7 @@ def _normalise_explainability_classes_config(
 
 @dataclass
 class Sweep:
-    data: Data
+    data: Data | None
     experiment_dir: Path | str
     resolutions: Sequence[tuple[str, Sequence[str]] | str] = field(
         default_factory=lambda: (("species", ("species",)),)
@@ -222,12 +226,28 @@ class Sweep:
     ensemble: Ensemble = field(default_factory=Ensemble)
     explainability: Explainability = field(default_factory=Explainability)
     title: str = "mllabiome sweep"
+    samples: Samples | None = None
+    modalities: Sequence[Modality] = field(default_factory=tuple)
+    representations: Mapping[str, Sequence[Any]] = field(default_factory=dict)
+    transformations: Mapping[str, Sequence[Any]] = field(default_factory=dict)
+    integrations: Sequence[Integration] = field(
+        default_factory=lambda: (Integration("unimodal"),)
+    )
 
     def root(self) -> Path:
         return Path(self.experiment_dir)
 
+    @property
+    def uses_modalities(self) -> bool:
+        return self.samples is not None or bool(self.modalities)
+
 
 def build_sweep_from_module(mod: Any) -> Sweep:
+
+    if hasattr(mod, "VIEWS"):
+        raise TypeError(
+            "VIEWS is not supported. Use MODALITIES with mllabiome.Modality(...)."
+        )
 
     if hasattr(mod, "build_sweep"):
         obj = mod.build_sweep()
@@ -239,6 +259,98 @@ def build_sweep_from_module(mod: Any) -> Sweep:
         if not isinstance(obj, Sweep):
             raise TypeError("SWEEP must be an instance of mllabiome.Sweep.")
         return obj
+
+    if hasattr(mod, "SAMPLES") or hasattr(mod, "MODALITIES"):
+        missing = [
+            name
+            for name in ("EXPERIMENT_DIR", "SAMPLES", "MODALITIES")
+            if not hasattr(mod, name)
+        ]
+        if missing:
+            raise TypeError(f"Modality-based config is missing: {', '.join(missing)}.")
+        samples = getattr(mod, "SAMPLES")
+        modalities = tuple(getattr(mod, "MODALITIES"))
+        if not isinstance(samples, Samples):
+            raise TypeError("SAMPLES must be an instance of mllabiome.Samples(...).")
+        if not modalities or not all(
+            isinstance(modality, Modality) for modality in modalities
+        ):
+            raise TypeError(
+                "MODALITIES must contain one or more mllabiome.Modality(...) instances."
+            )
+        if hasattr(mod, "TRANSFORMATIONS"):
+            transformations = getattr(mod, "TRANSFORMATIONS")
+        elif hasattr(mod, "_build_transformations"):
+            transformations = mod._build_transformations()
+        else:
+            transformations = {}
+        if hasattr(mod, "MODELS"):
+            learners = getattr(mod, "MODELS")
+        elif hasattr(mod, "_build_models"):
+            learners = mod._build_models()
+        else:
+            raise TypeError(
+                "Modality-based config must define MODELS or _build_models()."
+            )
+        integrations = tuple(getattr(mod, "INTEGRATIONS", (Integration("unimodal"),)))
+        if not all(isinstance(item, Integration) for item in integrations):
+            raise TypeError(
+                "INTEGRATIONS must contain mllabiome.Integration(...) instances."
+            )
+        ensemble_explicit = hasattr(mod, "ENSEMBLE")
+        ensemble = getattr(mod, "ENSEMBLE", Ensemble())
+        late = {item.key for item in integrations if item.stage == "late"}
+        if late:
+            task = _normalise_sweep_task(samples.task)
+            if task == "regression":
+                mapping = {
+                    "late_mean_prediction": "mean_prediction",
+                    "late_weighted_mean_prediction": "weighted_mean_prediction",
+                    "late_median_prediction": "median_prediction",
+                    "late_mean_proba": "mean_prediction",
+                    "late_weighted_mean_proba": "weighted_mean_prediction",
+                }
+                learned_aggregation = "weighted_mean_prediction"
+            else:
+                mapping = {
+                    "late_mean_proba": "mean_proba",
+                    "late_weighted_mean_proba": "weighted_mean_proba",
+                }
+                learned_aggregation = "weighted_mean_proba"
+            if ensemble_explicit:
+                aggregations = list(ensemble.aggregation_strategies)
+                selections = list(ensemble.selection_strategies)
+            else:
+                aggregations = []
+                selections = ["top_k"]
+            for key in sorted(late):
+                if key in mapping and mapping[key] not in aggregations:
+                    aggregations.append(mapping[key])
+                if key == "late_super_learner":
+                    if "super_learner" not in selections:
+                        selections.append("super_learner")
+                    if learned_aggregation not in aggregations:
+                        aggregations.append(learned_aggregation)
+            ensemble = replace(
+                ensemble,
+                aggregation_strategies=tuple(aggregations),
+                selection_strategies=tuple(selections),
+            )
+        return Sweep(
+            data=None,
+            title=getattr(mod, "TITLE", Path(getattr(mod, "EXPERIMENT_DIR")).name),
+            experiment_dir=getattr(mod, "EXPERIMENT_DIR"),
+            learners=learners,
+            evaluation=getattr(mod, "EVALUATION", Evaluation()),
+            gate=getattr(mod, "GATE", QualificationGate()),
+            ensemble=ensemble,
+            explainability=getattr(mod, "EXPLAINABILITY", Explainability()),
+            samples=samples,
+            modalities=modalities,
+            representations=getattr(mod, "REPRESENTATIONS", {}),
+            transformations=transformations,
+            integrations=integrations,
+        )
 
     required = [
         "EXPERIMENT_DIR",
@@ -633,7 +745,7 @@ def _load_checkpoint_frames(
     }
 
 
-def _clear_evaluation_checkpoints(root: Path) -> None:
+def _clear_evaluation_checkpoints(root: Path, compact: bool = False) -> None:
     db_path = root / "configs.db"
     if not db_path.exists():
         return
@@ -641,6 +753,9 @@ def _clear_evaluation_checkpoints(root: Path) -> None:
     try:
         conn.execute("DROP TABLE IF EXISTS evaluation_checkpoints")
         conn.commit()
+        if compact:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.execute("VACUUM")
     finally:
         conn.close()
 
@@ -722,6 +837,16 @@ def _normalise_sweep_task(value: str) -> str:
     if task not in {"classification", "regression", "multilabel", "multioutput"}:
         raise ValueError(f"Unsupported task {value!r}.")
     return task
+
+
+def sweep_task(sweep: Sweep) -> str:
+    if sweep.uses_modalities:
+        if sweep.samples is None:
+            raise ValueError("Modality-based sweeps require Samples.")
+        return _normalise_sweep_task(sweep.samples.task)
+    if sweep.data is None:
+        raise ValueError("Data-based sweeps require Data.")
+    return _normalise_sweep_task(sweep.data.task)
 
 
 def _target_columns(data: Data) -> tuple[str, ...]:
@@ -1260,9 +1385,9 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
     )
     if not sweep.gate.enabled:
         existing["qualification"] = pd.DataFrame()
-        qpath = root / "tables" / "qualification_gate.tsv"
-        if qpath.exists():
-            qpath.unlink()
+        qpath = root / "tables" / "qualification_gate.parquet"
+        if table_exists(qpath):
+            remove_table(qpath)
     inner_done = _done_pairs(existing["inner_metrics"], "inner_key")
     outer_done = _done_pairs(existing["outer_metrics"], "split_key")
     qualification_map = (
@@ -1442,60 +1567,22 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
         split_task = prog.add_task(
             "Outer splits completed", total=len(split_task_counts)
         )
-        if execution.workers == 1:
-            iterator = (
-                fn(*args, **kwargs) for _, _, fn, args, kwargs in prepared_tasks
-            )
-        else:
-            delayed_tasks = [
-                delayed(fn)(*args, **kwargs)
-                for _, _, fn, args, kwargs in prepared_tasks
-            ]
-            backend_kwargs = {"n_jobs": execution.workers}
-            if execution.backend == "loky":
-                backend_kwargs["inner_max_num_threads"] = execution.threads_per_worker
-            with parallel_backend(execution.backend, **backend_kwargs):
-                iterator = Parallel(
-                    n_jobs=execution.workers,
-                    backend=execution.backend,
-                    return_as="generator_unordered",
-                    pre_dispatch=max(execution.workers, execution.workers * 2),
-                    batch_size=1,
-                    max_nbytes="1M",
-                    mmap_mode="r",
-                )(delayed_tasks)
-                for result in iterator:
-                    _checkpoint_result(root, result)
-                    inner_metric_rows.extend(result.get("inner_metrics", []))
-                    inner_pred_rows.extend(result.get("inner_predictions", []))
-                    outer_metric_rows.extend(result.get("outer_metrics", []))
-                    outer_pred_rows.extend(result.get("outer_predictions", []))
-                    qualification_rows.extend(result.get("qualification", []))
-                    job_resource_rows.extend(result.get("job_resources", []))
-                    split_key = str(result.get("split_key", ""))
-                    completed_by_split[split_key] = (
-                        completed_by_split.get(split_key, 0) + 1
-                    )
-                    if completed_by_split[split_key] == split_task_counts.get(
-                        split_key, 0
-                    ):
-                        prog.advance(split_task)
-                    prog.advance(job_task)
-                iterator = None
-        if execution.workers == 1:
-            for result in iterator:
-                _checkpoint_result(root, result)
-                inner_metric_rows.extend(result.get("inner_metrics", []))
-                inner_pred_rows.extend(result.get("inner_predictions", []))
-                outer_metric_rows.extend(result.get("outer_metrics", []))
-                outer_pred_rows.extend(result.get("outer_predictions", []))
-                qualification_rows.extend(result.get("qualification", []))
-                job_resource_rows.extend(result.get("job_resources", []))
-                split_key = str(result.get("split_key", ""))
-                completed_by_split[split_key] = completed_by_split.get(split_key, 0) + 1
-                if completed_by_split[split_key] == split_task_counts.get(split_key, 0):
-                    prog.advance(split_task)
-                prog.advance(job_task)
+        task_payloads = [
+            (fn, args, kwargs) for _, _, fn, args, kwargs in prepared_tasks
+        ]
+        for result in iter_parallel_tasks(task_payloads, execution):
+            _checkpoint_result(root, result)
+            inner_metric_rows.extend(result.get("inner_metrics", []))
+            inner_pred_rows.extend(result.get("inner_predictions", []))
+            outer_metric_rows.extend(result.get("outer_metrics", []))
+            outer_pred_rows.extend(result.get("outer_predictions", []))
+            qualification_rows.extend(result.get("qualification", []))
+            job_resource_rows.extend(result.get("job_resources", []))
+            split_key = str(result.get("split_key", ""))
+            completed_by_split[split_key] = completed_by_split.get(split_key, 0) + 1
+            if completed_by_split[split_key] == split_task_counts.get(split_key, 0):
+                prog.advance(split_task)
+            prog.advance(job_task)
     _write_tables(
         root,
         outer_metric_rows,
@@ -1574,17 +1661,17 @@ def _write_multi_target_summary(
         targets.append(
             {"target": target, "task": task, "experiment_dir": str(child.root())}
         )
-        metrics_path = child.root() / "results" / "outer_results.tsv"
-        preds_path = child.root() / "predictions" / "outer_predictions.tsv"
-        if metrics_path.exists():
-            frame = pd.read_csv(metrics_path, sep="\t")
+        metrics_path = child.root() / "results" / "outer_results.parquet"
+        preds_path = child.root() / "predictions" / "outer_predictions.parquet"
+        if table_exists(metrics_path):
+            frame = read_table(metrics_path)
             if "target" not in frame.columns:
                 frame.insert(0, "target", target)
             if "task" not in frame.columns:
                 frame.insert(1, "task", task)
             metric_frames.append(frame)
-        if preds_path.exists():
-            frame = pd.read_csv(preds_path, sep="\t")
+        if table_exists(preds_path):
+            frame = read_table(preds_path)
             if "target" not in frame.columns:
                 frame.insert(0, "target", target)
             if "task" not in frame.columns:
@@ -1592,9 +1679,7 @@ def _write_multi_target_summary(
             pred_frames.append(frame)
     if metric_frames:
         combined_metrics = pd.concat(metric_frames, ignore_index=True, sort=False)
-        combined_metrics.to_csv(
-            table_dir / "multi_target_outer_metrics.tsv", sep="\t", index=False
-        )
+        write_table(table_dir / "multi_target_outer_metrics.parquet", combined_metrics)
         if _normalise_sweep_task(sweep.data.task) == "multilabel":
             numeric_metrics = [
                 c for c in METRIC_COLUMNS if c in combined_metrics.columns
@@ -1608,12 +1693,11 @@ def _write_multi_target_summary(
                 multilabel = combined_metrics.groupby(group_cols, as_index=False)[
                     numeric_metrics
                 ].mean(numeric_only=True)
-                multilabel.to_csv(
-                    table_dir / "multilabel_metric_summary.tsv", sep="\t", index=False
-                )
+                write_table(table_dir / "multilabel_metric_summary.parquet", multilabel)
     if pred_frames:
-        pd.concat(pred_frames, ignore_index=True, sort=False).to_csv(
-            table_dir / "multi_target_outer_predictions.tsv", sep="\t", index=False
+        write_table(
+            table_dir / "multi_target_outer_predictions.parquet",
+            pd.concat(pred_frames, ignore_index=True, sort=False),
         )
     dump_json_standard(
         {"task": _normalise_sweep_task(sweep.data.task), "targets": targets},
@@ -1621,12 +1705,16 @@ def _write_multi_target_summary(
     )
     return {
         "manifest": root / "multi_target_manifest.json",
-        "outer_metrics": table_dir / "multi_target_outer_metrics.tsv",
-        "outer_predictions": table_dir / "multi_target_outer_predictions.tsv",
+        "outer_metrics": table_dir / "multi_target_outer_metrics.parquet",
+        "outer_predictions": table_dir / "multi_target_outer_predictions.parquet",
     }
 
 
 def evaluate(sweep: Sweep) -> dict[str, Path]:
+    if sweep.uses_modalities:
+        from .multimodal_sweep import evaluate_modality_sweep
+
+        return evaluate_modality_sweep(sweep)
     children = target_sweeps(sweep)
     if len(children) > 1 or children[0] is not sweep:
         outputs = [evaluate(child) for child in children]
@@ -1691,9 +1779,9 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
     )
     if not sweep.gate.enabled:
         existing["qualification"] = pd.DataFrame()
-        qpath = root / "tables" / "qualification_gate.tsv"
-        if qpath.exists():
-            qpath.unlink()
+        qpath = root / "tables" / "qualification_gate.parquet"
+        if table_exists(qpath):
+            remove_table(qpath)
     inner_done = _done_pairs(existing["inner_metrics"], "inner_key")
     outer_done = _done_pairs(existing["outer_metrics"], "split_key")
     qualification_map = (
@@ -1875,60 +1963,22 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
         split_task = prog.add_task(
             "Outer splits completed", total=len(split_task_counts)
         )
-        if execution.workers == 1:
-            iterator = (
-                fn(*args, **kwargs) for _, _, fn, args, kwargs in prepared_tasks
-            )
-        else:
-            delayed_tasks = [
-                delayed(fn)(*args, **kwargs)
-                for _, _, fn, args, kwargs in prepared_tasks
-            ]
-            backend_kwargs = {"n_jobs": execution.workers}
-            if execution.backend == "loky":
-                backend_kwargs["inner_max_num_threads"] = execution.threads_per_worker
-            with parallel_backend(execution.backend, **backend_kwargs):
-                iterator = Parallel(
-                    n_jobs=execution.workers,
-                    backend=execution.backend,
-                    return_as="generator_unordered",
-                    pre_dispatch=max(execution.workers, execution.workers * 2),
-                    batch_size=1,
-                    max_nbytes="1M",
-                    mmap_mode="r",
-                )(delayed_tasks)
-                for result in iterator:
-                    _checkpoint_result(root, result)
-                    inner_metric_rows.extend(result.get("inner_metrics", []))
-                    inner_pred_rows.extend(result.get("inner_predictions", []))
-                    outer_metric_rows.extend(result.get("outer_metrics", []))
-                    outer_pred_rows.extend(result.get("outer_predictions", []))
-                    qualification_rows.extend(result.get("qualification", []))
-                    job_resource_rows.extend(result.get("job_resources", []))
-                    split_key = str(result.get("split_key", ""))
-                    completed_by_split[split_key] = (
-                        completed_by_split.get(split_key, 0) + 1
-                    )
-                    if completed_by_split[split_key] == split_task_counts.get(
-                        split_key, 0
-                    ):
-                        prog.advance(split_task)
-                    prog.advance(job_task)
-                iterator = None
-        if execution.workers == 1:
-            for result in iterator:
-                _checkpoint_result(root, result)
-                inner_metric_rows.extend(result.get("inner_metrics", []))
-                inner_pred_rows.extend(result.get("inner_predictions", []))
-                outer_metric_rows.extend(result.get("outer_metrics", []))
-                outer_pred_rows.extend(result.get("outer_predictions", []))
-                qualification_rows.extend(result.get("qualification", []))
-                job_resource_rows.extend(result.get("job_resources", []))
-                split_key = str(result.get("split_key", ""))
-                completed_by_split[split_key] = completed_by_split.get(split_key, 0) + 1
-                if completed_by_split[split_key] == split_task_counts.get(split_key, 0):
-                    prog.advance(split_task)
-                prog.advance(job_task)
+        task_payloads = [
+            (fn, args, kwargs) for _, _, fn, args, kwargs in prepared_tasks
+        ]
+        for result in iter_parallel_tasks(task_payloads, execution):
+            _checkpoint_result(root, result)
+            inner_metric_rows.extend(result.get("inner_metrics", []))
+            inner_pred_rows.extend(result.get("inner_predictions", []))
+            outer_metric_rows.extend(result.get("outer_metrics", []))
+            outer_pred_rows.extend(result.get("outer_predictions", []))
+            qualification_rows.extend(result.get("qualification", []))
+            job_resource_rows.extend(result.get("job_resources", []))
+            split_key = str(result.get("split_key", ""))
+            completed_by_split[split_key] = completed_by_split.get(split_key, 0) + 1
+            if completed_by_split[split_key] == split_task_counts.get(split_key, 0):
+                prog.advance(split_task)
+            prog.advance(job_task)
     _write_tables(
         root,
         outer_metric_rows,
@@ -2008,55 +2058,29 @@ def _prepare_dirs(root: Path) -> None:
 def _existing_outputs(root: Path) -> dict[str, Path]:
     return {
         "experiment_dir": root,
-        "configs": root / "configs.tsv",
-        "rankings": root / "tables" / "mpma_rankings.tsv",
-        "outer_results": root / "results" / "outer_results.tsv",
-        "inner_results": root / "inner_results" / "inner_results.tsv",
-        "outer_predictions": root / "predictions" / "outer_predictions.tsv",
-        "mpma_b_selection": root / "tables" / "mpma_b_outer_selection.tsv",
-        "mpma_b_predictions": root / "predictions" / "mpma_b_outer_predictions.tsv",
-        "mpma_b_outer_results": root / "results" / "mpma_b_outer_results.tsv",
+        "configs": root / "configs.db",
+        "rankings": root / "tables" / "mpma_rankings.parquet",
+        "outer_results": root / "results" / "outer_results.parquet",
+        "inner_results": root / "inner_results" / "inner_results.parquet",
+        "outer_predictions": root / "predictions" / "outer_predictions.parquet",
+        "mpma_b_selection": root / "tables" / "mpma_b_outer_selection.parquet",
+        "mpma_b_predictions": root / "predictions" / "mpma_b_outer_predictions.parquet",
+        "mpma_b_outer_results": root / "results" / "mpma_b_outer_results.parquet",
         "mpma_b_summary": root / "tables" / "mpma_b_strategy_summary.json",
         "mpma_b_final_candidate": root / "tables" / "mpma_b_final_candidate.json",
-        "job_resources": root / "tables" / "job_resources.tsv",
+        "job_resources": root / "tables" / "job_resources.parquet",
         "mpma_b_selection_resources": root
         / "tables"
         / "mpma_b_selection_resources.json",
     }
 
 
-def _parquet_path(path: Path) -> Path:
-    return path.with_suffix(".parquet")
-
-
-def _read_tsv(path: Path) -> pd.DataFrame:
-    parquet = _parquet_path(path)
-    if parquet.exists() and parquet.stat().st_size > 0:
-        try:
-            return pd.read_parquet(parquet)
-        except Exception:
-            pass
-    if not path.exists() or path.stat().st_size == 0:
-        return pd.DataFrame()
-    try:
-        return pd.read_csv(path, sep="\t")
-    except pd.errors.EmptyDataError:
-        return pd.DataFrame()
+def _read_table(path: Path) -> pd.DataFrame:
+    return read_table(path)
 
 
 def _write_dataframe(path: Path, frame: pd.DataFrame) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    parquet = _parquet_path(path)
-    tsv_tmp = path.with_name(path.name + ".tmp")
-    parquet_tmp = parquet.with_name(parquet.name + ".tmp")
-    frame.to_csv(tsv_tmp, sep="\t", index=False)
-    tsv_tmp.replace(path)
-    try:
-        frame.to_parquet(parquet_tmp, index=False, compression="zstd")
-        parquet_tmp.replace(parquet)
-    except Exception:
-        if parquet_tmp.exists():
-            parquet_tmp.unlink()
+    write_table(path, frame)
 
 
 def _filter_current(
@@ -2092,15 +2116,15 @@ def _load_existing_evaluation(
     if redo:
         return empty
     tables = {
-        "outer_metrics": root / "results" / "outer_results.tsv",
-        "inner_metrics": root / "inner_results" / "inner_results.tsv",
-        "outer_predictions": root / "predictions" / "outer_predictions.tsv",
-        "inner_predictions": root / "inner_predictions" / "inner_predictions.tsv",
-        "qualification": root / "tables" / "qualification_gate.tsv",
-        "job_resources": root / "tables" / "job_resources.tsv",
+        "outer_metrics": root / "results" / "outer_results.parquet",
+        "inner_metrics": root / "inner_results" / "inner_results.parquet",
+        "outer_predictions": root / "predictions" / "outer_predictions.parquet",
+        "inner_predictions": root / "inner_predictions" / "inner_predictions.parquet",
+        "qualification": root / "tables" / "qualification_gate.parquet",
+        "job_resources": root / "tables" / "job_resources.parquet",
     }
     base = {
-        name: _filter_current(_read_tsv(path), current_config_ids, outer_keys)
+        name: _filter_current(_read_table(path), current_config_ids, outer_keys)
         for name, path in tables.items()
     }
     checkpoints = _load_checkpoint_frames(root, current_config_ids, outer_keys)
@@ -2219,6 +2243,12 @@ def _write_manifest(root: Path, sweep: Sweep, dataset: Dataset) -> None:
 def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
     db_path = root / "configs.db"
     conn = sqlite3.connect(db_path)
+    extra_columns = {
+        "candidate_family": "TEXT",
+        "modalities": "TEXT",
+        "integration": "TEXT",
+        "integration_n_components": "TEXT",
+    }
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
@@ -2230,29 +2260,28 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
                 resolution TEXT NOT NULL,
                 levels TEXT NOT NULL,
                 learner TEXT NOT NULL,
-                active INTEGER NOT NULL DEFAULT 1
+                active INTEGER NOT NULL DEFAULT 1,
+                candidate_family TEXT,
+                modalities TEXT,
+                integration TEXT,
+                integration_n_components TEXT
             )"""
         )
         columns = {row[1] for row in conn.execute("PRAGMA table_info(configs)")}
         if "transformation_abbreviation" in columns:
+            conn.execute("DROP TABLE configs")
             conn.execute(
-                """CREATE TABLE configs_canonical (
-                    config_id TEXT PRIMARY KEY,
-                    mpdr_id TEXT,
-                    count_transformation TEXT NOT NULL,
-                    resolution TEXT NOT NULL,
-                    levels TEXT NOT NULL,
-                    learner TEXT NOT NULL,
-                    active INTEGER NOT NULL DEFAULT 1
+                """CREATE TABLE configs (
+                    config_id TEXT PRIMARY KEY, mpdr_id TEXT, count_transformation TEXT NOT NULL,
+                    resolution TEXT NOT NULL, levels TEXT NOT NULL, learner TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1, candidate_family TEXT, modalities TEXT,
+                    integration TEXT, integration_n_components TEXT
                 )"""
             )
-            conn.execute(
-                """INSERT OR REPLACE INTO configs_canonical
-                   (config_id, mpdr_id, count_transformation, resolution, levels, learner, active)
-                   SELECT config_id, mpdr_id, count_transformation, resolution, levels, learner, active FROM configs"""
-            )
-            conn.execute("DROP TABLE configs")
-            conn.execute("ALTER TABLE configs_canonical RENAME TO configs")
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(configs)")}
+        for name, sql_type in extra_columns.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE configs ADD COLUMN {name} {sql_type}")
         conn.execute(
             """CREATE TABLE IF NOT EXISTS completions (
                 config_id TEXT NOT NULL,
@@ -2267,15 +2296,13 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
         for r in configs.to_dict(orient="records"):
             conn.execute(
                 """INSERT INTO configs
-                   (config_id, mpdr_id, count_transformation, resolution, levels, learner, active)
-                   VALUES (?, ?, ?, ?, ?, ?, 1)
+                   (config_id, mpdr_id, count_transformation, resolution, levels, learner, active, candidate_family, modalities, integration, integration_n_components)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
                    ON CONFLICT(config_id) DO UPDATE SET
-                     mpdr_id=excluded.mpdr_id,
-                     count_transformation=excluded.count_transformation,
-                     resolution=excluded.resolution,
-                     levels=excluded.levels,
-                     learner=excluded.learner,
-                     active=1""",
+                     mpdr_id=excluded.mpdr_id, count_transformation=excluded.count_transformation,
+                     resolution=excluded.resolution, levels=excluded.levels, learner=excluded.learner,
+                     active=1, candidate_family=excluded.candidate_family, modalities=excluded.modalities,
+                     integration=excluded.integration, integration_n_components=excluded.integration_n_components""",
                 (
                     str(r.get("config_id")),
                     str(r.get("mpdr_id", "")),
@@ -2283,6 +2310,16 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
                     str(r.get("resolution")),
                     str(r.get("levels")),
                     str(r.get("learner")),
+                    None
+                    if pd.isna(r.get("candidate_family"))
+                    else str(r.get("candidate_family")),
+                    None if pd.isna(r.get("modalities")) else str(r.get("modalities")),
+                    None
+                    if pd.isna(r.get("integration"))
+                    else str(r.get("integration")),
+                    None
+                    if pd.isna(r.get("integration_n_components"))
+                    else str(r.get("integration_n_components")),
                 ),
             )
         conn.commit()
@@ -2292,7 +2329,6 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
         )
     finally:
         conn.close()
-    export.to_csv(root / "configs.tsv", sep="\t", index=False)
 
 
 def _groups_from_metadata(
@@ -2581,19 +2617,20 @@ def _write_tables(
             frame["count_transformation"] = frame["count_transformation"].map(
                 _count_transformation_name
             )
-    _write_dataframe(root / "results" / "outer_results.tsv", outer_df)
-    _write_dataframe(root / "inner_results" / "inner_results.tsv", inner_df)
-    _write_dataframe(root / "predictions" / "outer_predictions.tsv", outer_pred_df)
+    _write_dataframe(root / "results" / "outer_results.parquet", outer_df)
+    _write_dataframe(root / "inner_results" / "inner_results.parquet", inner_df)
+    _write_dataframe(root / "predictions" / "outer_predictions.parquet", outer_pred_df)
     _write_dataframe(
-        root / "inner_predictions" / "inner_predictions.tsv", inner_pred_df
+        root / "inner_predictions" / "inner_predictions.parquet", inner_pred_df
     )
-    _write_dataframe(root / "tables" / "job_resources.tsv", resource_df)
-    qpath = root / "tables" / "qualification_gate.tsv"
+    _write_dataframe(root / "tables" / "job_resources.parquet", resource_df)
+    qpath = root / "tables" / "qualification_gate.parquet"
     if gate_enabled:
         _write_dataframe(qpath, qual_df)
-    elif qpath.exists():
-        qpath.unlink()
+    elif table_exists(qpath):
+        remove_table(qpath)
     _update_completion_db(root, outer_df, inner_df)
+    _clear_evaluation_checkpoints(root, compact=True)
 
 
 def _update_completion_db(
@@ -2663,10 +2700,10 @@ def _update_completion_db(
 def _write_rankings_and_figures(
     root: Path, class_labels: list[str], optimize_metric: str
 ) -> None:
-    path = root / "results" / "outer_results.tsv"
-    if not path.exists() or path.stat().st_size == 0:
+    path = root / "results" / "outer_results.parquet"
+    if not table_exists(path):
         return
-    df = pd.read_csv(path, sep="\t")
+    df = read_table(path)
     if df.empty:
         return
     metrics = [c for c in METRIC_COLUMNS if c in df.columns]
@@ -2691,7 +2728,7 @@ def _write_rankings_and_figures(
     sort_col = f"{sort_metric}_mean"
     rank = rank.sort_values(sort_col, ascending=metric_is_loss(sort_metric))
     rank.insert(0, "rank", np.arange(1, len(rank) + 1))
-    rank.to_csv(root / "tables" / "mpma_rankings.tsv", sep="\t", index=False)
+    write_table(root / "tables" / "mpma_rankings.parquet", rank)
     stale = root / "figures" / "mpma_top_metric.png"
     if stale.exists():
         stale.unlink()

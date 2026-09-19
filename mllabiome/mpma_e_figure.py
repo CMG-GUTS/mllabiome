@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from scipy.stats import rankdata
+from .storage import read_table, write_table, table_exists
 
 try:
     from sklearn.preprocessing import (
@@ -194,7 +195,7 @@ def read_config_meta(
     experiment_dir: Path, include_inactive: bool = False
 ) -> pd.DataFrame:
     db_path = experiment_dir / "configs.db"
-    tsv_path = experiment_dir / "configs.tsv"
+    table_path = experiment_dir / "configs.parquet"
     if db_path.exists():
         conn = sqlite3.connect(str(db_path))
         query = (
@@ -204,13 +205,15 @@ def read_config_meta(
         )
         df = pd.read_sql(query, conn)
         conn.close()
-    elif tsv_path.exists():
-        df = pd.read_csv(tsv_path, sep="\t", dtype=str)
+    elif table_exists(table_path):
+        df = read_table(table_path, dtype=str)
         if not include_inactive and "active" in df.columns:
             active = pd.to_numeric(df["active"], errors="coerce").fillna(1).astype(int)
             df = df.loc[active.eq(1)].copy()
     else:
-        raise FileNotFoundError(f"No configs.db/configs.tsv found in {experiment_dir}")
+        raise FileNotFoundError(
+            f"No configs.db/configs.parquet found in {experiment_dir}"
+        )
 
     if "transform" not in df.columns and "count_transformation" in df.columns:
         df["transform"] = df["count_transformation"]
@@ -1294,7 +1297,7 @@ def render_figure(
     plt.close(fig)
 
 
-def write_members_tsv(tasks: list[EnsembleTask], out_path: Path) -> None:
+def write_members_table(tasks: list[EnsembleTask], out_path: Path) -> None:
     rows = []
     for task in tasks:
         shown_ids = {m.config_id for m in task.shown_members if m.config_id is not None}
@@ -1317,7 +1320,7 @@ def write_members_tsv(tasks: list[EnsembleTask], out_path: Path) -> None:
                     "n_features_in_demo": m.n_features,
                 }
             )
-    pd.DataFrame(rows).to_csv(out_path, sep="\t", index=False)
+    write_table(out_path, pd.DataFrame(rows))
 
 
 def _normalise_selected_unit_for_figure(selected: dict[str, Any]) -> dict[str, Any]:
@@ -1391,17 +1394,17 @@ def write_single_task_mpma_e_figure(
     tables_dir.mkdir(parents=True, exist_ok=True)
     metadata_dir.mkdir(parents=True, exist_ok=True)
 
-    members_tsv = tables_dir / f"{out_name}_members.tsv"
+    members_table = tables_dir / f"{out_name}_members.parquet"
     diagnostics_json = metadata_dir / f"{out_name}_diagnostics.json"
 
     for stale in (
-        out_prefix.with_name(out_prefix.name + "_members.tsv"),
+        out_prefix.with_name(out_prefix.name + "_members.parquet"),
         out_prefix.with_name(out_prefix.name + "_diagnostics.json"),
     ):
         if stale.exists():
             stale.unlink()
 
-    write_members_tsv([task], members_tsv)
+    write_members_table([task], members_table)
     with diagnostics_json.open("w", encoding="utf-8") as fh:
         json.dump(
             {"tasks": {task_key: task.diagnostics}},
@@ -1414,6 +1417,6 @@ def write_single_task_mpma_e_figure(
         "mpma_e_svg": out_prefix.with_suffix(".svg"),
         "mpma_e_pdf": out_prefix.with_suffix(".pdf"),
         "mpma_e_png": out_prefix.with_suffix(".png"),
-        "mpma_e_members": members_tsv,
+        "mpma_e_members": members_table,
         "mpma_e_diagnostics": diagnostics_json,
     }

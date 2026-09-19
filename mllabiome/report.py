@@ -13,6 +13,7 @@ import pandas as pd
 from .configs_sweep import Sweep
 from .console import console, path_table, stage, success
 from .utils import dump_json_standard
+from .storage import read_table, write_table, table_exists, glob_tables
 from .metrics import compute_metrics
 from .report_statistics import run_report_statistics
 from .report_compute import run_compute_accounting
@@ -118,11 +119,9 @@ def _strip_svg_preamble(svg: str) -> str:
     return text
 
 
-def _read_tsv(path: Path) -> pd.DataFrame:
-    if not path.exists() or path.stat().st_size == 0:
-        return pd.DataFrame()
+def _read_table(path: Path) -> pd.DataFrame:
     try:
-        return pd.read_csv(path, sep="\t")
+        return read_table(path)
     except Exception:
         return pd.DataFrame()
 
@@ -189,11 +188,13 @@ def _pct_ci_cell(
 
 
 def _strategy_statistics_summary(root: Path) -> pd.DataFrame:
-    return _read_tsv(root / "report" / "tables" / "strategy_metrics_bootstrap.tsv")
+    return _read_table(
+        root / "report" / "tables" / "strategy_metrics_bootstrap.parquet"
+    )
 
 
 def _strategy_pairwise_tests(root: Path) -> pd.DataFrame:
-    return _read_tsv(root / "report" / "tables" / "strategy_pairwise_tests.tsv")
+    return _read_table(root / "report" / "tables" / "strategy_pairwise_tests.parquet")
 
 
 def _mean_std_from_cols(
@@ -212,7 +213,7 @@ def _mean_std_from_cols(
 
 
 def _agg_metrics(path: Path, prefix: str) -> pd.DataFrame:
-    df = _read_tsv(path)
+    df = _read_table(path)
     if df.empty or "config_id" not in df.columns:
         return pd.DataFrame()
     if "ok" in df.columns:
@@ -239,8 +240,8 @@ def _agg_metrics(path: Path, prefix: str) -> pd.DataFrame:
 
 
 def _top_mpma_raw(root: Path, n: int = 10) -> pd.DataFrame:
-    inner = _agg_metrics(root / "inner_results" / "inner_results.tsv", "inner")
-    outer = _agg_metrics(root / "results" / "outer_results.tsv", "outer")
+    inner = _agg_metrics(root / "inner_results" / "inner_results.parquet", "inner")
+    outer = _agg_metrics(root / "results" / "outer_results.parquet", "outer")
     if inner.empty and outer.empty:
         return pd.DataFrame()
     if not inner.empty:
@@ -313,10 +314,10 @@ def _best_mpma_row(root: Path) -> dict[str, Any]:
 def _ensemble_outer_metrics_from_predictions(
     root: Path, ensemble_config_id: str
 ) -> dict[str, Any]:
-    path = root / "ensembling" / "ensemble_predictions.tsv"
-    if not path.exists() or not str(ensemble_config_id):
+    path = root / "ensembling" / "ensemble_predictions.parquet"
+    if not table_exists(path) or not str(ensemble_config_id):
         return {}
-    df = _read_tsv(path)
+    df = _read_table(path)
     if (
         df.empty
         or "ensemble_config_id" not in df.columns
@@ -418,8 +419,8 @@ def _strategy_rows(root: Path) -> list[dict[str, Any]]:
         else {"Strategy": "MPMA-B", "source": "mpma"}
     )
 
-    outer = _agg_metrics(root / "results" / "outer_results.tsv", "outer")
-    inner = _agg_metrics(root / "inner_results" / "inner_results.tsv", "inner")
+    outer = _agg_metrics(root / "results" / "outer_results.parquet", "outer")
+    inner = _agg_metrics(root / "inner_results" / "inner_results.parquet", "inner")
     if not outer.empty:
         base = outer.copy()
         if not inner.empty:
@@ -609,41 +610,113 @@ def _ensemble_summary_table(root: Path) -> pd.DataFrame:
 
 
 def _ensemble_members_table(root: Path) -> pd.DataFrame:
-    p = root / "tables" / "mpma_e_members.tsv"
-    if not p.exists():
-        p = root / "figures" / "mpma_e_members.tsv"
-    if p.exists():
-        df = pd.read_csv(p, sep="\t")
-        rename = {
-            "member_order": "Member",
-            "ranks": "Resolution",
-            "transformation": "Count transformation",
-            "classifier_family": "Learner type",
-        }
-        cols = [
-            c
-            for c in [
-                "member_order",
-                "ranks",
-                "transformation",
-                "classifier_family",
-            ]
-            if c in df.columns
-        ]
-        out = df[cols].rename(columns=rename).copy() if cols else df.copy()
-        return out
     ens = _ensemble_final_candidate(root)
-    members = ens.get("members", [])
+    members = ens.get("members", []) if isinstance(ens, dict) else []
     if isinstance(members, str):
         try:
             members = json.loads(members)
         except Exception:
             members = []
-    return pd.DataFrame({"Member": range(1, len(members) + 1)})
+    members = [str(x) for x in members] if isinstance(members, list) else []
+    weights = ens.get("weights", []) if isinstance(ens, dict) else []
+    if isinstance(weights, str):
+        try:
+            weights = json.loads(weights)
+        except Exception:
+            weights = []
+    weights = list(weights) if isinstance(weights, list) else []
+
+    p = root / "tables" / "mpma_e_members.parquet"
+    if not table_exists(p):
+        p = root / "figures" / "mpma_e_members.parquet"
+    if table_exists(p):
+        existing = read_table(p)
+        informative = {
+            "config_id",
+            "Config ID",
+            "resolution",
+            "Representation",
+            "learner",
+            "Learner",
+            "modalities",
+            "Modalities",
+            "integration",
+            "Integration",
+        }
+        if any(c in existing.columns for c in informative):
+            return existing.copy()
+
+    configs_path = root / "configs.parquet"
+    configs = (
+        read_table(configs_path, dtype=str)
+        if table_exists(configs_path)
+        else pd.DataFrame()
+    )
+    if not members:
+        return pd.DataFrame()
+    if configs.empty or "config_id" not in configs.columns:
+        return pd.DataFrame(
+            {
+                "Member": range(1, len(members) + 1),
+                "Config ID": members,
+                "Weight": [
+                    float(weights[i]) if i < len(weights) else np.nan
+                    for i in range(len(members))
+                ],
+            }
+        )
+
+    lookup = configs.drop_duplicates("config_id", keep="first").set_index("config_id")
+    rows: list[dict[str, Any]] = []
+    for index, config_id in enumerate(members, start=1):
+        row: dict[str, Any] = {"Member": index, "Config ID": config_id}
+        if config_id in lookup.index:
+            source = lookup.loc[config_id]
+            if isinstance(source, pd.DataFrame):
+                source = source.iloc[0]
+            mapping = (
+                ("candidate_family", "Family"),
+                ("modalities", "Modalities"),
+                ("integration", "Integration"),
+                ("integration_n_components", "Components"),
+                ("resolution", "Representation"),
+                ("count_transformation", "Transformation"),
+                ("learner", "Learner"),
+            )
+            for source_name, display_name in mapping:
+                value = source.get(source_name, "")
+                if pd.notna(value) and str(value).strip():
+                    row[display_name] = str(value)
+        if index - 1 < len(weights):
+            try:
+                value = float(weights[index - 1])
+            except Exception:
+                value = float("nan")
+            if np.isfinite(value):
+                row["Weight"] = value
+        rows.append(row)
+    out = pd.DataFrame(rows)
+    columns = [
+        "Member",
+        "Config ID",
+        "Family",
+        "Modalities",
+        "Integration",
+        "Components",
+        "Representation",
+        "Transformation",
+        "Learner",
+        "Weight",
+    ]
+    return out[[column for column in columns if column in out.columns]]
 
 
 def _manifest(root: Path) -> dict[str, Any]:
     return _read_json(root / "manifest.json")
+
+
+def _sweep_data_source(sweep: Sweep):
+    return sweep.samples if getattr(sweep, "uses_modalities", False) else sweep.data
 
 
 def _procedure_table(sweep: Sweep, root: Path) -> pd.DataFrame:
@@ -655,20 +728,26 @@ def _procedure_table(sweep: Sweep, root: Path) -> pd.DataFrame:
         if isinstance(manifest.get("sweep"), dict)
         else {}
     )
-    classes = manifest.get("class_labels", getattr(sweep.data, "class_labels", ()))
+    source = _sweep_data_source(sweep)
+    classes = manifest.get("class_labels", getattr(source, "class_labels", ()))
     return pd.DataFrame(
         [
             ["Task", sweep.title],
             ["Experiment directory", str(root)],
-            ["Data format", str(getattr(sweep.data, "format", data.get("format", "")))],
+            [
+                "Data format",
+                "multimodal"
+                if getattr(sweep, "uses_modalities", False)
+                else str(getattr(source, "format", data.get("format", ""))),
+            ],
             ["Samples", str(manifest.get("n_samples", ""))],
             ["Classes", ", ".join(map(str, classes)) if classes else ""],
             ["Procedure", ev.protocol],
             [
                 "Stratification",
                 "target"
-                if not getattr(sweep.data, "stratify_col", None)
-                else f"target + {getattr(sweep.data, 'stratify_col')}",
+                if not getattr(source, "stratify_col", None)
+                else f"target + {getattr(source, 'stratify_col')}",
             ],
             [
                 "Outer folds",
@@ -940,7 +1019,8 @@ def _html_table(df: pd.DataFrame, *, raw_html_cols: set[str] | None = None) -> s
     if df.empty:
         return "<p>No rows available.</p>"
     raw_html_cols = raw_html_cols or set()
-    cols = list(df.columns)
+    hidden_cols = {"Config ID", "config_id"}
+    cols = [c for c in df.columns if str(c) not in hidden_cols]
     parts = ['<div class="table-wrap"><table><thead><tr>']
     parts.extend(f"<th>{html.escape(str(c))}</th>" for c in cols)
     parts.append("</tr></thead><tbody>")
@@ -1093,7 +1173,7 @@ def _xai_method_display(method: str) -> str:
 
 
 def _xai_coordinate_column(target_dir: Path) -> str:
-    table = _read_tsv(target_dir / "coordinate_metadata.tsv")
+    table = _read_table(target_dir / "coordinate_metadata.parquet")
     if table.empty or "exact_feature_identity" not in table.columns:
         return "Feature"
     values = table["exact_feature_identity"].astype(str).str.strip().str.lower()
@@ -1106,13 +1186,14 @@ def _xai_target_metadata(target_dir: Path) -> tuple[list[str], list[tuple[int, s
     methods = [
         str(x).strip().lower() for x in meta.get("methods", []) if str(x).strip()
     ]
-    for path in sorted(target_dir.glob("feature_stability_*.tsv")):
+    for path in glob_tables(target_dir, "feature_stability_*"):
         name = path.stem.removeprefix("feature_stability_").strip().lower()
         if name and name not in methods:
             methods.append(name)
     if (
-        target_dir / "feature_interactions_current.csv"
-    ).exists() and "interactions" not in methods:
+        table_exists(target_dir / "feature_interactions_current.parquet")
+        and "interactions" not in methods
+    ):
         methods.append("interactions")
     indices = list(meta.get("explained_class_indices", []))
     labels = list(meta.get("explained_class_labels", []))
@@ -1125,10 +1206,10 @@ def _xai_target_metadata(target_dir: Path) -> tuple[list[str], list[tuple[int, s
         classes.append((idx, str(label)))
     if not classes:
         for path in [
-            target_dir / "feature_stability.tsv",
-            target_dir / "top_features.tsv",
+            target_dir / "feature_stability.parquet",
+            target_dir / "top_features.parquet",
         ]:
-            tab = _read_tsv(path)
+            tab = _read_table(path)
             if tab.empty or "class_index" not in tab.columns:
                 continue
             lab_col = "class_label" if "class_label" in tab.columns else None
@@ -1153,7 +1234,7 @@ def _xai_target_metadata(target_dir: Path) -> tuple[list[str], list[tuple[int, s
 def _xai_consensus_table(
     target_dir: Path, class_index: int, top_n: int = 15
 ) -> pd.DataFrame:
-    tab = _read_tsv(target_dir / "top_features.tsv")
+    tab = _read_table(target_dir / "top_features.parquet")
     if tab.empty or "feature" not in tab.columns:
         return pd.DataFrame()
     if "class_index" in tab.columns:
@@ -1183,7 +1264,7 @@ def _xai_consensus_table(
             val = _safe_float(row.get(col, np.nan))
             item[col] = f"{val:.3f}" if np.isfinite(val) else ""
         val = _safe_float(row.get("consensus", row.get("consensus_score", np.nan)))
-        item["Concordance"] = f"{val:.3f}" if np.isfinite(val) else ""
+        item["Mean support"] = f"{val:.3f}" if np.isfinite(val) else ""
         n_methods = _safe_float(row.get("n_methods", np.nan))
         n_total = _safe_float(row.get("n_methods_total", np.nan))
         item["Methods"] = (
@@ -1200,7 +1281,7 @@ def _xai_consensus_table(
 def _xai_stability_table(
     target_dir: Path, method: str, class_index: int, top_n: int = 15
 ) -> pd.DataFrame:
-    tab = _read_tsv(target_dir / f"feature_stability_{method}.tsv")
+    tab = _read_table(target_dir / f"feature_stability_{method}.parquet")
     if tab.empty or "feature" not in tab.columns:
         return pd.DataFrame()
     if "class_index" in tab.columns:
@@ -1260,8 +1341,12 @@ def _xai_method_global_text(method: str) -> str:
 
 
 def _xai_local_table(target_dir: Path, method: str, top_n: int = 5) -> pd.DataFrame:
-    selected = _read_tsv(target_dir / f"instance_explanations_{method}_selected.tsv")
-    top = _read_tsv(target_dir / f"instance_explanations_{method}_top_features.tsv")
+    selected = _read_table(
+        target_dir / f"instance_explanations_{method}_selected.parquet"
+    )
+    top = _read_table(
+        target_dir / f"instance_explanations_{method}_top_features.parquet"
+    )
     if selected.empty or top.empty:
         return pd.DataFrame()
     rows: list[dict[str, Any]] = []
@@ -1354,13 +1439,13 @@ def _explainability_report_blocks(
                 "feature_support",
                 class_label,
                 report_dir,
-                f"{label} · {class_label}: cross-method rank-support concordance",
+                f"{label} · {class_label}: cross-method top-k rank support",
             )
             consensus_tab = _xai_consensus_table(target_dir, class_index, top_n=top_n)
             if consensus_fig or not consensus_tab.empty:
-                parts.append("<h6>Cross-method concordance</h6>")
+                parts.append("<h6>Cross-method rank support</h6>")
                 parts.append(
-                    f"<p>Method-specific effect magnitudes are not averaged. Concordance is normalized within-method rank support among methods available for each {html.escape(unit_singular)}.</p>"
+                    f"<p>Method-specific effect magnitudes are not averaged. Support uses within-method top-k ranks among methods available for each {html.escape(unit_singular)}: rank 1 scores 1, rank k scores 1/k, and ranks below k score 0.</p>"
                 )
                 if consensus_fig:
                     parts.append(consensus_fig)
@@ -1518,9 +1603,11 @@ def _terminal_table(
     tab = Table(title=title, show_lines=False)
     for col in df.columns:
         tab.add_column(str(col), overflow="fold", no_wrap=False)
-    view = df.head(max_rows).copy() if max_rows is not None else df.copy()
-    for _, row in view.iterrows():
-        tab.add_row(*[_strip_cell_markup(row.get(col, "")) for col in view.columns])
+    table_preview = df.head(max_rows).copy() if max_rows is not None else df.copy()
+    for _, row in table_preview.iterrows():
+        tab.add_row(
+            *[_strip_cell_markup(row.get(col, "")) for col in table_preview.columns]
+        )
     console.print(tab)
 
 
@@ -1603,10 +1690,10 @@ def _target_dirs_for_terminal(root: Path) -> list[tuple[str, Path]]:
 def _feature_support_terminal(root: Path, *, top_n: int = 8) -> None:
     rows: list[dict[str, Any]] = []
     for label, target_dir in _target_dirs_for_terminal(root):
-        path = target_dir / "top_features.tsv"
-        if not path.exists():
-            path = target_dir / "top_features_shap.tsv"
-        tab = _read_tsv(path)
+        path = target_dir / "top_features.parquet"
+        if not table_exists(path):
+            path = target_dir / "top_features_shap.parquet"
+        tab = _read_table(path)
         if tab.empty or "feature" not in tab.columns:
             continue
         if "rank" in tab.columns:
@@ -1840,6 +1927,13 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
 
     procedure = _procedure_table(sweep, root)
     top10_html = _top_mpma_display(_top_mpma_raw(root, 10), html_mode=True)
+    if getattr(sweep, "uses_modalities", False) and not top10_html.empty:
+        top10_html = top10_html.rename(
+            columns={
+                "Resolution": "Representation",
+                "Count transformation": "Transformation",
+            }
+        )
     strategy_rows = _strategy_rows(root)
     compute_accounting = run_compute_accounting(root, sweep, strategy_rows)
     compute_display = compute_accounting.get("display", pd.DataFrame())
@@ -1935,21 +2029,15 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
     ]
     hardware_text = " · ".join(hardware_parts)
 
-    procedure.to_csv(tables_dir / "evaluation_procedure.tsv", sep="\t", index=False)
-    top10_html.to_csv(
-        tables_dir / "top10_mpma_inner_outer_performance.tsv", sep="\t", index=False
+    write_table(tables_dir / "evaluation_procedure.parquet", procedure)
+    write_table(tables_dir / "top10_mpma_inner_outer_performance.parquet", top10_html)
+    write_table(tables_dir / "task_strategy_performance.parquet", strategy_html)
+    write_table(
+        tables_dir / "strategy_pairwise_primary_metric.parquet", primary_pairwise
     )
-    strategy_html.to_csv(
-        tables_dir / "task_strategy_performance.tsv", sep="\t", index=False
-    )
-    primary_pairwise.to_csv(
-        tables_dir / "strategy_pairwise_primary_metric.tsv", sep="\t", index=False
-    )
-    compute_display.to_csv(
-        tables_dir / "strategy_compute_display.tsv", sep="\t", index=False
-    )
-    ensemble_summary.to_csv(tables_dir / "mpma_e_selection.tsv", sep="\t", index=False)
-    ensemble_members.to_csv(tables_dir / "mpma_e_members.tsv", sep="\t", index=False)
+    write_table(tables_dir / "strategy_compute_display.parquet", compute_display)
+    write_table(tables_dir / "mpma_e_selection.parquet", ensemble_summary)
+    write_table(tables_dir / "mpma_e_members.parquet", ensemble_members)
 
     figs = []
     figs.append(
@@ -2000,7 +2088,7 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
 </section>
 {_tex_link(tables_dir / "task_strategy_performance.tex", report_dir, "task_strategy_performance.tex")}
 <h3 id="statistics">Statistical comparisons</h3>
-<p>Pairwise differences are Strategy A minus Strategy B. The table shows the configured primary metric; complete pairwise results are available in strategy_pairwise_tests.tsv. Holm adjustment is applied across strategy pairs within each metric.</p>
+<p>Pairwise differences are Strategy A minus Strategy B. The table shows the configured primary metric; complete pairwise results are available in strategy_pairwise_tests.parquet. Holm adjustment is applied across strategy pairs within each metric.</p>
 {_html_table(primary_pairwise)}
 <h2 id="top-mpmas">Top 10 MPMA-B configurations</h2>
 {_html_table(top10_html, raw_html_cols=top_metric_cols)}
@@ -2021,7 +2109,7 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
         {
             "report_dir": report_dir,
             "task": "classification",
-            "target": str(sweep.data.target_col),
+            "target": str(_sweep_data_source(sweep).target_col),
             "figures_embedded": len([f for f in figs if f]),
             "explainability_targets": explainability_count,
         },
@@ -2040,23 +2128,23 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
     outputs = {
         "html_report": report_dir / "index.html",
         "task_performance_latex": tables_dir / "task_strategy_performance.tex",
-        "top10_mpmas_tsv": tables_dir / "top10_mpma_inner_outer_performance.tsv",
-        "mpma_e_selection_tsv": tables_dir / "mpma_e_selection.tsv",
-        "mpma_e_members_tsv": tables_dir / "mpma_e_members.tsv",
+        "top10_mpmas": tables_dir / "top10_mpma_inner_outer_performance.parquet",
+        "mpma_e_selection": tables_dir / "mpma_e_selection.parquet",
+        "mpma_e_members": tables_dir / "mpma_e_members.parquet",
         "strategy_outer_unit_metrics": statistics.get(
-            "unit_metrics_path", tables_dir / "strategy_outer_unit_metrics.tsv"
+            "unit_metrics_path", tables_dir / "strategy_outer_unit_metrics.parquet"
         ),
         "strategy_metrics_bootstrap": statistics.get(
-            "summary_path", tables_dir / "strategy_metrics_bootstrap.tsv"
+            "summary_path", tables_dir / "strategy_metrics_bootstrap.parquet"
         ),
         "strategy_pairwise_tests": statistics.get(
-            "pairwise_path", tables_dir / "strategy_pairwise_tests.tsv"
+            "pairwise_path", tables_dir / "strategy_pairwise_tests.parquet"
         ),
         "strategy_statistics_manifest": statistics.get(
             "manifest_path", tables_dir / "strategy_statistics_manifest.json"
         ),
         "strategy_compute": compute_accounting.get(
-            "compute_path", tables_dir / "strategy_compute.tsv"
+            "compute_path", tables_dir / "strategy_compute.parquet"
         ),
         "compute_accounting_manifest": compute_accounting.get(
             "manifest_path", tables_dir / "compute_accounting_manifest.json"

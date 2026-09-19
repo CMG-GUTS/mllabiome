@@ -53,6 +53,8 @@ results/
 examples/runs/
 runs/
 examples/data/IBS/IBS_lodo_mllabiome.csv
+examples/data/GUTBRAIN
+examples/gutbrain_multiview_regression_configs_sweep_rc26.py
 
 # Potential inputs and custom files
 sandbox/

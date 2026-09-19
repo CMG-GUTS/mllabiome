@@ -7,14 +7,17 @@ from .configs_sweep import (
     Sweep,
     _target_task,
     _target_columns,
+    _normalise_sweep_task,
     _write_multi_target_summary,
     evaluate,
+    sweep_task,
     target_sweeps,
 )
 from .ensemble_sweep import sweep_ensemble
 from .final_explainability import explain
 from .final_models import build_final_models
-from .task_reports import write_task_report
+from .task_reports import write_regression_report, write_task_report
+from .report import write_report
 from .utils import dump_json_standard
 
 
@@ -47,6 +50,10 @@ def run_evaluate(sweep: Sweep) -> dict[str, Any]:
 
 
 def run_ensemble(sweep: Sweep) -> dict[str, Any]:
+    if getattr(sweep, "uses_modalities", False):
+        outputs = sweep_ensemble(sweep)
+        build_final_models(sweep.root())
+        return {"ensemble": outputs, "final_models": sweep.root() / "final_models.json"}
     children = target_sweeps(sweep)
     records: list[dict[str, Any]] = []
     outputs: dict[str, Any] = {}
@@ -70,6 +77,8 @@ def run_ensemble(sweep: Sweep) -> dict[str, Any]:
 
 
 def run_explain(sweep: Sweep) -> dict[str, Any]:
+    if getattr(sweep, "uses_modalities", False):
+        return explain(sweep)
     children = target_sweeps(sweep)
     records: list[dict[str, Any]] = []
     outputs: dict[str, Any] = {}
@@ -88,6 +97,13 @@ def run_explain(sweep: Sweep) -> dict[str, Any]:
 
 
 def run_report(sweep: Sweep) -> dict[str, Any]:
+    if getattr(sweep, "uses_modalities", False):
+        task = sweep_task(sweep)
+        return (
+            write_regression_report(sweep)
+            if task == "regression"
+            else write_report(sweep)
+        )
     return write_task_report(sweep)
 
 

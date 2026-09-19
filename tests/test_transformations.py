@@ -245,7 +245,11 @@ def test_alr_matches_scikit_bio_first_reference_and_coordinate_metadata():
     assert all(item.coordinate_type == "alr_logcontrast" for item in metadata)
     assert all(item.anchor_feature is None for item in metadata)
     assert all(not item.exact_feature_identity for item in metadata)
-    assert [item.components for item in metadata] == [("b", "a"), ("c", "a"), ("d", "a")]
+    assert [item.components for item in metadata] == [
+        ("b", "a"),
+        ("c", "a"),
+        ("d", "a"),
+    ]
     assert all(item.coefficients == (1.0, -1.0) for item in metadata)
 
 
@@ -289,7 +293,9 @@ def test_ilr_matches_scikit_bio_egozcue_basis_and_coordinate_metadata():
     for index, item in enumerate(metadata):
         row = basis[index]
         mask = np.abs(row) > 1e-15
-        assert item.components == tuple(np.asarray(features, dtype=object)[mask].tolist())
+        assert item.components == tuple(
+            np.asarray(features, dtype=object)[mask].tolist()
+        )
         np.testing.assert_allclose(
             np.asarray(item.coefficients, dtype=float),
             row[mask],

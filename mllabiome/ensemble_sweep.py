@@ -7,7 +7,8 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 from .compute import ResourceTracker
-from .configs_sweep import Ensemble, Sweep
+from .ensemble_progress import EnsembleSearchProgress
+from .configs_sweep import Ensemble, Sweep, sweep_task
 from .console import path_table, stage, success, summary_table
 from .data import load_dataset
 from .ensemble_aggregation import (
@@ -23,6 +24,7 @@ from .metrics import (
 )
 from .mpma_e_figure import write_single_task_mpma_e_figure
 from .selection import select_final_mpma_candidate
+from .storage import read_table, write_table, table_exists
 from .utils import TAXONOMIC_LEVELS, dump_json_standard
 
 
@@ -883,6 +885,8 @@ def _candidate_table_for_inner(
     plan: Ensemble,
     metric: str,
     outer_split_key: str | None,
+    progress_callback=None,
+    progress_scope: str | None = None,
 ) -> pd.DataFrame:
     _validate_plan(plan)
     eligible = _eligible_config_ids(configs, plan)
@@ -897,20 +901,44 @@ def _candidate_table_for_inner(
     if not pcols:
         raise ValueError("Inner predictions do not contain probability columns.")
     rows: list[dict[str, Any]] = []
-    for spec in _ensemble_configs(plan):
-        method = str(spec["selection_strategy"])
-        if method in {"top_k", "best_per_resolution", "best_per_learner_type"}:
-            row = _candidate_from_simple_selector(
-                spec, scores, pred, configs, pcols, metric
-            )
-        elif method == "caruana":
-            row = _candidate_from_caruana(spec, scores, pred, pcols, metric)
-        elif method == "super_learner":
-            row = _candidate_from_super_learner(spec, scores, pred, pcols, plan, metric)
-        else:
-            raise ValueError(f"Unknown ensemble method: {method!r}.")
-        if row is not None:
-            rows.append(row)
+    specs = _ensemble_configs(plan)
+    scope = str(progress_scope or outer_split_key or "__final__")
+    for index, spec in enumerate(specs, start=1):
+        if progress_callback is not None:
+            progress_callback(scope, "start", spec, index, len(specs), "evaluating")
+        row = None
+        failed = False
+        try:
+            method = str(spec["selection_strategy"])
+            if method in {"top_k", "best_per_resolution", "best_per_learner_type"}:
+                row = _candidate_from_simple_selector(
+                    spec, scores, pred, configs, pcols, metric
+                )
+            elif method == "caruana":
+                row = _candidate_from_caruana(spec, scores, pred, pcols, metric)
+            elif method == "super_learner":
+                row = _candidate_from_super_learner(
+                    spec, scores, pred, pcols, plan, metric
+                )
+            else:
+                raise ValueError(f"Unknown ensemble method: {method!r}.")
+            if row is not None:
+                rows.append(row)
+        except Exception as exc:
+            failed = True
+            if progress_callback is not None:
+                progress_callback(scope, "error", spec, index, len(specs), str(exc))
+            raise
+        finally:
+            if not failed and progress_callback is not None:
+                progress_callback(
+                    scope,
+                    "done",
+                    spec,
+                    index,
+                    len(specs),
+                    "valid" if row is not None else "skipped",
+                )
     if not rows:
         return pd.DataFrame()
     out = pd.DataFrame(rows)
@@ -970,6 +998,7 @@ def select_mpma_e_by_outer_fold(
     configs: pd.DataFrame,
     plan: Ensemble,
     metric: str,
+    progress_callback=None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     _validate_plan(plan)
     outer = _prediction_frame_for_outer(outer_predictions, None)
@@ -984,7 +1013,14 @@ def select_mpma_e_by_outer_fold(
     outer_keys = sorted(set(inner_results["split_key"].astype(str)))
     for outer_key in outer_keys:
         candidates = _candidate_table_for_inner(
-            inner_results, inner_predictions, configs, plan, metric, outer_key
+            inner_results,
+            inner_predictions,
+            configs,
+            plan,
+            metric,
+            outer_key,
+            progress_callback=progress_callback,
+            progress_scope=outer_key,
         )
         if candidates.empty:
             raise RuntimeError(
@@ -992,6 +1028,15 @@ def select_mpma_e_by_outer_fold(
             )
         score_col = f"{metric}_mean"
         winner = candidates.iloc[0].to_dict()
+        if progress_callback is not None:
+            progress_callback(
+                outer_key,
+                "selected",
+                winner,
+                len(_ensemble_configs(plan)),
+                len(_ensemble_configs(plan)),
+                f"inner {metric}={float(winner[score_col]):.4f}",
+            )
         members = [str(x) for x in _parse_json_list(winner["members"], "members")]
         weights = [
             float(x) for x in _parse_json_list(winner.get("weights", "[]"), "weights")
@@ -1106,15 +1151,34 @@ def select_final_mpma_e_candidate(
     plan: Ensemble,
     metric: str,
     member_score_metric: str | None = None,
+    progress_callback=None,
 ) -> tuple[dict[str, Any], pd.DataFrame]:
     candidates = _candidate_table_for_inner(
-        inner_results, inner_predictions, configs, plan, metric, None
+        inner_results,
+        inner_predictions,
+        configs,
+        plan,
+        metric,
+        None,
+        progress_callback=progress_callback,
+        progress_scope="__final__",
     )
     if candidates.empty:
         return ({}, candidates)
     score_col = f"{metric}_mean"
     candidates = candidates.rename(columns={score_col: "inner_score"})
     first = candidates.iloc[0].to_dict()
+    if progress_callback is not None:
+        progress_callback(
+            "__final__",
+            "selected",
+            first,
+            len(_ensemble_configs(plan)),
+            len(_ensemble_configs(plan)),
+            f"inner {metric}={float(first['inner_score']):.4f}"
+            if "inner_score" in first
+            else f"inner {metric}={float(first[f'{metric}_mean']):.4f}",
+        )
     compatibility_metric = str(member_score_metric or metric)
     best = {
         "ensemble_config_id": str(first["ensemble_config_id"]),
@@ -1154,27 +1218,24 @@ def select_final_mpma_e_candidate(
 
 
 def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
-    if (
-        str(getattr(sweep.data, "task", "classification")).strip().casefold()
-        == "regression"
-    ):
+    if sweep_task(sweep) == "regression":
         from .regression_ensemble import sweep_regression_ensemble
 
         return sweep_regression_ensemble(sweep)
     root = sweep.root()
     ensemble_dir = root / "ensembling"
     ensemble_dir.mkdir(parents=True, exist_ok=True)
-    outer_path = root / "predictions" / "outer_predictions.tsv"
-    inner_result_path = root / "inner_results" / "inner_results.tsv"
-    inner_prediction_path = root / "inner_predictions" / "inner_predictions.tsv"
-    config_path = root / "configs.tsv"
+    outer_path = root / "predictions" / "outer_predictions.parquet"
+    inner_result_path = root / "inner_results" / "inner_results.parquet"
+    inner_prediction_path = root / "inner_predictions" / "inner_predictions.parquet"
+    config_path = root / "configs.parquet"
     required = [outer_path, inner_result_path, inner_prediction_path, config_path]
-    if any((not path.exists() for path in required)):
+    if any((not table_exists(path) for path in required)):
         raise FileNotFoundError("Run evaluate(sweep) before sweep_ensemble(sweep).")
-    outer_predictions = pd.read_csv(outer_path, sep="\t")
-    inner_results = pd.read_csv(inner_result_path, sep="\t")
-    inner_predictions = pd.read_csv(inner_prediction_path, sep="\t")
-    configs = pd.read_csv(config_path, sep="\t")
+    outer_predictions = read_table(outer_path)
+    inner_results = read_table(inner_result_path)
+    inner_predictions = read_table(inner_prediction_path)
+    configs = read_table(config_path)
     metric = str(sweep.ensemble.optimize_metric)
     stage("Ensemble sweep", str(root))
     summary_table(
@@ -1199,29 +1260,38 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
             getattr(sweep.evaluation, "resource_sample_interval_s", 0.1)
         )
     ).start()
-    selection, selected_outer_predictions, fold_metrics = select_mpma_e_by_outer_fold(
-        inner_results,
-        inner_predictions,
-        outer_predictions,
-        configs,
-        sweep.ensemble,
-        metric,
-    )
-    if selection.empty or selected_outer_predictions.empty or fold_metrics.empty:
-        raise RuntimeError("No valid nested ensemble selections were produced.")
-    member_score_metric = str(sweep.evaluation.optimize_metric)
-    if member_score_metric not in inner_results.columns:
-        raise ValueError(
-            f"inner_results.tsv must contain the base evaluation metric {member_score_metric!r} required for final-model member metadata."
+    outer_keys = sorted(set(inner_results["split_key"].astype(str)))
+    ensemble_specs = _ensemble_configs(sweep.ensemble)
+    with EnsembleSearchProgress(
+        outer_keys + ["__final__"], len(ensemble_specs)
+    ) as live:
+        selection, selected_outer_predictions, fold_metrics = (
+            select_mpma_e_by_outer_fold(
+                inner_results,
+                inner_predictions,
+                outer_predictions,
+                configs,
+                sweep.ensemble,
+                metric,
+                progress_callback=live.update,
+            )
         )
-    final_ensemble, candidates = select_final_mpma_e_candidate(
-        inner_results,
-        inner_predictions,
-        configs,
-        sweep.ensemble,
-        metric,
-        member_score_metric,
-    )
+        if selection.empty or selected_outer_predictions.empty or fold_metrics.empty:
+            raise RuntimeError("No valid nested ensemble selections were produced.")
+        member_score_metric = str(sweep.evaluation.optimize_metric)
+        if member_score_metric not in inner_results.columns:
+            raise ValueError(
+                f"inner_results.parquet must contain the base evaluation metric {member_score_metric!r} required for final-model member metadata."
+            )
+        final_ensemble, candidates = select_final_mpma_e_candidate(
+            inner_results,
+            inner_predictions,
+            configs,
+            sweep.ensemble,
+            metric,
+            member_score_metric,
+            progress_callback=live.update,
+        )
     if not final_ensemble:
         raise RuntimeError(
             "No valid final ensemble candidate was produced from inner OOF predictions."
@@ -1233,16 +1303,16 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
         str(sweep.evaluation.optimize_metric),
         plan=sweep.ensemble,
     )
-    selection_path = ensemble_dir / "mpma_e_outer_selection.tsv"
-    prediction_path = ensemble_dir / "ensemble_predictions.tsv"
-    result_path = ensemble_dir / "mpma_e_outer_results.tsv"
-    candidate_path = ensemble_dir / "ensemble_candidate_scores.tsv"
+    selection_path = ensemble_dir / "mpma_e_outer_selection.parquet"
+    prediction_path = ensemble_dir / "ensemble_predictions.parquet"
+    result_path = ensemble_dir / "mpma_e_outer_results.parquet"
+    candidate_path = ensemble_dir / "ensemble_candidate_scores.parquet"
     summary_path = ensemble_dir / "mpma_e_strategy_summary.json"
     final_path = ensemble_dir / "mpma_e_final_candidate.json"
-    selection.to_csv(selection_path, sep="\t", index=False)
-    selected_outer_predictions.to_csv(prediction_path, sep="\t", index=False)
-    fold_metrics.to_csv(result_path, sep="\t", index=False)
-    candidates.to_csv(candidate_path, sep="\t", index=False)
+    write_table(selection_path, selection)
+    write_table(prediction_path, selected_outer_predictions)
+    write_table(result_path, fold_metrics)
+    write_table(candidate_path, candidates)
     dump_json_standard(nested_summary, summary_path)
     report_final_ensemble = dict(final_ensemble)
     report_final_ensemble["optimize_metric"] = str(
@@ -1285,35 +1355,36 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
             },
         ]
     )
-    comparison.to_csv(
-        ensemble_dir / "final_model_comparison.tsv", sep="\t", index=False
-    )
+    write_table(ensemble_dir / "final_model_comparison.parquet", comparison)
     resource_path = ensemble_dir / "mpma_e_selection_resources.json"
     dump_json_standard(resource_tracker.stop(), resource_path)
     stale_candidate_plot = ensemble_dir / "ensemble_candidates.png"
     if stale_candidate_plot.exists():
         stale_candidate_plot.unlink()
-    X_fig, taxa_fig, source_fig = _matrix_for_mpma_e_figure(sweep)
-    mpma_e_outputs = write_single_task_mpma_e_figure(
-        root,
-        task_key=root.name,
-        task_title=sweep.title,
-        X=X_fig,
-        taxa=taxa_fig,
-        source=source_fig,
-        out_dir=root / "figures",
-        out_name="mpma_e",
-        include_inactive_configs=True,
-        max_members=20,
-        seed=sweep.evaluation.random_state,
-    )
+    if getattr(sweep, "uses_modalities", False):
+        mpma_e_outputs = {}
+    else:
+        X_fig, taxa_fig, source_fig = _matrix_for_mpma_e_figure(sweep)
+        mpma_e_outputs = write_single_task_mpma_e_figure(
+            root,
+            task_key=root.name,
+            task_title=sweep.title,
+            X=X_fig,
+            taxa=taxa_fig,
+            source=source_fig,
+            out_dir=root / "figures",
+            out_name="mpma_e",
+            include_inactive_configs=True,
+            max_members=20,
+            seed=sweep.evaluation.random_state,
+        )
     success(
         f"Ensemble sweep completed · final candidate={final_ensemble['ensemble_config_id']} · inner {metric}={final_ensemble['inner_score']:.4f}"
     )
     outputs = {
         "ensemble_dir": ensemble_dir,
         "selected_unit": ensemble_dir / "selected_unit.json",
-        "comparison": ensemble_dir / "final_model_comparison.tsv",
+        "comparison": ensemble_dir / "final_model_comparison.parquet",
         "mpma_e_selection": selection_path,
         "mpma_e_predictions": prediction_path,
         "mpma_e_outer_results": result_path,

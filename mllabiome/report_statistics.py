@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import t as student_t
 
+from .storage import read_table, write_table, table_exists, resolve_table_path
 from .final_models import build_final_models, fixed_strategy_predictions
 from .metrics import _renormalize_proba, compute_metrics, metric_is_loss
 from .utils import dump_json_standard
@@ -66,11 +67,9 @@ _LODO_PROTOCOLS = {"lodo", "leave_one_dataset_out"}
 _NESTED_PROTOCOLS = {"repeated_nested_cv", "nested_cv"}
 
 
-def _read_tsv(path: Path) -> pd.DataFrame:
-    if not path.exists() or path.stat().st_size == 0:
-        return pd.DataFrame()
+def _read_table(path: Path) -> pd.DataFrame:
     try:
-        return pd.read_csv(path, sep="\t")
+        return read_table(path)
     except Exception:
         return pd.DataFrame()
 
@@ -155,7 +154,7 @@ def _candidate_from_final_models(root: Path) -> dict[str, Any]:
 
 
 def _candidate_from_table(root: Path) -> dict[str, Any]:
-    table = _read_tsv(root / "ensembling" / "ensemble_candidate_scores.tsv")
+    table = _read_table(root / "ensembling" / "ensemble_candidate_scores.parquet")
     if table.empty:
         return {}
     if "inner_score" in table.columns:
@@ -173,7 +172,7 @@ def _candidate_from_table(root: Path) -> dict[str, Any]:
 
 
 def _candidate_from_outer_selection(root: Path) -> dict[str, Any]:
-    table = _read_tsv(root / "ensembling" / "mpma_e_outer_selection.tsv")
+    table = _read_table(root / "ensembling" / "mpma_e_outer_selection.parquet")
     if table.empty:
         return {}
     row = table.iloc[0].to_dict()
@@ -321,7 +320,7 @@ def _strategy_prediction_frames(
     if "MPMA-B" in rows or "MPMA-E" in rows:
         build_final_models(root)
     outer = _ensure_outer_split_key(
-        _read_tsv(root / "predictions" / "outer_predictions.tsv")
+        _read_table(root / "predictions" / "outer_predictions.parquet")
     )
     if "MPMA-B" in rows:
         frame = _ensure_outer_split_key(fixed_strategy_predictions(root, "MPMA-B"))
@@ -1647,9 +1646,10 @@ def _selection_metric_from_run(
 
 
 def _file_signature(path: Path) -> dict[str, Any]:
-    if not path.exists():
+    physical = resolve_table_path(path) if path.suffix == ".parquet" else path
+    if not physical.exists():
         return {"path": str(path), "exists": False}
-    stat = path.stat()
+    stat = physical.stat()
     return {
         "path": str(path),
         "exists": True,
@@ -1686,9 +1686,9 @@ def _statistics_fingerprint(
             }
         )
     paths = [
-        root / "predictions" / "outer_predictions.tsv",
-        root / "configs.tsv",
-        root / "inner_results" / "inner_results.tsv",
+        root / "predictions" / "outer_predictions.parquet",
+        root / "configs.parquet",
+        root / "inner_results" / "inner_results.parquet",
         root / "tables" / "mpma_b_final_candidate.json",
         root / "ensembling" / "selected_unit.json",
         root / "ensembling" / "mpma_e_final_candidate.json",
@@ -1718,16 +1718,16 @@ def _cached_result(
     manifest = _read_json(manifest_path)
     if str(manifest.get("fingerprint", "")) != fingerprint:
         return None
-    unit_path = tables / "strategy_outer_unit_metrics.tsv"
-    summary_path = tables / "strategy_metrics_bootstrap.tsv"
-    pairwise_path = tables / "strategy_pairwise_tests.tsv"
-    oof_performance_path = tables / "strategy_oof_performance.tsv"
-    oof_wide_path = tables / "strategy_oof_performance_table.tsv"
-    oof_calibration_path = tables / "strategy_oof_calibration.tsv"
-    oof_contrasts_path = tables / "strategy_oof_pairwise_contrasts.tsv"
+    unit_path = tables / "strategy_outer_unit_metrics.parquet"
+    summary_path = tables / "strategy_metrics_bootstrap.parquet"
+    pairwise_path = tables / "strategy_pairwise_tests.parquet"
+    oof_performance_path = tables / "strategy_oof_performance.parquet"
+    oof_wide_path = tables / "strategy_oof_performance_table.parquet"
+    oof_calibration_path = tables / "strategy_oof_calibration.parquet"
+    oof_contrasts_path = tables / "strategy_oof_pairwise_contrasts.parquet"
     oof_manifest_path = tables / "strategy_oof_statistics_manifest.json"
-    oof_coverage_path = tables / "strategy_oof_coverage.tsv"
-    oof_pairwise_coverage_path = tables / "strategy_oof_pairwise_coverage.tsv"
+    oof_coverage_path = tables / "strategy_oof_coverage.parquet"
+    oof_pairwise_coverage_path = tables / "strategy_oof_pairwise_coverage.parquet"
     required = (
         unit_path,
         summary_path,
@@ -1740,15 +1740,15 @@ def _cached_result(
         oof_coverage_path,
         oof_pairwise_coverage_path,
     )
-    if any(not path.exists() for path in required):
+    if any(not table_exists(path) for path in required):
         return None
     return {
-        "unit_metrics": _read_tsv(unit_path),
-        "summary": _read_tsv(summary_path),
-        "pairwise": _read_tsv(pairwise_path),
-        "oof_performance": _read_tsv(oof_performance_path),
-        "oof_calibration": _read_tsv(oof_calibration_path),
-        "oof_contrasts": _read_tsv(oof_contrasts_path),
+        "unit_metrics": _read_table(unit_path),
+        "summary": _read_table(summary_path),
+        "pairwise": _read_table(pairwise_path),
+        "oof_performance": _read_table(oof_performance_path),
+        "oof_calibration": _read_table(oof_calibration_path),
+        "oof_contrasts": _read_table(oof_contrasts_path),
         "unit_metrics_path": unit_path,
         "summary_path": summary_path,
         "pairwise_path": pairwise_path,
@@ -1830,13 +1830,13 @@ def run_report_statistics(
     )
     tables = root / "report" / "tables"
     tables.mkdir(parents=True, exist_ok=True)
-    unit_path = tables / "strategy_outer_unit_metrics.tsv"
-    summary_path = tables / "strategy_metrics_bootstrap.tsv"
-    pairwise_path = tables / "strategy_pairwise_tests.tsv"
+    unit_path = tables / "strategy_outer_unit_metrics.parquet"
+    summary_path = tables / "strategy_metrics_bootstrap.parquet"
+    pairwise_path = tables / "strategy_pairwise_tests.parquet"
     manifest_path = tables / "strategy_statistics_manifest.json"
-    unit_metrics.to_csv(unit_path, sep="\t", index=False)
-    summary.to_csv(summary_path, sep="\t", index=False)
-    pairwise.to_csv(pairwise_path, sep="\t", index=False)
+    write_table(unit_path, unit_metrics)
+    write_table(summary_path, summary)
+    write_table(pairwise_path, pairwise)
     advanced = _run_oof_statistics(
         frames,
         protocol,
@@ -1844,21 +1844,19 @@ def run_report_statistics(
         int(random_state),
         int(calibration_bins),
     )
-    oof_performance_path = tables / "strategy_oof_performance.tsv"
-    oof_wide_path = tables / "strategy_oof_performance_table.tsv"
-    oof_calibration_path = tables / "strategy_oof_calibration.tsv"
-    oof_contrasts_path = tables / "strategy_oof_pairwise_contrasts.tsv"
+    oof_performance_path = tables / "strategy_oof_performance.parquet"
+    oof_wide_path = tables / "strategy_oof_performance_table.parquet"
+    oof_calibration_path = tables / "strategy_oof_calibration.parquet"
+    oof_contrasts_path = tables / "strategy_oof_pairwise_contrasts.parquet"
     oof_manifest_path = tables / "strategy_oof_statistics_manifest.json"
-    oof_coverage_path = tables / "strategy_oof_coverage.tsv"
-    oof_pairwise_coverage_path = tables / "strategy_oof_pairwise_coverage.tsv"
-    advanced["performance"].to_csv(oof_performance_path, sep="\t", index=False)
-    advanced["performance_wide"].to_csv(oof_wide_path, sep="\t", index=False)
-    advanced["calibration"].to_csv(oof_calibration_path, sep="\t", index=False)
-    advanced["contrasts"].to_csv(oof_contrasts_path, sep="\t", index=False)
-    advanced["coverage"].to_csv(oof_coverage_path, sep="\t", index=False)
-    advanced["pairwise_coverage"].to_csv(
-        oof_pairwise_coverage_path, sep="\t", index=False
-    )
+    oof_coverage_path = tables / "strategy_oof_coverage.parquet"
+    oof_pairwise_coverage_path = tables / "strategy_oof_pairwise_coverage.parquet"
+    write_table(oof_performance_path, advanced["performance"])
+    write_table(oof_wide_path, advanced["performance_wide"])
+    write_table(oof_calibration_path, advanced["calibration"])
+    write_table(oof_contrasts_path, advanced["contrasts"])
+    write_table(oof_coverage_path, advanced["coverage"])
+    write_table(oof_pairwise_coverage_path, advanced["pairwise_coverage"])
     oof_manifest = {
         "schema_version": 4,
         "protocol": str(protocol),

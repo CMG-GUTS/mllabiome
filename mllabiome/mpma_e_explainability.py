@@ -19,6 +19,7 @@ from .ensemble_aggregation import (
 from .final_models import build_final_models
 from .resolutions import materialize_mpdr
 from .utils import dump_json_standard
+from .storage import read_table, write_table, table_exists
 
 
 def _member_rows_for_final_model(
@@ -31,7 +32,7 @@ def _member_rows_for_final_model(
     for config_id in member_ids:
         if config_id not in by_id:
             raise _core.ExplainabilityConfigurationError(
-                f"Final MPMA-E member {config_id!r} is not present in configs.tsv."
+                f"Final MPMA-E member {config_id!r} is not present in configs.parquet."
             )
         ordered.append(by_id[config_id])
     return pd.DataFrame(ordered)
@@ -76,10 +77,10 @@ def _prepare_member_specs(
 
 
 def _stored_member_outer_predictions(root: Path) -> pd.DataFrame | None:
-    path = root / "predictions" / "outer_predictions.tsv"
-    if not path.exists():
+    path = root / "predictions" / "outer_predictions.parquet"
+    if not table_exists(path):
         return None
-    frame = pd.read_csv(path, sep="\t")
+    frame = read_table(path)
     if "outer_split_key" not in frame.columns and "split_key" in frame.columns:
         frame["outer_split_key"] = frame["split_key"]
     required = {"outer_split_key", "sample_id", "config_id"}
@@ -468,18 +469,18 @@ def _write_prediction_tables(
 
     outputs: dict[str, Path] = {}
     ensemble_df = pd.DataFrame(ensemble_rows)
-    p = out_dir / "oof_predictions.tsv"
-    ensemble_df.to_csv(p, sep="\t", index=False)
+    p = out_dir / "oof_predictions.parquet"
+    write_table(p, ensemble_df)
     outputs["oof_predictions"] = p
 
     member_df = pd.DataFrame(member_rows)
-    p = out_dir / "member_probability_decomposition.tsv"
-    member_df.to_csv(p, sep="\t", index=False)
+    p = out_dir / "member_probability_decomposition.parquet"
+    write_table(p, member_df)
     outputs["member_probability_decomposition"] = p
 
     influence_df = pd.DataFrame(influence_rows)
-    p = out_dir / "member_aggregation_influence.tsv"
-    influence_df.to_csv(p, sep="\t", index=False)
+    p = out_dir / "member_aggregation_influence.parquet"
+    write_table(p, influence_df)
     outputs["member_aggregation_influence"] = p
     if not influence_df.empty:
         summary = (
@@ -494,8 +495,8 @@ def _write_prediction_tables(
             )
             .sort_values("mean_abs_influence", ascending=False)
         )
-        p = out_dir / "member_aggregation_influence_summary.tsv"
-        summary.to_csv(p, sep="\t", index=False)
+        p = out_dir / "member_aggregation_influence_summary.parquet"
+        write_table(p, summary)
         outputs["member_aggregation_influence_summary"] = p
     return outputs
 
@@ -811,8 +812,8 @@ def _run_hierarchical_shap(
     info("Aggregating MPMA-E member SHAP attributions and writing outputs")
     raw = pd.DataFrame(representation_records)
     outputs: dict[str, Path] = {}
-    raw_path = out_dir / "shap_member_attributions.tsv.gz"
-    raw.to_csv(raw_path, sep="\t", index=False, compression="gzip")
+    raw_path = out_dir / "shap_member_attributions.parquet"
+    write_table(raw_path, raw)
     outputs["shap_member_attributions"] = raw_path
     if raw.empty:
         raise _core.ExplainabilityConfigurationError(
@@ -820,8 +821,8 @@ def _run_hierarchical_shap(
         )
 
     coordinate_frame = pd.DataFrame(coordinate_records).drop_duplicates()
-    p = out_dir / "coordinate_metadata.tsv"
-    coordinate_frame.to_csv(p, sep="\t", index=False)
+    p = out_dir / "coordinate_metadata.parquet"
+    write_table(p, coordinate_frame)
     outputs["coordinate_metadata"] = p
 
     member_summary = (
@@ -849,13 +850,13 @@ def _run_hierarchical_shap(
         )
         .sort_values(["class_index", "importance_mean"], ascending=[True, False])
     )
-    p = out_dir / "feature_importance_member_shap.tsv"
-    member_summary.to_csv(p, sep="\t", index=False)
+    p = out_dir / "feature_importance_member_shap.parquet"
+    member_write_table(p, summary)
     outputs["feature_importance_member_shap"] = p
 
     participation_raw = pd.DataFrame(participation_records)
-    p = out_dir / "shap_taxon_participation_oof.tsv.gz"
-    participation_raw.to_csv(p, sep="\t", index=False, compression="gzip")
+    p = out_dir / "shap_taxon_participation_oof.parquet"
+    write_table(p, participation_raw)
     outputs["shap_taxon_participation_oof"] = p
     participation_frames: list[pd.DataFrame] = []
     if not participation_raw.empty:
@@ -885,8 +886,8 @@ def _run_hierarchical_shap(
         participation_summary["interpretation"] = (
             "unsigned_nonadditive_logcontrast_component_participation"
         )
-        p = out_dir / "feature_importance_taxon_participation.tsv"
-        participation_summary.to_csv(p, sep="\t", index=False)
+        p = out_dir / "feature_importance_taxon_participation.parquet"
+        participation_write_table(p, summary)
         outputs["feature_importance_taxon_participation"] = p
 
     if linear:
@@ -919,8 +920,8 @@ def _run_hierarchical_shap(
             )
             .sort_values(["class_index", "importance_mean"], ascending=[True, False])
         )
-        p = out_dir / "feature_importance_mpdr_propagated_shap.tsv"
-        representation_summary.to_csv(p, sep="\t", index=False)
+        p = out_dir / "feature_importance_mpdr_propagated_shap.parquet"
+        representation_write_table(p, summary)
         outputs["feature_importance_mpdr_propagated_shap"] = p
 
         coordinate_fold_frames: list[pd.DataFrame] = []
@@ -955,15 +956,15 @@ def _run_hierarchical_shap(
             "outer_fold_mean_abs_weighted_member_coordinate_shap",
             sweep.explainability.top_k,
         )
-        p = out_dir / "feature_stability_coordinate.tsv"
-        coordinate_stability.to_csv(p, sep="\t", index=False)
+        p = out_dir / "feature_stability_coordinate.parquet"
+        write_table(p, coordinate_stability)
         outputs["feature_stability_coordinate"] = p
 
         exact_taxon_raw = pd.DataFrame(exact_taxon_records)
         exact_taxon_summary = pd.DataFrame()
         if not exact_taxon_raw.empty:
-            p = out_dir / "shap_taxon_net_oof.tsv.gz"
-            exact_taxon_raw.to_csv(p, sep="\t", index=False, compression="gzip")
+            p = out_dir / "shap_taxon_net_oof.parquet"
+            write_table(p, exact_taxon_raw)
             outputs["shap_taxon_net_oof"] = p
             fold_frames: list[pd.DataFrame] = []
             for split_key, fold_raw in exact_taxon_raw.groupby("split_key", sort=False):
@@ -1014,18 +1015,18 @@ def _run_hierarchical_shap(
                 if has_non_exact_coordinates
                 else "all_members"
             )
-            p = out_dir / "feature_importance_taxon_net_shap.tsv"
-            exact_taxon_summary.to_csv(p, sep="\t", index=False)
+            p = out_dir / "feature_importance_taxon_net_shap.parquet"
+            exact_taxon_write_table(p, summary)
             outputs["feature_importance_taxon_net_shap"] = p
 
         if has_non_exact_coordinates:
             compat = coordinate_stability.copy()
             compat["scoring"] = "outer_fold_mean_abs_weighted_member_coordinate_shap"
-            p = out_dir / "feature_stability.tsv"
-            compat.to_csv(p, sep="\t", index=False)
+            p = out_dir / "feature_stability.parquet"
+            write_table(p, compat)
             outputs["stability"] = p
-            p = out_dir / "feature_importance.tsv"
-            compat.to_csv(p, sep="\t", index=False)
+            p = out_dir / "feature_importance.parquet"
+            write_table(p, compat)
             outputs["importance"] = p
         elif not exact_taxon_summary.empty:
             stability_cols = [
@@ -1050,23 +1051,26 @@ def _run_hierarchical_shap(
                 "sign_negative_fraction",
                 "sign_consistency",
             ]
-            p = out_dir / "feature_stability.tsv"
-            exact_taxon_summary[
-                [c for c in stability_cols if c in exact_taxon_summary.columns]
-            ].to_csv(p, sep="\t", index=False)
+            p = out_dir / "feature_stability.parquet"
+            write_table(
+                p,
+                exact_taxon_summary[
+                    [c for c in stability_cols if c in exact_taxon_summary.columns]
+                ],
+            )
             outputs["stability"] = p
             compat = exact_taxon_summary.copy()
             compat["scoring"] = "outer_fold_mean_abs_net_weighted_member_shap"
-            p = out_dir / "feature_importance.tsv"
-            compat.to_csv(p, sep="\t", index=False)
+            p = out_dir / "feature_importance.parquet"
+            write_table(p, compat)
             outputs["importance"] = p
         else:
             compat = coordinate_stability.copy()
-            p = out_dir / "feature_stability.tsv"
-            compat.to_csv(p, sep="\t", index=False)
+            p = out_dir / "feature_stability.parquet"
+            write_table(p, compat)
             outputs["stability"] = p
-            p = out_dir / "feature_importance.tsv"
-            compat.to_csv(p, sep="\t", index=False)
+            p = out_dir / "feature_importance.parquet"
+            write_table(p, compat)
             outputs["importance"] = p
     else:
         compat = member_summary[
@@ -1075,13 +1079,13 @@ def _run_hierarchical_shap(
         compat.insert(0, "method", "member_shap_not_exact_ensemble")
         compat["feature"] = compat["representation_feature"]
         compat["scoring"] = "constituent_member_mean_abs_shap"
-        p = out_dir / "feature_importance.tsv"
-        compat.to_csv(p, sep="\t", index=False)
+        p = out_dir / "feature_importance.parquet"
+        write_table(p, compat)
         outputs["importance"] = p
 
     diagnostics = pd.DataFrame(diagnostic_rows)
-    p = out_dir / "shap_additivity_diagnostics.tsv"
-    diagnostics.to_csv(p, sep="\t", index=False)
+    p = out_dir / "shap_additivity_diagnostics.parquet"
+    write_table(p, diagnostics)
     outputs["shap_additivity_diagnostics"] = p
     return outputs
 
@@ -1095,10 +1099,10 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
             "MPMA-E explainability was requested, but no final MPMA-E specification is available."
         )
     if rankings is None:
-        rankings_path = root / "tables" / "mpma_rankings.tsv"
+        rankings_path = root / "tables" / "mpma_rankings.parquet"
         if not rankings_path.exists():
             raise FileNotFoundError("Run evaluate(sweep) before explain(sweep).")
-        rankings = pd.read_csv(rankings_path, sep="\t")
+        rankings = read_table(rankings_path)
 
     out_dir = root / "explainability" / "mpma_e"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1123,8 +1127,8 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
     )
 
     outputs = _write_prediction_tables(bundle, mpma_e, out_dir)
-    reproduction_path = out_dir / "prediction_reproduction_diagnostics.tsv"
-    bundle["reproduction"].to_csv(reproduction_path, sep="\t", index=False)
+    reproduction_path = out_dir / "prediction_reproduction_diagnostics.parquet"
+    write_table(reproduction_path, bundle["reproduction"])
     outputs["prediction_reproduction_diagnostics"] = reproduction_path
 
     if "shap" in methods:

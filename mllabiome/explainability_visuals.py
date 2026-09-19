@@ -12,6 +12,8 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap
 
+from .explainability_support import top_k_rank_support
+
 try:
     import networkx as nx
 except Exception:
@@ -492,9 +494,9 @@ def plot_feature_support(
 
     _bracket(fig, panel, bracket_lab[0], bracket_lab[1], 0.765, "Ranked feature")
     _bracket(fig, panel, bracket_dir[0], bracket_dir[1], 0.765, "Class shift")
-    _bracket(fig, panel, bracket_hm[0], bracket_hm[1], 0.765, "Method support")
+    _bracket(fig, panel, bracket_hm[0], bracket_hm[1], 0.765, "Top-k support")
     if not solo_method:
-        _bracket(fig, panel, 0.872, 0.984, 0.765, "Mean")
+        _bracket(fig, panel, 0.872, 0.984, 0.765, "Mean support")
     save_all(fig, out_stem)
     plt.close(fig)
     return True
@@ -527,11 +529,9 @@ def plot_regression_feature_support(
     for method in methods:
         sub = d[d["method"].eq(method)].copy()
         sub = sub.sort_values(["importance_mean", "feature"], ascending=[False, True])
-        n = len(sub)
-        if n == 1:
-            sub["support"] = 1.0
-        else:
-            sub["support"] = 1.0 - np.arange(n, dtype=float) / float(n - 1)
+        sub["support"] = top_k_rank_support(
+            sub["importance_mean"], int(top_k)
+        ).to_numpy(dtype=float)
         rows.append(sub[["method", "feature", "support"]])
     support = pd.concat(rows, ignore_index=True)
     pivot = support.pivot_table(
@@ -674,9 +674,9 @@ def plot_regression_feature_support(
                 clip_on=False,
             )
     _bracket(fig, panel, bracket_lab[0], bracket_lab[1], 0.765, "Ranked feature")
-    _bracket(fig, panel, bracket_hm[0], bracket_hm[1], 0.765, "Method support")
+    _bracket(fig, panel, bracket_hm[0], bracket_hm[1], 0.765, "Top-k support")
     if ax_bar is not None:
-        _bracket(fig, panel, 0.875, 0.980, 0.765, "Mean")
+        _bracket(fig, panel, 0.875, 0.980, 0.765, "Mean support")
     save_all(fig, out_stem)
     plt.close(fig)
     return True

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .storage import read_table, table_exists
 from . import explainability as _core
 from .final_models import build_final_models
 from .mpma_e_explainability import explain_mpma_e
@@ -80,8 +81,9 @@ def _invalidate_stale(root: Path, models: dict, explainability) -> None:
 
 
 def explain(sweep):
+    source = sweep.samples if getattr(sweep, "uses_modalities", False) else sweep.data
     if (
-        str(getattr(sweep.data, "task", "classification")).strip().casefold()
+        str(getattr(source, "task", "classification")).strip().casefold()
         == "regression"
     ):
         from .regression_explainability import explain_regression
@@ -90,10 +92,10 @@ def explain(sweep):
     root = Path(sweep.root())
     models = build_final_models(root)
     _invalidate_stale(root, models, sweep.explainability)
-    rankings_path = root / "tables" / "mpma_rankings.tsv"
-    if not rankings_path.exists():
+    rankings_path = root / "tables" / "mpma_rankings.parquet"
+    if not table_exists(rankings_path):
         raise FileNotFoundError("Run evaluate(sweep) before explain(sweep).")
-    rankings = pd.read_csv(rankings_path, sep="\t")
+    rankings = read_table(rankings_path)
     targets = _core._automatic_explainability_targets(sweep, rankings)
     mpma_e = models.get("MPMA-E")
 
@@ -109,6 +111,10 @@ def explain(sweep):
             )
             key = "mpma_b"
         elif text in {"ensemble", "mpma_e", "MPMA-E"}:
+            if getattr(sweep, "uses_modalities", False):
+                raise _core.ExplainabilityConfigurationError(
+                    "MPMA-E explainability for modality-based candidates is not enabled in rc24. Ensemble selection and prediction are supported, but hierarchical attribution across heterogeneous modality and integration pipelines requires a separate exact reconstruction contract and is intentionally not approximated."
+                )
             if not isinstance(mpma_e, dict):
                 raise _core.ExplainabilityConfigurationError(
                     "MPMA-E explainability was requested, but no final MPMA-E specification is available."

@@ -43,6 +43,7 @@ from .explainability_visuals import (
     plot_regression_feature_support,
 )
 from .utils import dump_json_standard
+from .storage import read_table, write_table, table_exists
 
 
 _REGRESSION_METRICS = {
@@ -116,7 +117,7 @@ def _config_row(configs: pd.DataFrame, config_id: str) -> pd.Series:
             .map(lambda x: x.startswith(str(config_id)) or str(config_id).startswith(x))
         ]
     if frame.empty:
-        raise ValueError(f"No MPMA with config_id={config_id!r} in configs.tsv.")
+        raise ValueError(f"No MPMA with config_id={config_id!r} in configs.parquet.")
     return frame.iloc[0]
 
 
@@ -182,6 +183,31 @@ def _coordinate_metadata_rows(
 def _fit_individual_folds(
     sweep: Sweep, row: pd.Series
 ) -> tuple[Any, list[dict[str, Any]]]:
+    if getattr(sweep, "uses_modalities", False):
+        from .multimodal_sweep import fit_modality_regression_candidate_folds
+
+        dataset, folds = fit_modality_regression_candidate_folds(sweep, row)
+        for fold in folds:
+            objects = fold.pop("coordinate_metadata_objects", [])
+            fold["coordinate_metadata"] = [
+                {
+                    "coordinate": str(item.name),
+                    "native_coordinate": str(item.name),
+                    "coordinate_type": str(item.coordinate_type),
+                    "anchor_feature": ""
+                    if item.anchor_feature is None
+                    else str(item.anchor_feature),
+                    "exact_feature_identity": bool(item.exact_feature_identity),
+                    "components": json.dumps(
+                        list(item.components), separators=(",", ":")
+                    ),
+                    "coefficients": json.dumps(
+                        [float(x) for x in item.coefficients], separators=(",", ":")
+                    ),
+                }
+                for item in objects
+            ]
+        return dataset, folds
     levels = _row_levels(row)
     dataset = load_dataset(sweep.data, levels)
     X_base, base_names = materialize_mpdr(dataset, levels)
@@ -233,6 +259,10 @@ def _fit_individual_folds(
 def _fit_ensemble_folds(
     sweep: Sweep, configs: pd.DataFrame, unit: dict[str, Any]
 ) -> tuple[Any, list[dict[str, Any]]]:
+    if getattr(sweep, "uses_modalities", False):
+        raise ValueError(
+            "Regression MPMA-E explainability for modality-based candidates is not enabled in rc24. Ensemble prediction is supported, but hierarchical attribution across heterogeneous modality pipelines is intentionally not approximated."
+        )
     members = [
         str(member.get("config_id") if isinstance(member, dict) else member)
         for member in unit.get("members", [])
@@ -843,26 +873,26 @@ def _write_regression_explainability_figures(
 ) -> dict[str, Path]:
     frame = importance if importance is not None else pd.DataFrame()
     if frame.empty:
-        path = target_dir / "feature_stability.tsv"
-        if path.exists() and path.stat().st_size:
-            frame = pd.read_csv(path, sep="\t")
+        path = target_dir / "feature_stability.parquet"
+        if table_exists(path) and path.stat().st_size:
+            frame = read_table(path)
     outputs = (
         _write_feature_support_figure(target_dir, frame, int(top_k))
         if not frame.empty
         else {}
     )
-    curve_path = target_dir / "ale_curves.tsv"
-    if curve_path.exists() and curve_path.stat().st_size:
+    curve_path = target_dir / "ale_curves.parquet"
+    if table_exists(curve_path):
         outputs.update(
             _write_regression_ale_figure(
-                target_dir, frame, pd.read_csv(curve_path, sep="\t"), int(top_k)
+                target_dir, frame, read_table(curve_path), int(top_k)
             )
         )
-    interaction_path = target_dir / "ale_interactions.tsv"
-    if interaction_path.exists() and interaction_path.stat().st_size:
+    interaction_path = target_dir / "ale_interactions.parquet"
+    if table_exists(interaction_path):
         outputs.update(
             _write_regression_interaction_figures(
-                target_dir, pd.read_csv(interaction_path, sep="\t"), int(top_k)
+                target_dir, read_table(interaction_path), int(top_k)
             )
         )
     return outputs
@@ -910,10 +940,8 @@ def _explain_target(
             )
     coordinate_path: Path | None = None
     if coordinate_rows:
-        coordinate_path = target_dir / "coordinate_metadata.tsv"
-        pd.DataFrame(coordinate_rows).drop_duplicates().to_csv(
-            coordinate_path, sep="\t", index=False
-        )
+        coordinate_path = target_dir / "coordinate_metadata.parquet"
+        write_table(coordinate_path, pd.DataFrame(coordinate_rows).drop_duplicates())
     methods = tuple(method_name(method) for method in sweep.explainability.methods)
     frames: list[pd.DataFrame] = []
     curves: list[pd.DataFrame] = []
@@ -957,14 +985,15 @@ def _explain_target(
                     seed_scores = frame
     importance = _aggregate_frames(frames, len(folds), int(sweep.explainability.top_k))
     combined = _combined_feature_table(importance)
-    importance_path = target_dir / "feature_stability.tsv"
-    combined_path = target_dir / "feature_importance.tsv"
-    importance.to_csv(importance_path, sep="\t", index=False)
-    combined.to_csv(combined_path, sep="\t", index=False)
-    fold_path = target_dir / "fold_feature_importance.tsv"
-    pd.concat(frames, ignore_index=True, sort=False).to_csv(
-        fold_path, sep="\t", index=False
-    ) if frames else pd.DataFrame().to_csv(fold_path, sep="\t", index=False)
+    importance_path = target_dir / "feature_stability.parquet"
+    combined_path = target_dir / "feature_importance.parquet"
+    write_table(importance_path, importance)
+    write_table(combined_path, combined)
+    fold_path = target_dir / "fold_feature_importance.parquet"
+    write_table(
+        fold_path,
+        pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame(),
+    )
     outputs: dict[str, Path] = {
         "explainability_dir": target_dir,
         "importance": combined_path,
@@ -974,10 +1003,8 @@ def _explain_target(
     if coordinate_path is not None:
         outputs["coordinate_metadata"] = coordinate_path
     if curves:
-        curve_path = target_dir / "ale_curves.tsv"
-        pd.concat(curves, ignore_index=True, sort=False).to_csv(
-            curve_path, sep="\t", index=False
-        )
+        curve_path = target_dir / "ale_curves.parquet"
+        write_table(curve_path, pd.concat(curves, ignore_index=True, sort=False))
         outputs["ale_curves"] = curve_path
     if interaction_frames:
         interactions = pd.concat(interaction_frames, ignore_index=True, sort=False)
@@ -986,9 +1013,10 @@ def _explain_target(
             interaction_strength_sd=("interaction_strength", "std"),
             n_folds=("interaction_strength", "count"),
         )
-        interaction_path = target_dir / "ale_interactions.tsv"
-        summary.sort_values("interaction_strength_mean", ascending=False).to_csv(
-            interaction_path, sep="\t", index=False
+        interaction_path = target_dir / "ale_interactions.parquet"
+        write_table(
+            interaction_path,
+            summary.sort_values("interaction_strength_mean", ascending=False),
         )
         outputs["interactions"] = interaction_path
     outputs.update(
@@ -996,14 +1024,25 @@ def _explain_target(
             target_dir, importance, int(sweep.explainability.top_k)
         )
     )
+    target_col = (
+        sweep.samples.target_col
+        if getattr(sweep, "uses_modalities", False)
+        else sweep.data.target_col
+    )
+    explanation_spaces = sorted(
+        {str(fold.get("explanation_space", "model_coordinates")) for fold in folds}
+    )
     explained = {
         "task": "regression",
-        "target": str(sweep.data.target_col),
+        "target": str(target_col),
         "unit": unit,
         "methods": list(methods),
         "outer_folds": int(len(folds)),
         "sample_count": int(len(dataset.y)),
         "top_k": int(sweep.explainability.top_k),
+        "explanation_space": explanation_spaces[0]
+        if len(explanation_spaces) == 1
+        else explanation_spaces,
     }
     meta_path = target_dir / "explained_unit.json"
     dump_json_standard(explained, meta_path)
@@ -1015,10 +1054,10 @@ def explain_regression(sweep: Sweep) -> dict[str, Path]:
     root = Path(sweep.root())
     stage("Regression explainability", str(root))
     models = _selected_models(root)
-    configs_path = root / "configs.tsv"
-    if not configs_path.exists():
+    configs_path = root / "configs.parquet"
+    if not table_exists(configs_path):
         raise FileNotFoundError("Run evaluate(sweep) before regression explainability.")
-    configs = pd.read_csv(configs_path, sep="\t")
+    configs = read_table(configs_path)
     targets = _targets(sweep, models)
     summary_table(
         "Regression explainability suite",
