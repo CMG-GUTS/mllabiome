@@ -4,13 +4,14 @@ from .threading import configure_thread_limits
 
 configure_thread_limits()
 
-__version__ = "0.1.0rc53"
+__version__ = "0.1.0rc56"
 from .configs_sweep import (
     MPDR,
     MPMA,
     Ensemble,
     Evaluation,
     Explainability,
+    LocalExplanations,
     QualificationGate,
     Sweep,
     build_sweep_configs,
@@ -73,6 +74,7 @@ __all__ = [
     "Ensemble",
     "Evaluation",
     "Explainability",
+    "LocalExplanations",
     "ExplainabilityConfigurationError",
     "ExplainabilityDependencyError",
     "SHAP",

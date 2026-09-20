@@ -10,6 +10,7 @@ from sklearn.base import BaseEstimator
 
 from .configs_sweep import (
     Sweep,
+    _effective_local_explanations_mode,
     _groups_from_metadata,
     _lodo_feature_pair,
     _regression_outer_splits,
@@ -38,6 +39,8 @@ from .explainability_methods import (
     LIME,
     Permutation,
     SHAP,
+    method_has_global,
+    method_has_local,
     method_name,
 )
 from .learners import _learner_factory
@@ -48,8 +51,10 @@ from .runtime import configure_estimator_threads
 from .transformations import _count_transformation_factory
 from .explainability_visuals import (
     plot_interaction_network,
+    plot_local_attributions,
     plot_regression_feature_support,
 )
+from .final_models import build_final_models
 from .utils import dump_json_standard
 from .storage import read_table, write_table, table_exists
 
@@ -133,15 +138,13 @@ def _config_row(configs: pd.DataFrame, config_id: str) -> pd.Series:
 
 
 def _selected_models(root: Path) -> dict[str, Any]:
-    path = root / "final_models.json"
-    if not path.exists():
-        raise FileNotFoundError(
-            "Run ensemble/build_final_models before regression explainability."
-        )
-    value = json.loads(path.read_text(encoding="utf-8"))
+    candidate = root / "tables" / "mpma_b_final_candidate.json"
+    if not candidate.exists():
+        raise FileNotFoundError("Run evaluate(sweep) before regression explainability.")
+    value = build_final_models(root)
     if not isinstance(value, dict) or not isinstance(value.get("MPMA-B"), dict):
         raise ValueError(
-            "final_models.json does not contain a valid MPMA-B specification."
+            "Final model specification does not contain a valid MPMA-B specification."
         )
     return value
 
@@ -398,6 +401,126 @@ def _sample_indices(n: int, max_rows: int, seed: int) -> np.ndarray:
     return np.sort(rng.choice(np.arange(n), size=max_rows, replace=False))
 
 
+def _regression_local_sample_pairs(
+    dataset: Any,
+    folds: Sequence[dict[str, Any]],
+    mode: str,
+    sample_ids: Sequence[str],
+    quantiles: Sequence[float],
+) -> list[tuple[int, str]]:
+    sid_to_idx = {str(sid): i for i, sid in enumerate(dataset.sample_ids)}
+    selected: list[tuple[int, str]] = []
+    if mode in {"requested", "representative_and_requested"}:
+        for sid in sample_ids:
+            if str(sid) not in sid_to_idx:
+                raise ValueError(
+                    f"Requested instance sample_id {sid!r} was not found in the loaded dataset."
+                )
+            selected.append((int(sid_to_idx[str(sid)]), f"requested:{sid}"))
+    if mode in {"representative", "representative_and_requested"}:
+        records: list[dict[str, Any]] = []
+        for fold in folds:
+            test_idx = np.asarray(fold["test_idx"], dtype=int)
+            pred = np.asarray(fold.get("y_pred"), dtype=float).reshape(-1)
+            if len(pred) != len(test_idx):
+                continue
+            for local_i, sample_index in enumerate(test_idx):
+                records.append(
+                    {
+                        "sample_index": int(sample_index),
+                        "prediction": float(pred[int(local_i)]),
+                    }
+                )
+        frame = pd.DataFrame(records)
+        if not frame.empty:
+            frame = frame.groupby("sample_index", as_index=False).agg(
+                prediction=("prediction", "mean")
+            )
+            used = {int(i) for i, _ in selected}
+            for quantile in quantiles:
+                q = float(quantile)
+                centre = float(frame["prediction"].quantile(q))
+                ranked = frame.assign(
+                    _dist=(
+                        pd.to_numeric(frame["prediction"], errors="coerce") - centre
+                    ).abs()
+                ).sort_values(["_dist", "sample_index"])
+                row = next(
+                    (
+                        r
+                        for _, r in ranked.iterrows()
+                        if int(r["sample_index"]) not in used
+                    ),
+                    ranked.iloc[0],
+                )
+                idx = int(row["sample_index"])
+                used.add(idx)
+                selected.append(
+                    (idx, f"representative_prediction_q{int(round(q * 100)):02d}")
+                )
+    out: list[tuple[int, str]] = []
+    seen: set[int] = set()
+    for sample_index, role in selected:
+        if int(sample_index) in seen:
+            continue
+        seen.add(int(sample_index))
+        out.append((int(sample_index), str(role)))
+    return out
+
+
+def _regression_local_records(
+    fold: dict[str, Any],
+    method: str,
+    values: np.ndarray,
+    rows_ex: Sequence[int],
+    sample_ids: Sequence[Any],
+    selected_roles: dict[int, str],
+    local_top_k: int,
+) -> pd.DataFrame:
+    arr = np.asarray(values, dtype=float)
+    if arr.ndim == 3 and arr.shape[-1] == 1:
+        arr = arr[:, :, 0]
+    if arr.ndim != 2:
+        raise ValueError(f"Unexpected regression local attribution shape {arr.shape}.")
+    test_idx = np.asarray(fold["test_idx"], dtype=int)
+    X_test = np.asarray(fold["X_test"], dtype=float)
+    names = [str(x) for x in fold["feature_names"]]
+    y_test = np.asarray(fold["y_test"], dtype=float).reshape(-1)
+    y_pred = np.asarray(fold["y_pred"], dtype=float).reshape(-1)
+    records: list[dict[str, Any]] = []
+    k = max(1, int(local_top_k))
+    for value_row, local_test_row in enumerate(rows_ex):
+        local_i = int(local_test_row)
+        global_i = int(test_idx[local_i])
+        vals = arr[int(value_row)]
+        is_selected = global_i in selected_roles
+        chosen = np.argsort(-np.abs(vals))
+        if not is_selected:
+            chosen = chosen[: min(k, len(chosen))]
+        for rank, feature_index in enumerate(chosen, start=1):
+            j = int(feature_index)
+            value = float(vals[j])
+            records.append(
+                {
+                    "method": str(method),
+                    "sample_id": str(sample_ids[global_i]),
+                    "sample_index": global_i,
+                    "split_key": str(fold.get("split_key", "")),
+                    "selection_role": selected_roles.get(global_i, ""),
+                    "selected_for_report": bool(is_selected),
+                    "observed_response": float(y_test[local_i]),
+                    "prediction": float(y_pred[local_i]),
+                    "feature": names[j],
+                    "feature_value": float(X_test[local_i, j]),
+                    "attribution": value,
+                    "abs_attribution": abs(value),
+                    "local_rank": int(rank),
+                    "retained_scope": "representative_full" if is_selected else "top_k",
+                }
+            )
+    return pd.DataFrame(records)
+
+
 def _permutation_importance(
     fold: dict[str, Any],
     spec: Permutation,
@@ -458,6 +581,10 @@ def _shap_importance(
     spec: SHAP,
     seed: int,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    *,
+    local_sample_ids: Sequence[Any] | None = None,
+    selected_roles: dict[int, str] | None = None,
+    local_top_k: int | None = None,
 ) -> pd.DataFrame:
     try:
         import shap
@@ -467,7 +594,11 @@ def _shap_importance(
     X_test = np.asarray(fold["X_test"], dtype=float)
     names = list(fold["feature_names"])
     bg_rows = _sample_indices(len(X_train), int(spec.background_size), seed)
-    ex_rows = _sample_indices(len(X_test), int(spec.max_explain), seed + 17)
+    ex_rows = (
+        np.arange(len(X_test), dtype=int)
+        if local_top_k is not None
+        else _sample_indices(len(X_test), int(spec.max_explain), seed + 17)
+    )
     background = X_train[bg_rows]
     X_explain = X_test[ex_rows]
     if progress_callback is not None:
@@ -548,7 +679,18 @@ def _shap_importance(
         )
     if progress_callback is not None:
         progress_callback(4, 4, f"{len(names)} features")
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    if local_top_k is not None and local_sample_ids is not None:
+        frame.attrs["local_explanations"] = _regression_local_records(
+            fold,
+            "shap",
+            arr,
+            ex_rows,
+            local_sample_ids,
+            selected_roles or {},
+            int(local_top_k),
+        )
+    return frame
 
 
 def _lime_importance(
@@ -556,6 +698,10 @@ def _lime_importance(
     spec: LIME,
     seed: int,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    *,
+    local_sample_ids: Sequence[Any] | None = None,
+    selected_roles: dict[int, str] | None = None,
+    local_top_k: int | None = None,
 ) -> pd.DataFrame:
     try:
         from lime.lime_tabular import LimeTabularExplainer
@@ -564,7 +710,11 @@ def _lime_importance(
     X_train = np.asarray(fold["X_train"], dtype=float)
     X_test = np.asarray(fold["X_test"], dtype=float)
     names = list(fold["feature_names"])
-    rows = _sample_indices(len(X_test), int(spec.max_explain), seed + 23)
+    rows = (
+        np.arange(len(X_test), dtype=int)
+        if local_top_k is not None
+        else _sample_indices(len(X_test), int(spec.max_explain), seed + 23)
+    )
     kwargs: dict[str, Any] = {
         "training_data": X_train,
         "feature_names": names,
@@ -603,7 +753,7 @@ def _lime_importance(
         if progress_callback is not None:
             progress_callback(sample_no, len(rows), f"sample {int(index)}")
     arr = np.vstack(values) if values else np.zeros((0, len(names)), dtype=float)
-    return pd.DataFrame(
+    frame = pd.DataFrame(
         [
             {
                 "method": "lime",
@@ -622,6 +772,17 @@ def _lime_importance(
             for j, name in enumerate(names)
         ]
     )
+    if local_top_k is not None and local_sample_ids is not None:
+        frame.attrs["local_explanations"] = _regression_local_records(
+            fold,
+            "lime",
+            arr,
+            rows,
+            local_sample_ids,
+            selected_roles or {},
+            int(local_top_k),
+        )
+    return frame
 
 
 def _ale_importance(
@@ -1078,7 +1239,32 @@ def _explain_target(
         coordinate_path = target_dir / "coordinate_metadata.parquet"
         write_table(coordinate_path, pd.DataFrame(coordinate_rows).drop_duplicates())
     methods = tuple(method_name(method) for method in sweep.explainability.methods)
+    global_methods = tuple(
+        method_name(method)
+        for method in sweep.explainability.methods
+        if method_has_global(method)
+    )
+    local_methods = tuple(
+        method_name(method)
+        for method in sweep.explainability.methods
+        if method_has_local(method)
+    )
+    local_mode = _effective_local_explanations_mode(sweep.explainability)
+    local_enabled = local_mode != "none" and bool(local_methods)
+    selected_pairs = (
+        _regression_local_sample_pairs(
+            dataset,
+            folds,
+            local_mode,
+            sweep.explainability.local.sample_ids,
+            sweep.explainability.local.regression_quantiles,
+        )
+        if local_enabled
+        else []
+    )
+    selected_roles = {int(i): str(role) for i, role in selected_pairs}
     frames: list[pd.DataFrame] = []
+    local_frames: list[pd.DataFrame] = []
     curves: list[pd.DataFrame] = []
     interaction_frames: list[pd.DataFrame] = []
     fallback_metric = str(sweep.evaluation.optimize_metric)
@@ -1103,6 +1289,8 @@ def _explain_target(
             seed_scores = pd.DataFrame()
             for method_no, spec in enumerate(method_specs, start=1):
                 name = method_name(spec)
+                global_method = method_has_global(spec)
+                local_method = local_enabled and method_has_local(spec)
                 prog.update(
                     method_task,
                     total=1,
@@ -1142,11 +1330,27 @@ def _explain_target(
                     )
                 elif name == "shap":
                     frame = _shap_importance(
-                        fold, spec, fold_seed, progress_callback=method_progress
+                        fold,
+                        spec,
+                        fold_seed,
+                        progress_callback=method_progress,
+                        local_sample_ids=dataset.sample_ids if local_method else None,
+                        selected_roles=selected_roles if local_method else None,
+                        local_top_k=int(sweep.explainability.local.stored_features)
+                        if local_method
+                        else None,
                     )
                 elif name == "lime":
                     frame = _lime_importance(
-                        fold, spec, fold_seed, progress_callback=method_progress
+                        fold,
+                        spec,
+                        fold_seed,
+                        progress_callback=method_progress,
+                        local_sample_ids=dataset.sample_ids if local_method else None,
+                        selected_roles=selected_roles if local_method else None,
+                        local_top_k=int(sweep.explainability.local.stored_features)
+                        if local_method
+                        else None,
                     )
                 elif name == "ale":
                     frame, curve = _ale_importance(
@@ -1170,12 +1374,16 @@ def _explain_target(
                         f"Unsupported regression explainability method {name!r}."
                     )
                 if not frame.empty:
-                    frame = frame.copy()
-                    frame["fold_no"] = fold_no
-                    frame["fold_key"] = split_key
-                    frames.append(frame)
-                    if seed_scores.empty or name in {"shap", "permutation"}:
-                        seed_scores = frame
+                    local_frame = frame.attrs.get("local_explanations")
+                    if isinstance(local_frame, pd.DataFrame) and not local_frame.empty:
+                        local_frames.append(local_frame.copy())
+                    if global_method:
+                        frame = frame.copy()
+                        frame["fold_no"] = fold_no
+                        frame["fold_key"] = split_key
+                        frames.append(frame)
+                        if seed_scores.empty or name in {"shap", "permutation"}:
+                            seed_scores = frame
                 prog.update(
                     method_task,
                     total=1,
@@ -1218,6 +1426,15 @@ def _explain_target(
         }
         if coordinate_path is not None:
             outputs["coordinate_metadata"] = coordinate_path
+        local_table = (
+            pd.concat(local_frames, ignore_index=True, sort=False)
+            if local_frames
+            else pd.DataFrame()
+        )
+        if local_enabled:
+            local_path = target_dir / "local_explanations.parquet"
+            write_table(local_path, local_table)
+            outputs["local_explanations"] = local_path
         phase.phase("write ALE and interaction tables")
         if curves:
             curve_path = target_dir / "ale_curves.parquet"
@@ -1244,6 +1461,19 @@ def _explain_target(
                 target_dir, importance, int(sweep.explainability.top_k)
             )
         )
+        if local_enabled and not local_table.empty and selected_pairs:
+            preferred = (
+                "shap" if "shap" in set(local_table["method"].astype(str)) else "lime"
+            )
+            local_figure = plot_local_attributions(
+                local_table,
+                target_dir / "figures" / "local_explanations",
+                task="regression",
+                method=preferred,
+                top_n=int(sweep.explainability.local.displayed_features),
+            )
+            if local_figure is not None:
+                outputs["local_explanations_figure"] = local_figure
     target_col = (
         sweep.samples.target_col
         if getattr(sweep, "uses_modalities", False)
@@ -1260,6 +1490,16 @@ def _explain_target(
         "outer_folds": int(len(folds)),
         "sample_count": int(len(dataset.y)),
         "top_k": int(sweep.explainability.top_k),
+        "local_explanations": local_mode,
+        "local_methods": list(local_methods) if local_enabled else [],
+        "global_methods": list(global_methods),
+        "local_top_k": int(sweep.explainability.local.stored_features),
+        "local_target": "predicted_response",
+        "local_storage": "top_k_per_oof_split_full_vectors_for_report_representatives",
+        "top_instance_features": int(sweep.explainability.local.displayed_features),
+        "representative_quantiles": [
+            float(x) for x in sweep.explainability.local.regression_quantiles
+        ],
         "explanation_space": explanation_spaces[0]
         if len(explanation_spaces) == 1
         else explanation_spaces,
@@ -1285,6 +1525,9 @@ def explain_regression(sweep: Sweep) -> dict[str, Path]:
             "targets": targets,
             "methods": [method_name(method) for method in sweep.explainability.methods],
             "top features": int(sweep.explainability.top_k),
+            "local explanations": _effective_local_explanations_mode(
+                sweep.explainability
+            ),
         },
     )
     outputs: dict[str, Path] = {}

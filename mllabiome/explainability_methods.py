@@ -4,8 +4,20 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+def normalise_method_scope(scope: str) -> str:
+    value = str(scope).strip().lower().replace("-", "_")
+    aliases = {"all": "both", "global_local": "both", "local_global": "both"}
+    value = aliases.get(value, value)
+    if value not in {"global", "local", "both"}:
+        raise ValueError(
+            "Explainability method scope must be 'global', 'local', or 'both'."
+        )
+    return value
+
+
 @dataclass(frozen=True)
 class SHAP:
+    scope: str = "both"
     algorithm: str = "permutation"
     masker: str = "independent"
     background_size: int = 50
@@ -14,6 +26,7 @@ class SHAP:
     name: str = field(default="shap", init=False)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "scope", normalise_method_scope(self.scope))
         if self.algorithm not in {"auto", "tree", "permutation", "partition", "exact"}:
             raise ValueError(
                 "SHAP.algorithm must be 'auto', 'tree', 'permutation', 'partition', or 'exact'."
@@ -83,6 +96,7 @@ class ALE:
 
 @dataclass(frozen=True)
 class LIME:
+    scope: str = "both"
     num_samples: int = 2000
     max_explain: int = 50
     feature_selection: str = "none"
@@ -92,6 +106,7 @@ class LIME:
     name: str = field(default="lime", init=False)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "scope", normalise_method_scope(self.scope))
         if int(self.num_samples) < 100:
             raise ValueError("LIME.num_samples must be at least 100.")
         if int(self.max_explain) < 1:
@@ -130,6 +145,24 @@ class ALEInteractions:
 
 
 _METHOD_TYPES = (SHAP, Permutation, ALE, LIME, ALEInteractions)
+
+
+def method_scope(method: Any) -> str:
+    obj = coerce_method(method) if isinstance(method, str) else method
+    if isinstance(obj, (SHAP, LIME)):
+        return normalise_method_scope(obj.scope)
+    return "global"
+
+
+def method_has_global(method: Any) -> bool:
+    return method_scope(method) in {"global", "both"}
+
+
+def method_has_local(method: Any) -> bool:
+    obj = coerce_method(method) if isinstance(method, str) else method
+    return isinstance(obj, (SHAP, LIME)) and method_scope(obj) in {"local", "both"}
+
+
 _PROFILE_NAMES = {"screening", "standard", "comprehensive"}
 
 

@@ -21,6 +21,7 @@ from threadpoolctl import threadpool_limits
 
 from .configs_sweep import (
     Sweep,
+    _effective_local_explanations_mode,
     _groups_from_metadata,
     _outer_splits,
     _strata_from_metadata,
@@ -36,11 +37,14 @@ from .explainability_methods import (
     Permutation,
     SHAP,
     coerce_method,
+    method_has_global,
+    method_has_local,
     method_name,
     method_to_dict,
 )
 from .explainability_visuals import (
     plot_interaction_network as _plot_interaction_network_visual,
+    plot_local_attributions,
 )
 from .learners import _learner_factory
 from .metrics import _predict_proba_aligned
@@ -1489,12 +1493,26 @@ def _explainability_config_payload(explainability: Any) -> dict[str, Any]:
         "classes": explainability.classes,
         "top_k": int(explainability.top_k),
         "random_state": int(explainability.random_state),
-        "local_explanations": str(
-            getattr(explainability, "local_explanations", "representative")
+        "local": {
+            "representatives": bool(explainability.local.representatives),
+            "sample_ids": list(explainability.local.sample_ids),
+            "stored_features": int(explainability.local.stored_features),
+            "displayed_features": int(explainability.local.displayed_features),
+            "regression_quantiles": [
+                float(x) for x in explainability.local.regression_quantiles
+            ],
+        },
+        "local_explanations": _effective_local_explanations_mode(explainability),
+        "effective_local_explanations": _effective_local_explanations_mode(
+            explainability
         ),
-        "representative_instances": bool(explainability.representative_instances),
-        "instance_sample_ids": list(explainability.instance_sample_ids),
-        "top_instance_features": int(explainability.top_instance_features),
+        "representative_instances": bool(explainability.local.representatives),
+        "instance_sample_ids": list(explainability.local.sample_ids),
+        "local_top_k": int(explainability.local.stored_features),
+        "top_instance_features": int(explainability.local.displayed_features),
+        "representative_quantiles": [
+            float(x) for x in explainability.local.regression_quantiles
+        ],
     }
 
 
@@ -1938,45 +1956,66 @@ def _safe_cache_name(value: str | None) -> str:
 
 
 def _explainability_cache_complete(target_dir: Path, explainability: Any) -> bool:
-    if not (target_dir / "explained_unit.json").exists():
-        return False
-    if not table_exists(target_dir / "feature_importance.parquet"):
-        return False
-    if not table_exists(target_dir / "top_features.parquet"):
-        return False
-    figs = target_dir / "figures"
-    if (
-        not (figs / "feature_support.svg").exists()
-        and not (figs / "feature_support.png").exists()
-        and not list(figs.glob("feature_support__*.svg"))
-        and not list(figs.glob("feature_support__*.png"))
-    ):
+    meta_path = target_dir / "explained_unit.json"
+    if not meta_path.exists():
         return False
     try:
-        meta = json.loads((target_dir / "explained_unit.json").read_text())
+        meta = json.loads(meta_path.read_text())
     except Exception:
         return False
     if str(
         meta.get("explainability_config_signature", "")
     ) != _explainability_config_signature(explainability):
         return False
-    normalised = set(_normalise_explainability_methods(explainability.methods))
-    for method in ("shap", "lime", "ale", "permutation"):
-        if method in normalised and not table_exists(
-            target_dir / f"feature_importance_{method}.parquet"
+    specs = _normalise_explainability_method_specs(explainability.methods)
+    global_methods = {method_name(spec) for spec in specs if method_has_global(spec)}
+    local_methods = {method_name(spec) for spec in specs if method_has_local(spec)}
+    if global_methods:
+        if not table_exists(target_dir / "feature_importance.parquet"):
+            return False
+        if not table_exists(target_dir / "top_features.parquet"):
+            return False
+        figs = target_dir / "figures"
+        if not (
+            (figs / "feature_support.svg").exists()
+            or (figs / "feature_support.png").exists()
+            or list(figs.glob("feature_support__*.svg"))
+            or list(figs.glob("feature_support__*.png"))
         ):
             return False
-    if "interactions" in normalised and not any(
-        (target_dir / name).exists()
-        for name in (
-            "feature_interactions_current.parquet",
-            "feature_interactions_corrected.parquet",
-            "feature_interactions_fixed_pairs.parquet",
-            "feature_interactions_corrected_fixed.parquet",
-        )
-    ):
-        return False
+        for method in ("shap", "lime", "ale", "permutation"):
+            if method in global_methods and not table_exists(
+                target_dir / f"feature_importance_{method}.parquet"
+            ):
+                return False
+        if "interactions" in global_methods and not any(
+            (target_dir / name).exists()
+            for name in (
+                "feature_interactions_current.parquet",
+                "feature_interactions_corrected.parquet",
+                "feature_interactions_fixed_pairs.parquet",
+                "feature_interactions_corrected_fixed.parquet",
+            )
+        ):
+            return False
+    if local_methods and _effective_local_explanations_mode(explainability) != "none":
+        if not table_exists(target_dir / "local_explanations.parquet"):
+            return False
     return True
+
+
+def _existing_explainability_outputs(target_dir: Path) -> dict[str, Path]:
+    outputs: dict[str, Path] = {"explainability_dir": target_dir}
+    candidates = {
+        "importance": target_dir / "feature_importance.parquet",
+        "stability": target_dir / "feature_stability.parquet",
+        "local_explanations": target_dir / "local_explanations.parquet",
+        "local_explanations_figure": target_dir / "figures" / "local_explanations.svg",
+    }
+    for key, path in candidates.items():
+        if path.exists():
+            outputs[key] = path
+    return outputs
 
 
 def _copy_explainability_cache(src: Path, dst: Path) -> None:
@@ -2214,6 +2253,7 @@ def _value_frame_for_fold(
     class_indices: Sequence[int],
     class_labels: Sequence[str],
     scoring: str,
+    positive_class: int | None = None,
 ) -> pd.DataFrame:
     arr = np.asarray(values, dtype=float)
     if arr.ndim == 2:
@@ -2224,6 +2264,15 @@ def _value_frame_for_fold(
         )
     if arr.shape[2] == len(class_labels):
         selected = arr[:, :, list(class_indices)]
+    elif arr.shape[2] == 1 and len(class_labels) == 2:
+        positive = 1 if positive_class is None else int(positive_class)
+        selected = np.stack(
+            [
+                arr[:, :, 0] if int(class_index) == positive else -arr[:, :, 0]
+                for class_index in class_indices
+            ],
+            axis=2,
+        )
     elif arr.shape[2] == len(class_indices):
         selected = arr
     elif arr.shape[2] == 1 and len(class_indices) == 1:
@@ -2866,113 +2915,28 @@ def _select_local_sample_pairs(
     return out
 
 
-def _summarize_selected_local_explanations(
-    dataset: Any,
-    feature_names: Sequence[str],
-    oof_rows: Sequence[dict[str, Any]],
-    selected_pairs: Sequence[tuple[int, str]],
-    *,
-    method: str,
-    top_features_per_direction: int,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    if not oof_rows or not selected_pairs:
-        return pd.DataFrame(), pd.DataFrame()
-    meta = pd.DataFrame(oof_rows)
-    if meta.empty or "values" not in meta.columns:
-        return pd.DataFrame(), pd.DataFrame()
-    values = np.vstack(meta["values"].to_list())
-    top_rows: list[dict[str, Any]] = []
-    selected_rows: list[dict[str, Any]] = []
-    k = max(1, int(top_features_per_direction))
-    for sample_index, role in selected_pairs:
-        sample_meta = meta[
-            meta["sample_index"].astype(int).eq(int(sample_index))
-        ].copy()
-        if sample_meta.empty:
-            continue
-        sid = str(dataset.sample_ids[int(sample_index)])
-        for class_index, class_meta in sample_meta.groupby("class_index", sort=True):
-            positions = class_meta.index.to_numpy(dtype=int)
-            vals = values[positions].mean(axis=0)
-            vals_sd = (
-                values[positions].std(axis=0, ddof=1)
-                if len(positions) > 1
-                else np.zeros(values.shape[1])
-            )
-            p_class = pd.to_numeric(class_meta["p_class"], errors="coerce")
-            pred_mode = pd.to_numeric(
-                class_meta.get("predicted_class", -1), errors="coerce"
-            ).dropna()
-            predicted = int(pred_mode.mode().iloc[0]) if not pred_mode.empty else -1
-            class_label = str(class_meta["class_label"].iloc[0])
-            selected_rows.append(
-                {
-                    "method": str(method),
-                    "sample_id": sid,
-                    "sample_index": int(sample_index),
-                    "selection_role": role,
-                    "true_class": int(dataset.y[int(sample_index)]),
-                    "predicted_class": predicted,
-                    "class_index": int(class_index),
-                    "class_label": class_label,
-                    "p_class_mean": float(p_class.mean())
-                    if not p_class.empty
-                    else np.nan,
-                    "p_class_sd": float(p_class.std(ddof=1))
-                    if len(p_class) > 1
-                    else 0.0,
-                    "n_oof_explanations": int(len(positions)),
-                }
-            )
-            order_neg = np.argsort(vals)[:k]
-            order_pos = np.argsort(-vals)[:k]
-            chosen = list(
-                dict.fromkeys([int(i) for i in list(order_neg) + list(order_pos)])
-            )
-            chosen = sorted(chosen, key=lambda j: abs(float(vals[j])), reverse=True)
-            for rank, j in enumerate(chosen, start=1):
-                top_rows.append(
-                    {
-                        "method": str(method),
-                        "sample_id": sid,
-                        "sample_index": int(sample_index),
-                        "selection_role": role,
-                        "true_class": int(dataset.y[int(sample_index)]),
-                        "predicted_class": predicted,
-                        "class_index": int(class_index),
-                        "class_label": class_label,
-                        "p_class_mean": float(p_class.mean())
-                        if not p_class.empty
-                        else np.nan,
-                        "feature": str(feature_names[j]),
-                        "value": float(vals[j]),
-                        "value_sd": float(vals_sd[j]),
-                        "abs_value": float(abs(vals[j])),
-                        "rank": int(rank),
-                        "n_oof_explanations": int(len(positions)),
-                    }
-                )
-    return pd.DataFrame(top_rows), pd.DataFrame(selected_rows)
-
-
-def _local_method_signature(
+def _local_explanations_signature(
     source_signature: str,
     explainability: Any,
-    spec: Any,
-    class_indices: Sequence[int],
+    specs_by_name: dict[str, Any],
+    methods: Sequence[str],
     selected_pairs: Sequence[tuple[int, str]],
 ) -> str:
+    local_methods = [
+        name
+        for name in ("shap", "lime")
+        if name in methods and method_has_local(specs_by_name[name])
+    ]
     payload = {
         "source_signature": str(source_signature),
-        "method": method_name(spec),
-        "parameters": method_to_dict(spec),
-        "class_indices": [int(x) for x in class_indices],
+        "methods": {
+            name: method_to_dict(specs_by_name[name]) for name in local_methods
+        },
         "random_state": int(explainability.random_state),
-        "local_explanations": str(
-            getattr(explainability, "local_explanations", "none")
-        ),
+        "mode": _effective_local_explanations_mode(explainability),
         "selected_samples": [[int(i), str(role)] for i, role in selected_pairs],
-        "top_instance_features": int(explainability.top_instance_features),
+        "local_top_k": int(explainability.local.stored_features),
+        "top_instance_features": int(explainability.local.displayed_features),
     }
     return _signature_hash(payload)
 
@@ -2983,83 +2947,132 @@ def _compute_local_method_rows(
     folds: Sequence[dict[str, Any]],
     dataset: Any,
     feature_names: Sequence[str],
-    class_indices: Sequence[int],
-    selected_pairs: Sequence[tuple[int, str]],
     random_state: int,
     threads_per_worker: int,
 ) -> list[dict[str, Any]]:
-    selected = {int(i) for i, _ in selected_pairs}
+    class_indices = tuple(range(len(dataset.class_labels)))
     rows: list[dict[str, Any]] = []
     for fold_no, fold in enumerate(folds, start=1):
         test_idx = np.asarray(fold["test_idx"], dtype=int)
-        local_positions = [i for i, gi in enumerate(test_idx) if int(gi) in selected]
-        if not local_positions:
+        if len(test_idx) == 0:
             continue
         estimator = configure_estimator_threads(
             fold["estimator"], int(threads_per_worker)
         )
-        X_selected = np.asarray(fold["X_test"])[np.asarray(local_positions, dtype=int)]
+        force_rows = tuple(range(len(test_idx)))
         if method == "shap":
-            values, selected_rows, _ = _shap_values_for_data(
+            values, rows_ex, _ = _shap_values_for_data(
                 estimator,
                 fold["X_train"],
-                X_selected,
+                fold["X_test"],
                 feature_names,
                 dataset.class_labels,
                 random_state=int(random_state) + fold_no * 997,
                 spec=spec,
+                force_explain_rows=force_rows,
                 show_progress=False,
             )
         elif method == "lime":
-            values, selected_rows = _lime_values_for_data(
+            values, rows_ex = _lime_values_for_data(
                 estimator,
                 fold["X_train"],
-                X_selected,
+                fold["X_test"],
                 feature_names,
                 dataset.class_labels,
                 class_indices,
                 random_state=int(random_state) + fold_no * 997,
                 spec=spec,
+                force_explain_rows=force_rows,
                 progress_callback=None,
             )
         else:
             continue
-        proba = np.asarray(fold.get("proba"), dtype=float)
-        pred = (
-            np.argmax(proba, axis=1)
-            if proba.ndim == 2 and proba.shape[0] == len(test_idx)
-            else np.full(len(test_idx), -1)
+        rows.extend(
+            _local_value_rows_for_fold(
+                fold,
+                values,
+                rows_ex,
+                class_indices,
+                dataset.class_labels,
+                dataset.sample_ids,
+                dataset.y,
+                positive_class=dataset.positive_class,
+            )
         )
-        for value_row, sliced_row in enumerate(selected_rows):
-            original_local = int(local_positions[int(sliced_row)])
-            global_i = int(test_idx[original_local])
-            for class_pos, class_index in enumerate(class_indices):
-                value_pos = (
-                    int(class_index)
-                    if values.shape[2] == len(dataset.class_labels)
-                    else class_pos
-                )
-                p_class = (
-                    float(proba[original_local, int(class_index)])
-                    if proba.ndim == 2 and int(class_index) < proba.shape[1]
-                    else float("nan")
-                )
-                rows.append(
-                    {
-                        "split_key": str(fold.get("split_key", "")),
-                        "sample_id": str(dataset.sample_ids[global_i]),
-                        "sample_index": global_i,
-                        "true_class": int(dataset.y[global_i]),
-                        "predicted_class": int(pred[original_local])
-                        if original_local < len(pred)
-                        else -1,
-                        "class_index": int(class_index),
-                        "class_label": str(dataset.class_labels[int(class_index)]),
-                        "p_class": p_class,
-                        "values": values[value_row, :, value_pos],
-                    }
-                )
     return rows
+
+
+def _compact_local_explanations(
+    method: str,
+    dataset: Any,
+    feature_names: Sequence[str],
+    rows: Sequence[dict[str, Any]],
+    selected_pairs: Sequence[tuple[int, str]],
+    local_top_k: int,
+) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame()
+    selected = {int(i): str(role) for i, role in selected_pairs}
+    records: list[dict[str, Any]] = []
+    k = max(1, int(local_top_k))
+    for row in rows:
+        sample_index = int(row["sample_index"])
+        true_class = int(row["true_class"])
+        if int(row["class_index"]) != true_class:
+            continue
+        values = np.asarray(row["values"], dtype=float).reshape(-1)
+        feature_values = np.asarray(
+            row.get("feature_values", np.full(len(values), np.nan)), dtype=float
+        ).reshape(-1)
+        if len(values) != len(feature_names):
+            raise ExplainabilityConfigurationError(
+                f"Local {method.upper()} attribution width {len(values)} does not match {len(feature_names)} feature names."
+            )
+        is_selected = sample_index in selected
+        if is_selected:
+            chosen = np.argsort(-np.abs(values))
+        else:
+            chosen = np.argsort(-np.abs(values))[: min(k, len(values))]
+        predicted_class = int(row.get("predicted_class", -1))
+        predicted_label = (
+            str(dataset.class_labels[predicted_class])
+            if 0 <= predicted_class < len(dataset.class_labels)
+            else ""
+        )
+        for rank, feature_index in enumerate(chosen, start=1):
+            j = int(feature_index)
+            value = float(values[j])
+            records.append(
+                {
+                    "method": str(method),
+                    "sample_id": str(row["sample_id"]),
+                    "sample_index": sample_index,
+                    "split_key": str(row.get("split_key", "")),
+                    "selection_role": selected.get(sample_index, ""),
+                    "selected_for_report": bool(is_selected),
+                    "true_class": true_class,
+                    "true_class_label": str(dataset.class_labels[true_class]),
+                    "predicted_class": predicted_class,
+                    "predicted_class_label": predicted_label,
+                    "class_index": true_class,
+                    "class_label": str(dataset.class_labels[true_class]),
+                    "prediction": float(row.get("p_class", np.nan)),
+                    "feature": str(feature_names[j]),
+                    "feature_value": float(feature_values[j])
+                    if j < len(feature_values)
+                    else np.nan,
+                    "attribution": value,
+                    "abs_attribution": abs(value),
+                    "local_rank": int(rank),
+                    "retained_scope": "representative_full" if is_selected else "top_k",
+                }
+            )
+    if not records:
+        return pd.DataFrame()
+    return pd.DataFrame(records).sort_values(
+        ["method", "sample_index", "split_key", "local_rank"],
+        kind="stable",
+    )
 
 
 def _ensure_local_explanation_outputs(
@@ -3071,79 +3084,98 @@ def _ensure_local_explanation_outputs(
     folds: Sequence[dict[str, Any]],
     dataset: Any,
     feature_names: Sequence[str],
-    class_indices: Sequence[int],
     threads_per_worker: int,
+    precomputed_rows: dict[str, Sequence[dict[str, Any]]] | None = None,
 ) -> dict[str, Path]:
-    mode = str(getattr(sweep.explainability, "local_explanations", "none"))
+    mode = _effective_local_explanations_mode(sweep.explainability)
     if mode == "none":
         return {}
+    include_representative = mode in {"representative", "representative_and_requested"}
+    include_requested = mode in {"requested", "representative_and_requested"}
     selected_pairs = _select_local_sample_pairs(
         dataset,
         folds,
-        sample_ids=sweep.explainability.instance_sample_ids,
-        representative=bool(sweep.explainability.representative_instances),
+        sample_ids=sweep.explainability.local.sample_ids if include_requested else (),
+        representative=include_representative,
     )
-    if not selected_pairs:
+    local_methods = [
+        name
+        for name in ("shap", "lime")
+        if name in methods and method_has_local(specs_by_name[name])
+    ]
+    if not local_methods:
         return {}
+    signature = _local_explanations_signature(
+        source_signature, sweep.explainability, specs_by_name, methods, selected_pairs
+    )
+    local_path = target_dir / "local_explanations.parquet"
     cache_path = target_dir / "local_explanations_cache.json"
     try:
         cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
     except Exception:
         cache = {}
-    outputs: dict[str, Path] = {}
-    for method in ("shap", "lime"):
-        if method not in methods:
-            continue
-        signature = _local_method_signature(
-            source_signature,
-            sweep.explainability,
-            specs_by_name[method],
-            class_indices,
-            selected_pairs,
-        )
-        top_path = target_dir / f"instance_explanations_{method}_top_features.parquet"
-        selected_path = target_dir / f"instance_explanations_{method}_selected.parquet"
-        entry = cache.get(method, {}) if isinstance(cache, dict) else {}
-        if (
-            str(entry.get("signature", "")) == signature
-            and table_exists(top_path)
-            and table_exists(selected_path)
-        ):
-            info(
-                f"Reusing cached local {method.upper()} explanations · selected samples unchanged"
+    if str(cache.get("signature", "")) == signature and table_exists(local_path):
+        local_table = read_table(local_path)
+        info("Reusing cached sample-wise OOF explanations")
+    else:
+        frames: list[pd.DataFrame] = []
+        supplied = precomputed_rows or {}
+        for method in local_methods:
+            rows = list(supplied.get(method, ()))
+            if not rows:
+                info(
+                    f"Computing sample-wise OOF {method.upper()} explanations · all held-out samples"
+                )
+                rows = _compute_local_method_rows(
+                    method,
+                    specs_by_name[method],
+                    folds,
+                    dataset,
+                    feature_names,
+                    sweep.explainability.random_state,
+                    threads_per_worker,
+                )
+            frame = _compact_local_explanations(
+                method,
+                dataset,
+                feature_names,
+                rows,
+                selected_pairs,
+                int(sweep.explainability.local.stored_features),
             )
-            outputs[f"instance_explanations_{method}"] = top_path
-            continue
-        info(
-            f"Computing local OOF {method.upper()} explanations · mode={mode} · samples={len(selected_pairs)}"
+            if not frame.empty:
+                frames.append(frame)
+        local_table = (
+            pd.concat(frames, ignore_index=True, sort=False)
+            if frames
+            else pd.DataFrame()
         )
-        rows = _compute_local_method_rows(
-            method,
-            specs_by_name[method],
-            folds,
-            dataset,
-            feature_names,
-            class_indices,
-            selected_pairs,
-            sweep.explainability.random_state,
-            threads_per_worker,
+        write_table(local_path, local_table)
+        dump_json_standard(
+            {
+                "signature": signature,
+                "mode": mode,
+                "selected_samples": [
+                    {"sample_id": str(dataset.sample_ids[int(i)]), "role": str(role)}
+                    for i, role in selected_pairs
+                ],
+            },
+            cache_path,
         )
-        top, selected = _summarize_selected_local_explanations(
-            dataset,
-            feature_names,
-            rows,
-            selected_pairs,
-            method=method,
-            top_features_per_direction=sweep.explainability.top_instance_features,
+    outputs: dict[str, Path] = {"local_explanations": local_path}
+    if not local_table.empty and selected_pairs:
+        preferred = (
+            "shap" if "shap" in set(local_table["method"].astype(str)) else "lime"
         )
-        write_table(top_path, top)
-        write_table(selected_path, selected)
-        outputs[f"instance_explanations_{method}"] = top_path
-        cache[method] = {
-            "signature": signature,
-            "samples": [str(dataset.sample_ids[int(i)]) for i, _ in selected_pairs],
-        }
-        dump_json_standard(cache, cache_path)
+        figure_path = plot_local_attributions(
+            local_table,
+            target_dir / "figures" / "local_explanations",
+            task="classification",
+            method=preferred,
+            top_n=int(sweep.explainability.local.displayed_features),
+        )
+        if figure_path is not None:
+            outputs["local_explanations_figure"] = figure_path
     return outputs
 
 
@@ -3187,7 +3219,7 @@ def _shap_fold_parallel_task(
     class_indices: Sequence[int],
     sample_ids: Sequence[Any],
     y: np.ndarray,
-    instance_sample_ids: Sequence[str],
+    positive_class: int | None,
     collect_local: bool,
     random_state: int,
     spec: SHAP,
@@ -3196,12 +3228,7 @@ def _shap_fold_parallel_task(
 ) -> tuple[int, pd.DataFrame, list[dict[str, Any]], int, str]:
     estimator = configure_estimator_threads(fold["estimator"], threads_per_worker)
     test_idx = np.asarray(fold["test_idx"], dtype=int)
-    requested = {str(x) for x in instance_sample_ids}
-    force_rows = (
-        [i for i, gi in enumerate(test_idx) if str(sample_ids[int(gi)]) in requested]
-        if collect_local
-        else []
-    )
+    force_rows = list(range(len(test_idx))) if collect_local else []
     callback = (
         _queued_progress_callback(progress_queue, int(fold_no))
         if progress_queue is not None
@@ -3226,13 +3253,21 @@ def _shap_fold_parallel_task(
         class_indices,
         class_labels,
         "mean_abs_probability_shap_within_outer_fold",
+        positive_class=positive_class,
     )
     fold_frame["fold_key"] = str(fold.get("split_key", ""))
     fold_frame["fold_no"] = int(fold_no)
     fold_frame["shap_backend"] = str(backend)
     rows = (
         _local_value_rows_for_fold(
-            fold, vals, rows_ex, class_indices, class_labels, sample_ids, y
+            fold,
+            vals,
+            rows_ex,
+            tuple(range(len(class_labels))),
+            class_labels,
+            sample_ids,
+            y,
+            positive_class=positive_class,
         )
         if collect_local
         else []
@@ -3248,21 +3283,39 @@ def _local_value_rows_for_fold(
     class_labels: Sequence[str],
     sample_ids: Sequence[Any],
     y: np.ndarray,
+    *,
+    positive_class: int | None = None,
 ) -> list[dict[str, Any]]:
     test_idx = np.asarray(fold["test_idx"], dtype=int)
+    X_test = np.asarray(fold["X_test"], dtype=float)
     proba = np.asarray(fold.get("proba"), dtype=float)
     pred = (
         np.argmax(proba, axis=1)
         if proba.ndim == 2 and proba.shape[0] == len(test_idx)
         else np.full(len(test_idx), -1)
     )
+    arr = np.asarray(values, dtype=float)
+    if arr.ndim == 2:
+        arr = arr[:, :, None]
     rows: list[dict[str, Any]] = []
     for local_value_row, local_test_row in enumerate(rows_ex):
         global_i = int(test_idx[int(local_test_row)])
         for class_pos, class_index in enumerate(class_indices):
-            value_pos = (
-                int(class_index) if values.shape[2] == len(class_labels) else class_pos
-            )
+            if arr.shape[2] == len(class_labels):
+                local_values = arr[local_value_row, :, int(class_index)]
+            elif arr.shape[2] == len(class_indices):
+                local_values = arr[local_value_row, :, class_pos]
+            elif arr.shape[2] == 1 and len(class_labels) == 2:
+                positive = 1 if positive_class is None else int(positive_class)
+                local_values = arr[local_value_row, :, 0]
+                if int(class_index) != positive:
+                    local_values = -local_values
+            elif arr.shape[2] == 1 and len(class_indices) == 1:
+                local_values = arr[local_value_row, :, 0]
+            else:
+                raise ExplainabilityConfigurationError(
+                    f"Local attribution output shape {arr.shape} does not match configured classes."
+                )
             p_class = (
                 float(proba[int(local_test_row), int(class_index)])
                 if proba.ndim == 2 and int(class_index) < proba.shape[1]
@@ -3280,7 +3333,8 @@ def _local_value_rows_for_fold(
                     "class_index": int(class_index),
                     "class_label": str(class_labels[int(class_index)]),
                     "p_class": p_class,
-                    "values": values[local_value_row, :, value_pos],
+                    "feature_values": X_test[int(local_test_row)].copy(),
+                    "values": np.asarray(local_values, dtype=float).copy(),
                 }
             )
     return rows
@@ -3294,7 +3348,7 @@ def _lime_fold_parallel_task(
     class_indices: Sequence[int],
     sample_ids: Sequence[Any],
     y: np.ndarray,
-    instance_sample_ids: Sequence[str],
+    positive_class: int | None,
     collect_local: bool,
     random_state: int,
     spec: LIME,
@@ -3303,12 +3357,7 @@ def _lime_fold_parallel_task(
 ) -> tuple[int, pd.DataFrame, list[dict[str, Any]]]:
     estimator = configure_estimator_threads(fold["estimator"], threads_per_worker)
     test_idx = np.asarray(fold["test_idx"], dtype=int)
-    requested = {str(x) for x in instance_sample_ids}
-    force_rows = (
-        [i for i, gi in enumerate(test_idx) if str(sample_ids[int(gi)]) in requested]
-        if collect_local
-        else []
-    )
+    force_rows = list(range(len(test_idx))) if collect_local else []
     callback = (
         _queued_progress_callback(progress_queue, int(fold_no))
         if progress_queue is not None
@@ -3320,7 +3369,7 @@ def _lime_fold_parallel_task(
         fold["X_test"],
         feature_names,
         class_labels,
-        class_indices,
+        tuple(range(len(class_labels))) if collect_local else class_indices,
         random_state=int(random_state),
         spec=spec,
         force_explain_rows=force_rows,
@@ -3338,7 +3387,14 @@ def _lime_fold_parallel_task(
     frame["fold_no"] = int(fold_no)
     rows = (
         _local_value_rows_for_fold(
-            fold, coeffs, rows_ex, class_indices, class_labels, sample_ids, y
+            fold,
+            coeffs,
+            rows_ex,
+            tuple(range(len(class_labels))) if collect_local else class_indices,
+            class_labels,
+            sample_ids,
+            y,
+            positive_class=positive_class,
         )
         if collect_local
         else []
@@ -3435,6 +3491,8 @@ def _explain_one(
 ) -> dict[str, Path]:
     method_specs = _normalise_explainability_method_specs(sweep.explainability.methods)
     methods = tuple(method_name(x) for x in method_specs)
+    global_methods = tuple(method_name(x) for x in method_specs if method_has_global(x))
+    local_methods = tuple(method_name(x) for x in method_specs if method_has_local(x))
     specs_by_name = {method_name(x): x for x in method_specs}
     _preflight_explainability_dependencies(methods)
     root = sweep.root()
@@ -3447,8 +3505,8 @@ def _explain_one(
             "methods": methods,
             "profile": str(getattr(sweep.explainability, "profile", "standard")),
             "top features": sweep.explainability.top_k,
-            "local explanations": str(
-                getattr(sweep.explainability, "local_explanations", "representative")
+            "local explanations": _effective_local_explanations_mode(
+                sweep.explainability
             ),
             "interaction pairs": int(specs_by_name["interactions"].top_k)
             if "interactions" in methods
@@ -3520,11 +3578,7 @@ def _explain_one(
         and _explainability_cache_complete(target_dir, sweep.explainability)
     ):
         info(f"Reusing existing explainability for {target_label}")
-        return {
-            "explainability_dir": target_dir,
-            "importance": target_dir / "feature_importance.parquet",
-            "stability": target_dir / "feature_stability.parquet",
-        }
+        return _existing_explainability_outputs(target_dir)
     if (
         not ensemble_explain
         and allow_member_cache
@@ -3537,11 +3591,7 @@ def _explain_one(
         info(
             f"Reusing cached explainability for {target_label} · config={config_id_for_cache}"
         )
-        return {
-            "explainability_dir": target_dir,
-            "importance": target_dir / "feature_importance.parquet",
-            "stability": target_dir / "feature_stability.parquet",
-        }
+        return _existing_explainability_outputs(target_dir)
 
     coordinate_metadata: list[Any] = []
     if ensemble_explain:
@@ -3622,7 +3672,7 @@ def _explain_one(
         name: _method_cache_signature(
             sweep.explainability, specs_by_name[name], source_signature, class_indices
         )
-        for name in methods
+        for name in global_methods
     }
     current_method_entries = {
         name: _method_cache_entry(
@@ -3672,7 +3722,7 @@ def _explain_one(
     method_outputs: dict[str, Path] = {}
     interaction_outputs: dict[str, Path] = {}
     resolved_shap_backends: set[str] = set()
-    for name in methods:
+    for name in global_methods:
         if name not in reusable_methods:
             continue
         if name == "interactions":
@@ -3718,13 +3768,13 @@ def _explain_one(
         method_outputs.update(_existing_method_outputs(target_dir, name))
     oof_pred_path = _write_oof_prediction_summary(dataset, oof_folds, target_dir)
     method_outputs["oof_predictions"] = oof_pred_path
-    local_mode = str(
-        getattr(sweep.explainability, "local_explanations", "representative")
-    )
-    local_enabled = local_mode != "none"
+    local_mode = _effective_local_explanations_mode(sweep.explainability)
+    local_enabled = local_mode != "none" and bool(local_methods)
 
     shap_oof_rows: list[dict[str, Any]] = []
-    if "shap" in methods and "shap" not in reusable_methods:
+    lime_oof_rows: list[dict[str, Any]] = []
+    shap_local_enabled = local_enabled and "shap" in local_methods
+    if "shap" in global_methods and "shap" not in reusable_methods:
         spec = specs_by_name["shap"]
         info("Running global class-specific OOF SHAP feature attribution")
         shap_fold_frames: list[pd.DataFrame] = []
@@ -3732,7 +3782,12 @@ def _explain_one(
             with progress() as prog:
                 for fold_no, fold in enumerate(oof_folds, start=1):
                     test_idx = np.asarray(fold["test_idx"], dtype=int)
-                    expected_rows = max(1, min(int(spec.max_explain), len(test_idx)))
+                    expected_rows = max(
+                        1,
+                        len(test_idx)
+                        if shap_local_enabled
+                        else min(int(spec.max_explain), len(test_idx)),
+                    )
                     prefix = (
                         f"SHAP fold {fold_no}/{len(oof_folds)} · "
                         f"{expected_rows} samples · {len(feature_names)} features · {len(class_indices)} classes"
@@ -3748,7 +3803,9 @@ def _explain_one(
                         dataset.class_labels,
                         random_state=sweep.explainability.random_state + fold_no * 997,
                         spec=spec,
-                        force_explain_rows=[],
+                        force_explain_rows=list(range(len(test_idx)))
+                        if shap_local_enabled
+                        else [],
                         show_progress=False,
                         progress_callback=_progress_callback(prog, task, prefix),
                     )
@@ -3759,17 +3816,32 @@ def _explain_one(
                         class_indices,
                         dataset.class_labels,
                         "mean_abs_probability_shap_within_outer_fold",
+                        positive_class=dataset.positive_class,
                     )
                     fold_frame["fold_key"] = str(fold.get("split_key", ""))
                     fold_frame["fold_no"] = int(fold_no)
                     fold_frame["shap_backend"] = str(backend)
                     shap_fold_frames.append(fold_frame)
-                    shap_oof_rows.extend([])
+                    if shap_local_enabled:
+                        shap_oof_rows.extend(
+                            _local_value_rows_for_fold(
+                                fold,
+                                vals,
+                                rows_ex,
+                                tuple(range(len(dataset.class_labels))),
+                                dataset.class_labels,
+                                dataset.sample_ids,
+                                dataset.y,
+                                positive_class=dataset.positive_class,
+                            )
+                        )
         else:
             fold_totals = {
                 fold_no: max(
                     1,
-                    min(
+                    len(np.asarray(fold["test_idx"], dtype=int))
+                    if shap_local_enabled
+                    else min(
                         int(spec.max_explain),
                         len(np.asarray(fold["test_idx"], dtype=int)),
                     ),
@@ -3793,8 +3865,8 @@ def _explain_one(
                             class_indices,
                             dataset.sample_ids,
                             dataset.y,
-                            sweep.explainability.instance_sample_ids,
-                            False,
+                            dataset.positive_class,
+                            shap_local_enabled,
                             sweep.explainability.random_state + fold_no * 997,
                             spec,
                             int(execution.threads_per_worker),
@@ -3874,18 +3946,27 @@ def _explain_one(
         previous_method_cache["shap"] = current_method_entries["shap"]
         success("Class-specific OOF SHAP completed")
 
-    if "lime" in methods and "lime" not in reusable_methods:
+    lime_local_enabled = local_enabled and "lime" in local_methods
+    if "lime" in global_methods and "lime" not in reusable_methods:
         spec = specs_by_name["lime"]
         info("Running global class-specific OOF LIME feature attribution")
         lime_fold_frames: list[pd.DataFrame] = []
-        lime_oof_rows: list[dict[str, Any]] = []
         if execution.workers == 1:
             prog = progress()
             prog.start()
             for fold_no, fold in enumerate(oof_folds, start=1):
                 prefix = f"LIME fold {fold_no}/{len(oof_folds)} · {len(feature_names)} features · {len(class_indices)} classes"
                 task = prog.add_task(f"{prefix} · preparing", total=1)
-                force_rows = []
+                force_rows = (
+                    list(range(len(np.asarray(fold["test_idx"], dtype=int))))
+                    if lime_local_enabled
+                    else []
+                )
+                local_class_indices = (
+                    tuple(range(len(dataset.class_labels)))
+                    if lime_local_enabled
+                    else class_indices
+                )
                 coeffs, rows_ex = _lime_values_for_data(
                     configure_estimator_threads(
                         fold["estimator"], int(execution.threads_per_worker)
@@ -3894,7 +3975,7 @@ def _explain_one(
                     fold["X_test"],
                     feature_names,
                     dataset.class_labels,
-                    class_indices,
+                    local_class_indices,
                     random_state=sweep.explainability.random_state + fold_no * 997,
                     spec=spec,
                     force_explain_rows=force_rows,
@@ -3911,13 +3992,27 @@ def _explain_one(
                 fold_frame["fold_key"] = str(fold.get("split_key", ""))
                 fold_frame["fold_no"] = int(fold_no)
                 lime_fold_frames.append(fold_frame)
-                lime_oof_rows.extend([])
+                if lime_local_enabled:
+                    lime_oof_rows.extend(
+                        _local_value_rows_for_fold(
+                            fold,
+                            coeffs,
+                            rows_ex,
+                            local_class_indices,
+                            dataset.class_labels,
+                            dataset.sample_ids,
+                            dataset.y,
+                            positive_class=dataset.positive_class,
+                        )
+                    )
             prog.stop()
         else:
             fold_totals = {
                 fold_no: max(
                     1,
-                    min(
+                    len(np.asarray(fold["test_idx"], dtype=int))
+                    if lime_local_enabled
+                    else min(
                         int(spec.max_explain),
                         len(np.asarray(fold["test_idx"], dtype=int)),
                     ),
@@ -3941,8 +4036,8 @@ def _explain_one(
                             class_indices,
                             dataset.sample_ids,
                             dataset.y,
-                            sweep.explainability.instance_sample_ids,
-                            False,
+                            dataset.positive_class,
+                            lime_local_enabled,
                             sweep.explainability.random_state + fold_no * 997,
                             spec,
                             int(execution.threads_per_worker),
@@ -4309,20 +4404,26 @@ def _explain_one(
         previous_method_cache["ale"] = current_method_entries["ale"]
         success("Class-specific OOF ALE completed")
 
-    if not method_frames:
+    if not method_frames and not local_enabled:
         raise ExplainabilityConfigurationError(
-            "No feature-importance method was executed."
+            "No global or local explainability method was executed."
         )
 
-    imp = _combine_feature_importance(method_frames)
+    imp = (
+        _combine_feature_importance(method_frames) if method_frames else pd.DataFrame()
+    )
     write_table(target_dir / "feature_importance.parquet", imp)
-    stability_all = pd.concat(
-        [
-            frame.assign(method=str(frame["method"].iloc[0]))
-            for frame in method_frames
-            if not frame.empty
-        ],
-        ignore_index=True,
+    stability_all = (
+        pd.concat(
+            [
+                frame.assign(method=str(frame["method"].iloc[0]))
+                for frame in method_frames
+                if not frame.empty
+            ],
+            ignore_index=True,
+        )
+        if method_frames
+        else pd.DataFrame()
     )
     stability_columns = [
         "method",
@@ -4361,7 +4462,7 @@ def _explain_one(
         target_dir / "feature_importance_by_outer_fold.parquet"
     )
 
-    if "interactions" in methods and "interactions" not in reusable_methods:
+    if "interactions" in global_methods and "interactions" not in reusable_methods:
         spec = specs_by_name["interactions"]
         info("Running class-specific OOF ALE interaction analysis")
         by_method: dict[str, list[pd.DataFrame]] = {
@@ -4448,18 +4549,25 @@ def _explain_one(
             oof_folds,
             dataset,
             feature_names,
-            class_indices,
             int(execution.threads_per_worker),
+            precomputed_rows={"shap": shap_oof_rows, "lime": lime_oof_rows},
         )
     )
 
-    top_features = _method_support_table(
-        method_frames, imp, top_k=sweep.explainability.top_k
+    top_features = (
+        _method_support_table(method_frames, imp, top_k=sweep.explainability.top_k)
+        if method_frames and not imp.empty
+        else pd.DataFrame()
     )
     write_table(target_dir / "top_features.parquet", top_features)
     dist_frames: list[pd.DataFrame] = []
     class_figure_paths: dict[str, Path] = {}
-    for class_index, class_top in top_features.groupby("class_index", sort=True):
+    grouped_top_features = (
+        top_features.groupby("class_index", sort=True)
+        if not top_features.empty and "class_index" in top_features.columns
+        else ()
+    )
+    for class_index, class_top in grouped_top_features:
         c = int(class_index)
         label = str(dataset.class_labels[c])
         slug = _class_slug(label)
@@ -4521,14 +4629,18 @@ def _explain_one(
                 str(dataset.class_labels[int(x)]) for x in class_indices
             ],
             "class_target": "class_probability",
-            "explanation_layers": ["global", "cross_fold_stability", "local"],
-            "local_explanations": local_mode,
-            "local_methods": [
-                x for x in ("shap", "lime") if x in methods and local_enabled
+            "explanation_layers": [
+                *(["global", "cross_fold_stability"] if global_methods else []),
+                *(["local"] if local_enabled else []),
             ],
-            "global_methods": [x for x in methods if x != "interactions"],
+            "local_explanations": local_mode,
+            "local_methods": list(local_methods) if local_enabled else [],
+            "local_target": "observed_class_probability",
+            "local_storage": "top_k_per_oof_split_full_vectors_for_report_representatives",
+            "local_top_k": int(sweep.explainability.local.stored_features),
+            "global_methods": [x for x in global_methods if x != "interactions"],
             "interaction_scope": "global_exploratory"
-            if "interactions" in methods
+            if "interactions" in global_methods
             else "not_requested",
             "shap_backends": sorted(resolved_shap_backends),
             "default_suite": ["shap", "lime", "ale", "permutation", "interactions"],

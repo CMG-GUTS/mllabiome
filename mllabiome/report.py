@@ -16,7 +16,7 @@ from .storage import read_table, write_table, table_exists, glob_tables
 from .metrics import compute_metrics
 from .report_statistics import run_report_statistics
 from .report_compute import run_compute_accounting
-from .explainability_visuals import plot_feature_support
+from .explainability_visuals import plot_feature_support, plot_local_attributions
 
 _METRICS = [
     ("AUC", "ROC-AUC"),
@@ -984,46 +984,6 @@ def _xai_method_global_text(method: str) -> str:
     }.get(str(method).strip().lower(), "Global OOF feature explanation.")
 
 
-def _xai_local_table(target_dir: Path, method: str, top_n: int = 5) -> pd.DataFrame:
-    selected = _read_table(
-        target_dir / f"instance_explanations_{method}_selected.parquet"
-    )
-    top = _read_table(
-        target_dir / f"instance_explanations_{method}_top_features.parquet"
-    )
-    if selected.empty or top.empty:
-        return pd.DataFrame()
-    rows: list[dict[str, Any]] = []
-    feature_column = _xai_coordinate_column(target_dir)
-    group_cols = [c for c in ("sample_id", "class_index") if c in top.columns]
-    grouped = top.groupby(group_cols, sort=False) if group_cols else [((), top)]
-    for _, group in grouped:
-        group = (
-            group.sort_values("rank", ascending=True)
-            if "rank" in group.columns
-            else group
-        )
-        for _, row in group.head(int(top_n)).iterrows():
-            item: dict[str, Any] = {
-                "Sample": str(row.get("sample_id", "")),
-                "Role": str(row.get("selection_role", "")),
-                "Class": str(row.get("class_label", row.get("class_index", ""))),
-                feature_column: _short_feature_label(row.get("feature", "")),
-            }
-            p = _safe_float(row.get("p_class_mean", np.nan))
-            item["P(class)"] = f"{p:.3f}" if np.isfinite(p) else ""
-            value = _safe_float(row.get("value", np.nan))
-            label = "SHAP contribution" if method == "shap" else "LIME coefficient"
-            item[label] = f"{value:+.3f}" if np.isfinite(value) else ""
-            sd = _safe_float(row.get("value_sd", np.nan))
-            if np.isfinite(sd):
-                item["Across-fold SD"] = f"{sd:.3f}"
-            rank = _safe_float(row.get("rank", np.nan))
-            item["Local rank"] = int(rank) if np.isfinite(rank) else ""
-            rows.append(item)
-    return pd.DataFrame(rows)
-
-
 def _xai_local_mode(target_dir: Path) -> str:
     meta = _read_json(target_dir / "explained_unit.json")
     cfg = meta.get("explainability_config", {}) if isinstance(meta, dict) else {}
@@ -1039,6 +999,38 @@ def _xai_local_mode(target_dir: Path) -> str:
     if requested:
         return "requested"
     return "none"
+
+
+def _xai_local_figure(target_dir: Path, report_dir: Path, label: str, task: str) -> str:
+    table = _read_table(target_dir / "local_explanations.parquet")
+    if table.empty or "method" not in table.columns:
+        return ""
+    methods = {str(x).strip().lower() for x in table["method"].dropna().tolist()}
+    method = "shap" if "shap" in methods else "lime" if "lime" in methods else ""
+    if not method:
+        return ""
+    meta = _read_json(target_dir / "explained_unit.json")
+    cfg = meta.get("explainability_config", {}) if isinstance(meta, dict) else {}
+    local_cfg = cfg.get("local", {}) if isinstance(cfg, dict) else {}
+    displayed = local_cfg.get(
+        "displayed_features",
+        meta.get("top_instance_features", cfg.get("top_instance_features", 8))
+        if isinstance(meta, dict)
+        else 8,
+    )
+    try:
+        top_n = max(1, int(displayed))
+    except (TypeError, ValueError):
+        top_n = 8
+    stem = target_dir / "figures" / "local_explanations"
+    if not stem.with_suffix(".svg").exists():
+        plot_local_attributions(table, stem, task=str(task), method=method, top_n=top_n)
+    display = "SHAP" if method == "shap" else "LIME"
+    return _fig(
+        stem,
+        report_dir,
+        f"{label}: representative OOF local {display} explanations",
+    )
 
 
 def _explainability_report_blocks(
@@ -1161,35 +1153,23 @@ def _explainability_report_blocks(
         parts.append("<h4>Local explanations</h4>")
         if local_mode == "none":
             parts.append(
-                "<p>Local sample-level reporting was not requested for this run. SHAP/LIME may still compute local values internally to form global summaries, but individual samples are not presented.</p>"
+                "<p>Local sample-level reporting was not requested for this run.</p>"
             )
         else:
-            parts.append(
-                f"<p>Local OOF explanation mode: {html.escape(local_mode)}. Each displayed sample is explained only by outer-fold model(s) that did not train on that sample.</p>"
+            local_figure = _xai_local_figure(
+                target_dir, report_dir, label, "classification"
             )
-            found_local = False
-            for method in ("shap", "lime"):
-                if method not in methods:
-                    continue
-                local_tab = _xai_local_table(target_dir, method, top_n=5)
-                if local_tab.empty:
-                    continue
-                found_local = True
+            if local_figure:
                 parts.append(
-                    f"<h5>{html.escape(_xai_method_display(method))} local explanations</h5>"
+                    "<p>Representative held-out samples are selected from OOF predictions, with one representative per observed class. Each sample is explained only by outer-fold model(s) that did not train on that sample. Positive and negative SHAP contributions respectively increase or decrease the predicted probability of the explained class relative to the SHAP reference value; when SHAP is unavailable, the figure uses local LIME surrogate coefficients.</p>"
                 )
-                if method == "shap":
-                    parts.append(
-                        "<p>Signed SHAP contributions indicate whether each feature pushes the class probability upward or downward relative to the SHAP baseline.</p>"
-                    )
-                else:
-                    parts.append(
-                        "<p>Signed LIME coefficients are local surrogate effects around the selected held-out sample and should not be interpreted as global model coefficients.</p>"
-                    )
-                parts.append(_html_table(local_tab))
-            if not found_local:
+                parts.append(local_figure)
                 parts.append(
-                    "<p>No local SHAP/LIME table is available for the requested mode.</p>"
+                    "<p>Sample-wise local attribution results are retained in <code>local_explanations.parquet</code>.</p>"
+                )
+            else:
+                parts.append(
+                    "<p>No representative local SHAP/LIME visualization is available for this explained unit.</p>"
                 )
         parts.append("</section>")
     return "".join(parts), blocks

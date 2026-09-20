@@ -535,6 +535,28 @@ def _regression_explainability_blocks(
             parts.append(
                 _report._html_table(_regression_numeric_table(interactions, int(top_k)))
             )
+        local_mode = str(meta.get("local_explanations", "none")).strip() or "none"
+        parts.append("<h4>Local explanations</h4>")
+        if local_mode == "none":
+            parts.append(
+                "<p>Local sample-level reporting was not requested for this run.</p>"
+            )
+        else:
+            local_figure = _report._xai_local_figure(
+                target_dir, report_dir, label, "regression"
+            )
+            if local_figure:
+                parts.append(
+                    "<p>Representative held-out samples are selected from the OOF prediction distribution at the lower, central, and upper response ranges. Each sample is explained only by outer-fold model(s) that did not train on that sample. Positive and negative SHAP contributions respectively increase or decrease the predicted response relative to the SHAP reference value; when SHAP is unavailable, the figure uses local LIME surrogate coefficients.</p>"
+                )
+                parts.append(local_figure)
+                parts.append(
+                    "<p>Sample-wise local attribution results are retained in <code>local_explanations.parquet</code>.</p>"
+                )
+            else:
+                parts.append(
+                    "<p>No representative local SHAP/LIME visualization is available for this explained unit.</p>"
+                )
         parts.append("</section>")
     return "".join(parts), count
 

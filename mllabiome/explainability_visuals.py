@@ -1297,3 +1297,173 @@ def plot_interaction_network(
     save_all(fig, out_stem)
     plt.close(fig)
     return True
+
+
+def plot_local_attributions(
+    table: pd.DataFrame,
+    out_stem: Path,
+    *,
+    task: str,
+    method: str,
+    top_n: int,
+) -> Path | None:
+    if table is None or table.empty:
+        return None
+    selected = table.copy()
+    if "selected_for_report" in selected.columns:
+        marker = selected["selected_for_report"]
+        if marker.dtype == bool:
+            selected = selected[marker]
+        else:
+            selected = selected[
+                marker.astype(str).str.strip().str.lower().isin({"true", "1", "yes"})
+            ]
+    selected = selected[
+        selected["method"].astype(str).str.lower().eq(str(method).lower())
+    ]
+    if selected.empty:
+        return None
+    apply_style()
+    sample_ids = list(dict.fromkeys(selected["sample_id"].astype(str).tolist()))
+    if not sample_ids:
+        return None
+    n_panels = len(sample_ids)
+    fig_h = max(48.0, 31.0 * n_panels + 8.0)
+    fig = plt.figure(figsize=(150 * MM, fig_h * MM))
+    fig.patch.set_facecolor(BG)
+    panel_h = 0.91 / n_panels
+    for panel_no, sample_id in enumerate(sample_ids):
+        sub = selected[selected["sample_id"].astype(str).eq(sample_id)].copy()
+        agg = sub.groupby("feature", as_index=False, dropna=False).agg(
+            attribution=("attribution", "mean"),
+            attribution_sd=("attribution", "std"),
+            feature_value=("feature_value", "mean"),
+        )
+        agg["abs_attribution"] = pd.to_numeric(
+            agg["attribution"], errors="coerce"
+        ).abs()
+        agg = agg.sort_values("abs_attribution", ascending=False).head(
+            max(1, int(top_n))
+        )
+        agg = agg.sort_values("attribution", ascending=True)
+        y0 = 0.045 + (n_panels - 1 - panel_no) * panel_h
+        ax_lab = fig.add_axes([0.045, y0 + 0.10 * panel_h, 0.39, panel_h * 0.64])
+        ax_bar = fig.add_axes([0.45, y0 + 0.10 * panel_h, 0.505, panel_h * 0.64])
+        role = str(sub.get("selection_role", pd.Series([""])).iloc[0]).strip()
+        if str(task).lower() == "classification":
+            class_label = str(sub.get("class_label", pd.Series([""])).iloc[0])
+            heading = (
+                f"Representative sample · {class_label}"
+                if role.startswith("representative")
+                else "Requested sample"
+            )
+            prediction = pd.to_numeric(
+                sub.get("prediction", np.nan), errors="coerce"
+            ).mean()
+            true_label = str(
+                sub.get("true_class_label", pd.Series([class_label])).iloc[0]
+            )
+            predicted_label = str(
+                sub.get("predicted_class_label", pd.Series([""])).iloc[0]
+            )
+            detail = f"{sample_id} · observed {true_label} · predicted {predicted_label} · OOF P({class_label}) {prediction:.3f}"
+            axis_label = (
+                f"Contribution to predicted probability of {class_label}"
+                if str(method).lower() == "shap"
+                else "Local surrogate coefficient"
+            )
+        else:
+            role_labels = {
+                "representative_prediction_q25": "Lower-range prediction",
+                "representative_prediction_q50": "Central prediction",
+                "representative_prediction_q75": "Upper-range prediction",
+            }
+            role_heading = role_labels.get(
+                role,
+                "Requested sample"
+                if role.startswith("requested")
+                else role.replace("_", " ").strip().title(),
+            )
+            heading = (
+                f"Representative sample · {role_heading}"
+                if role.startswith("representative")
+                else role_heading
+            )
+            prediction = pd.to_numeric(
+                sub.get("prediction", np.nan), errors="coerce"
+            ).mean()
+            observed = pd.to_numeric(
+                sub.get("observed_response", np.nan), errors="coerce"
+            ).mean()
+            detail = f"{sample_id} · observed {observed:.3f} · OOF prediction {prediction:.3f}"
+            axis_label = (
+                "Contribution to predicted response"
+                if str(method).lower() == "shap"
+                else "Local surrogate coefficient"
+            )
+        fig.text(
+            0.045,
+            y0 + panel_h * 0.88,
+            heading,
+            ha="left",
+            va="center",
+            fontsize=6.6,
+            color=INK,
+            weight="bold",
+        )
+        fig.text(
+            0.045,
+            y0 + panel_h * 0.78,
+            detail,
+            ha="left",
+            va="center",
+            fontsize=5.4,
+            color=MID,
+        )
+        values = (
+            pd.to_numeric(agg["attribution"], errors="coerce")
+            .fillna(0.0)
+            .to_numpy(dtype=float)
+        )
+        features = agg["feature"].astype(str).tolist()
+        y = np.arange(len(agg))
+        for ax in (ax_lab, ax_bar):
+            ax.set_ylim(len(agg) - 0.5, -0.5)
+            ax.set_yticks([])
+            ax.set_facecolor(BG)
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            for yi in np.arange(len(agg) + 1) - 0.5:
+                ax.axhline(yi, color=TRACK, lw=0.22, zorder=0)
+        ax_lab.set_xlim(0, 1)
+        ax_lab.set_xticks([])
+        for i, feature in enumerate(features):
+            ax_lab.text(
+                0.01,
+                i,
+                _plain_taxon_label(feature, 44),
+                ha="left",
+                va="center",
+                fontsize=5.1,
+                color=INK,
+                path_effects=[mpe.withStroke(linewidth=1.0, foreground="white")],
+            )
+        vmax = max(float(np.nanmax(np.abs(values))) if len(values) else 1.0, 1e-12)
+        colors = [ACC if value >= 0 else CLASS_CTRL for value in values]
+        ax_bar.barh(y, values, height=0.54, color=colors, edgecolor="none", zorder=2)
+        ax_bar.axvline(0.0, color="#000000", lw=0.5, zorder=3)
+        ax_bar.set_xlim(-1.18 * vmax, 1.18 * vmax)
+        ax_bar.set_xlabel(axis_label, fontsize=5.3, color=INK, labelpad=2)
+        ax_bar.tick_params(axis="x", labelsize=4.8, length=2.0, width=0.4, pad=1)
+        ax_bar.spines["bottom"].set_visible(True)
+        ax_bar.spines["bottom"].set_color("#000000")
+        ax_bar.spines["bottom"].set_linewidth(0.45)
+        for yi, value in enumerate(values):
+            ha = "left" if value >= 0 else "right"
+            x = value + (0.025 * vmax if value >= 0 else -0.025 * vmax)
+            ax_bar.text(
+                x, yi, f"{value:+.3f}", ha=ha, va="center", fontsize=4.6, color=INK
+            )
+    save_all(fig, out_stem)
+    plt.close(fig)
+    return out_stem.with_suffix(".svg")

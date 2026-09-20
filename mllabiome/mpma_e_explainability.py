@@ -538,7 +538,11 @@ def _run_hierarchical_shap(
             max_rows=int(spec.max_explain),
             random_state=seed + 13,
         )
-        requested = {str(x) for x in sweep.explainability.instance_sample_ids}
+        requested = (
+            {str(x) for x in sweep.explainability.local.sample_ids}
+            if _core.method_has_local(spec)
+            else set()
+        )
         if requested:
             forced = [
                 local_i
@@ -1110,6 +1114,9 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
         sweep.explainability.methods
     )
     methods = tuple(_core.method_name(x) for x in method_specs)
+    global_methods = tuple(
+        _core.method_name(x) for x in method_specs if _core.method_has_global(x)
+    )
     info("Preparing final MPMA-E member refits for OOF explanation")
     bundle = _fit_oof_members(sweep, rankings, mpma_e)
     dataset = bundle["dataset"]
@@ -1131,7 +1138,7 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
     write_table(reproduction_path, bundle["reproduction"])
     outputs["prediction_reproduction_diagnostics"] = reproduction_path
 
-    if "shap" in methods:
+    if "shap" in global_methods:
         outputs.update(_run_hierarchical_shap(sweep, bundle, mpma_e, out_dir))
 
     linear_exact = (
@@ -1148,7 +1155,7 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
         "members": mpma_e.get("members", []),
         "explanation_architecture": "member_native_then_aggregation",
         "exact_feature_attribution_propagation": bool(
-            linear_exact and "shap" in methods
+            linear_exact and "shap" in global_methods
         ),
         "exact_feature_attribution_condition": (
             "Exact at model-coordinate level because MPMA-E is a fixed linear mean/weighted mean of member probabilities and member SHAP decompositions are propagated using the exact aggregation weights. Taxon-level signed aggregation is restricted to coordinates with exact one-to-one feature identity."

@@ -70,8 +70,8 @@ EXPLAINABILITY = mll.Explainability(
         mll.LIME(),
         mll.ALEInteractions(),
     ),
-    top_k=15,
-    representative_instances=False,
+    # top_k=15,
+    # representative_instances=False,
 )
 
 SWEEP = mll.Sweep(

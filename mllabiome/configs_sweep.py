@@ -26,6 +26,7 @@ from .explainability_methods import (
     Permutation,
     SHAP,
     apply_profile,
+    method_has_local,
     normalise_profile,
 )
 from .learners import _learner_factory, _learner_name
@@ -141,6 +142,33 @@ class Ensemble:
     exclude_transformations: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class LocalExplanations:
+    representatives: bool = True
+    sample_ids: tuple[str, ...] = ()
+    stored_features: int = 15
+    displayed_features: int = 8
+    regression_quantiles: tuple[float, ...] = (0.25, 0.50, 0.75)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "sample_ids", tuple(str(x) for x in self.sample_ids))
+        object.__setattr__(
+            self,
+            "regression_quantiles",
+            tuple(float(x) for x in self.regression_quantiles),
+        )
+        if int(self.stored_features) < 1:
+            raise ValueError("LocalExplanations.stored_features must be at least 1.")
+        if int(self.displayed_features) < 1:
+            raise ValueError("LocalExplanations.displayed_features must be at least 1.")
+        if not self.regression_quantiles or any(
+            not 0.0 < x < 1.0 for x in self.regression_quantiles
+        ):
+            raise ValueError(
+                "LocalExplanations.regression_quantiles must contain values strictly between 0 and 1."
+            )
+
+
 @dataclass(init=False)
 class Explainability:
     targets: str | tuple[str, ...] = "auto"
@@ -149,9 +177,7 @@ class Explainability:
     classes: str | tuple[int | str, ...] = "auto"
     profile: str = "standard"
     random_state: int = 42
-    representative_instances: bool = True
-    instance_sample_ids: tuple[str, ...] = ()
-    top_instance_features: int = 5
+    local: LocalExplanations = LocalExplanations()
     n_jobs: int | str | None = None
     parallel_backend: str | None = None
 
@@ -163,29 +189,139 @@ class Explainability:
         classes: str | Sequence[int | str] = "auto",
         profile: str = "standard",
         random_state: int = 42,
-        representative_instances: bool = True,
-        instance_sample_ids: Sequence[str] = (),
-        top_instance_features: int = 5,
+        local: LocalExplanations | None = None,
         n_jobs: int | str | None = None,
         parallel_backend: str | None = None,
         **unknown_options: Any,
     ) -> None:
+        legacy_keys = {
+            "local_explanations",
+            "representative_instances",
+            "instance_sample_ids",
+            "local_top_k",
+            "top_instance_features",
+            "representative_quantiles",
+        }
+        legacy = {
+            key: unknown_options.pop(key)
+            for key in tuple(unknown_options)
+            if key in legacy_keys
+        }
         if unknown_options:
             unknown = ", ".join(sorted(unknown_options))
             raise TypeError(f"Unknown Explainability option(s): {unknown}.")
+        if local is not None and legacy:
+            raise TypeError(
+                "Use either Explainability.local or legacy local-explanation options, not both."
+            )
         self.targets = _normalise_explainability_targets_config(targets)
         self.top_k = int(top_k)
         self.profile = normalise_profile(profile)
         self.methods = tuple(apply_profile(m, self.profile) for m in methods)
         self.classes = _normalise_explainability_classes_config(classes)
         self.random_state = int(random_state)
-        self.representative_instances = bool(representative_instances)
-        self.instance_sample_ids = tuple(str(x) for x in instance_sample_ids)
-        self.top_instance_features = int(top_instance_features)
+        self.local = local if local is not None else _legacy_local_explanations(legacy)
         self.n_jobs = n_jobs
         self.parallel_backend = (
             None if parallel_backend is None else str(parallel_backend)
         )
+
+    @property
+    def local_explanations(self) -> str:
+        return _effective_local_explanations_mode(self)
+
+    @property
+    def representative_instances(self) -> bool:
+        return bool(self.local.representatives)
+
+    @property
+    def instance_sample_ids(self) -> tuple[str, ...]:
+        return tuple(self.local.sample_ids)
+
+    @property
+    def local_top_k(self) -> int:
+        return int(self.local.stored_features)
+
+    @property
+    def top_instance_features(self) -> int:
+        return int(self.local.displayed_features)
+
+    @property
+    def representative_quantiles(self) -> tuple[float, ...]:
+        return tuple(self.local.regression_quantiles)
+
+
+def _legacy_local_explanations(options: Mapping[str, Any]) -> LocalExplanations:
+    if not options:
+        return LocalExplanations()
+    representatives = bool(options.get("representative_instances", True))
+    sample_ids = tuple(str(x) for x in options.get("instance_sample_ids", ()))
+    stored_features = int(options.get("local_top_k", 15))
+    displayed_features = int(options.get("top_instance_features", 8))
+    quantiles = tuple(
+        float(x) for x in options.get("representative_quantiles", (0.25, 0.50, 0.75))
+    )
+    mode = (
+        str(options.get("local_explanations", "auto")).strip().lower().replace("-", "_")
+    )
+    aliases = {
+        "": "auto",
+        "off": "none",
+        "false": "none",
+        "representatives": "representative",
+        "samples": "requested",
+        "both": "representative_and_requested",
+        "representative_requested": "representative_and_requested",
+    }
+    mode = aliases.get(mode, mode)
+    if mode == "none":
+        representatives = False
+        sample_ids = ()
+    elif mode == "representative":
+        representatives = True
+        sample_ids = ()
+    elif mode == "requested":
+        representatives = False
+    elif mode == "representative_and_requested":
+        representatives = True
+    elif mode != "auto":
+        raise ValueError(
+            "Explainability.local_explanations must be 'auto', 'none', 'representative', 'requested', or 'representative_and_requested'."
+        )
+    return LocalExplanations(
+        representatives=representatives,
+        sample_ids=sample_ids,
+        stored_features=stored_features,
+        displayed_features=displayed_features,
+        regression_quantiles=quantiles,
+    )
+
+
+def _effective_local_explanations_mode(explainability: Any) -> str:
+    methods = tuple(getattr(explainability, "methods", ()))
+    if not any(method_has_local(method) for method in methods):
+        return "none"
+    local = getattr(explainability, "local", None)
+    if local is None:
+        local = _legacy_local_explanations(
+            {
+                "representative_instances": getattr(
+                    explainability, "representative_instances", True
+                ),
+                "instance_sample_ids": getattr(
+                    explainability, "instance_sample_ids", ()
+                ),
+            }
+        )
+    representative = bool(local.representatives)
+    requested = bool(local.sample_ids)
+    if representative and requested:
+        return "representative_and_requested"
+    if representative:
+        return "representative"
+    if requested:
+        return "requested"
+    return "none"
 
 
 def _normalise_explainability_targets_config(

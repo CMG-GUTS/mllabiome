@@ -35,18 +35,12 @@ MODALITIES = (
 )
 
 REPRESENTATIONS = {
-    "microbiota": (
-        ("species", ("species",)),
-    ),
+    "microbiota": (("species", ("species",)),),
 }
 
 TRANSFORMATIONS = {
-    "microbiota": (
-        mll.Transformation("arcsine_sqrt"),
-    ),
-    "brainharmonix": (
-        mll.Transformation("identity"),
-    ),
+    "microbiota": (mll.Transformation("arcsine_sqrt"),),
+    "brainharmonix": (mll.Transformation("identity"),),
 }
 
 INTEGRATIONS = (
