@@ -4,36 +4,32 @@ from pathlib import Path
 
 from mllabiome import mll
 
-TITLE = "PTSD within-dataset MPMA sweep"
-EXPERIMENT_DIR = Path("examples/runs/PTSD-NCV")
+TITLE = "MDD case-control within-dataset MPMA sweep"
+EXPERIMENT_DIR = Path("examples/runs/MDD-CLS-NCV")
 
 DATA = mll.Data(
-    abundance_path=Path("examples/data/PTSD/PTSD_profiles.tsv"),
-    metadata_path=Path("examples/data/PTSD/PTSD_metadata.tsv"),
+    abundance_path=Path("examples/data/MDD/BROWN_MDD_profiles_counts.tsv"),
+    metadata_path=Path("examples/data/MDD/BROWN_MDD_metadata.tsv"),
     format="metaphlan_tsv",
     sample_id_col="sampleId",
     target_col="group",
     task="classification",
-    class_labels=("Placebo", "Active"),
-    positive_class="Active",
+    class_labels=("Control", "MDD"),
+    positive_class="MDD",
 )
 
 RESOLUTIONS = (
     ("genus", ("genus",)),
+    ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
     ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
-    mll.Transformation("clr"),
+    mll.Transformation("identity"),
     mll.Transformation("arcsine_sqrt"),
-    mll.Transformation("alr"),
-    mll.Transformation("ilr"),
 )
 
-LEARNERS = (
-    "RF_1000_msl5",
-    "BNB",
-)
+LEARNERS = ("RF_1000_msl5",)
 
 EVALUATION = mll.Evaluation(
     protocol="nested_cv",
@@ -47,7 +43,6 @@ EVALUATION = mll.Evaluation(
 GATE = mll.QualificationGate(
     enabled=False,
     metric="nMCC",
-    threshold=0.51,
 )
 
 ENSEMBLE = mll.Ensemble(

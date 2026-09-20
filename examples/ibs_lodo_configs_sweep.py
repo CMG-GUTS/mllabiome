@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
 
 from mllabiome import mll
 
@@ -21,7 +20,8 @@ STUDY_IDS = (
 )
 SAMPLE_ID_COL = "Name"
 TARGET_COL = "host_disease"
-POSITIVE_LABEL = "IBS"
+CASE_LABEL = "IBS"
+CONTROL_LABEL = "Healthy"
 
 
 def _prepare_ibs_lodo_csv(
@@ -30,6 +30,7 @@ def _prepare_ibs_lodo_csv(
 ) -> Path:
     frames = []
     rank_prefixes = ("d__", "k__", "p__", "c__", "o__", "f__", "g__", "s__", "t__")
+    allowed_labels = {CASE_LABEL, CONTROL_LABEL}
     for study_id in STUDY_IDS:
         profiles_path = data_dir / f"{study_id}_profiles.tsv"
         metadata_path = data_dir / f"{study_id}_metadata.tsv"
@@ -51,21 +52,22 @@ def _prepare_ibs_lodo_csv(
                 f"{metadata_path} is missing {TARGET_COL!r}. Available columns: {list(metadata.columns)}"
             )
         metadata[SAMPLE_ID_COL] = metadata[SAMPLE_ID_COL].astype(str).str.strip()
-        metadata = metadata.drop_duplicates(subset=[SAMPLE_ID_COL]).set_index(
-            SAMPLE_ID_COL
-        )
+        metadata = metadata.drop_duplicates(subset=[SAMPLE_ID_COL]).set_index(SAMPLE_ID_COL)
         common = profiles.index.intersection(metadata.index)
         if len(common) == 0:
             raise ValueError(f"No sample overlap for IBS study {study_id}.")
         X = profiles.loc[common].apply(pd.to_numeric, errors="coerce").fillna(0.0)
         raw_label = metadata.loc[common, TARGET_COL].astype(str).str.strip()
-        y = raw_label.where(raw_label.eq(POSITIVE_LABEL), "non-IBS")
+        unexpected = sorted(set(raw_label.unique()) - allowed_labels)
+        if unexpected:
+            raise ValueError(
+                f"Unexpected {TARGET_COL!r} labels in {study_id}: {unexpected}. Expected only {sorted(allowed_labels)}."
+            )
+        y = raw_label.map({CONTROL_LABEL: "non-IBS", CASE_LABEL: "IBS"})
         frame = X.copy()
         frame.insert(0, "study_id", study_id)
         frame.insert(0, "label", y.to_numpy(dtype=object))
-        frame.insert(
-            0, "sample_id", [f"{study_id}::{sid}" for sid in common.astype(str)]
-        )
+        frame.insert(0, "sample_id", [f"{study_id}::{sid}" for sid in common.astype(str)])
         frames.append(frame.reset_index(drop=True))
     out = pd.concat(frames, axis=0, join="outer", ignore_index=True).fillna(0.0)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,60 +81,28 @@ DATA = mll.Data(
     format="csv",
     sample_id_col="sample_id",
     target_col="label",
+    task="classification",
     group_col="study_id",
     label_map={"non-IBS": 0, "IBS": 1},
     class_labels=("non-IBS", "IBS"),
-    positive_class=1,
+    positive_class="IBS",
 )
 
-_RESOLUTION_SETS: list[tuple[str, tuple[str, ...]]] = [
-    # ("phylum", ("phylum",)),
-    # ("class", ("class",)),
-    # ("order", ("order",)),
-    # ("family", ("family",)),
+RESOLUTIONS = (
     ("genus", ("genus",)),
     ("raw", ("all",)),
-]
+)
 
+COUNT_TRANSFORMATIONS = (
+    mll.Transformation("identity"),
+    mll.Transformation("arcsine_sqrt"),
+)
 
-def _build_count_transformations():
-    T = mll.Transformation
-    return [
-        T("identity"),
-        # T("relative_abundance"),
-        # T("presence_absence"),
-        # T("hellinger"),
-        T("arcsine_sqrt"),
-        # T("log10_relative_abundance_half_min_pseudocount"),
-        # T("centered_log_ratio_multiplicative_replacement"),
-        # T("standardized_centered_log_ratio_multiplicative_replacement"),
-        # T("yeo_johnson_relative_abundance"),
-        # T("quantile_normal_relative_abundance"),
-        # T("robust_scaled_relative_abundance"),
-        # T("within_sample_fractional_rank"),
-        # T("training_ecdf_rank"),
-        # T("prevalence_weighted_relative_abundance"),
-    ]
-
-
-def _build_models():
-    return [
-        (
-            "RF_1000_msl5",
-            RandomForestClassifier(
-                n_estimators=1000,
-                min_samples_leaf=5,
-                n_jobs=1,
-                random_state=42,
-            ),
-        ),
-    ]
-
+LEARNERS = ("RF_1000_msl5",)
 
 EVALUATION = mll.Evaluation(
     protocol="lodo",
     inner_folds=3,
-    repeats=1,
     optimize_metric="nMCC",
     random_state=42,
     n_jobs=1,
@@ -162,10 +132,24 @@ ENSEMBLE = mll.Ensemble(
     ),
     optimize_metric="log_loss",
 )
+
 EXPLAINABILITY = mll.Explainability(
     targets="auto",
     top_k=30,
     representative_instances=True,
     instance_sample_ids=(),
     top_instance_features=5,
+)
+
+SWEEP = mll.Sweep(
+    data=DATA,
+    experiment_dir=EXPERIMENT_DIR,
+    title=TITLE,
+    resolutions=RESOLUTIONS,
+    count_transformations=COUNT_TRANSFORMATIONS,
+    learners=LEARNERS,
+    evaluation=EVALUATION,
+    gate=GATE,
+    ensemble=ENSEMBLE,
+    explainability=EXPLAINABILITY,
 )
