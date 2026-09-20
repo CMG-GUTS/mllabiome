@@ -204,7 +204,11 @@ class Explainability:
             "top_instance_features",
             "representative_quantiles",
         }
-        legacy = {key: unknown_options.pop(key) for key in tuple(unknown_options) if key in legacy_keys}
+        legacy = {
+            key: unknown_options.pop(key)
+            for key in tuple(unknown_options)
+            if key in legacy_keys
+        }
         if unknown_options:
             unknown = ", ".join(sorted(unknown_options))
             raise TypeError(f"Unknown Explainability option(s): {unknown}.")
@@ -260,7 +264,9 @@ def _legacy_local_explanations(options: Mapping[str, Any]) -> LocalExplanations:
     quantiles = tuple(
         float(x) for x in options.get("representative_quantiles", (0.25, 0.50, 0.75))
     )
-    mode = str(options.get("local_explanations", "auto")).strip().lower().replace("-", "_")
+    mode = (
+        str(options.get("local_explanations", "auto")).strip().lower().replace("-", "_")
+    )
     aliases = {
         "": "auto",
         "off": "none",
@@ -305,7 +311,9 @@ def _effective_local_explanations_mode(explainability: Any) -> str:
                 "representative_instances": getattr(
                     explainability, "representative_instances", True
                 ),
-                "instance_sample_ids": getattr(explainability, "instance_sample_ids", ()),
+                "instance_sample_ids": getattr(
+                    explainability, "instance_sample_ids", ()
+                ),
             }
         )
     representative = bool(local.representatives)
@@ -317,7 +325,6 @@ def _effective_local_explanations_mode(explainability: Any) -> str:
     if requested:
         return "requested"
     return "none"
-
 
 
 def _normalise_explainability_targets_config(
@@ -1785,68 +1792,32 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
 
 
 def _write_multi_target_summary(
-    sweep: Sweep, children: list[Sweep], outputs: list[dict[str, Path]]
+    sweep: Sweep, children: Sequence[Sweep]
 ) -> dict[str, Path]:
     root = sweep.root()
     root.mkdir(parents=True, exist_ok=True)
-    table_dir = root / "tables"
-    table_dir.mkdir(parents=True, exist_ok=True)
-    metric_frames = []
-    pred_frames = []
     targets = []
-    for child, output in zip(children, outputs):
+    for child in children:
         target = str(child.data.target_col)
         task = str(child.data.task)
         targets.append(
-            {"target": target, "task": task, "experiment_dir": str(child.root())}
-        )
-        metrics_path = child.root() / "results" / "outer_results.parquet"
-        preds_path = child.root() / "predictions" / "outer_predictions.parquet"
-        if table_exists(metrics_path):
-            frame = read_table(metrics_path)
-            if "target" not in frame.columns:
-                frame.insert(0, "target", target)
-            if "task" not in frame.columns:
-                frame.insert(1, "task", task)
-            metric_frames.append(frame)
-        if table_exists(preds_path):
-            frame = read_table(preds_path)
-            if "target" not in frame.columns:
-                frame.insert(0, "target", target)
-            if "task" not in frame.columns:
-                frame.insert(1, "task", task)
-            pred_frames.append(frame)
-    if metric_frames:
-        combined_metrics = pd.concat(metric_frames, ignore_index=True, sort=False)
-        write_table(table_dir / "multi_target_outer_metrics.parquet", combined_metrics)
-        if _normalise_sweep_task(sweep.data.task) == "multilabel":
-            numeric_metrics = [
-                c for c in METRIC_COLUMNS if c in combined_metrics.columns
-            ]
-            group_cols = [
-                c
-                for c in ("config_id", "count_transformation", "resolution", "learner")
-                if c in combined_metrics.columns
-            ]
-            if group_cols and numeric_metrics:
-                multilabel = combined_metrics.groupby(group_cols, as_index=False)[
-                    numeric_metrics
-                ].mean(numeric_only=True)
-                write_table(table_dir / "multilabel_metric_summary.parquet", multilabel)
-    if pred_frames:
-        write_table(
-            table_dir / "multi_target_outer_predictions.parquet",
-            pd.concat(pred_frames, ignore_index=True, sort=False),
+            {
+                "target": target,
+                "task": task,
+                "experiment_dir": str(child.root()),
+                "outer_metrics": str(
+                    child.root() / "results" / "outer_results.parquet"
+                ),
+                "outer_predictions": str(
+                    child.root() / "predictions" / "outer_predictions.parquet"
+                ),
+            }
         )
     dump_json_standard(
         {"task": _normalise_sweep_task(sweep.data.task), "targets": targets},
         root / "multi_target_manifest.json",
     )
-    return {
-        "manifest": root / "multi_target_manifest.json",
-        "outer_metrics": table_dir / "multi_target_outer_metrics.parquet",
-        "outer_predictions": table_dir / "multi_target_outer_predictions.parquet",
-    }
+    return {"manifest": root / "multi_target_manifest.json"}
 
 
 def evaluate(sweep: Sweep) -> dict[str, Path]:
@@ -1856,14 +1827,13 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
         return evaluate_modality_sweep(sweep)
     children = target_sweeps(sweep)
     if len(children) > 1 or children[0] is not sweep:
-        outputs = []
         for index, child in enumerate(children, start=1):
             info(
                 f"Multi-target evaluation · target {index}/{len(children)} · {child.data.target_col}"
             )
-            outputs.append(evaluate(child))
-        info("Multi-target evaluation · aggregating target outputs")
-        return _write_multi_target_summary(sweep, children, outputs)
+            evaluate(child)
+        info("Multi-target evaluation · writing target manifest")
+        return _write_multi_target_summary(sweep, children)
     task = _target_task(sweep.data, _target_columns(sweep.data)[0])
     if task == "regression":
         return _evaluate_regression(sweep)
@@ -2432,16 +2402,6 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
         for name, sql_type in extra_columns.items():
             if name not in columns:
                 conn.execute(f"ALTER TABLE configs ADD COLUMN {name} {sql_type}")
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS completions (
-                config_id TEXT NOT NULL,
-                split_key TEXT NOT NULL,
-                stage TEXT NOT NULL,
-                ok INTEGER NOT NULL,
-                elapsed_s REAL,
-                PRIMARY KEY (config_id, split_key, stage)
-            )"""
-        )
         conn.execute("UPDATE configs SET active=0")
         for r in configs.to_dict(orient="records"):
             conn.execute(
@@ -2749,72 +2709,7 @@ def _write_tables(
         _write_dataframe(qpath, qual_df)
     elif table_exists(qpath):
         remove_table(qpath)
-    _update_completion_db(root, outer_df, inner_df)
     _clear_evaluation_checkpoints(root, compact=True)
-
-
-def _update_completion_db(
-    root: Path, outer_df: pd.DataFrame, inner_df: pd.DataFrame
-) -> None:
-    db_path = root / "configs.db"
-    if not db_path.exists():
-        return
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS completions (
-                config_id TEXT NOT NULL,
-                split_key TEXT NOT NULL,
-                stage TEXT NOT NULL,
-                ok INTEGER NOT NULL,
-                elapsed_s REAL,
-                PRIMARY KEY (config_id, split_key, stage)
-            )"""
-        )
-        rows = []
-        if not outer_df.empty and {"config_id", "split_key", "ok"}.issubset(
-            outer_df.columns
-        ):
-            for r in (
-                outer_df[["config_id", "split_key", "ok"]]
-                .dropna(subset=["config_id", "split_key"])
-                .to_dict(orient="records")
-            ):
-                rows.append(
-                    (
-                        str(r["config_id"]),
-                        str(r["split_key"]),
-                        "outer",
-                        int(r.get("ok", 0)),
-                        None,
-                    )
-                )
-        if not inner_df.empty and {"config_id", "inner_key", "ok"}.issubset(
-            inner_df.columns
-        ):
-            for r in (
-                inner_df[["config_id", "inner_key", "ok"]]
-                .dropna(subset=["config_id", "inner_key"])
-                .to_dict(orient="records")
-            ):
-                rows.append(
-                    (
-                        str(r["config_id"]),
-                        str(r["inner_key"]),
-                        "inner",
-                        int(r.get("ok", 0)),
-                        None,
-                    )
-                )
-        if rows:
-            conn.executemany(
-                """INSERT OR REPLACE INTO completions(config_id, split_key, stage, ok, elapsed_s)
-                   VALUES (?, ?, ?, ?, ?)""",
-                rows,
-            )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def _write_rankings_and_figures(

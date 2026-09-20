@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import matplotlib as mpl
 from matplotlib.colors import LinearSegmentedColormap
@@ -117,6 +118,22 @@ def apply() -> None:
     mpl.rcParams.update(RC)
 
 
+def compact_svg(path: Path) -> Path:
+    path = Path(path)
+    text = path.read_text(encoding="utf-8")
+    text = re.sub(r"<metadata\b[^>]*>.*?</metadata>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    text = re.sub(r">\s+<", "><", text)
+    path.write_text(text.strip() + "\n", encoding="utf-8")
+    return path
+
+
+def save_svg(fig, path: Path, *, dpi: int = 300) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=dpi, metadata={"Date": None})
+    return compact_svg(path)
+
+
 def save_all(fig, stem: Path) -> None:
-    stem.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(stem.with_suffix(".svg"), dpi=300)
+    save_svg(fig, stem.with_suffix(".svg"), dpi=300)

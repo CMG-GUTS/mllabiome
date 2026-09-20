@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .storage import read_table, write_table
+from .storage import read_table
 from .metrics import metric_is_loss
 from .transformations import TRANSFORMATION_SPACE, transformation_label
 from .utils import TAXONOMIC_LEVELS
@@ -102,9 +102,6 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
         .reset_index()
         .rename(columns={metric: f"{metric}_mean"})
     )
-    (root / "tables").mkdir(parents=True, exist_ok=True)
-    write_table(root / "tables" / "representation_impact_cells.parquet", cells)
-
     import matplotlib as mpl
     import matplotlib.gridspec as gridspec
     import matplotlib.pyplot as plt
@@ -118,6 +115,7 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
         COL_W_2,
         HMAP_CMAP,
         REPRESENTATION_RC,
+        save_svg,
     )
 
     mpl.rcParams.update(REPRESENTATION_RC)
@@ -284,5 +282,5 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
 
     out_base = root / "figures" / "representation_impact"
     out_base.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_base.with_suffix(".svg"), dpi=300)
+    save_svg(fig, out_base.with_suffix(".svg"), dpi=300)
     plt.close(fig)

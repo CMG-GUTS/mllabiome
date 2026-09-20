@@ -13,6 +13,7 @@ import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap
 
 from .explainability_support import top_k_rank_support
+from .style import compact_svg
 
 try:
     import networkx as nx
@@ -95,7 +96,9 @@ def apply_style() -> None:
 
 def save_all(fig: plt.Figure, stem: Path) -> None:
     stem.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(stem.with_suffix(".svg"), dpi=300)
+    path = stem.with_suffix(".svg")
+    fig.savefig(path, dpi=300, metadata={"Date": None})
+    compact_svg(path)
 
 
 def _bbox(
@@ -1340,33 +1343,44 @@ def plot_local_attributions(
             local = sub[sub["method"].astype(str).str.lower().eq(method)].copy()
             if local.empty:
                 continue
-            agg = (
-                local.groupby("feature", as_index=False, dropna=False)
-                .agg(
-                    attribution=("attribution", "mean"),
-                    attribution_sd=("attribution", "std"),
-                    feature_value=("feature_value", "mean"),
-                )
+            agg = local.groupby("feature", as_index=False, dropna=False).agg(
+                attribution=("attribution", "mean"),
+                attribution_sd=("attribution", "std"),
+                feature_value=("feature_value", "mean"),
             )
-            agg["attribution"] = pd.to_numeric(agg["attribution"], errors="coerce").fillna(0.0)
+            agg["attribution"] = pd.to_numeric(
+                agg["attribution"], errors="coerce"
+            ).fillna(0.0)
             agg["abs_attribution"] = agg["attribution"].abs()
             support_rows: list[dict[str, float | str]] = []
-            split_values = local["split_key"].astype(str) if "split_key" in local.columns else pd.Series(["oof"] * len(local), index=local.index)
+            split_values = (
+                local["split_key"].astype(str)
+                if "split_key" in local.columns
+                else pd.Series(["oof"] * len(local), index=local.index)
+            )
             for split_key in dict.fromkeys(split_values.tolist()):
                 split = local[split_values.eq(split_key)].copy()
                 split = split.groupby("feature", as_index=False, dropna=False).agg(
                     attribution=("attribution", "mean")
                 )
-                split["attribution"] = pd.to_numeric(split["attribution"], errors="coerce").fillna(0.0)
+                split["attribution"] = pd.to_numeric(
+                    split["attribution"], errors="coerce"
+                ).fillna(0.0)
                 split["abs_attribution"] = split["attribution"].abs()
                 split = split.sort_values(
-                    ["abs_attribution", "feature"], ascending=[False, True], kind="stable"
+                    ["abs_attribution", "feature"],
+                    ascending=[False, True],
+                    kind="stable",
                 ).reset_index(drop=True)
                 split["rank"] = np.arange(1, len(split) + 1, dtype=int)
                 for _, item in split.iterrows():
                     rank = int(item["rank"])
                     value = float(item["attribution"])
-                    score = float(np.sign(value) / rank) if rank <= k and value != 0.0 else 0.0
+                    score = (
+                        float(np.sign(value) / rank)
+                        if rank <= k and value != 0.0
+                        else 0.0
+                    )
                     support_rows.append(
                         {
                             "feature": str(item["feature"]),
@@ -1384,9 +1398,17 @@ def plot_local_attributions(
             else:
                 agg["signed_rank_support"] = 0.0
                 agg["rank_support"] = 0.0
-            agg["signed_rank_support"] = pd.to_numeric(agg["signed_rank_support"], errors="coerce").fillna(0.0)
-            agg["rank_support"] = pd.to_numeric(agg["rank_support"], errors="coerce").fillna(0.0)
-            agg = agg.sort_values(["rank_support", "abs_attribution", "feature"], ascending=[False, False, True], kind="stable").reset_index(drop=True)
+            agg["signed_rank_support"] = pd.to_numeric(
+                agg["signed_rank_support"], errors="coerce"
+            ).fillna(0.0)
+            agg["rank_support"] = pd.to_numeric(
+                agg["rank_support"], errors="coerce"
+            ).fillna(0.0)
+            agg = agg.sort_values(
+                ["rank_support", "abs_attribution", "feature"],
+                ascending=[False, False, True],
+                kind="stable",
+            ).reset_index(drop=True)
             aggregates[method] = agg
         if not aggregates:
             continue
@@ -1418,17 +1440,25 @@ def plot_local_attributions(
                     signs.append(1 if score > 0 else -1)
                 signed_supports.append(score)
                 abs_supports.append(abs_score)
-            row["consensus"] = float(np.mean(signed_supports)) if signed_supports else 0.0
-            row["selection_score"] = float(np.mean(abs_supports)) if abs_supports else 0.0
+            row["consensus"] = (
+                float(np.mean(signed_supports)) if signed_supports else 0.0
+            )
+            row["selection_score"] = (
+                float(np.mean(abs_supports)) if abs_supports else 0.0
+            )
             row["support_count"] = int(support_count)
             row["direction_agreement"] = int(len(set(signs)) <= 1 and len(signs) > 1)
             rows.append(row)
         merged = pd.DataFrame(rows)
         if merged.empty:
             continue
-        merged = merged.sort_values(
-            ["selection_score", "feature"], ascending=[False, True], kind="stable"
-        ).head(k).reset_index(drop=True)
+        merged = (
+            merged.sort_values(
+                ["selection_score", "feature"], ascending=[False, True], kind="stable"
+            )
+            .head(k)
+            .reset_index(drop=True)
+        )
         y0 = 0.04 + (n_panels - 1 - panel_no) * panel_h
         role = str(sub.get("selection_role", pd.Series([""])).iloc[0]).strip()
         if str(task).lower() == "classification":
@@ -1438,9 +1468,15 @@ def plot_local_attributions(
                 if role.startswith("representative")
                 else "Requested sample"
             )
-            prediction = pd.to_numeric(sub.get("prediction", np.nan), errors="coerce").mean()
-            true_label = str(sub.get("true_class_label", pd.Series([class_label])).iloc[0])
-            predicted_label = str(sub.get("predicted_class_label", pd.Series([""])).iloc[0])
+            prediction = pd.to_numeric(
+                sub.get("prediction", np.nan), errors="coerce"
+            ).mean()
+            true_label = str(
+                sub.get("true_class_label", pd.Series([class_label])).iloc[0]
+            )
+            predicted_label = str(
+                sub.get("predicted_class_label", pd.Series([""])).iloc[0]
+            )
             detail = (
                 f"{sample_id} · observed {true_label} · predicted {predicted_label} · "
                 f"OOF P({class_label}) {prediction:.3f}"
@@ -1463,8 +1499,12 @@ def plot_local_attributions(
                 if role.startswith("representative")
                 else role_heading
             )
-            prediction = pd.to_numeric(sub.get("prediction", np.nan), errors="coerce").mean()
-            observed = pd.to_numeric(sub.get("observed_response", np.nan), errors="coerce").mean()
+            prediction = pd.to_numeric(
+                sub.get("prediction", np.nan), errors="coerce"
+            ).mean()
+            observed = pd.to_numeric(
+                sub.get("observed_response", np.nan), errors="coerce"
+            ).mean()
             detail = f"{sample_id} · observed {observed:.3f} · OOF prediction {prediction:.3f}"
             shap_label = "SHAP contribution to predicted response"
         fig.text(
@@ -1488,15 +1528,25 @@ def plot_local_attributions(
         )
         if len(methods) == 2:
             axes = {
-                "labels": fig.add_axes([0.035, y0 + 0.10 * panel_h, 0.275, panel_h * 0.61]),
-                "shap": fig.add_axes([0.325, y0 + 0.10 * panel_h, 0.195, panel_h * 0.61]),
-                "lime": fig.add_axes([0.545, y0 + 0.10 * panel_h, 0.195, panel_h * 0.61]),
-                "consensus": fig.add_axes([0.765, y0 + 0.10 * panel_h, 0.200, panel_h * 0.61]),
+                "labels": fig.add_axes(
+                    [0.035, y0 + 0.10 * panel_h, 0.275, panel_h * 0.61]
+                ),
+                "shap": fig.add_axes(
+                    [0.325, y0 + 0.10 * panel_h, 0.195, panel_h * 0.61]
+                ),
+                "lime": fig.add_axes(
+                    [0.545, y0 + 0.10 * panel_h, 0.195, panel_h * 0.61]
+                ),
+                "consensus": fig.add_axes(
+                    [0.765, y0 + 0.10 * panel_h, 0.200, panel_h * 0.61]
+                ),
             }
         else:
             method = methods[0]
             axes = {
-                "labels": fig.add_axes([0.055, y0 + 0.10 * panel_h, 0.39, panel_h * 0.61]),
+                "labels": fig.add_axes(
+                    [0.055, y0 + 0.10 * panel_h, 0.39, panel_h * 0.61]
+                ),
                 method: fig.add_axes([0.47, y0 + 0.10 * panel_h, 0.47, panel_h * 0.61]),
             }
         n_rows = len(merged)
@@ -1524,9 +1574,14 @@ def plot_local_attributions(
             )
         for method in methods:
             ax = axes[method]
-            values = pd.to_numeric(
-                merged.get(f"{method}_value", pd.Series(np.zeros(n_rows))), errors="coerce"
-            ).fillna(0.0).to_numpy(dtype=float)
+            values = (
+                pd.to_numeric(
+                    merged.get(f"{method}_value", pd.Series(np.zeros(n_rows))),
+                    errors="coerce",
+                )
+                .fillna(0.0)
+                .to_numpy(dtype=float)
+            )
             vmax = max(float(np.nanmax(np.abs(values))) if len(values) else 1.0, 1e-12)
             colors = [ACC if value >= 0 else CLASS_CTRL for value in values]
             ax.barh(y, values, height=0.54, color=colors, edgecolor="none", zorder=2)
@@ -1547,16 +1602,24 @@ def plot_local_attributions(
             for yi, value in enumerate(values):
                 x = value + (0.025 * vmax if value >= 0 else -0.025 * vmax)
                 ha = "left" if value >= 0 else "right"
-                ax.text(x, yi, f"{value:+.3f}", ha=ha, va="center", fontsize=4.0, color=INK)
+                ax.text(
+                    x, yi, f"{value:+.3f}", ha=ha, va="center", fontsize=4.0, color=INK
+                )
         if len(methods) == 2:
             ax = axes["consensus"]
-            consensus = pd.to_numeric(merged["consensus"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+            consensus = (
+                pd.to_numeric(merged["consensus"], errors="coerce")
+                .fillna(0.0)
+                .to_numpy(dtype=float)
+            )
             colors = [ACC if value >= 0 else CLASS_CTRL for value in consensus]
             ax.barh(y, consensus, height=0.54, color=colors, edgecolor="none", zorder=2)
             ax.axvline(0.0, color="#000000", lw=0.5, zorder=3)
             ax.set_xlim(-1.05, 1.05)
             ax.set_xticks([-1.0, 0.0, 1.0])
-            ax.set_xlabel("Signed within-method rank support", fontsize=4.7, color=INK, labelpad=2)
+            ax.set_xlabel(
+                "Signed within-method rank support", fontsize=4.7, color=INK, labelpad=2
+            )
             ax.set_title("Cross-method", fontsize=5.7, color=MID, pad=3, weight="bold")
             ax.tick_params(axis="x", labelsize=4.25, length=1.8, width=0.35, pad=1)
             ax.spines["bottom"].set_visible(True)

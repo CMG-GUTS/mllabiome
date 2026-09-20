@@ -16,6 +16,7 @@ import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap
 from scipy.stats import rankdata
 from .storage import read_table, write_table, table_exists
+from .style import save_svg
 
 try:
     from sklearn.preprocessing import (
@@ -1217,7 +1218,7 @@ def render_figure(
         y_top -= 8.0
 
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_prefix.with_suffix(".svg"))
+    save_svg(fig, out_prefix.with_suffix(".svg"))
     plt.close(fig)
 
 

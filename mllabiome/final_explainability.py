@@ -36,6 +36,13 @@ def _cleanup_explainability_cache(root: Path) -> None:
     for path in explainability_root.rglob("local_explanations_cache.json"):
         if path.is_file():
             path.unlink()
+    for target_dir in [path for path in explainability_root.iterdir() if path.is_dir()]:
+        if table_exists(target_dir / "feature_stability.parquet"):
+            for path in target_dir.glob("feature_stability_*.parquet"):
+                path.unlink()
+        if table_exists(target_dir / "feature_importance_by_outer_fold.parquet"):
+            for path in target_dir.glob("feature_importance_*_by_outer_fold.parquet"):
+                path.unlink()
     for path in explainability_root.rglob("explained_unit.json"):
         payload = _read_explained(path)
         if "method_cache" in payload:
@@ -46,6 +53,12 @@ def _cleanup_explainability_cache(root: Path) -> None:
 def _finalize_explainability(sweep, outputs):
     if not bool(getattr(sweep.explainability, "keep_cache", False)):
         _cleanup_explainability_cache(Path(sweep.root()))
+        if isinstance(outputs, dict):
+            outputs = {
+                key: value
+                for key, value in outputs.items()
+                if not isinstance(value, Path) or value.exists()
+            }
     return outputs
 
 

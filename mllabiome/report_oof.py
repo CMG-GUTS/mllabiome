@@ -481,7 +481,6 @@ def _design_display(manifest: dict[str, Any]) -> pd.DataFrame:
 def _links_html(tables_dir: Path) -> str:
     names = [
         ("strategy_oof_performance.parquet", "Long-form OOF estimates"),
-        ("strategy_oof_performance_table.parquet", "Wide OOF table"),
         ("strategy_oof_calibration.parquet", "Reliability-curve data"),
         ("strategy_oof_pairwise_contrasts.parquet", "Paired OOF contrasts"),
         ("strategy_oof_statistics_manifest.json", "OOF methods manifest"),
@@ -637,7 +636,7 @@ def oof_section_html(
     n_classes: int | None = None,
     heading_level: int = 2,
     id_prefix: str = "",
-    include_downloads: bool = True,
+    include_downloads: bool = False,
 ) -> str:
     report_dir = Path(report_dir)
     tables_dir = report_dir / "tables"
@@ -735,7 +734,7 @@ def oof_section_html(
 
 
 def _section_html(report_dir: Path, n_classes: int | None = None) -> str:
-    return oof_section_html(report_dir, n_classes=n_classes)
+    return oof_section_html(report_dir, n_classes=n_classes, include_downloads=False)
 
 
 def _remove_existing_section(text: str) -> str:
@@ -918,8 +917,6 @@ def write_report(sweep: Any) -> dict[str, Path]:
             _terminal_oof_summary(report_dir)
     new_outputs = {
         "strategy_oof_performance": tables_dir / "strategy_oof_performance.parquet",
-        "strategy_oof_performance_table": tables_dir
-        / "strategy_oof_performance_table.parquet",
         "strategy_oof_calibration": tables_dir / "strategy_oof_calibration.parquet",
         "strategy_oof_pairwise_contrasts": tables_dir
         / "strategy_oof_pairwise_contrasts.parquet",

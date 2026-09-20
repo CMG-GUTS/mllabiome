@@ -1270,16 +1270,11 @@ def _write_method_outputs(
         dist_path = target_dir / f"feature_distribution_stats_{method}__{slug}.parquet"
         write_table(dist_path, dist)
         importance_stem = figures_dir / f"feature_importance_{method}__{slug}"
-        support_stem = figures_dir / f"feature_support_{method}__{slug}"
         _plot_feature_importance(
             class_top, dist, importance_stem, top_k, class_labels, frame
         )
-        _plot_feature_importance(
-            class_top, dist, support_stem, top_k, class_labels, frame
-        )
         outputs[f"feature_distribution_{method}_{slug}"] = dist_path
         outputs[f"figure_{method}_{slug}"] = importance_stem.with_suffix(".svg")
-        outputs[f"feature_support_{method}_{slug}"] = support_stem.with_suffix(".svg")
     return outputs
 
 
@@ -1503,7 +1498,9 @@ def _explainability_config_payload(explainability: Any) -> dict[str, Any]:
             ],
         },
         "local_explanations": _effective_local_explanations_mode(explainability),
-        "effective_local_explanations": _effective_local_explanations_mode(explainability),
+        "effective_local_explanations": _effective_local_explanations_mode(
+            explainability
+        ),
         "representative_instances": bool(explainability.local.representatives),
         "instance_sample_ids": list(explainability.local.sample_ids),
         "local_top_k": int(explainability.local.stored_features),
@@ -1801,10 +1798,7 @@ def _existing_method_outputs(target_dir: Path, method: str) -> dict[str, Path]:
     for path in glob_tables(target_dir, f"feature_distribution_stats_{method}__*"):
         outputs[path.stem] = path
     figures = target_dir / "figures"
-    for pattern in (
-        f"feature_importance_{method}__*.svg",
-        f"feature_support_{method}__*.svg",
-    ):
+    for pattern in (f"feature_importance_{method}__*.svg",):
         for path in sorted(figures.glob(pattern)):
             outputs[path.stem] = path
     if method == "ale":
@@ -1906,7 +1900,8 @@ def _refresh_target_visuals(target_dir: Path, sweep: Sweep) -> dict[str, Path]:
                 ]
                 if not selected.empty:
                     stats = selected
-            for kind in ("feature_importance", "feature_support"):
+            kinds = ("feature_support",) if not stem_prefix else ("feature_importance",)
+            for kind in kinds:
                 stem = figures_dir / f"{kind}{stem_prefix}__{slug}"
                 _plot_feature_importance(
                     class_top, stats, stem, top_k, class_labels or (label,)
@@ -1961,7 +1956,9 @@ def _explainability_cache_complete(target_dir: Path, explainability: Any) -> boo
         meta = json.loads(meta_path.read_text())
     except Exception:
         return False
-    if str(meta.get("explainability_config_signature", "")) != _explainability_config_signature(explainability):
+    if str(
+        meta.get("explainability_config_signature", "")
+    ) != _explainability_config_signature(explainability):
         return False
     specs = _normalise_explainability_method_specs(explainability.methods)
     global_methods = {method_name(spec) for spec in specs if method_has_global(spec)}
@@ -2012,7 +2009,6 @@ def _existing_explainability_outputs(target_dir: Path) -> dict[str, Path]:
         if path.exists():
             outputs[key] = path
     return outputs
-
 
 
 def _copy_explainability_cache(src: Path, dst: Path) -> None:
@@ -2926,7 +2922,9 @@ def _local_explanations_signature(
     ]
     payload = {
         "source_signature": str(source_signature),
-        "methods": {name: method_to_dict(specs_by_name[name]) for name in local_methods},
+        "methods": {
+            name: method_to_dict(specs_by_name[name]) for name in local_methods
+        },
         "random_state": int(explainability.random_state),
         "mode": _effective_local_explanations_mode(explainability),
         "selected_samples": [[int(i), str(role)] for i, role in selected_pairs],
@@ -3016,7 +3014,9 @@ def _compact_local_explanations(
         if int(row["class_index"]) != true_class:
             continue
         values = np.asarray(row["values"], dtype=float).reshape(-1)
-        feature_values = np.asarray(row.get("feature_values", np.full(len(values), np.nan)), dtype=float).reshape(-1)
+        feature_values = np.asarray(
+            row.get("feature_values", np.full(len(values), np.nan)), dtype=float
+        ).reshape(-1)
         if len(values) != len(feature_names):
             raise ExplainabilityConfigurationError(
                 f"Local {method.upper()} attribution width {len(values)} does not match {len(feature_names)} feature names."
@@ -3051,7 +3051,9 @@ def _compact_local_explanations(
                     "class_label": str(dataset.class_labels[true_class]),
                     "prediction": float(row.get("p_class", np.nan)),
                     "feature": str(feature_names[j]),
-                    "feature_value": float(feature_values[j]) if j < len(feature_values) else np.nan,
+                    "feature_value": float(feature_values[j])
+                    if j < len(feature_values)
+                    else np.nan,
                     "attribution": value,
                     "abs_attribution": abs(value),
                     "local_rank": int(rank),
@@ -3114,7 +3116,9 @@ def _ensure_local_explanation_outputs(
         for method in local_methods:
             rows = list(supplied.get(method, ()))
             if not rows:
-                info(f"Computing sample-wise OOF {method.upper()} explanations · all held-out samples")
+                info(
+                    f"Computing sample-wise OOF {method.upper()} explanations · all held-out samples"
+                )
                 rows = _compute_local_method_rows(
                     method,
                     specs_by_name[method],
@@ -3134,7 +3138,11 @@ def _ensure_local_explanation_outputs(
             )
             if not frame.empty:
                 frames.append(frame)
-        local_table = pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
+        local_table = (
+            pd.concat(frames, ignore_index=True, sort=False)
+            if frames
+            else pd.DataFrame()
+        )
         write_table(local_path, local_table)
         dump_json_standard(
             {
@@ -3486,7 +3494,9 @@ def _explain_one(
             "methods": methods,
             "profile": str(getattr(sweep.explainability, "profile", "standard")),
             "top features": sweep.explainability.top_k,
-            "local explanations": _effective_local_explanations_mode(sweep.explainability),
+            "local explanations": _effective_local_explanations_mode(
+                sweep.explainability
+            ),
             "interaction pairs": int(specs_by_name["interactions"].top_k)
             if "interactions" in methods
             else "not requested",
@@ -3761,7 +3771,12 @@ def _explain_one(
             with progress() as prog:
                 for fold_no, fold in enumerate(oof_folds, start=1):
                     test_idx = np.asarray(fold["test_idx"], dtype=int)
-                    expected_rows = max(1, len(test_idx) if shap_local_enabled else min(int(spec.max_explain), len(test_idx)))
+                    expected_rows = max(
+                        1,
+                        len(test_idx)
+                        if shap_local_enabled
+                        else min(int(spec.max_explain), len(test_idx)),
+                    )
                     prefix = (
                         f"SHAP fold {fold_no}/{len(oof_folds)} · "
                         f"{expected_rows} samples · {len(feature_names)} features · {len(class_indices)} classes"
@@ -3777,7 +3792,9 @@ def _explain_one(
                         dataset.class_labels,
                         random_state=sweep.explainability.random_state + fold_no * 997,
                         spec=spec,
-                        force_explain_rows=list(range(len(test_idx))) if shap_local_enabled else [],
+                        force_explain_rows=list(range(len(test_idx)))
+                        if shap_local_enabled
+                        else [],
                         show_progress=False,
                         progress_callback=_progress_callback(prog, task, prefix),
                     )
@@ -3929,8 +3946,16 @@ def _explain_one(
             for fold_no, fold in enumerate(oof_folds, start=1):
                 prefix = f"LIME fold {fold_no}/{len(oof_folds)} · {len(feature_names)} features · {len(class_indices)} classes"
                 task = prog.add_task(f"{prefix} · preparing", total=1)
-                force_rows = list(range(len(np.asarray(fold["test_idx"], dtype=int)))) if lime_local_enabled else []
-                local_class_indices = tuple(range(len(dataset.class_labels))) if lime_local_enabled else class_indices
+                force_rows = (
+                    list(range(len(np.asarray(fold["test_idx"], dtype=int))))
+                    if lime_local_enabled
+                    else []
+                )
+                local_class_indices = (
+                    tuple(range(len(dataset.class_labels)))
+                    if lime_local_enabled
+                    else class_indices
+                )
                 coeffs, rows_ex = _lime_values_for_data(
                     configure_estimator_threads(
                         fold["estimator"], int(execution.threads_per_worker)
@@ -4373,7 +4398,9 @@ def _explain_one(
             "No global or local explainability method was executed."
         )
 
-    imp = _combine_feature_importance(method_frames) if method_frames else pd.DataFrame()
+    imp = (
+        _combine_feature_importance(method_frames) if method_frames else pd.DataFrame()
+    )
     write_table(target_dir / "feature_importance.parquet", imp)
     stability_all = (
         pd.concat(
@@ -4543,16 +4570,7 @@ def _explain_one(
         dist.insert(0, "class_label", label)
         dist.insert(0, "class_index", c)
         dist_frames.append(dist)
-        imp_stem = figures_dir / f"feature_importance__{slug}"
         support_stem = figures_dir / f"feature_support__{slug}"
-        _plot_feature_importance(
-            class_top,
-            dist,
-            imp_stem,
-            sweep.explainability.top_k,
-            dataset.class_labels,
-            stability_all,
-        )
         _plot_feature_importance(
             class_top,
             dist,
@@ -4561,7 +4579,6 @@ def _explain_one(
             dataset.class_labels,
             stability_all,
         )
-        class_figure_paths[f"figure_{slug}"] = imp_stem.with_suffix(".svg")
         class_figure_paths[f"feature_support_{slug}"] = support_stem.with_suffix(".svg")
     dist_all = (
         pd.concat(dist_frames, ignore_index=True) if dist_frames else pd.DataFrame()

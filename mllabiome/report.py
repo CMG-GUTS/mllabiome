@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import html
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,7 @@ import pandas as pd
 from .configs_sweep import Sweep
 from .console import console, path_table, phase_progress, stage, success
 from .utils import dump_json_standard
-from .storage import read_table, write_table, table_exists, glob_tables
+from .storage import read_table, table_exists, glob_tables
 from .metrics import compute_metrics
 from .report_statistics import run_report_statistics
 from .report_compute import run_compute_accounting
@@ -80,7 +81,11 @@ def _inline_svg(path: Path) -> str:
     end = text.rfind("</svg>")
     if start < 0 or end < 0:
         return ""
-    return text[start : end + 6]
+    text = text[start : end + 6]
+    text = re.sub(r"<metadata\b[^>]*>.*?</metadata>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    text = re.sub(r">\s+<", "><", text)
+    return text.strip()
 
 
 def _fig(stem_or_path: Path, report_dir: Path, caption: str = "") -> str:
@@ -137,6 +142,56 @@ def _format_p_value(value: Any) -> str:
     if 0 <= v < 0.001:
         return "<0.001"
     return f"{v:.3f}"
+
+
+def _primary_pairwise_display(pairwise: pd.DataFrame, metric: str) -> pd.DataFrame:
+    if pairwise.empty or "metric" not in pairwise.columns:
+        return pd.DataFrame()
+    out = pairwise[pairwise["metric"].astype(str).eq(str(metric))].copy()
+    if out.empty:
+        return out
+    columns = [
+        c
+        for c in [
+            "strategy_a",
+            "strategy_b",
+            "difference_a_minus_b",
+            "difference_ci_low",
+            "difference_ci_high",
+            "n_matched_outer_units",
+            "test",
+            "p_value",
+            "p_holm",
+            "significant_holm_0_05",
+        ]
+        if c in out.columns
+    ]
+    out = out[columns].copy()
+    out = out.rename(
+        columns={
+            "strategy_a": "Strategy A",
+            "strategy_b": "Strategy B",
+            "difference_a_minus_b": "Difference A-B",
+            "difference_ci_low": "95% CI low",
+            "difference_ci_high": "95% CI high",
+            "n_matched_outer_units": "Matched outer units",
+            "test": "Test",
+            "p_value": "p",
+            "p_holm": "Holm p",
+            "significant_holm_0_05": "Holm p<0.05",
+        }
+    )
+    for column in ("Difference A-B", "95% CI low", "95% CI high"):
+        if column in out.columns:
+            out[column] = pd.to_numeric(out[column], errors="coerce").map(
+                lambda x: f"{x:.3f}" if np.isfinite(x) else ""
+            )
+    for column in ("p", "Holm p"):
+        if column in out.columns:
+            out[column] = pd.to_numeric(out[column], errors="coerce").map(
+                _format_p_value
+            )
+    return out
 
 
 def _html_number(value: Any) -> str | None:
@@ -1001,9 +1056,7 @@ def _xai_local_mode(target_dir: Path) -> str:
     return "none"
 
 
-def _xai_local_figure(
-    target_dir: Path, report_dir: Path, label: str, task: str
-) -> str:
+def _xai_local_figure(target_dir: Path, report_dir: Path, label: str, task: str) -> str:
     table = _read_table(target_dir / "local_explanations.parquet")
     if table.empty or "method" not in table.columns:
         return ""
@@ -1029,7 +1082,9 @@ def _xai_local_figure(
     if len(available) == 2:
         caption = f"{label}: representative OOF local SHAP, LIME, and cross-method explanations"
     else:
-        caption = f"{label}: representative OOF local {available[0].upper()} explanations"
+        caption = (
+            f"{label}: representative OOF local {available[0].upper()} explanations"
+        )
     return _fig(stem, report_dir, caption)
 
 
@@ -1423,7 +1478,6 @@ def _publication_layout_css() -> str:
 
 def _report_css() -> str:
     return """
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 :root {
   --ink:#0f172a; --mid:#64748b; --dim:#94a3b8; --track:#e2e8f0; --soft:#f8fafc;
   --bg:#ffffff; --blue:#2563eb; --blue-hover:#0ea5e9; --blue-soft:#eff6ff; --blue-hover-soft:#f0f9ff;
@@ -1433,7 +1487,7 @@ def _report_css() -> str:
 *, *::before, *::after { box-sizing:border-box; }
 html {
   background:var(--bg); color:var(--ink);
-  font-family:'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, Helvetica, sans-serif;
   -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
   letter-spacing:-0.01em; scroll-behavior:smooth;
 }
@@ -1485,7 +1539,7 @@ figcaption { font-size:var(--font-small); color:var(--mid); margin-top:7px; }
 table { border-collapse:collapse; width:100%; font-size:var(--font-table); }
 th, td { border-bottom:1px solid var(--track); padding:7px 7px; text-align:left; vertical-align:top; line-height:1.38; }
 th { color:var(--mid); font-weight:700; background:#fff; }
-code { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
+code { font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:12px; }
 .report-footer { border-top:1px solid var(--track); margin-top:42px; padding-top:16px; color:var(--dim); font-size:12px; }
 @media (max-width: 860px) {
   .report-nav-inner { padding:0 16px; }
@@ -1533,54 +1587,9 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
         )
         strategy_html = _strategy_performance_display(root, html_mode=True)
         pairwise = statistics.get("pairwise", pd.DataFrame())
-        primary_pairwise = (
-            pairwise[
-                pairwise["metric"].astype(str).eq(str(sweep.evaluation.optimize_metric))
-            ].copy()
-            if not pairwise.empty and "metric" in pairwise.columns
-            else pd.DataFrame()
+        primary_pairwise = _primary_pairwise_display(
+            pairwise, str(sweep.evaluation.optimize_metric)
         )
-        if not primary_pairwise.empty:
-            primary_pairwise = primary_pairwise[
-                [
-                    c
-                    for c in [
-                        "strategy_a",
-                        "strategy_b",
-                        "difference_a_minus_b",
-                        "difference_ci_low",
-                        "difference_ci_high",
-                        "test",
-                        "p_value",
-                        "p_holm",
-                        "significant_holm_0_05",
-                    ]
-                    if c in primary_pairwise.columns
-                ]
-            ].copy()
-            primary_pairwise = primary_pairwise.rename(
-                columns={
-                    "strategy_a": "Strategy A",
-                    "strategy_b": "Strategy B",
-                    "difference_a_minus_b": "Difference A-B",
-                    "difference_ci_low": "95% CI low",
-                    "difference_ci_high": "95% CI high",
-                    "test": "Test",
-                    "p_value": "p",
-                    "p_holm": "Holm p",
-                    "significant_holm_0_05": "Holm p<0.05",
-                }
-            )
-            for c in ("Difference A-B", "95% CI low", "95% CI high"):
-                if c in primary_pairwise.columns:
-                    primary_pairwise[c] = pd.to_numeric(
-                        primary_pairwise[c], errors="coerce"
-                    ).map(lambda x: f"{x:.3f}" if np.isfinite(x) else "")
-            for c in ("p", "Holm p"):
-                if c in primary_pairwise.columns:
-                    primary_pairwise[c] = pd.to_numeric(
-                        primary_pairwise[c], errors="coerce"
-                    ).map(lambda x: _format_p_value(x))
         phase.phase("ensemble summaries")
         ensemble_summary = _ensemble_summary_table(root)
         ensemble_members = _ensemble_members_table(root)
@@ -1613,18 +1622,7 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
     ]
     hardware_text = " · ".join(hardware_parts)
 
-    with phase_progress("Report outputs", 3) as phase:
-        phase.phase("writing report tables")
-        write_table(tables_dir / "evaluation_procedure.parquet", procedure)
-        write_table(tables_dir / "top5_mpma_inner_outer_performance.parquet", top_mpmas)
-        write_table(tables_dir / "task_strategy_performance.parquet", strategy_html)
-        write_table(
-            tables_dir / "strategy_pairwise_primary_metric.parquet", primary_pairwise
-        )
-        write_table(tables_dir / "strategy_compute_display.parquet", compute_display)
-        write_table(tables_dir / "mpma_e_selection.parquet", ensemble_summary)
-        write_table(tables_dir / "mpma_e_members.parquet", ensemble_members)
-
+    with phase_progress("Report outputs", 2) as phase:
         phase.phase("global figures")
         figs = []
         figs.append(
@@ -1714,9 +1712,6 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
     success("Report completed")
     outputs = {
         "html_report": report_dir / "index.html",
-        "top5_mpmas": tables_dir / "top5_mpma_inner_outer_performance.parquet",
-        "mpma_e_selection": tables_dir / "mpma_e_selection.parquet",
-        "mpma_e_members": tables_dir / "mpma_e_members.parquet",
         "strategy_outer_unit_metrics": statistics.get(
             "unit_metrics_path", tables_dir / "strategy_outer_unit_metrics.parquet"
         ),

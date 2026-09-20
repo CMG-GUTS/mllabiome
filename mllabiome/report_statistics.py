@@ -1317,23 +1317,6 @@ def _paired_contrast_rows(
     return pd.DataFrame(rows), pd.DataFrame(coverage_rows)
 
 
-def _wide_oof_table(performance: pd.DataFrame) -> pd.DataFrame:
-    if performance.empty:
-        return pd.DataFrame()
-    rows: list[dict[str, Any]] = []
-    for (strategy, estimand), group in performance.groupby(
-        ["Strategy", "estimand"], sort=False
-    ):
-        row: dict[str, Any] = {"Strategy": strategy, "estimand": estimand}
-        for _, metric_row in group.iterrows():
-            metric = str(metric_row["metric"])
-            row[metric] = metric_row.get("estimate")
-            row[f"{metric}_ci_low"] = metric_row.get("ci_low")
-            row[f"{metric}_ci_high"] = metric_row.get("ci_high")
-        rows.append(row)
-    return pd.DataFrame(rows)
-
-
 def _run_oof_statistics(
     frames: dict[str, pd.DataFrame],
     protocol: str,
@@ -1386,7 +1369,6 @@ def _run_oof_statistics(
     performance = pd.DataFrame(performance_rows)
     return {
         "performance": performance,
-        "performance_wide": _wide_oof_table(performance),
         "calibration": pd.DataFrame(calibration_rows),
         "contrasts": contrasts,
         "coverage": pd.DataFrame(coverage_rows),
@@ -1506,7 +1488,6 @@ def _cached_result(
     summary_path = tables / "strategy_metrics_bootstrap.parquet"
     pairwise_path = tables / "strategy_pairwise_tests.parquet"
     oof_performance_path = tables / "strategy_oof_performance.parquet"
-    oof_wide_path = tables / "strategy_oof_performance_table.parquet"
     oof_calibration_path = tables / "strategy_oof_calibration.parquet"
     oof_contrasts_path = tables / "strategy_oof_pairwise_contrasts.parquet"
     oof_manifest_path = tables / "strategy_oof_statistics_manifest.json"
@@ -1517,7 +1498,6 @@ def _cached_result(
         summary_path,
         pairwise_path,
         oof_performance_path,
-        oof_wide_path,
         oof_calibration_path,
         oof_contrasts_path,
         oof_manifest_path,
@@ -1537,7 +1517,6 @@ def _cached_result(
         "summary_path": summary_path,
         "pairwise_path": pairwise_path,
         "oof_performance_path": oof_performance_path,
-        "oof_wide_path": oof_wide_path,
         "oof_calibration_path": oof_calibration_path,
         "oof_contrasts_path": oof_contrasts_path,
         "oof_manifest_path": oof_manifest_path,
@@ -1629,14 +1608,12 @@ def run_report_statistics(
         int(calibration_bins),
     )
     oof_performance_path = tables / "strategy_oof_performance.parquet"
-    oof_wide_path = tables / "strategy_oof_performance_table.parquet"
     oof_calibration_path = tables / "strategy_oof_calibration.parquet"
     oof_contrasts_path = tables / "strategy_oof_pairwise_contrasts.parquet"
     oof_manifest_path = tables / "strategy_oof_statistics_manifest.json"
     oof_coverage_path = tables / "strategy_oof_coverage.parquet"
     oof_pairwise_coverage_path = tables / "strategy_oof_pairwise_coverage.parquet"
     write_table(oof_performance_path, advanced["performance"])
-    write_table(oof_wide_path, advanced["performance_wide"])
     write_table(oof_calibration_path, advanced["calibration"])
     write_table(oof_contrasts_path, advanced["contrasts"])
     write_table(oof_coverage_path, advanced["coverage"])
@@ -1700,7 +1677,6 @@ def run_report_statistics(
         "oof_calibration": advanced["calibration"],
         "oof_contrasts": advanced["contrasts"],
         "oof_performance_path": oof_performance_path,
-        "oof_wide_path": oof_wide_path,
         "oof_calibration_path": oof_calibration_path,
         "oof_contrasts_path": oof_contrasts_path,
         "oof_manifest_path": oof_manifest_path,

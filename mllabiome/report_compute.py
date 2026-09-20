@@ -116,6 +116,38 @@ def _strategy_config_ids(strategy_rows: list[dict[str, Any]]) -> dict[str, str]:
     return out
 
 
+def compute_display(frame: pd.DataFrame) -> pd.DataFrame:
+    display = pd.DataFrame()
+    if not frame.empty:
+        display = frame[
+            [
+                "Strategy",
+                "attributable_cpu_core_hours",
+                "model_fits",
+                "peak_rss_gib",
+                "coverage_fraction",
+            ]
+        ].copy()
+        display = display.rename(
+            columns={
+                "attributable_cpu_core_hours": "CPU core-hours",
+                "model_fits": "Model fits",
+                "peak_rss_gib": "Peak job RAM (GiB)",
+                "coverage_fraction": "Accounting coverage",
+            }
+        )
+        display["CPU core-hours"] = pd.to_numeric(
+            display["CPU core-hours"], errors="coerce"
+        ).map(lambda x: f"{x:.3f}" if np.isfinite(x) else "")
+        display["Peak job RAM (GiB)"] = pd.to_numeric(
+            display["Peak job RAM (GiB)"], errors="coerce"
+        ).map(lambda x: f"{x:.3f}" if np.isfinite(x) else "")
+        display["Accounting coverage"] = pd.to_numeric(
+            display["Accounting coverage"], errors="coerce"
+        ).map(lambda x: f"{100 * x:.3f}%" if np.isfinite(x) else "")
+    return display
+
+
 def run_compute_accounting(
     root: Path, sweep: Any, strategy_rows: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -224,34 +256,7 @@ def run_compute_accounting(
     }
     manifest_path = tables_dir / "compute_accounting_manifest.json"
     dump_json_standard(manifest, manifest_path)
-    display = pd.DataFrame()
-    if not frame.empty:
-        display = frame[
-            [
-                "Strategy",
-                "attributable_cpu_core_hours",
-                "model_fits",
-                "peak_rss_gib",
-                "coverage_fraction",
-            ]
-        ].copy()
-        display = display.rename(
-            columns={
-                "attributable_cpu_core_hours": "CPU core-hours",
-                "model_fits": "Model fits",
-                "peak_rss_gib": "Peak job RAM (GiB)",
-                "coverage_fraction": "Accounting coverage",
-            }
-        )
-        display["CPU core-hours"] = pd.to_numeric(
-            display["CPU core-hours"], errors="coerce"
-        ).map(lambda x: f"{x:.3f}" if np.isfinite(x) else "")
-        display["Peak job RAM (GiB)"] = pd.to_numeric(
-            display["Peak job RAM (GiB)"], errors="coerce"
-        ).map(lambda x: f"{x:.3f}" if np.isfinite(x) else "")
-        display["Accounting coverage"] = pd.to_numeric(
-            display["Accounting coverage"], errors="coerce"
-        ).map(lambda x: f"{100 * x:.3f}%" if np.isfinite(x) else "")
+    display = compute_display(frame)
     return {
         "strategy_compute": frame,
         "display": display,

@@ -14,7 +14,7 @@ from .configs_sweep import Sweep, _normalise_sweep_task, _target_task, target_sw
 from .console import info, path_table, phase_progress, stage, success
 from .final_models import build_final_models
 from .metrics import metric_is_loss
-from .report_compute import run_compute_accounting
+from .report_compute import compute_display, run_compute_accounting
 from .report_oof import _mpma_b_composition, oof_section_html, write_report
 from .regression_explainability import _write_regression_explainability_figures
 from .utils import REGRESSION_METRIC_COLUMNS, dump_json_standard
@@ -598,60 +598,16 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
         explainability_html, explainability_count = _regression_explainability_blocks(
             root, report_dir, int(getattr(sweep.explainability, "top_k", 15))
         )
-    primary_pairwise = (
-        pairwise[pairwise["metric"].astype(str).eq(metric)].copy()
-        if not pairwise.empty and "metric" in pairwise.columns
-        else pd.DataFrame()
-    )
-    if not primary_pairwise.empty:
-        primary_pairwise = primary_pairwise.rename(
-            columns={
-                "strategy_a": "Strategy A",
-                "strategy_b": "Strategy B",
-                "difference_a_minus_b": "Difference A-B",
-                "difference_ci_low": "95% CI low",
-                "difference_ci_high": "95% CI high",
-                "n_matched_outer_units": "Matched outer units",
-                "test": "Test",
-                "p_value": "p",
-                "p_holm": "Holm p",
-                "significant_holm_0_05": "Holm p<0.05",
-            }
-        )
-        for column in ("Difference A-B", "95% CI low", "95% CI high"):
-            if column in primary_pairwise.columns:
-                primary_pairwise[column] = pd.to_numeric(
-                    primary_pairwise[column], errors="coerce"
-                ).map(lambda x: f"{x:.3f}" if np.isfinite(x) else "")
-        for column in ("p", "Holm p"):
-            if column in primary_pairwise.columns:
-                primary_pairwise[column] = pd.to_numeric(
-                    primary_pairwise[column], errors="coerce"
-                ).map(lambda x: _report._format_p_value(x))
-    procedure_path = tables_dir / "evaluation_procedure.parquet"
+    primary_pairwise = _report._primary_pairwise_display(pairwise, metric)
     statistics_path = tables_dir / "strategy_metrics_bootstrap.parquet"
     pairwise_path = tables_dir / "strategy_pairwise_tests.parquet"
-    performance_path = tables_dir / "task_strategy_performance.parquet"
-    top_path = tables_dir / "top5_mpma_inner_outer_performance.parquet"
-    selection_path = tables_dir / "mpma_e_selection.parquet"
-    members_path = tables_dir / "mpma_e_members.parquet"
-    primary_pairwise_path = tables_dir / "strategy_pairwise_primary_metric.parquet"
     outer_units_path = tables_dir / "strategy_outer_unit_metrics.parquet"
-    compute_display_path = tables_dir / "strategy_compute_display.parquet"
     statistics_manifest_path = tables_dir / "strategy_statistics_manifest.json"
-    with phase_progress("Regression report outputs", 3) as phase:
-        phase.phase("parquet tables")
-        write_table(procedure_path, procedure)
+    with phase_progress("Regression report outputs", 2) as phase:
+        phase.phase("statistical tables")
         write_table(statistics_path, statistics)
         write_table(pairwise_path, pairwise)
-        write_table(performance_path, performance)
-        phase.phase("report tables")
-        write_table(top_path, top_mpmas)
-        write_table(selection_path, ensemble_summary)
-        write_table(members_path, ensemble_members)
-        write_table(primary_pairwise_path, primary_pairwise)
         write_table(outer_units_path, outer_units)
-        write_table(compute_display_path, compute_display)
         phase.phase("statistics manifest")
         dump_json_standard(
             {
@@ -724,9 +680,6 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
     )
     outputs = {
         "html_report": html_path,
-        "top5_mpmas": top_path,
-        "mpma_e_selection": selection_path,
-        "mpma_e_members": members_path,
         "strategy_outer_unit_metrics": outer_units_path,
         "strategy_metrics_bootstrap": statistics_path,
         "strategy_pairwise_tests": pairwise_path,
@@ -780,15 +733,31 @@ def _target_report_section(child: Sweep, parent_report_dir: Path) -> str:
     task = _target_task(child.data, target)
     section_id = f"target-{_section_slug(target)}"
     tables_dir = root / "report" / "tables"
-    procedure = _read_table(tables_dir / "evaluation_procedure.parquet")
-    performance = _read_table(tables_dir / "task_strategy_performance.parquet")
-    selection = _read_table(tables_dir / "mpma_e_selection.parquet")
-    members = _read_table(tables_dir / "mpma_e_members.parquet")
-    pairwise = _read_table(tables_dir / "strategy_pairwise_primary_metric.parquet")
-    top_mpmas = _read_table(tables_dir / "top5_mpma_inner_outer_performance.parquet")
-    compute = _read_table(tables_dir / "strategy_compute_display.parquet")
-    if compute.empty:
-        compute = _read_table(tables_dir / "strategy_compute.parquet")
+    metric = str(child.evaluation.optimize_metric)
+    if task == "regression":
+        procedure = _regression_procedure(child, root)
+        statistics = _read_table(tables_dir / "strategy_metrics_bootstrap.parquet")
+        performance = _regression_performance_table(statistics)
+        top_mpmas = _regression_top_mpmas(root, metric, 5)
+    else:
+        procedure = _report._procedure_table(child, root)
+        performance = _report._strategy_performance_display(root, html_mode=True)
+        top_mpmas = _report._top_mpma_display(
+            _report._top_mpma_raw(root, 5), html_mode=True
+        )
+        if getattr(child, "uses_modalities", False) and not top_mpmas.empty:
+            top_mpmas = top_mpmas.rename(
+                columns={
+                    "Resolution": "Representation",
+                    "Count transformation": "Transformation",
+                }
+            )
+    selection = _report._ensemble_summary_table(root)
+    members = _report._ensemble_members_table(root)
+    pairwise = _report._primary_pairwise_display(
+        _read_table(tables_dir / "strategy_pairwise_tests.parquet"), metric
+    )
+    compute = compute_display(_read_table(tables_dir / "strategy_compute.parquet"))
     if task == "regression":
         xai, _ = _regression_explainability_blocks(
             root, parent_report_dir, int(getattr(child.explainability, "top_k", 15))
@@ -844,7 +813,7 @@ def _target_report_section(child: Sweep, parent_report_dir: Path) -> str:
 <h3>Computational resources</h3>{_report._html_table(compute)}</section>'''
 
 
-def _multilabel_summary(children: list[Sweep], tables_dir: Path) -> pd.DataFrame:
+def _multilabel_summary(children: list[Sweep]) -> pd.DataFrame:
     rows = []
     for child in children:
         frame = _read_table(child.root() / "results" / "mpma_b_outer_results.parquet")
@@ -866,7 +835,6 @@ def _multilabel_summary(children: list[Sweep], tables_dir: Path) -> pd.DataFrame
                 row[metric] = float(np.mean(values)) if len(values) else np.nan
         rows.append(row)
     label_summary = pd.DataFrame(rows)
-    write_table(tables_dir / "multilabel_per_label_performance.parquet", label_summary)
     if label_summary.empty:
         return pd.DataFrame()
     numeric = [c for c in label_summary.columns if c != "target"]
@@ -881,7 +849,6 @@ def _multilabel_summary(children: list[Sweep], tables_dir: Path) -> pd.DataFrame
             }
         ]
     )
-    write_table(tables_dir / "multilabel_macro_performance.parquet", macro)
     return macro
 
 
@@ -892,34 +859,14 @@ def write_multi_target_report(
     root = Path(sweep.root())
     report_dir = root / "report"
     report_dir.mkdir(parents=True, exist_ok=True)
-    tables_dir = report_dir / "tables"
-    tables_dir.mkdir(parents=True, exist_ok=True)
     stage("Report", str(report_dir))
     with phase_progress("Combined report", 3) as phase:
         phase.phase("target overview")
         overview = pd.DataFrame([_target_primary_summary(child) for child in children])
-        overview_path = tables_dir / "target_performance_overview.parquet"
-        write_table(overview_path, overview)
-        target_manifest = pd.DataFrame(
-            [
-                {
-                    "target": str(child.data.target_col),
-                    "task": _target_task(child.data, str(child.data.target_col)),
-                    "experiment_dir": str(child.root()),
-                    "primary_metric": str(child.evaluation.optimize_metric),
-                    "report": str(child.root() / "report" / "index.html"),
-                }
-                for child in children
-            ]
-        )
-        targets_path = tables_dir / "targets.parquet"
-        write_table(targets_path, target_manifest)
         phase.phase("task summaries")
         task = _normalise_sweep_task(sweep.data.task)
         macro = (
-            _multilabel_summary(children, tables_dir)
-            if task == "multilabel"
-            else pd.DataFrame()
+            _multilabel_summary(children) if task == "multilabel" else pd.DataFrame()
         )
         procedure = pd.DataFrame(
             [
@@ -947,8 +894,6 @@ def write_multi_target_report(
             ],
             columns=["Field", "Value"],
         )
-        procedure_path = tables_dir / "evaluation_procedure.parquet"
-        write_table(procedure_path, procedure)
         phase.phase("target report sections")
         sections = "".join(
             _target_report_section(child, report_dir) for child in children
@@ -983,21 +928,7 @@ def write_multi_target_report(
         },
         manifest_path,
     )
-    outputs = {
-        "html_report": html_path,
-        "target_overview": overview_path,
-        "targets": targets_path,
-        "evaluation_procedure": procedure_path,
-        "manifest": manifest_path,
-    }
-    if table_exists(tables_dir / "multilabel_per_label_performance.parquet"):
-        outputs["multilabel_per_label_performance"] = (
-            tables_dir / "multilabel_per_label_performance.parquet"
-        )
-    if table_exists(tables_dir / "multilabel_macro_performance.parquet"):
-        outputs["multilabel_macro_performance"] = (
-            tables_dir / "multilabel_macro_performance.parquet"
-        )
+    outputs = {"html_report": html_path, "manifest": manifest_path}
     success("Report completed")
     path_table("Report outputs", outputs)
     return outputs
