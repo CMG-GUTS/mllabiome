@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .console import info
 from .storage import read_table, table_exists
+from .utils import dump_json_standard
 from . import explainability as _core
 from .final_models import build_final_models
 from .mpma_e_explainability import explain_mpma_e
@@ -20,6 +21,32 @@ def _read_explained(path: Path) -> dict:
     except Exception:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _cleanup_explainability_cache(root: Path) -> None:
+    explainability_root = root / "explainability"
+    if not explainability_root.exists():
+        return
+    cache_root = explainability_root / "cache"
+    if cache_root.exists():
+        shutil.rmtree(cache_root)
+    for path in explainability_root.rglob(".method_cache"):
+        if path.is_dir():
+            shutil.rmtree(path)
+    for path in explainability_root.rglob("local_explanations_cache.json"):
+        if path.is_file():
+            path.unlink()
+    for path in explainability_root.rglob("explained_unit.json"):
+        payload = _read_explained(path)
+        if "method_cache" in payload:
+            payload.pop("method_cache", None)
+            dump_json_standard(payload, path)
+
+
+def _finalize_explainability(sweep, outputs):
+    if not bool(getattr(sweep.explainability, "keep_cache", False)):
+        _cleanup_explainability_cache(Path(sweep.root()))
+    return outputs
 
 
 def _member_ids(value) -> list[str]:
@@ -88,7 +115,8 @@ def explain(sweep):
     ):
         from .regression_explainability import explain_regression
 
-        return explain_regression(sweep)
+        outputs = explain_regression(sweep)
+        return _finalize_explainability(sweep, outputs)
     root = Path(sweep.root())
     models = build_final_models(root)
     _invalidate_stale(root, models, sweep.explainability)
@@ -134,4 +162,4 @@ def explain(sweep):
             }.get(text, text)
         for name, path in out.items():
             outputs[f"{key}_{name}"] = path
-    return outputs
+    return _finalize_explainability(sweep, outputs)

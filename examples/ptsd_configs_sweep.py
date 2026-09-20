@@ -24,10 +24,10 @@ RESOLUTIONS = (
 )
 
 COUNT_TRANSFORMATIONS = (
-    mll.Transformation("clr"),
+    # mll.Transformation("clr"),
     mll.Transformation("arcsine_sqrt"),
     mll.Transformation("alr"),
-    mll.Transformation("ilr"),
+    # mll.Transformation("ilr"),
 )
 
 LEARNERS = (
@@ -80,8 +80,6 @@ EXPLAINABILITY = mll.Explainability(
         mll.ALEInteractions(),
     ),
     classes="auto",
-    top_k=15,
-    representative_instances=False,
 )
 
 SWEEP = mll.Sweep(

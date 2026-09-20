@@ -140,7 +140,9 @@ def _config_row(configs: pd.DataFrame, config_id: str) -> pd.Series:
 def _selected_models(root: Path) -> dict[str, Any]:
     candidate = root / "tables" / "mpma_b_final_candidate.json"
     if not candidate.exists():
-        raise FileNotFoundError("Run evaluate(sweep) before regression explainability.")
+        raise FileNotFoundError(
+            "Run evaluate(sweep) before regression explainability."
+        )
     value = build_final_models(root)
     if not isinstance(value, dict) or not isinstance(value.get("MPMA-B"), dict):
         raise ValueError(
@@ -441,23 +443,15 @@ def _regression_local_sample_pairs(
                 q = float(quantile)
                 centre = float(frame["prediction"].quantile(q))
                 ranked = frame.assign(
-                    _dist=(
-                        pd.to_numeric(frame["prediction"], errors="coerce") - centre
-                    ).abs()
+                    _dist=(pd.to_numeric(frame["prediction"], errors="coerce") - centre).abs()
                 ).sort_values(["_dist", "sample_index"])
                 row = next(
-                    (
-                        r
-                        for _, r in ranked.iterrows()
-                        if int(r["sample_index"]) not in used
-                    ),
+                    (r for _, r in ranked.iterrows() if int(r["sample_index"]) not in used),
                     ranked.iloc[0],
                 )
                 idx = int(row["sample_index"])
                 used.add(idx)
-                selected.append(
-                    (idx, f"representative_prediction_q{int(round(q * 100)):02d}")
-                )
+                selected.append((idx, f"representative_prediction_q{int(round(q * 100)):02d}"))
     out: list[tuple[int, str]] = []
     seen: set[int] = set()
     for sample_index, role in selected:
@@ -1462,14 +1456,10 @@ def _explain_target(
             )
         )
         if local_enabled and not local_table.empty and selected_pairs:
-            preferred = (
-                "shap" if "shap" in set(local_table["method"].astype(str)) else "lime"
-            )
             local_figure = plot_local_attributions(
                 local_table,
                 target_dir / "figures" / "local_explanations",
                 task="regression",
-                method=preferred,
                 top_n=int(sweep.explainability.local.displayed_features),
             )
             if local_figure is not None:
@@ -1525,9 +1515,7 @@ def explain_regression(sweep: Sweep) -> dict[str, Path]:
             "targets": targets,
             "methods": [method_name(method) for method in sweep.explainability.methods],
             "top features": int(sweep.explainability.top_k),
-            "local explanations": _effective_local_explanations_mode(
-                sweep.explainability
-            ),
+            "local explanations": _effective_local_explanations_mode(sweep.explainability),
         },
     )
     outputs: dict[str, Path] = {}

@@ -1304,7 +1304,6 @@ def plot_local_attributions(
     out_stem: Path,
     *,
     task: str,
-    method: str,
     top_n: int,
 ) -> Path | None:
     if table is None or table.empty:
@@ -1318,37 +1317,119 @@ def plot_local_attributions(
             selected = selected[
                 marker.astype(str).str.strip().str.lower().isin({"true", "1", "yes"})
             ]
-    selected = selected[
-        selected["method"].astype(str).str.lower().eq(str(method).lower())
-    ]
-    if selected.empty:
+    if selected.empty or "method" not in selected.columns:
+        return None
+    present = {str(x).strip().lower() for x in selected["method"].dropna().tolist()}
+    methods = [name for name in ("shap", "lime") if name in present]
+    if not methods:
         return None
     apply_style()
     sample_ids = list(dict.fromkeys(selected["sample_id"].astype(str).tolist()))
     if not sample_ids:
         return None
+    k = max(1, int(top_n))
     n_panels = len(sample_ids)
-    fig_h = max(48.0, 31.0 * n_panels + 8.0)
-    fig = plt.figure(figsize=(150 * MM, fig_h * MM))
+    fig_h = max(52.0, 34.0 * n_panels + 10.0)
+    fig = plt.figure(figsize=(180 * MM, fig_h * MM))
     fig.patch.set_facecolor(BG)
-    panel_h = 0.91 / n_panels
+    panel_h = 0.92 / n_panels
     for panel_no, sample_id in enumerate(sample_ids):
         sub = selected[selected["sample_id"].astype(str).eq(sample_id)].copy()
-        agg = sub.groupby("feature", as_index=False, dropna=False).agg(
-            attribution=("attribution", "mean"),
-            attribution_sd=("attribution", "std"),
-            feature_value=("feature_value", "mean"),
-        )
-        agg["abs_attribution"] = pd.to_numeric(
-            agg["attribution"], errors="coerce"
-        ).abs()
-        agg = agg.sort_values("abs_attribution", ascending=False).head(
-            max(1, int(top_n))
-        )
-        agg = agg.sort_values("attribution", ascending=True)
-        y0 = 0.045 + (n_panels - 1 - panel_no) * panel_h
-        ax_lab = fig.add_axes([0.045, y0 + 0.10 * panel_h, 0.39, panel_h * 0.64])
-        ax_bar = fig.add_axes([0.45, y0 + 0.10 * panel_h, 0.505, panel_h * 0.64])
+        aggregates: dict[str, pd.DataFrame] = {}
+        for method in methods:
+            local = sub[sub["method"].astype(str).str.lower().eq(method)].copy()
+            if local.empty:
+                continue
+            agg = (
+                local.groupby("feature", as_index=False, dropna=False)
+                .agg(
+                    attribution=("attribution", "mean"),
+                    attribution_sd=("attribution", "std"),
+                    feature_value=("feature_value", "mean"),
+                )
+            )
+            agg["attribution"] = pd.to_numeric(agg["attribution"], errors="coerce").fillna(0.0)
+            agg["abs_attribution"] = agg["attribution"].abs()
+            support_rows: list[dict[str, float | str]] = []
+            split_values = local["split_key"].astype(str) if "split_key" in local.columns else pd.Series(["oof"] * len(local), index=local.index)
+            for split_key in dict.fromkeys(split_values.tolist()):
+                split = local[split_values.eq(split_key)].copy()
+                split = split.groupby("feature", as_index=False, dropna=False).agg(
+                    attribution=("attribution", "mean")
+                )
+                split["attribution"] = pd.to_numeric(split["attribution"], errors="coerce").fillna(0.0)
+                split["abs_attribution"] = split["attribution"].abs()
+                split = split.sort_values(
+                    ["abs_attribution", "feature"], ascending=[False, True], kind="stable"
+                ).reset_index(drop=True)
+                split["rank"] = np.arange(1, len(split) + 1, dtype=int)
+                for _, item in split.iterrows():
+                    rank = int(item["rank"])
+                    value = float(item["attribution"])
+                    score = float(np.sign(value) / rank) if rank <= k and value != 0.0 else 0.0
+                    support_rows.append(
+                        {
+                            "feature": str(item["feature"]),
+                            "signed_rank_support": score,
+                            "rank_support": abs(score),
+                        }
+                    )
+            support = pd.DataFrame(support_rows)
+            if not support.empty:
+                support = support.groupby("feature", as_index=False).agg(
+                    signed_rank_support=("signed_rank_support", "mean"),
+                    rank_support=("rank_support", "mean"),
+                )
+                agg = agg.merge(support, on="feature", how="left")
+            else:
+                agg["signed_rank_support"] = 0.0
+                agg["rank_support"] = 0.0
+            agg["signed_rank_support"] = pd.to_numeric(agg["signed_rank_support"], errors="coerce").fillna(0.0)
+            agg["rank_support"] = pd.to_numeric(agg["rank_support"], errors="coerce").fillna(0.0)
+            agg = agg.sort_values(["rank_support", "abs_attribution", "feature"], ascending=[False, False, True], kind="stable").reset_index(drop=True)
+            aggregates[method] = agg
+        if not aggregates:
+            continue
+        features: set[str] = set()
+        for agg in aggregates.values():
+            features.update(agg.head(k)["feature"].astype(str).tolist())
+        rows: list[dict[str, float | str | int]] = []
+        for feature in features:
+            row: dict[str, float | str | int] = {"feature": feature}
+            signed_supports: list[float] = []
+            abs_supports: list[float] = []
+            support_count = 0
+            signs: list[int] = []
+            for method in methods:
+                agg = aggregates.get(method)
+                value = 0.0
+                score = 0.0
+                abs_score = 0.0
+                if agg is not None:
+                    match = agg[agg["feature"].astype(str).eq(feature)]
+                    if not match.empty:
+                        value = float(match.iloc[0]["attribution"])
+                        score = float(match.iloc[0]["signed_rank_support"])
+                        abs_score = float(match.iloc[0]["rank_support"])
+                row[f"{method}_value"] = value
+                if abs_score > 0.0:
+                    support_count += 1
+                if score != 0.0:
+                    signs.append(1 if score > 0 else -1)
+                signed_supports.append(score)
+                abs_supports.append(abs_score)
+            row["consensus"] = float(np.mean(signed_supports)) if signed_supports else 0.0
+            row["selection_score"] = float(np.mean(abs_supports)) if abs_supports else 0.0
+            row["support_count"] = int(support_count)
+            row["direction_agreement"] = int(len(set(signs)) <= 1 and len(signs) > 1)
+            rows.append(row)
+        merged = pd.DataFrame(rows)
+        if merged.empty:
+            continue
+        merged = merged.sort_values(
+            ["selection_score", "feature"], ascending=[False, True], kind="stable"
+        ).head(k).reset_index(drop=True)
+        y0 = 0.04 + (n_panels - 1 - panel_no) * panel_h
         role = str(sub.get("selection_role", pd.Series([""])).iloc[0]).strip()
         if str(task).lower() == "classification":
             class_label = str(sub.get("class_label", pd.Series([""])).iloc[0])
@@ -1357,21 +1438,14 @@ def plot_local_attributions(
                 if role.startswith("representative")
                 else "Requested sample"
             )
-            prediction = pd.to_numeric(
-                sub.get("prediction", np.nan), errors="coerce"
-            ).mean()
-            true_label = str(
-                sub.get("true_class_label", pd.Series([class_label])).iloc[0]
+            prediction = pd.to_numeric(sub.get("prediction", np.nan), errors="coerce").mean()
+            true_label = str(sub.get("true_class_label", pd.Series([class_label])).iloc[0])
+            predicted_label = str(sub.get("predicted_class_label", pd.Series([""])).iloc[0])
+            detail = (
+                f"{sample_id} · observed {true_label} · predicted {predicted_label} · "
+                f"OOF P({class_label}) {prediction:.3f}"
             )
-            predicted_label = str(
-                sub.get("predicted_class_label", pd.Series([""])).iloc[0]
-            )
-            detail = f"{sample_id} · observed {true_label} · predicted {predicted_label} · OOF P({class_label}) {prediction:.3f}"
-            axis_label = (
-                f"Contribution to predicted probability of {class_label}"
-                if str(method).lower() == "shap"
-                else "Local surrogate coefficient"
-            )
+            shap_label = f"SHAP contribution to P({class_label})"
         else:
             role_labels = {
                 "representative_prediction_q25": "Lower-range prediction",
@@ -1389,81 +1463,112 @@ def plot_local_attributions(
                 if role.startswith("representative")
                 else role_heading
             )
-            prediction = pd.to_numeric(
-                sub.get("prediction", np.nan), errors="coerce"
-            ).mean()
-            observed = pd.to_numeric(
-                sub.get("observed_response", np.nan), errors="coerce"
-            ).mean()
+            prediction = pd.to_numeric(sub.get("prediction", np.nan), errors="coerce").mean()
+            observed = pd.to_numeric(sub.get("observed_response", np.nan), errors="coerce").mean()
             detail = f"{sample_id} · observed {observed:.3f} · OOF prediction {prediction:.3f}"
-            axis_label = (
-                "Contribution to predicted response"
-                if str(method).lower() == "shap"
-                else "Local surrogate coefficient"
-            )
+            shap_label = "SHAP contribution to predicted response"
         fig.text(
-            0.045,
-            y0 + panel_h * 0.88,
+            0.035,
+            y0 + panel_h * 0.91,
             heading,
             ha="left",
             va="center",
-            fontsize=6.6,
+            fontsize=6.8,
             color=INK,
             weight="bold",
         )
         fig.text(
-            0.045,
-            y0 + panel_h * 0.78,
+            0.035,
+            y0 + panel_h * 0.82,
             detail,
             ha="left",
             va="center",
             fontsize=5.4,
             color=MID,
         )
-        values = (
-            pd.to_numeric(agg["attribution"], errors="coerce")
-            .fillna(0.0)
-            .to_numpy(dtype=float)
-        )
-        features = agg["feature"].astype(str).tolist()
-        y = np.arange(len(agg))
-        for ax in (ax_lab, ax_bar):
-            ax.set_ylim(len(agg) - 0.5, -0.5)
+        if len(methods) == 2:
+            axes = {
+                "labels": fig.add_axes([0.035, y0 + 0.10 * panel_h, 0.275, panel_h * 0.61]),
+                "shap": fig.add_axes([0.325, y0 + 0.10 * panel_h, 0.195, panel_h * 0.61]),
+                "lime": fig.add_axes([0.545, y0 + 0.10 * panel_h, 0.195, panel_h * 0.61]),
+                "consensus": fig.add_axes([0.765, y0 + 0.10 * panel_h, 0.200, panel_h * 0.61]),
+            }
+        else:
+            method = methods[0]
+            axes = {
+                "labels": fig.add_axes([0.055, y0 + 0.10 * panel_h, 0.39, panel_h * 0.61]),
+                method: fig.add_axes([0.47, y0 + 0.10 * panel_h, 0.47, panel_h * 0.61]),
+            }
+        n_rows = len(merged)
+        y = np.arange(n_rows)
+        for ax in axes.values():
+            ax.set_ylim(n_rows - 0.5, -0.5)
             ax.set_yticks([])
             ax.set_facecolor(BG)
             for spine in ax.spines.values():
                 spine.set_visible(False)
-            for yi in np.arange(len(agg) + 1) - 0.5:
+            for yi in np.arange(n_rows + 1) - 0.5:
                 ax.axhline(yi, color=TRACK, lw=0.22, zorder=0)
-        ax_lab.set_xlim(0, 1)
-        ax_lab.set_xticks([])
-        for i, feature in enumerate(features):
-            ax_lab.text(
+        axes["labels"].set_xlim(0, 1)
+        axes["labels"].set_xticks([])
+        for i, feature in enumerate(merged["feature"].astype(str).tolist()):
+            axes["labels"].text(
                 0.01,
                 i,
-                _plain_taxon_label(feature, 44),
+                _plain_taxon_label(feature, 34),
                 ha="left",
                 va="center",
-                fontsize=5.1,
+                fontsize=4.85,
                 color=INK,
                 path_effects=[mpe.withStroke(linewidth=1.0, foreground="white")],
             )
-        vmax = max(float(np.nanmax(np.abs(values))) if len(values) else 1.0, 1e-12)
-        colors = [ACC if value >= 0 else CLASS_CTRL for value in values]
-        ax_bar.barh(y, values, height=0.54, color=colors, edgecolor="none", zorder=2)
-        ax_bar.axvline(0.0, color="#000000", lw=0.5, zorder=3)
-        ax_bar.set_xlim(-1.18 * vmax, 1.18 * vmax)
-        ax_bar.set_xlabel(axis_label, fontsize=5.3, color=INK, labelpad=2)
-        ax_bar.tick_params(axis="x", labelsize=4.8, length=2.0, width=0.4, pad=1)
-        ax_bar.spines["bottom"].set_visible(True)
-        ax_bar.spines["bottom"].set_color("#000000")
-        ax_bar.spines["bottom"].set_linewidth(0.45)
-        for yi, value in enumerate(values):
-            ha = "left" if value >= 0 else "right"
-            x = value + (0.025 * vmax if value >= 0 else -0.025 * vmax)
-            ax_bar.text(
-                x, yi, f"{value:+.3f}", ha=ha, va="center", fontsize=4.6, color=INK
-            )
+        for method in methods:
+            ax = axes[method]
+            values = pd.to_numeric(
+                merged.get(f"{method}_value", pd.Series(np.zeros(n_rows))), errors="coerce"
+            ).fillna(0.0).to_numpy(dtype=float)
+            vmax = max(float(np.nanmax(np.abs(values))) if len(values) else 1.0, 1e-12)
+            colors = [ACC if value >= 0 else CLASS_CTRL for value in values]
+            ax.barh(y, values, height=0.54, color=colors, edgecolor="none", zorder=2)
+            ax.axvline(0.0, color="#000000", lw=0.5, zorder=3)
+            ax.set_xlim(-1.22 * vmax, 1.22 * vmax)
+            if method == "shap":
+                xlabel = shap_label
+                title = "SHAP"
+            else:
+                xlabel = "LIME local surrogate coefficient"
+                title = "LIME"
+            ax.set_xlabel(xlabel, fontsize=4.7, color=INK, labelpad=2)
+            ax.set_title(title, fontsize=5.7, color=MID, pad=3, weight="bold")
+            ax.tick_params(axis="x", labelsize=4.25, length=1.8, width=0.35, pad=1)
+            ax.spines["bottom"].set_visible(True)
+            ax.spines["bottom"].set_color("#000000")
+            ax.spines["bottom"].set_linewidth(0.4)
+            for yi, value in enumerate(values):
+                x = value + (0.025 * vmax if value >= 0 else -0.025 * vmax)
+                ha = "left" if value >= 0 else "right"
+                ax.text(x, yi, f"{value:+.3f}", ha=ha, va="center", fontsize=4.0, color=INK)
+        if len(methods) == 2:
+            ax = axes["consensus"]
+            consensus = pd.to_numeric(merged["consensus"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+            colors = [ACC if value >= 0 else CLASS_CTRL for value in consensus]
+            ax.barh(y, consensus, height=0.54, color=colors, edgecolor="none", zorder=2)
+            ax.axvline(0.0, color="#000000", lw=0.5, zorder=3)
+            ax.set_xlim(-1.05, 1.05)
+            ax.set_xticks([-1.0, 0.0, 1.0])
+            ax.set_xlabel("Signed within-method rank support", fontsize=4.7, color=INK, labelpad=2)
+            ax.set_title("Cross-method", fontsize=5.7, color=MID, pad=3, weight="bold")
+            ax.tick_params(axis="x", labelsize=4.25, length=1.8, width=0.35, pad=1)
+            ax.spines["bottom"].set_visible(True)
+            ax.spines["bottom"].set_color("#000000")
+            ax.spines["bottom"].set_linewidth(0.4)
+            for yi, row in merged.iterrows():
+                value = float(row["consensus"])
+                support_count = int(row["support_count"])
+                x = value + (0.035 if value >= 0 else -0.035)
+                ha = "left" if value >= 0 else "right"
+                label = f"{value:+.3f} · {support_count}/2"
+                ax.text(x, yi, label, ha=ha, va="center", fontsize=4.15, color=INK)
     save_all(fig, out_stem)
     plt.close(fig)
     return out_stem.with_suffix(".svg")

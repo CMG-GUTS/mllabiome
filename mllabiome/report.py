@@ -1001,13 +1001,15 @@ def _xai_local_mode(target_dir: Path) -> str:
     return "none"
 
 
-def _xai_local_figure(target_dir: Path, report_dir: Path, label: str, task: str) -> str:
+def _xai_local_figure(
+    target_dir: Path, report_dir: Path, label: str, task: str
+) -> str:
     table = _read_table(target_dir / "local_explanations.parquet")
     if table.empty or "method" not in table.columns:
         return ""
     methods = {str(x).strip().lower() for x in table["method"].dropna().tolist()}
-    method = "shap" if "shap" in methods else "lime" if "lime" in methods else ""
-    if not method:
+    available = [name for name in ("shap", "lime") if name in methods]
+    if not available:
         return ""
     meta = _read_json(target_dir / "explained_unit.json")
     cfg = meta.get("explainability_config", {}) if isinstance(meta, dict) else {}
@@ -1023,14 +1025,12 @@ def _xai_local_figure(target_dir: Path, report_dir: Path, label: str, task: str)
     except (TypeError, ValueError):
         top_n = 8
     stem = target_dir / "figures" / "local_explanations"
-    if not stem.with_suffix(".svg").exists():
-        plot_local_attributions(table, stem, task=str(task), method=method, top_n=top_n)
-    display = "SHAP" if method == "shap" else "LIME"
-    return _fig(
-        stem,
-        report_dir,
-        f"{label}: representative OOF local {display} explanations",
-    )
+    plot_local_attributions(table, stem, task=str(task), top_n=top_n)
+    if len(available) == 2:
+        caption = f"{label}: representative OOF local SHAP, LIME, and cross-method explanations"
+    else:
+        caption = f"{label}: representative OOF local {available[0].upper()} explanations"
+    return _fig(stem, report_dir, caption)
 
 
 def _explainability_report_blocks(
@@ -1161,7 +1161,7 @@ def _explainability_report_blocks(
             )
             if local_figure:
                 parts.append(
-                    "<p>Representative held-out samples are selected from OOF predictions, with one representative per observed class. Each sample is explained only by outer-fold model(s) that did not train on that sample. Positive and negative SHAP contributions respectively increase or decrease the predicted probability of the explained class relative to the SHAP reference value; when SHAP is unavailable, the figure uses local LIME surrogate coefficients.</p>"
+                    "<p>Representative held-out samples are selected from OOF predictions, with one representative per observed class. Each sample is explained only by outer-fold model(s) that did not train on that sample. SHAP attributions and LIME local-surrogate coefficients are shown side by side when both are available. The cross-method panel combines attribution direction with within-method reciprocal-rank support and does not average raw SHAP and LIME magnitudes. The support count indicates how many local methods place the feature within the displayed top set.</p>"
                 )
                 parts.append(local_figure)
                 parts.append(

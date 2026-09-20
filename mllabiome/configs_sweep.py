@@ -178,6 +178,7 @@ class Explainability:
     profile: str = "standard"
     random_state: int = 42
     local: LocalExplanations = LocalExplanations()
+    keep_cache: bool = False
     n_jobs: int | str | None = None
     parallel_backend: str | None = None
 
@@ -190,6 +191,7 @@ class Explainability:
         profile: str = "standard",
         random_state: int = 42,
         local: LocalExplanations | None = None,
+        keep_cache: bool = False,
         n_jobs: int | str | None = None,
         parallel_backend: str | None = None,
         **unknown_options: Any,
@@ -202,11 +204,7 @@ class Explainability:
             "top_instance_features",
             "representative_quantiles",
         }
-        legacy = {
-            key: unknown_options.pop(key)
-            for key in tuple(unknown_options)
-            if key in legacy_keys
-        }
+        legacy = {key: unknown_options.pop(key) for key in tuple(unknown_options) if key in legacy_keys}
         if unknown_options:
             unknown = ", ".join(sorted(unknown_options))
             raise TypeError(f"Unknown Explainability option(s): {unknown}.")
@@ -221,6 +219,7 @@ class Explainability:
         self.classes = _normalise_explainability_classes_config(classes)
         self.random_state = int(random_state)
         self.local = local if local is not None else _legacy_local_explanations(legacy)
+        self.keep_cache = bool(keep_cache)
         self.n_jobs = n_jobs
         self.parallel_backend = (
             None if parallel_backend is None else str(parallel_backend)
@@ -261,9 +260,7 @@ def _legacy_local_explanations(options: Mapping[str, Any]) -> LocalExplanations:
     quantiles = tuple(
         float(x) for x in options.get("representative_quantiles", (0.25, 0.50, 0.75))
     )
-    mode = (
-        str(options.get("local_explanations", "auto")).strip().lower().replace("-", "_")
-    )
+    mode = str(options.get("local_explanations", "auto")).strip().lower().replace("-", "_")
     aliases = {
         "": "auto",
         "off": "none",
@@ -308,9 +305,7 @@ def _effective_local_explanations_mode(explainability: Any) -> str:
                 "representative_instances": getattr(
                     explainability, "representative_instances", True
                 ),
-                "instance_sample_ids": getattr(
-                    explainability, "instance_sample_ids", ()
-                ),
+                "instance_sample_ids": getattr(explainability, "instance_sample_ids", ()),
             }
         )
     representative = bool(local.representatives)
@@ -322,6 +317,7 @@ def _effective_local_explanations_mode(explainability: Any) -> str:
     if requested:
         return "requested"
     return "none"
+
 
 
 def _normalise_explainability_targets_config(

@@ -547,7 +547,7 @@ def _regression_explainability_blocks(
             )
             if local_figure:
                 parts.append(
-                    "<p>Representative held-out samples are selected from the OOF prediction distribution at the lower, central, and upper response ranges. Each sample is explained only by outer-fold model(s) that did not train on that sample. Positive and negative SHAP contributions respectively increase or decrease the predicted response relative to the SHAP reference value; when SHAP is unavailable, the figure uses local LIME surrogate coefficients.</p>"
+                    "<p>Representative held-out samples are selected from the OOF prediction distribution at the lower, central, and upper response ranges. Each sample is explained only by outer-fold model(s) that did not train on that sample. SHAP attributions and LIME local-surrogate coefficients are shown side by side when both are available. The cross-method panel combines attribution direction with within-method reciprocal-rank support and does not average raw SHAP and LIME magnitudes. The support count indicates how many local methods place the feature within the displayed top set.</p>"
                 )
                 parts.append(local_figure)
                 parts.append(
