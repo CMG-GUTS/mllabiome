@@ -179,7 +179,7 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
             y,
             label,
             transform=ax.transAxes,
-            fontsize=9,
+            fontsize=8,
             fontweight="bold",
             va="top",
             ha="left",

@@ -39,11 +39,11 @@ def _build_count_transformations():
         # T("log10_relative_abundance_half_min_pseudocount"),
         # T("centered_log_ratio_multiplicative_replacement"),
         # T("standardized_centered_log_ratio_multiplicative_replacement"),
-        T("yeo_johnson_relative_abundance"),
+        # T("yeo_johnson_relative_abundance"),
         # T("quantile_normal_relative_abundance"),
         # T("robust_scaled_relative_abundance"),
         # T("within_sample_fractional_rank"),
-        T("training_ecdf_rank"),
+        # T("training_ecdf_rank"),
         # T("prevalence_weighted_relative_abundance"),
     ]
 
@@ -108,7 +108,5 @@ EXPLAINABILITY = mll.Explainability(
         mll.ALEInteractions(),
     ),
     classes="auto",
-    top_k=15,
-    representative_instances=False,
     n_jobs="auto",
 )

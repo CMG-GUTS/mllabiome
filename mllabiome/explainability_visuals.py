@@ -13,7 +13,8 @@ import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap
 
 from .explainability_support import top_k_rank_support
-from .style import compact_svg
+from .style import COL_W_2, compact_svg, enforce_nature_figure
+from .utils import feature_tail_ellipsis
 
 try:
     import networkx as nx
@@ -22,7 +23,6 @@ except Exception:
 
 
 MM = 1.0 / 25.4
-COL_W_2 = 180 * MM
 INK = "#0f172a"
 MID = "#64748b"
 DIM = "#94a3b8"
@@ -57,27 +57,26 @@ def _support_text_color(value: float) -> str:
 RC = {
     "font.family": "sans-serif",
     "font.sans-serif": [
-        "Inter",
         "Arial",
         "Helvetica",
         "Liberation Sans",
         "DejaVu Sans",
     ],
-    "font.size": 7.8,
+    "font.size": 7.0,
     "axes.linewidth": 0.45,
     "axes.edgecolor": INK,
     "axes.labelcolor": INK,
-    "axes.titlesize": 8.2,
-    "axes.labelsize": 7.6,
-    "xtick.labelsize": 6.9,
-    "ytick.labelsize": 6.9,
+    "axes.titlesize": 7.0,
+    "axes.labelsize": 7.0,
+    "xtick.labelsize": 6.0,
+    "ytick.labelsize": 6.0,
     "xtick.major.width": 0.4,
     "ytick.major.width": 0.4,
     "xtick.major.size": 2.0,
     "ytick.major.size": 2.0,
     "xtick.color": INK,
     "ytick.color": INK,
-    "legend.fontsize": 6.8,
+    "legend.fontsize": 6.0,
     "legend.frameon": False,
     "svg.fonttype": "none",
     "pdf.fonttype": 42,
@@ -85,7 +84,7 @@ RC = {
     "mathtext.fontset": "dejavusans",
     "figure.facecolor": BG,
     "savefig.facecolor": BG,
-    "savefig.bbox": "tight",
+    "savefig.bbox": None,
     "savefig.pad_inches": 0.02,
 }
 
@@ -97,7 +96,8 @@ def apply_style() -> None:
 def save_all(fig: plt.Figure, stem: Path) -> None:
     stem.parent.mkdir(parents=True, exist_ok=True)
     path = stem.with_suffix(".svg")
-    fig.savefig(path, dpi=300, metadata={"Date": None})
+    enforce_nature_figure(fig)
+    fig.savefig(path, dpi=300, metadata={"Date": None}, bbox_inches=None, pad_inches=0)
     compact_svg(path)
 
 
@@ -242,12 +242,12 @@ def _terminal_taxon_label(value: str) -> str:
     return f"{rank}{text}" if text else str(value).replace("_", " ")
 
 
-def _plain_taxon_label(feature_name: str, max_len: int = 32) -> str:
+def _plain_taxon_label(feature_name: str, max_len: int | None = 32) -> str:
     text = str(feature_name)
     if text.startswith("ALR[") and text.endswith("]"):
         body = text[4:-1]
         if "/" in body:
-            numerator, reference = body.split("/", 1)
+            numerator, reference = (part.strip() for part in body.split("/", 1))
             out = f"ALR[{_terminal_taxon_label(numerator)} / {_terminal_taxon_label(reference)}]"
         else:
             out = text
@@ -259,13 +259,11 @@ def _plain_taxon_label(feature_name: str, max_len: int = 32) -> str:
             out = text.replace("_", " ")
     else:
         out = _terminal_taxon_label(text)
-    if len(out) > max_len:
-        out = out[: max_len - 1].rstrip() + "…"
-    return out
+    return out if max_len is None else feature_tail_ellipsis(out, max_len)
 
 
 def _net_short_label(feature_name: str) -> str:
-    return _plain_taxon_label(str(feature_name), 54)
+    return _plain_taxon_label(str(feature_name), 42)
 
 
 def _net_italic(label: str) -> str:
@@ -284,6 +282,13 @@ def _feature_label(feature_name: str) -> str:
         return _net_italic(_net_short_label(feature_name))
     except Exception:
         return _plain_taxon_label(str(feature_name), 42)
+
+
+def _full_feature_label(feature_name: str) -> str:
+    try:
+        return _net_italic(_plain_taxon_label(str(feature_name), None))
+    except Exception:
+        return _plain_taxon_label(str(feature_name), None)
 
 
 def _deduplicate_top_features(top: pd.DataFrame, max_features: int) -> pd.DataFrame:
@@ -368,31 +373,38 @@ def plot_feature_support(
     fold_stability = _fold_stability_matrix(
         stability, features, method_cols, class_index=class_index
     )
+    if solo_method and "top_k_frequency" in top.columns:
+        fallback = pd.to_numeric(top["top_k_frequency"], errors="coerce").to_numpy(
+            dtype=float
+        )
+        valid = np.isfinite(fallback)
+        if fold_stability.shape == (len(top), 1):
+            fold_stability[valid, 0] = np.clip(fallback[valid], 0.0, 1.0)
 
-    fig_h_mm = max(62.0, 3.85 * n + 27.0)
-    fig_w = (108.0 * MM) if solo_method else COL_W_2
+    fig_h_mm = max(52.0, 3.0 * n + 18.0)
+    fig_w = (136.0 * MM) if solo_method else COL_W_2
     fig = plt.figure(figsize=(fig_w, fig_h_mm * MM))
     fig.patch.set_facecolor(BG)
-    panel = [0.045, 0.075, 0.910, 0.840]
+    panel = [0.035, 0.035, 0.930, 0.930]
 
     if solo_method:
-        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.050, 0.385, 0.670), zorder=5)
-        ax_dir = fig.add_axes(_bbox(panel, 0.410, 0.050, 0.180, 0.670), zorder=5)
-        ax_hm = fig.add_axes(_bbox(panel, 0.665, 0.050, 0.100, 0.670), zorder=5)
-        ax_stab = fig.add_axes(_bbox(panel, 0.845, 0.050, 0.100, 0.670), zorder=5)
-        bracket_lab = (0.020, 0.385)
-        bracket_dir = (0.410, 0.590)
-        bracket_hm = (0.665, 0.765)
-        bracket_stab = (0.845, 0.945)
+        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.035, 0.455, 0.820), zorder=5)
+        ax_dir = fig.add_axes(_bbox(panel, 0.485, 0.035, 0.145, 0.820), zorder=5)
+        ax_hm = fig.add_axes(_bbox(panel, 0.715, 0.035, 0.085, 0.820), zorder=5)
+        ax_stab = fig.add_axes(_bbox(panel, 0.885, 0.035, 0.085, 0.820), zorder=5)
+        bracket_lab = (0.020, 0.455)
+        bracket_dir = (0.485, 0.630)
+        bracket_hm = (0.715, 0.800)
+        bracket_stab = (0.885, 0.970)
     else:
-        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.050, 0.330, 0.670), zorder=5)
-        ax_dir = fig.add_axes(_bbox(panel, 0.360, 0.050, 0.130, 0.670), zorder=5)
-        ax_hm = fig.add_axes(_bbox(panel, 0.555, 0.050, 0.180, 0.670), zorder=5)
-        ax_stab = fig.add_axes(_bbox(panel, 0.790, 0.050, 0.180, 0.670), zorder=5)
-        bracket_lab = (0.020, 0.330)
-        bracket_dir = (0.360, 0.490)
-        bracket_hm = (0.555, 0.735)
-        bracket_stab = (0.790, 0.970)
+        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.035, 0.395, 0.820), zorder=5)
+        ax_dir = fig.add_axes(_bbox(panel, 0.425, 0.035, 0.105, 0.820), zorder=5)
+        ax_hm = fig.add_axes(_bbox(panel, 0.565, 0.035, 0.175, 0.820), zorder=5)
+        ax_stab = fig.add_axes(_bbox(panel, 0.790, 0.035, 0.175, 0.820), zorder=5)
+        bracket_lab = (0.020, 0.395)
+        bracket_dir = (0.425, 0.530)
+        bracket_hm = (0.565, 0.740)
+        bracket_stab = (0.790, 0.965)
 
     for ax in (ax_lab, ax_dir, ax_hm, ax_stab):
         ax.set_facecolor(BG)
@@ -401,7 +413,7 @@ def plot_feature_support(
         for spine in ax.spines.values():
             spine.set_visible(False)
         for yi in np.arange(n + 1) - 0.5:
-            ax.axhline(yi, color=TRACK, lw=0.22, zorder=0)
+            ax.axhline(yi, color=TRACK, lw=0.25, zorder=0)
 
     ax_lab.set_xlim(0, 1)
     ax_lab.set_xticks([])
@@ -413,19 +425,18 @@ def plot_feature_support(
             str(rank_val),
             ha="left",
             va="center",
-            fontsize=4.65,
+            fontsize=5.0,
             color=DIM,
             clip_on=False,
         )
         ax_lab.text(
             0.120,
             i,
-            _feature_label(feat),
+            _full_feature_label(feat),
             ha="left",
             va="center",
-            fontsize=4.95,
+            fontsize=5.0,
             color=INK,
-            path_effects=[mpe.withStroke(linewidth=1.65, foreground="white")],
             clip_on=False,
         )
 
@@ -457,7 +468,7 @@ def plot_feature_support(
             [v], [i], s=9, color=col, edgecolors="none", zorder=3, clip_on=False
         )
     ax_dir.set_xticks([-2.0, 0.0, 2.0])
-    ax_dir.set_xticklabels(["Control", "0", "Case"], fontsize=3.35, color="#000000")
+    ax_dir.set_xticklabels(["Control", "0", "Case"], fontsize=5.0, color="#000000")
     for lab in ax_dir.get_xticklabels():
         lab.set_clip_on(False)
     _style_black_bottom_axis(ax_dir, show_left=False)
@@ -481,7 +492,7 @@ def plot_feature_support(
             )
             axis.set_xticks(np.arange(len(method_cols)))
             labels = [m.replace("Permutation", "Perm.") for m in method_cols]
-            axis.set_xticklabels(labels, fontsize=4.05, color="#000000", rotation=0)
+            axis.set_xticklabels(labels, fontsize=5.0, color="#000000", rotation=0)
             axis.tick_params(axis="x", length=0, pad=2, colors="#000000")
             for lab in axis.get_xticklabels():
                 lab.set_clip_on(False)
@@ -501,7 +512,7 @@ def plot_feature_support(
                         text,
                         ha="center",
                         va="center",
-                        fontsize=4.65,
+                        fontsize=5.0,
                         color=color,
                         zorder=5,
                     )
@@ -509,10 +520,10 @@ def plot_feature_support(
         _soft_missing(ax_hm, "no method\nscores")
         _soft_missing(ax_stab, "no fold\nstability")
 
-    _bracket(fig, panel, bracket_lab[0], bracket_lab[1], 0.765, "Ranked feature")
-    _bracket(fig, panel, bracket_dir[0], bracket_dir[1], 0.765, "Class shift")
-    _bracket(fig, panel, bracket_hm[0], bracket_hm[1], 0.765, "Top-k support")
-    _bracket(fig, panel, bracket_stab[0], bracket_stab[1], 0.765, "Fold stability")
+    _bracket(fig, panel, bracket_lab[0], bracket_lab[1], 0.900, "Ranked feature")
+    _bracket(fig, panel, bracket_dir[0], bracket_dir[1], 0.900, "Class shift")
+    _bracket(fig, panel, bracket_hm[0], bracket_hm[1], 0.900, "Top-k support")
+    _bracket(fig, panel, bracket_stab[0], bracket_stab[1], 0.900, "Fold stability")
     save_all(fig, out_stem)
     plt.close(fig)
     return True
@@ -571,24 +582,24 @@ def plot_regression_feature_support(
     fold_stability = _fold_stability_matrix(d, features, methods)
     n = len(top)
     solo_method = len(methods) == 1
-    fig_h_mm = max(58.0, 3.85 * n + 24.0)
-    fig_w = (108.0 * MM) if solo_method else COL_W_2
+    fig_h_mm = max(52.0, 3.0 * n + 18.0)
+    fig_w = (136.0 * MM) if solo_method else COL_W_2
     fig = plt.figure(figsize=(fig_w, fig_h_mm * MM))
     fig.patch.set_facecolor(BG)
-    panel = [0.045, 0.075, 0.910, 0.840]
+    panel = [0.035, 0.035, 0.930, 0.930]
     if solo_method:
-        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.050, 0.530, 0.670), zorder=5)
-        ax_hm = fig.add_axes(_bbox(panel, 0.640, 0.050, 0.130, 0.670), zorder=5)
-        ax_stab = fig.add_axes(_bbox(panel, 0.840, 0.050, 0.130, 0.670), zorder=5)
-        bracket_lab = (0.020, 0.530)
-        bracket_hm = (0.640, 0.770)
-        bracket_stab = (0.840, 0.970)
+        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.035, 0.570, 0.820), zorder=5)
+        ax_hm = fig.add_axes(_bbox(panel, 0.665, 0.035, 0.125, 0.820), zorder=5)
+        ax_stab = fig.add_axes(_bbox(panel, 0.845, 0.035, 0.125, 0.820), zorder=5)
+        bracket_lab = (0.020, 0.570)
+        bracket_hm = (0.665, 0.790)
+        bracket_stab = (0.845, 0.970)
     else:
-        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.050, 0.470, 0.670), zorder=5)
-        ax_hm = fig.add_axes(_bbox(panel, 0.560, 0.050, 0.180, 0.670), zorder=5)
-        ax_stab = fig.add_axes(_bbox(panel, 0.800, 0.050, 0.180, 0.670), zorder=5)
-        bracket_lab = (0.020, 0.470)
-        bracket_hm = (0.560, 0.740)
+        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.035, 0.500, 0.820), zorder=5)
+        ax_hm = fig.add_axes(_bbox(panel, 0.565, 0.035, 0.180, 0.820), zorder=5)
+        ax_stab = fig.add_axes(_bbox(panel, 0.800, 0.035, 0.180, 0.820), zorder=5)
+        bracket_lab = (0.020, 0.500)
+        bracket_hm = (0.565, 0.745)
         bracket_stab = (0.800, 0.980)
     for ax in (ax_lab, ax_hm, ax_stab):
         ax.set_facecolor(BG)
@@ -597,7 +608,7 @@ def plot_regression_feature_support(
         for spine in ax.spines.values():
             spine.set_visible(False)
         for yi in np.arange(n + 1) - 0.5:
-            ax.axhline(yi, color=TRACK, lw=0.22, zorder=0)
+            ax.axhline(yi, color=TRACK, lw=0.25, zorder=0)
     ax_lab.set_xlim(0, 1)
     ax_lab.set_xticks([])
     for i, feature in enumerate(features):
@@ -607,19 +618,18 @@ def plot_regression_feature_support(
             str(i + 1),
             ha="left",
             va="center",
-            fontsize=4.65,
+            fontsize=5.0,
             color=DIM,
             clip_on=False,
         )
         ax_lab.text(
             0.095,
             i,
-            _feature_label(feature),
+            _full_feature_label(feature),
             ha="left",
             va="center",
-            fontsize=4.95,
+            fontsize=5.0,
             color=INK,
-            path_effects=[mpe.withStroke(linewidth=1.65, foreground="white")],
             clip_on=False,
         )
     support_matrix = (
@@ -641,7 +651,7 @@ def plot_regression_feature_support(
             masked, aspect="auto", interpolation="nearest", cmap=cmap, vmin=0, vmax=1
         )
         axis.set_xticks(np.arange(len(methods)))
-        axis.set_xticklabels(labels, fontsize=4.05, color="#000000", rotation=0)
+        axis.set_xticklabels(labels, fontsize=5.0, color="#000000", rotation=0)
         axis.tick_params(axis="x", length=0, pad=2, colors="#000000")
         for lab in axis.get_xticklabels():
             lab.set_clip_on(False)
@@ -661,13 +671,13 @@ def plot_regression_feature_support(
                     label,
                     ha="center",
                     va="center",
-                    fontsize=4.65,
+                    fontsize=5.0,
                     color=color,
                     zorder=5,
                 )
-    _bracket(fig, panel, bracket_lab[0], bracket_lab[1], 0.765, "Ranked feature")
-    _bracket(fig, panel, bracket_hm[0], bracket_hm[1], 0.765, "Top-k support")
-    _bracket(fig, panel, bracket_stab[0], bracket_stab[1], 0.765, "Fold stability")
+    _bracket(fig, panel, bracket_lab[0], bracket_lab[1], 0.900, "Ranked feature")
+    _bracket(fig, panel, bracket_hm[0], bracket_hm[1], 0.900, "Top-k support")
+    _bracket(fig, panel, bracket_stab[0], bracket_stab[1], 0.900, "Fold stability")
     save_all(fig, out_stem)
     plt.close(fig)
     return True
@@ -996,7 +1006,7 @@ def _draw_network(
         x, y = pos[node]
         raw = str(nd["label"])
         lbl = _net_italic(raw)
-        fs = float(np.clip(5.8 + (r - 0.08) / max(0.32 - 0.08, 1e-9) * 1.6, 5.8, 7.4))
+        fs = float(np.clip(5.8 + (r - 0.08) / max(0.32 - 0.08, 1e-9) * 1.2, 5.8, 7.0))
         fw = "bold" if is_hub else "normal"
         hw = len(raw) * char_w * (fs / 7.5) / 2 + 0.04
         hh = line_h * (fs / 7.5) / 2
@@ -1095,7 +1105,7 @@ def _draw_network(
             fontsize=lbl_fs[k],
             color=INK,
             fontweight=lbl_fw[k],
-            path_effects=[mpe.withStroke(linewidth=2.2, foreground="white")],
+            path_effects=[mpe.withStroke(linewidth=1.0, foreground="white")],
             zorder=6,
         )
     ax.set_xlim(-5.0, 5.0)
@@ -1332,8 +1342,8 @@ def plot_local_attributions(
         return None
     k = max(1, int(top_n))
     n_panels = len(sample_ids)
-    fig_h = max(52.0, 34.0 * n_panels + 10.0)
-    fig = plt.figure(figsize=(180 * MM, fig_h * MM))
+    fig_h = max(64.0, 50.0 * n_panels + 10.0)
+    fig = plt.figure(figsize=(COL_W_2, fig_h * MM))
     fig.patch.set_facecolor(BG)
     panel_h = 0.92 / n_panels
     for panel_no, sample_id in enumerate(sample_ids):
@@ -1529,16 +1539,16 @@ def plot_local_attributions(
         if len(methods) == 2:
             axes = {
                 "labels": fig.add_axes(
-                    [0.035, y0 + 0.10 * panel_h, 0.275, panel_h * 0.61]
+                    [0.035, y0 + 0.10 * panel_h, 0.305, panel_h * 0.61]
                 ),
                 "shap": fig.add_axes(
-                    [0.325, y0 + 0.10 * panel_h, 0.195, panel_h * 0.61]
+                    [0.355, y0 + 0.10 * panel_h, 0.180, panel_h * 0.61]
                 ),
                 "lime": fig.add_axes(
-                    [0.545, y0 + 0.10 * panel_h, 0.195, panel_h * 0.61]
+                    [0.555, y0 + 0.10 * panel_h, 0.180, panel_h * 0.61]
                 ),
                 "consensus": fig.add_axes(
-                    [0.765, y0 + 0.10 * panel_h, 0.200, panel_h * 0.61]
+                    [0.755, y0 + 0.10 * panel_h, 0.210, panel_h * 0.61]
                 ),
             }
         else:
@@ -1558,17 +1568,17 @@ def plot_local_attributions(
             for spine in ax.spines.values():
                 spine.set_visible(False)
             for yi in np.arange(n_rows + 1) - 0.5:
-                ax.axhline(yi, color=TRACK, lw=0.22, zorder=0)
+                ax.axhline(yi, color=TRACK, lw=0.25, zorder=0)
         axes["labels"].set_xlim(0, 1)
         axes["labels"].set_xticks([])
         for i, feature in enumerate(merged["feature"].astype(str).tolist()):
             axes["labels"].text(
                 0.01,
                 i,
-                _plain_taxon_label(feature, 34),
+                _plain_taxon_label(feature, 46),
                 ha="left",
                 va="center",
-                fontsize=4.85,
+                fontsize=5.0,
                 color=INK,
                 path_effects=[mpe.withStroke(linewidth=1.0, foreground="white")],
             )
@@ -1593,9 +1603,9 @@ def plot_local_attributions(
             else:
                 xlabel = "LIME local surrogate coefficient"
                 title = "LIME"
-            ax.set_xlabel(xlabel, fontsize=4.7, color=INK, labelpad=2)
+            ax.set_xlabel(xlabel, fontsize=5.0, color=INK, labelpad=2)
             ax.set_title(title, fontsize=5.7, color=MID, pad=3, weight="bold")
-            ax.tick_params(axis="x", labelsize=4.25, length=1.8, width=0.35, pad=1)
+            ax.tick_params(axis="x", labelsize=5.0, length=1.8, width=0.35, pad=1)
             ax.spines["bottom"].set_visible(True)
             ax.spines["bottom"].set_color("#000000")
             ax.spines["bottom"].set_linewidth(0.4)
@@ -1603,7 +1613,7 @@ def plot_local_attributions(
                 x = value + (0.025 * vmax if value >= 0 else -0.025 * vmax)
                 ha = "left" if value >= 0 else "right"
                 ax.text(
-                    x, yi, f"{value:+.3f}", ha=ha, va="center", fontsize=4.0, color=INK
+                    x, yi, f"{value:+.3f}", ha=ha, va="center", fontsize=5.0, color=INK
                 )
         if len(methods) == 2:
             ax = axes["consensus"]
@@ -1618,10 +1628,10 @@ def plot_local_attributions(
             ax.set_xlim(-1.05, 1.05)
             ax.set_xticks([-1.0, 0.0, 1.0])
             ax.set_xlabel(
-                "Signed within-method rank support", fontsize=4.7, color=INK, labelpad=2
+                "Signed within-method rank support", fontsize=5.0, color=INK, labelpad=2
             )
             ax.set_title("Cross-method", fontsize=5.7, color=MID, pad=3, weight="bold")
-            ax.tick_params(axis="x", labelsize=4.25, length=1.8, width=0.35, pad=1)
+            ax.tick_params(axis="x", labelsize=5.0, length=1.8, width=0.35, pad=1)
             ax.spines["bottom"].set_visible(True)
             ax.spines["bottom"].set_color("#000000")
             ax.spines["bottom"].set_linewidth(0.4)
@@ -1631,7 +1641,7 @@ def plot_local_attributions(
                 x = value + (0.035 if value >= 0 else -0.035)
                 ha = "left" if value >= 0 else "right"
                 label = f"{value:+.3f} · {support_count}/2"
-                ax.text(x, yi, label, ha=ha, va="center", fontsize=4.15, color=INK)
+                ax.text(x, yi, label, ha=ha, va="center", fontsize=5.0, color=INK)
     save_all(fig, out_stem)
     plt.close(fig)
     return out_stem.with_suffix(".svg")

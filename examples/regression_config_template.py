@@ -2,23 +2,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.naive_bayes import BernoulliNB
+from sklearn.ensemble import RandomForestRegressor
 
 from mllabiome import mll
 
-TITLE = "PTSD within-dataset MPMA sweep"
-EXPERIMENT_DIR = Path("examples/runs/PTSD-NCV")
+TITLE = "Regression MPMA sweep"
+EXPERIMENT_DIR = Path("examples/runs/REGRESSION-NCV")
 
 DATA = mll.Data(
-    abundance_path=Path("examples/data/PTSD/PTSD_profiles.tsv"),
-    metadata_path=Path("examples/data/PTSD/PTSD_metadata.tsv"),
+    abundance_path=Path("examples/data/REGRESSION/profiles.tsv"),
+    metadata_path=Path("examples/data/REGRESSION/metadata.tsv"),
     format="metaphlan_tsv",
-    sample_id_col="sampleId",
-    target_col="group",
-    task="classification",
-    class_labels=("Placebo", "Active"),
-    positive_class="Active",
+    sample_id_col="sample_id",
+    target_col="continuous_target",
+    task="regression",
 )
 
 RESOLUTIONS = (
@@ -31,11 +28,10 @@ COUNT_TRANSFORMATIONS = (
     mll.Transformation("alr"),
 )
 
-
 MODELS = (
     (
-        "RF_1000_msl5",
-        RandomForestClassifier(
+        "RFREG_1000_msl5",
+        RandomForestRegressor(
             n_estimators=1000,
             min_samples_leaf=5,
             n_jobs=1,
@@ -49,16 +45,12 @@ EVALUATION = mll.Evaluation(
     outer_folds=5,
     inner_folds=3,
     repeats=1,
-    optimize_metric="log_loss",
+    optimize_metric="RMSE",
     random_state=42,
     n_jobs="auto",
 )
 
-GATE = mll.QualificationGate(
-    enabled=False,
-    metric="nMCC",
-    threshold=0.51,
-)
+GATE = mll.QualificationGate(enabled=False)
 
 ENSEMBLE = mll.Ensemble(
     max_sizes=(3,),
@@ -70,27 +62,17 @@ ENSEMBLE = mll.Ensemble(
         "super_learner",
     ),
     aggregation_strategies=(
-        "mean_proba",
-        "weighted_mean_proba",
-        "median_proba",
-        "rank_mean",
-        "majority_vote",
+        "mean_prediction",
+        "weighted_mean_prediction",
+        "median_prediction",
     ),
-    optimize_metric="log_loss",
+    optimize_metric="RMSE",
 )
 
 EXPLAINABILITY = mll.Explainability(
-    targets=("mpma_b",),
-    profile="screening",
-    methods=(
-        mll.Permutation(),
-        mll.SHAP(),
-        mll.ALE(),
-        mll.LIME(),
-        mll.ALEInteractions(),
-
-    ),
-    classes="auto",
+    targets="auto",
+    top_k=20,
+    methods=(mll.Permutation(), mll.SHAP(), mll.ALE(), mll.LIME()),
 )
 
 SWEEP = mll.Sweep(

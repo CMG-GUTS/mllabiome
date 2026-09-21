@@ -12,9 +12,9 @@ import pandas as pd
 
 from .configs_sweep import Sweep
 from .console import console, path_table, phase_progress, stage, success
-from .utils import dump_json_standard
-from .storage import read_table, table_exists, glob_tables
-from .metrics import compute_metrics
+from .utils import dump_json_standard, feature_tail_ellipsis
+from .storage import read_table, write_table, table_exists, glob_tables
+from .metrics import compute_metrics, metric_is_loss
 from .report_statistics import run_report_statistics
 from .report_compute import run_compute_accounting
 from .explainability_visuals import plot_feature_support, plot_local_attributions
@@ -29,6 +29,90 @@ _METRICS = [
 ]
 
 _BASELINE_RANK_PRIORITY = ("strain", "species", "genus")
+
+
+def _canonical_metric_name(metric: Any) -> str:
+    text = str(metric).strip()
+    key = text.casefold().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "roc_auc": "AUC",
+        "auc": "AUC",
+        "pr_auc": "PR_AUC",
+        "average_precision": "PR_AUC",
+        "nmcc": "nMCC",
+        "f1w": "F1w",
+        "precision": "Precision",
+        "recall": "Recall",
+        "logloss": "log_loss",
+        "log_loss": "log_loss",
+        "brier_loss": "brier",
+        "brier": "brier",
+    }
+    return aliases.get(key, text)
+
+
+def _metric_display_label(metric: Any) -> str:
+    key = _canonical_metric_name(metric)
+    labels = {
+        "AUC": "ROC-AUC",
+        "PR_AUC": "PR-AUC (AP)",
+        "nMCC": "nMCC",
+        "F1w": "F1w",
+        "Precision": "Precision",
+        "Recall": "Recall",
+        "log_loss": "Log loss",
+        "brier": "Brier score",
+    }
+    return labels.get(key, str(metric))
+
+
+def _classification_display_metrics(selection_metric: Any) -> list[tuple[str, str]]:
+    primary = _canonical_metric_name(selection_metric)
+    ordered = [primary] + [metric for metric, _ in _METRICS if metric != primary]
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for metric in ordered:
+        if metric in seen:
+            continue
+        seen.add(metric)
+        out.append((metric, _metric_display_label(metric)))
+    return out
+
+
+def _display_token(value: Any) -> str:
+    text = str(value).strip()
+    if not text or text.casefold() == "nan":
+        return ""
+    replacements = {
+        "relative_abundance": "relative abundance",
+        "arcsine_sqrt": "arcsin√x",
+        r"$\arcsin\sqrt{x}$": "arcsin√x",
+        "log1p": "ln(1+x)",
+        "log10p": "log10(1+x)",
+        "log2p": "log2(1+x)",
+        r"$\ln(1+x)$": "ln(1+x)",
+        r"$\log_{10}(1+x)$": "log10(1+x)",
+        r"$\log_2(1+x)$": "log2(1+x)",
+        "additive_log_ratio_first_reference_multiplicative_replacement": "additive log ratio first reference multiplicative replacement",
+    }
+    return replacements.get(text, text.replace("_", " "))
+
+
+def _top_mpma_heading(table: pd.DataFrame) -> str:
+    n = int(len(table))
+    return f"Top {n} MPMA-B configurations" if n > 0 else "Top MPMA-B configurations"
+
+
+REPORT_TEMPLATE_VERSION = "standard-v2"
+REPORT_LAYERS = (
+    "evaluation_procedure",
+    "descriptive_performance_uncertainty",
+    "inferential_comparisons",
+    "selected_specifications",
+    "important_features",
+    "explainability",
+    "compute_hardware",
+)
 
 _FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect x="1" y="1" width="62" height="62" rx="14" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/><text x="32" y="39" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="22" font-weight="700" fill="#0f172a">mll</text></svg>"""
 
@@ -47,7 +131,9 @@ def _single_rank_label(row: pd.Series | dict[str, Any]) -> str | None:
     return None
 
 
-def _pick_deepest_single_rank(sub: pd.DataFrame, *, sort_col: str) -> dict[str, Any]:
+def _pick_deepest_single_rank(
+    sub: pd.DataFrame, *, sort_col: str, ascending: bool = False
+) -> dict[str, Any]:
     if sub.empty:
         return {}
     candidates = []
@@ -58,7 +144,7 @@ def _pick_deepest_single_rank(sub: pd.DataFrame, *, sort_col: str) -> dict[str, 
         if rr.empty:
             continue
         if sort_col in rr.columns:
-            rr = rr.sort_values(sort_col, ascending=False)
+            rr = rr.sort_values(sort_col, ascending=ascending)
         candidates.append(rr.iloc[0].to_dict())
         break
     if candidates:
@@ -147,7 +233,9 @@ def _format_p_value(value: Any) -> str:
 def _primary_pairwise_display(pairwise: pd.DataFrame, metric: str) -> pd.DataFrame:
     if pairwise.empty or "metric" not in pairwise.columns:
         return pd.DataFrame()
-    out = pairwise[pairwise["metric"].astype(str).eq(str(metric))].copy()
+    key = str(metric).strip().casefold().replace("-", "_").replace(" ", "_")
+    key = {"logloss": "log_loss", "brier_loss": "brier"}.get(key, key)
+    out = pairwise[pairwise["metric"].astype(str).str.casefold().eq(key)].copy()
     if out.empty:
         return out
     columns = [
@@ -159,6 +247,7 @@ def _primary_pairwise_display(pairwise: pd.DataFrame, metric: str) -> pd.DataFra
             "difference_ci_low",
             "difference_ci_high",
             "n_matched_outer_units",
+            "n_paired_outer_units",
             "test",
             "p_value",
             "p_holm",
@@ -175,6 +264,7 @@ def _primary_pairwise_display(pairwise: pd.DataFrame, metric: str) -> pd.DataFra
             "difference_ci_low": "95% CI low",
             "difference_ci_high": "95% CI high",
             "n_matched_outer_units": "Matched outer units",
+            "n_paired_outer_units": "Matched outer units",
             "test": "Test",
             "p_value": "p",
             "p_holm": "Holm p",
@@ -271,7 +361,9 @@ def _mean_std_from_cols(
     return _safe_float(mean), _safe_float(std)
 
 
-def _agg_metrics(path: Path, prefix: str) -> pd.DataFrame:
+def _agg_metrics(
+    path: Path, prefix: str, extra_metrics: tuple[str, ...] = ()
+) -> pd.DataFrame:
     df = _read_table(path)
     if df.empty or "config_id" not in df.columns:
         return pd.DataFrame()
@@ -290,7 +382,9 @@ def _agg_metrics(path: Path, prefix: str) -> pd.DataFrame:
         ]
         if c in df.columns
     ]
-    metric_cols = [c for c, _ in _METRICS if c in df.columns]
+    metric_names = [c for c, _ in _METRICS]
+    metric_names.extend(_canonical_metric_name(c) for c in extra_metrics)
+    metric_cols = [c for c in dict.fromkeys(metric_names) if c in df.columns]
     if not metric_cols:
         return df[id_cols].drop_duplicates("config_id") if id_cols else pd.DataFrame()
     g = df.groupby(id_cols, dropna=False)[metric_cols].agg(["mean", "std", "count"])
@@ -298,9 +392,14 @@ def _agg_metrics(path: Path, prefix: str) -> pd.DataFrame:
     return g.reset_index()
 
 
-def _top_mpma_raw(root: Path, n: int = 5) -> pd.DataFrame:
-    inner = _agg_metrics(root / "inner_results" / "inner_results.parquet", "inner")
-    outer = _agg_metrics(root / "results" / "outer_results.parquet", "outer")
+def _top_mpma_raw(
+    root: Path, n: int = 5, selection_metric: str = "nMCC"
+) -> pd.DataFrame:
+    metric = _canonical_metric_name(selection_metric)
+    inner = _agg_metrics(
+        root / "inner_results" / "inner_results.parquet", "inner", (metric,)
+    )
+    outer = _agg_metrics(root / "results" / "outer_results.parquet", "outer", (metric,))
     if inner.empty and outer.empty:
         return pd.DataFrame()
     if not inner.empty:
@@ -313,41 +412,102 @@ def _top_mpma_raw(root: Path, n: int = 5) -> pd.DataFrame:
     else:
         base = outer
     sort_col = (
-        "inner_nMCC_mean"
-        if "inner_nMCC_mean" in base.columns
-        else ("outer_nMCC_mean" if "outer_nMCC_mean" in base.columns else None)
+        f"inner_{metric}_mean"
+        if f"inner_{metric}_mean" in base.columns
+        else (
+            f"outer_{metric}_mean"
+            if f"outer_{metric}_mean" in base.columns
+            else (
+                "inner_nMCC_mean"
+                if "inner_nMCC_mean" in base.columns
+                else ("outer_nMCC_mean" if "outer_nMCC_mean" in base.columns else None)
+            )
+        )
     )
     if sort_col:
-        base = base.sort_values(sort_col, ascending=False)
+        sort_metric = metric if metric in sort_col else "nMCC"
+        base = base.sort_values(sort_col, ascending=metric_is_loss(sort_metric))
     base = base.head(int(n)).copy()
     base.insert(0, "rank", np.arange(1, len(base) + 1))
     return base
 
 
-def _top_mpma_display(df: pd.DataFrame, *, html_mode: bool = False) -> pd.DataFrame:
+def _metric_mean_std_cell(
+    mean: Any,
+    std: Any,
+    metric: str,
+    *,
+    bold: bool = False,
+    html_mode: bool = False,
+) -> str:
+    if _canonical_metric_name(metric) in {"log_loss", "brier"}:
+        m = _safe_float(mean)
+        sd = _safe_float(std)
+        if not np.isfinite(m):
+            return "—" if html_mode else r"--"
+        body = f"{m:.3f}"
+        if np.isfinite(sd):
+            body += (" ± " if html_mode else r"$\pm$") + f"{sd:.3f}"
+        if bold:
+            return f"<strong>{body}</strong>" if html_mode else rf"\textbf{{{body}}}"
+        return body
+    return _pct_cell(mean, std, bold=bold, html_mode=html_mode)
+
+
+def _metric_ci_cell(
+    estimate: Any,
+    std: Any,
+    low: Any,
+    high: Any,
+    metric: str,
+    *,
+    bold: bool = False,
+    html_mode: bool = False,
+) -> str:
+    if _canonical_metric_name(metric) in {"log_loss", "brier"}:
+        e = _safe_float(estimate)
+        sd = _safe_float(std)
+        lo = _safe_float(low)
+        hi = _safe_float(high)
+        if not np.isfinite(e):
+            return "—" if html_mode else r"--"
+        body = f"{e:.3f}"
+        if np.isfinite(sd):
+            body += (" ± " if html_mode else r"$\pm$") + f"{sd:.3f}"
+        if np.isfinite(lo) and np.isfinite(hi):
+            body += f" [{lo:.3f}, {hi:.3f}]"
+        if bold:
+            return f"<strong>{body}</strong>" if html_mode else rf"\textbf{{{body}}}"
+        return body
+    return _pct_ci_cell(estimate, std, low, high, bold=bold, html_mode=html_mode)
+
+
+def _top_mpma_display(
+    df: pd.DataFrame, *, selection_metric: str = "nMCC", html_mode: bool = False
+) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
+    primary = _canonical_metric_name(selection_metric)
+    metric_order = [primary] + [
+        metric for metric in ("nMCC", "AUC", "F1w") if metric != primary
+    ]
     rows: list[dict[str, Any]] = []
     for _, r in df.iterrows():
         row = {
             "Rank": int(r.get("rank", len(rows) + 1)),
-            "Resolution": str(r.get("resolution", "")),
-            "Count transformation": str(
+            "Resolution": _display_token(r.get("resolution", "")),
+            "Count transformation": _display_token(
                 r.get("transformation_abbreviation", r.get("count_transformation", ""))
             ),
             "Learner": str(r.get("learner", "")),
         }
-        for metric, label_latex, label_html in [
-            ("nMCC", "nMCC", "nMCC"),
-            ("AUC", "ROC-AUC", "ROC-AUC"),
-            ("F1w", "F1$_w$", "F1w"),
-        ]:
-            label = label_html if html_mode else label_latex
-            row[f"Inner {label}"] = _pct_cell(
-                *_mean_std_from_cols(r, "inner", metric), html_mode=html_mode
+        for metric in metric_order:
+            label = _metric_display_label(metric)
+            row[f"Inner {label}"] = _metric_mean_std_cell(
+                *_mean_std_from_cols(r, "inner", metric), metric, html_mode=html_mode
             )
-            row[f"Outer {label}"] = _pct_cell(
-                *_mean_std_from_cols(r, "outer", metric), html_mode=html_mode
+            row[f"Outer {label}"] = _metric_mean_std_cell(
+                *_mean_std_from_cols(r, "outer", metric), metric, html_mode=html_mode
             )
         rows.append(row)
     return pd.DataFrame(rows)
@@ -463,23 +623,20 @@ def _ensemble_final_candidate(root: Path) -> dict[str, Any]:
     return ens if isinstance(ens, dict) else {}
 
 
-def _strategy_rows(root: Path) -> list[dict[str, Any]]:
+def _strategy_rows(root: Path, selection_metric: str = "nMCC") -> list[dict[str, Any]]:
     by_strategy: dict[str, dict[str, Any]] = {}
     ens = _ensemble_row(root)
-    by_strategy["MPMA-E"] = (
-        {"Strategy": "MPMA-E", "source": "ensemble", **ens}
-        if ens
-        else {"Strategy": "MPMA-E", "source": "ensemble"}
-    )
+    if ens:
+        by_strategy["MPMA-E"] = {"Strategy": "MPMA-E", "source": "ensemble", **ens}
     best = _best_mpma_row(root)
-    by_strategy["MPMA-B"] = (
-        {"Strategy": "MPMA-B", "source": "mpma", **best}
-        if best
-        else {"Strategy": "MPMA-B", "source": "mpma"}
-    )
+    if best:
+        by_strategy["MPMA-B"] = {"Strategy": "MPMA-B", "source": "mpma", **best}
 
-    outer = _agg_metrics(root / "results" / "outer_results.parquet", "outer")
-    inner = _agg_metrics(root / "inner_results" / "inner_results.parquet", "inner")
+    metric = _canonical_metric_name(selection_metric)
+    outer = _agg_metrics(root / "results" / "outer_results.parquet", "outer", (metric,))
+    inner = _agg_metrics(
+        root / "inner_results" / "inner_results.parquet", "inner", (metric,)
+    )
     if not outer.empty:
         base = outer.copy()
         if not inner.empty:
@@ -493,19 +650,38 @@ def _strategy_rows(root: Path) -> list[dict[str, Any]]:
             if sub.empty:
                 return {}
             sort_col = (
-                "inner_nMCC_mean"
-                if "inner_nMCC_mean" in sub.columns
-                else "outer_nMCC_mean"
+                f"inner_{metric}_mean"
+                if f"inner_{metric}_mean" in sub.columns
+                else (
+                    f"outer_{metric}_mean"
+                    if f"outer_{metric}_mean" in sub.columns
+                    else (
+                        "inner_nMCC_mean"
+                        if "inner_nMCC_mean" in sub.columns
+                        else "outer_nMCC_mean"
+                    )
+                )
             )
             if sort_col in sub.columns:
-                sub = sub.sort_values(sort_col, ascending=False)
+                sort_metric = metric if metric in sort_col else "nMCC"
+                sub = sub.sort_values(sort_col, ascending=metric_is_loss(sort_metric))
             return sub.iloc[0].to_dict()
 
         sort_col = (
-            "inner_nMCC_mean"
-            if "inner_nMCC_mean" in base.columns
-            else "outer_nMCC_mean"
+            f"inner_{metric}_mean"
+            if f"inner_{metric}_mean" in base.columns
+            else (
+                f"outer_{metric}_mean"
+                if f"outer_{metric}_mean" in base.columns
+                else (
+                    "inner_nMCC_mean"
+                    if "inner_nMCC_mean" in base.columns
+                    else "outer_nMCC_mean"
+                )
+            )
         )
+        sort_metric = metric if metric in sort_col else "nMCC"
+        sort_ascending = metric_is_loss(sort_metric)
         learner = base.get(
             "learner", pd.Series("", index=base.index, dtype=str)
         ).astype(str)
@@ -521,7 +697,9 @@ def _strategy_rows(root: Path) -> list[dict[str, Any]]:
             & transform.str.fullmatch("relative_abundance", case=False).fillna(False)
         ].copy()
 
-        automl = _pick_deepest_single_rank(automl_pool, sort_col=sort_col)
+        automl = _pick_deepest_single_rank(
+            automl_pool, sort_col=sort_col, ascending=sort_ascending
+        )
         if automl:
             by_strategy["AutoML"] = {"Strategy": "AutoML", "source": "mpma", **automl}
 
@@ -529,7 +707,9 @@ def _strategy_rows(root: Path) -> list[dict[str, Any]]:
             learner.str.fullmatch("RF_1000_msl5", case=False).fillna(False)
             & transform.str.fullmatch("arcsine_sqrt", case=False).fillna(False)
         ].copy()
-        baseline = _pick_deepest_single_rank(baseline_pool, sort_col=sort_col)
+        baseline = _pick_deepest_single_rank(
+            baseline_pool, sort_col=sort_col, ascending=sort_ascending
+        )
         if baseline:
             by_strategy["Baseline RF"] = {
                 "Strategy": "Baseline RF",
@@ -549,20 +729,20 @@ def _strategy_rows(root: Path) -> list[dict[str, Any]]:
                 **siamcat,
             }
 
-    by_strategy.setdefault("AutoML", {"Strategy": "AutoML", "source": "mpma"})
-    by_strategy.setdefault("Baseline RF", {"Strategy": "Baseline RF", "source": "mpma"})
-    by_strategy.setdefault("SIAMCAT", {"Strategy": "SIAMCAT", "source": "mpma"})
     return [
-        by_strategy[k] for k in ("MPMA-E", "MPMA-B", "AutoML", "Baseline RF", "SIAMCAT")
+        by_strategy[k]
+        for k in ("MPMA-E", "MPMA-B", "AutoML", "Baseline RF", "SIAMCAT")
+        if k in by_strategy
     ]
 
 
 def _strategy_performance_display(
-    root: Path, *, html_mode: bool = False
+    root: Path, *, selection_metric: str = "nMCC", html_mode: bool = False
 ) -> pd.DataFrame:
-    rows = _strategy_rows(root)
+    rows = _strategy_rows(root, selection_metric)
     if not rows:
         return pd.DataFrame()
+    display_metrics = _classification_display_metrics(selection_metric)
     stats = _strategy_statistics_summary(root)
     if not stats.empty and {
         "Strategy",
@@ -572,54 +752,55 @@ def _strategy_performance_display(
         "ci_high",
     }.issubset(stats.columns):
         best_by_metric: dict[str, str] = {}
-        for metric, _ in _METRICS:
+        for metric, _ in display_metrics:
             sub = stats[stats["metric"].astype(str).eq(metric)].copy()
             sub["estimate"] = pd.to_numeric(sub["estimate"], errors="coerce")
             sub = sub[np.isfinite(sub["estimate"].to_numpy(dtype=float))]
             if not sub.empty:
-                best_by_metric[metric] = str(
-                    sub.sort_values("estimate", ascending=False).iloc[0]["Strategy"]
-                )
+                sub = sub.sort_values("estimate", ascending=metric_is_loss(metric))
+                best_by_metric[metric] = str(sub.iloc[0]["Strategy"])
         out = []
         for row in rows:
             strategy = str(row.get("Strategy", ""))
             rr = {"Strategy": strategy}
-            for metric, label in _METRICS:
+            for metric, label in display_metrics:
                 sub = stats[
                     stats["Strategy"].astype(str).eq(strategy)
                     & stats["metric"].astype(str).eq(metric)
                 ]
-                key = label.replace("$", "").replace("_{w}", "w")
                 if sub.empty:
-                    rr[key] = "—" if html_mode else r"--"
+                    rr[label] = "—" if html_mode else r"--"
                     continue
                 r = sub.iloc[0]
-                rr[key] = _pct_ci_cell(
+                rr[label] = _metric_ci_cell(
                     r.get("estimate"),
                     r.get("std"),
                     r.get("ci_low"),
                     r.get("ci_high"),
+                    metric,
                     bold=(best_by_metric.get(metric) == strategy),
                     html_mode=html_mode,
                 )
             out.append(rr)
         return pd.DataFrame(out)
     best_by_metric: dict[str, str] = {}
-    for metric, _ in _METRICS:
+    for metric, _ in display_metrics:
         vals = []
         for row in rows:
             m, _ = _mean_std_from_cols(row, "outer", metric)
             if np.isfinite(m):
                 vals.append((m, str(row.get("Strategy", ""))))
         if vals:
-            best_by_metric[metric] = max(vals, key=lambda x: x[0])[1]
+            chooser = min if metric_is_loss(metric) else max
+            best_by_metric[metric] = chooser(vals, key=lambda x: x[0])[1]
     out = []
     for row in rows:
         strategy = str(row.get("Strategy", ""))
         rr = {"Strategy": strategy}
-        for metric, label in _METRICS:
-            rr[label.replace("$", "").replace("_{w}", "w")] = _pct_cell(
+        for metric, label in display_metrics:
+            rr[label] = _metric_mean_std_cell(
                 *_mean_std_from_cols(row, "outer", metric),
+                metric,
                 bold=(best_by_metric.get(metric) == strategy),
                 html_mode=html_mode,
             )
@@ -690,20 +871,40 @@ def _ensemble_members_table(root: Path) -> pd.DataFrame:
         p = root / "figures" / "mpma_e_members.parquet"
     if table_exists(p):
         existing = read_table(p)
-        informative = {
-            "config_id",
-            "Config ID",
-            "resolution",
-            "Representation",
-            "learner",
-            "Learner",
-            "modalities",
-            "Modalities",
-            "integration",
-            "Integration",
-        }
-        if any(c in existing.columns for c in informative):
-            return existing.copy()
+        if not existing.empty:
+            rename = {
+                "member_order": "Member",
+                "config_id": "Config ID",
+                "ranks": "Representation",
+                "transformation": "Transformation",
+                "classifier_family": "Learner",
+                "n_features_in_demo": "Features",
+                "modalities": "Modalities",
+                "integration": "Integration",
+                "weight": "Weight",
+            }
+            existing = existing.rename(
+                columns={k: v for k, v in rename.items() if k in existing.columns}
+            )
+            columns = [
+                "Member",
+                "Config ID",
+                "Family",
+                "Modalities",
+                "Integration",
+                "Representation",
+                "Transformation",
+                "Learner",
+                "Features",
+                "Weight",
+            ]
+            selected = [column for column in columns if column in existing.columns]
+            if selected:
+                out = existing[selected].copy()
+                for column in ("Representation", "Transformation", "Integration"):
+                    if column in out.columns:
+                        out[column] = out[column].map(_display_token)
+                return out
 
     configs_path = root / "configs.parquet"
     configs = (
@@ -767,7 +968,11 @@ def _ensemble_members_table(root: Path) -> pd.DataFrame:
         "Learner",
         "Weight",
     ]
-    return out[[column for column in columns if column in out.columns]]
+    out = out[[column for column in columns if column in out.columns]]
+    for column in ("Representation", "Transformation", "Integration"):
+        if column in out.columns:
+            out[column] = out[column].map(_display_token)
+    return out
 
 
 def _manifest(root: Path) -> dict[str, Any]:
@@ -1021,6 +1226,41 @@ def _refresh_xai_support_figures(target_dir: Path, fallback_top_k: int) -> None:
             [label],
             stability,
         )
+    methods = [
+        str(x).strip().lower()
+        for x in meta.get("methods", [])
+        if str(x).strip() and str(x).strip().lower() != "interactions"
+    ]
+    for method in methods:
+        method_top = _read_table(target_dir / f"top_features_{method}.parquet")
+        if method_top.empty or "feature" not in method_top.columns:
+            continue
+        method_stability = _read_table(
+            target_dir / f"feature_stability_{method}.parquet"
+        )
+        if "class_index" in method_top.columns:
+            method_groups = method_top.groupby("class_index", sort=True)
+        else:
+            method_groups = [(0, method_top)]
+        for class_index, class_top in method_groups:
+            label = (
+                str(class_top["class_label"].dropna().iloc[0])
+                if "class_label" in class_top.columns
+                and not class_top["class_label"].dropna().empty
+                else f"class_{int(class_index)}"
+            )
+            slug = _xai_class_slug(label)
+            class_stats = _read_table(
+                target_dir / f"feature_distribution_stats_{method}__{slug}.parquet"
+            )
+            plot_feature_support(
+                class_top,
+                class_stats,
+                figures / f"feature_importance_{method}__{slug}",
+                top_k,
+                [label],
+                method_stability,
+            )
 
 
 def _xai_figure_for_class(
@@ -1309,7 +1549,7 @@ def _short_feature_label(feature: Any, max_len: int = 64) -> str:
     if text.startswith("ALR[") and text.endswith("]"):
         body = text[4:-1]
         if "/" in body:
-            numerator, reference = body.split("/", 1)
+            numerator, reference = (part.strip() for part in body.split("/", 1))
             label = f"ALR[{_terminal_feature_label(numerator)} / {_terminal_feature_label(reference)}]"
         else:
             label = text
@@ -1321,29 +1561,68 @@ def _short_feature_label(feature: Any, max_len: int = 64) -> str:
             label = text.replace("_", " ")
     else:
         label = _terminal_feature_label(text)
-    return label if len(label) <= max_len else label[: max_len - 1].rstrip() + "…"
+    return feature_tail_ellipsis(label, max_len)
 
 
 def _target_dirs_for_terminal(root: Path) -> list[tuple[str, Path]]:
     dirs = _target_dirs_by_label(root)
-    return [
+    ordered = [
         (label, dirs[label])
         for label in ("MPMA-E", "MPMA-B", "Baseline RF")
         if label in dirs
     ]
+    seen = {path.resolve() for _, path in ordered}
+    explainability_root = root / "explainability"
+    if explainability_root.exists():
+        for path in sorted(x for x in explainability_root.iterdir() if x.is_dir()):
+            if path.resolve() in seen:
+                continue
+            meta = {}
+            meta_path = path / "explained_unit.json"
+            if meta_path.exists():
+                try:
+                    obj = json.loads(meta_path.read_text(encoding="utf-8"))
+                    if isinstance(obj, dict):
+                        meta = obj
+                except Exception:
+                    meta = {}
+            label = str(
+                meta.get(
+                    "target_label",
+                    meta.get("type", meta.get("unit", path.name.replace("_", " "))),
+                )
+            ).strip()
+            ordered.append((label or path.name.replace("_", " "), path))
+            seen.add(path.resolve())
+    return ordered
 
 
-def _feature_support_terminal(root: Path, *, top_n: int = 8) -> None:
+def _feature_support_table(root: Path, *, top_n: int = 8) -> pd.DataFrame:
+
     rows: list[dict[str, Any]] = []
     for label, target_dir in _target_dirs_for_terminal(root):
-        path = target_dir / "top_features.parquet"
-        if not table_exists(path):
-            path = target_dir / "top_features_shap.parquet"
-        tab = _read_table(path)
+        candidates = (
+            target_dir / "top_features.parquet",
+            target_dir / "top_features_shap.parquet",
+            target_dir / "feature_importance.parquet",
+            target_dir / "feature_stability.parquet",
+        )
+        tab = pd.DataFrame()
+        for path in candidates:
+            if table_exists(path):
+                tab = _read_table(path)
+                if not tab.empty and "feature" in tab.columns:
+                    break
         if tab.empty or "feature" not in tab.columns:
             continue
         if "rank" in tab.columns:
             tab = tab.sort_values("rank", ascending=True)
+        elif "mean_rank" in tab.columns:
+            tab = tab.sort_values(["mean_rank", "feature"], ascending=[True, True])
+        elif "importance_mean" in tab.columns:
+            tab = tab.sort_values(
+                ["importance_mean", "feature"], ascending=[False, True]
+            )
         methods = [
             c
             for c in (
@@ -1351,33 +1630,103 @@ def _feature_support_terminal(root: Path, *, top_n: int = 8) -> None:
                 "LIME",
                 "Permutation",
                 "ALE",
+                "shap",
+                "lime",
+                "permutation",
+                "ale",
                 "consensus",
-                "importance_mean",
             )
             if c in tab.columns
         ]
-        for i, r in tab.head(top_n).iterrows():
+        for local_rank, (_, row) in enumerate(tab.head(top_n).iterrows(), start=1):
             support = ""
-            if methods:
+            if "mean_rank" in tab.columns:
+                value = pd.to_numeric(
+                    pd.Series([row.get("mean_rank")]), errors="coerce"
+                ).iloc[0]
+                if pd.notna(value):
+                    support = f"mean rank {float(value):.2f}"
+            if not support and methods:
                 vals = pd.to_numeric(
-                    pd.Series([r.get(c) for c in methods]), errors="coerce"
+                    pd.Series([row.get(c) for c in methods]), errors="coerce"
                 ).dropna()
                 if not vals.empty:
                     support = f"{float(vals.mean()):.3f}"
+            if not support and "top_k_frequency" in tab.columns:
+                value = pd.to_numeric(
+                    pd.Series([row.get("top_k_frequency")]), errors="coerce"
+                ).iloc[0]
+                if pd.notna(value):
+                    support = f"top-k {float(value):.3f}"
+            if not support and "importance_mean" in tab.columns:
+                value = pd.to_numeric(
+                    pd.Series([row.get("importance_mean")]), errors="coerce"
+                ).iloc[0]
+                if pd.notna(value):
+                    support = f"importance {float(value):.3g}"
+            raw_rank = row.get("rank", local_rank)
+            try:
+                rank = int(float(raw_rank)) if pd.notna(raw_rank) else local_rank
+            except (TypeError, ValueError):
+                rank = local_rank
             rows.append(
                 {
                     "Strategy": label,
-                    "Rank": int(r.get("rank", len(rows) + 1))
-                    if str(r.get("rank", "")).strip()
-                    else len(rows) + 1,
-                    "Feature": _short_feature_label(r.get("feature", "")),
+                    "Rank": rank,
+                    "Feature": _short_feature_label(row.get("feature", "")),
                     "Support": support,
                 }
             )
-    if rows:
-        _terminal_table(
-            "Top explainability features", pd.DataFrame(rows), max_rows=len(rows)
-        )
+    return pd.DataFrame(rows, columns=["Strategy", "Rank", "Feature", "Support"])
+
+
+def _feature_support_terminal(root: Path, *, top_n: int = 8) -> None:
+    table = _feature_support_table(root, top_n=top_n)
+    if not table.empty:
+        _terminal_table("Top explainability features", table, max_rows=len(table))
+
+
+def _hardware_summary_table(environment: dict[str, Any] | None) -> pd.DataFrame:
+
+    env = environment or {}
+    rows: list[dict[str, str]] = []
+
+    def add(field: str, value: Any) -> None:
+        if value is None:
+            return
+        text = str(value).strip()
+        if text and text.lower() not in {"none", "nan"}:
+            rows.append({"Field": field, "Value": text})
+
+    add("CPU model", env.get("cpu_model"))
+    physical = env.get("physical_cpus")
+    logical = env.get("logical_cpus")
+    if physical not in (None, "") or logical not in (None, ""):
+        ptxt = str(physical) if physical not in (None, "") else "?"
+        ltxt = str(logical) if logical not in (None, "") else "?"
+        add("CPU topology", f"{ptxt} physical / {ltxt} logical CPUs")
+
+    for key, label in (
+        ("memory_available_bytes", "Available memory"),
+        ("memory_total_bytes", "Total memory"),
+    ):
+        value = env.get(key)
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = float("nan")
+        if np.isfinite(number):
+            add(label, f"{number / (1024**3):.3f} GiB")
+
+    workers = env.get("evaluation_workers")
+    threads = env.get("threads_per_worker")
+    if workers not in (None, "") or threads not in (None, ""):
+        wtxt = str(workers) if workers not in (None, "") else "?"
+        ttxt = str(threads) if threads not in (None, "") else "?"
+        add("Evaluation parallelism", f"{wtxt} workers × {ttxt} threads/worker")
+    add("Platform", env.get("platform"))
+    add("Python", env.get("python_version"))
+    return pd.DataFrame(rows, columns=["Field", "Value"])
 
 
 def _print_report_summary(
@@ -1388,25 +1737,35 @@ def _print_report_summary(
     top_mpmas: pd.DataFrame,
     ensemble_summary: pd.DataFrame,
     ensemble_members: pd.DataFrame,
+    *,
+    primary_pairwise: pd.DataFrame | None = None,
+    compute_display: pd.DataFrame | None = None,
+    compute_environment: dict[str, Any] | None = None,
 ) -> None:
     stage("Run summary", str(root))
     _terminal_table("Evaluation procedure", _compact_procedure_for_terminal(procedure))
     _terminal_table("Task performance", strategy_html)
+    if primary_pairwise is not None and not primary_pairwise.empty:
+        _terminal_table("Inferential comparisons", primary_pairwise, max_rows=10)
     if not top_mpmas.empty:
-        cols = [
-            c
-            for c in [
-                "Rank",
-                "Resolution",
-                "Count transformation",
-                "Learner",
-                "Inner nMCC",
-                "Outer nMCC",
-                "Inner ROC-AUC",
-                "Outer ROC-AUC",
-            ]
-            if c in top_mpmas.columns
+        identity_priority = [
+            "Rank",
+            "Family",
+            "Modalities",
+            "Integration",
+            "Representation",
+            "Resolution",
+            "Transformation",
+            "Count transformation",
+            "Learner",
         ]
+        metric_cols = [
+            c
+            for c in top_mpmas.columns
+            if c.startswith("Inner") or c.startswith("Outer")
+        ]
+        cols = [c for c in identity_priority if c in top_mpmas.columns]
+        cols.extend([c for c in metric_cols if c not in cols][:4])
         _terminal_table(
             "Top MPMA-B configurations",
             top_mpmas[cols] if cols else top_mpmas,
@@ -1430,6 +1789,11 @@ def _print_report_summary(
             "Final MPMA-E members", ensemble_members[cols] if cols else ensemble_members
         )
     _feature_support_terminal(root, top_n=8)
+    if compute_display is not None and not compute_display.empty:
+        _terminal_table("Computational resources", compute_display)
+    hardware = _hardware_summary_table(compute_environment)
+    if not hardware.empty:
+        _terminal_table("Hardware and runtime", hardware)
 
 
 def _procedure_grid_html(procedure: pd.DataFrame) -> str:
@@ -1481,8 +1845,8 @@ def _report_css() -> str:
 :root {
   --ink:#0f172a; --mid:#64748b; --dim:#94a3b8; --track:#e2e8f0; --soft:#f8fafc;
   --bg:#ffffff; --blue:#2563eb; --blue-hover:#0ea5e9; --blue-soft:#eff6ff; --blue-hover-soft:#f0f9ff;
-  --nav-h:44px; --content-w:1120px;
-  --font-body:13px; --font-small:12px; --font-table:12px;
+  --nav-h:44px; --content-w:1400px;
+  --font-body:14px; --font-small:13px; --font-table:13px;
 }
 *, *::before, *::after { box-sizing:border-box; }
 html {
@@ -1520,11 +1884,14 @@ h4 { font-size:13px; font-weight:750; margin:28px 0 10px; }
 h5 { font-size:12px; font-weight:750; margin:22px 0 8px; color:var(--ink); }
 h6 { font-size:12px; font-weight:650; margin:16px 0 7px; color:var(--mid); }
 .xai-target { margin:0 0 34px; }
-.xai-class { border-top:1px solid var(--track); margin-top:20px; padding-top:2px; }
+.xai-class { border-top:1px solid var(--track); margin-top:18px; padding-top:2px; }
+.xai-class figure { margin:10px 0 16px; }
 p, li { font-size:var(--font-body); color:var(--mid); line-height:1.56; }
 .report-path { margin-top:0; }
-figure { margin:18px 0 28px; overflow-x:auto; }
-figure img, .embedded-svg svg { max-width:100%; width:auto; height:auto; display:block; }
+figure { margin:14px 0 22px; overflow-x:auto; width:max-content; max-width:100%; }
+figure img { max-width:100%; width:auto; height:auto; display:block; }
+.embedded-svg { display:inline-block; width:max-content; max-width:100%; }
+.embedded-svg svg { width:auto; max-width:100%; height:auto; display:block; }
 figcaption { font-size:var(--font-small); color:var(--mid); margin-top:7px; }
 .compare-block { margin:17px 0 32px; overflow-x:auto; padding-bottom:2px; }
 .compare-block > h3 { font-size:13px; margin:18px 0 11px; color:var(--ink); }
@@ -1533,7 +1900,7 @@ figcaption { font-size:var(--font-small); color:var(--mid); margin-top:7px; }
 .compare-cell h3 { font-size:12px; color:var(--mid); margin:0 0 7px; font-weight:700; }
 .compare-cell figure { margin:0; }
 .compare-cell figcaption { display:none; }
-.compare-cell img, .compare-cell .embedded-svg svg { min-width:430px; }
+.compare-cell img, .compare-cell .embedded-svg svg { width:auto; max-width:100%; min-width:0; }
 .missing-figure { border:1px solid var(--track); color:var(--mid); font-size:12px; padding:36px 12px; text-align:center; background:#fff; border-radius:10px; }
 .table-wrap { overflow-x:auto; margin:12px 0 24px; }
 table { border-collapse:collapse; width:100%; font-size:var(--font-table); }
@@ -1548,7 +1915,7 @@ code { font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monosp
   .report-links a { padding:7px 6px; }
   h1 { font-size:22px; }
   .compare-grid { grid-template-columns:repeat(var(--compare-columns), minmax(360px, 1fr)); }
-  .compare-cell img, .compare-cell .embedded-svg svg { min-width:360px; }
+  .compare-cell img, .compare-cell .embedded-svg svg { min-width:0; }
 }
 """ + _publication_layout_css()
 
@@ -1564,7 +1931,11 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
     with phase_progress("Report analysis", 4) as phase:
         phase.phase("procedure and rankings")
         procedure = _procedure_table(sweep, root)
-        top_mpmas = _top_mpma_display(_top_mpma_raw(root, 5), html_mode=True)
+        top_mpmas = _top_mpma_display(
+            _top_mpma_raw(root, 5, str(sweep.evaluation.optimize_metric)),
+            selection_metric=str(sweep.evaluation.optimize_metric),
+            html_mode=True,
+        )
         if getattr(sweep, "uses_modalities", False) and not top_mpmas.empty:
             top_mpmas = top_mpmas.rename(
                 columns={
@@ -1572,7 +1943,7 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
                     "Count transformation": "Transformation",
                 }
             )
-        strategy_rows = _strategy_rows(root)
+        strategy_rows = _strategy_rows(root, str(sweep.evaluation.optimize_metric))
         phase.phase("compute accounting")
         compute_accounting = run_compute_accounting(root, sweep, strategy_rows)
         compute_display = compute_accounting.get("display", pd.DataFrame())
@@ -1584,8 +1955,13 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
             strategy_rows,
             n_bootstrap=2000,
             random_state=sweep.evaluation.random_state,
+            selection_metric=str(sweep.evaluation.optimize_metric),
         )
-        strategy_html = _strategy_performance_display(root, html_mode=True)
+        strategy_html = _strategy_performance_display(
+            root,
+            selection_metric=str(sweep.evaluation.optimize_metric),
+            html_mode=True,
+        )
         pairwise = statistics.get("pairwise", pd.DataFrame())
         primary_pairwise = _primary_pairwise_display(
             pairwise, str(sweep.evaluation.optimize_metric)
@@ -1643,6 +2019,12 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
             root, report_dir, top_n=int(getattr(sweep.explainability, "top_k", 15))
         )
 
+    feature_summary = _feature_support_table(root, top_n=8)
+    feature_summary_path = tables_dir / "important_features.parquet"
+    write_table(feature_summary_path, feature_summary)
+    hardware_summary = _hardware_summary_table(compute_environment)
+    hardware_summary_path = tables_dir / "hardware_environment.parquet"
+    write_table(hardware_summary_path, hardware_summary)
     css = _report_css()
     top_metric_cols = {
         c for c in top_mpmas.columns if c.startswith("Inner") or c.startswith("Outer")
@@ -1657,9 +2039,11 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
 <a href="#performance">Performance</a>
 <a href="#mpma-b-composition">MPMA-B</a>
 <a href="#mpma-e">MPMA-E</a>
+<a href="#statistics">Statistics</a>
+<a href="#important-features">Features</a>
 <a href="#explainability-comparison">Explainability</a>
 <a href="#figures">Figures</a>
-<a href="#statistics">Statistics</a>
+<a href="#compute">Compute</a>
 </nav></div></header>
 <div class="report-shell"><main id="top" class="report-content">
 <h2 id="procedure" class="first-section">Evaluation procedure</h2>
@@ -1672,11 +2056,15 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
 {_html_table(ensemble_summary)}
 {_html_table(ensemble_members)}
 </section>
-<h3 id="statistics">Statistical comparisons</h3>
-<p>Pairwise differences are Strategy A minus Strategy B. The table shows the configured primary metric; complete pairwise results are available in strategy_pairwise_tests.parquet. Holm adjustment is applied across strategy pairs within each metric.</p>
-{_html_table(primary_pairwise)}
-<h2 id="top-mpmas">Top 5 MPMA-B configurations</h2>
+<h3 id="statistics">Outer-unit strategy comparisons</h3>
+<p><strong>Inferential layer.</strong> These comparisons use matched held-out outer units: outer test folds for nested cross-validation and held-out datasets for LODO. Pairwise differences are Strategy A minus Strategy B. The table shows the configured primary metric; complete pairwise results are available in strategy_pairwise_tests.parquet. Holm adjustment is applied across strategy pairs within each metric. For loss metrics, a negative difference means Strategy A has lower loss.</p>
+{_html_table(primary_pairwise) if not primary_pairwise.empty else f"<p>No matched pairwise comparisons were estimable for {html.escape(str(sweep.evaluation.optimize_metric))}. At least two displayed strategies with finite values on the same held-out outer units are required.</p>"}
+<h2 id="top-mpmas">{_top_mpma_heading(top_mpmas)}</h2>
 {_html_table(top_mpmas, raw_html_cols=top_metric_cols)}
+
+<h2 id="important-features">Important features</h2>
+<p>Ranked feature summaries are shown when explainability artefacts are available. Display labels are shortened from the left so the most specific taxonomic suffix is preserved.</p>
+{_html_table(feature_summary) if not feature_summary.empty else "<p>No ranked feature table is available yet.</p>"}
 
 <h2 id="explainability-comparison">Explainability</h2>
 {explainability_html if explainability_html else "<p>No explainability artefacts are available yet.</p>"}
@@ -1686,6 +2074,8 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
 <h3 id="compute">Computational resources</h3>
 <p>Compute is summarized by additive CPU core-hours, model-fit count, and peak resident memory for the worker process tree. CPU time includes child processes and external R processes when used. MPMA-B and MPMA-E share the MPMA search pool, so their compute totals overlap.{(" Hardware: " + html.escape(hardware_text) + ".") if hardware_text else ""}</p>
 {_html_table(compute_display)}
+<h4>Hardware and runtime environment</h4>
+{_html_table(hardware_summary) if not hardware_summary.empty else "<p>Hardware details are unavailable for this run.</p>"}
 <p class="report-footer">mllabiome · generated report</p>
 </main></div></body></html>
 """
@@ -1694,6 +2084,8 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
         {
             "report_dir": report_dir,
             "task": "classification",
+            "report_template": REPORT_TEMPLATE_VERSION,
+            "report_layers": list(REPORT_LAYERS),
             "target": str(_sweep_data_source(sweep).target_col),
             "figures_embedded": len([f for f in figs if f]),
             "explainability_targets": explainability_count,
@@ -1708,6 +2100,9 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
         top_mpmas,
         ensemble_summary,
         ensemble_members,
+        primary_pairwise=primary_pairwise,
+        compute_display=compute_display,
+        compute_environment=compute_environment,
     )
     success("Report completed")
     outputs = {
@@ -1730,6 +2125,8 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
         "compute_accounting_manifest": compute_accounting.get(
             "manifest_path", tables_dir / "compute_accounting_manifest.json"
         ),
+        "important_features": feature_summary_path,
+        "hardware_environment": hardware_summary_path,
     }
     path_table("Report outputs", outputs)
     return outputs

@@ -54,13 +54,12 @@ mpl.rcParams.update(
     {
         "font.family": "sans-serif",
         "font.sans-serif": [
-            "Inter",
             "Arial",
             "Helvetica",
             "Liberation Sans",
             "DejaVu Sans",
         ],
-        "font.size": 7.8,
+        "font.size": 7.0,
         "axes.linewidth": 0.4,
         "svg.fonttype": "none",
         "pdf.fonttype": 42,
@@ -965,7 +964,7 @@ def draw_panel(
         f"MPMA-E\n{task.spec.title} ({task.spec.key})",
         ha="left",
         va="top",
-        fontsize=8.4,
+        fontsize=7.0,
         weight="bold",
         color=INK,
         linespacing=1.16,
@@ -994,7 +993,7 @@ def draw_panel(
         r"$\mathbf{x}$",
         ha="left",
         va="center",
-        fontsize=12,
+        fontsize=7.0,
         color=INK,
     )
     ax.text(
@@ -1051,7 +1050,7 @@ def draw_panel(
                 "...",
                 ha="center",
                 va="center",
-                fontsize=8.5,
+                fontsize=7.0,
                 color=MID,
                 style="italic",
                 zorder=3,
@@ -1167,7 +1166,7 @@ def draw_panel(
             zorder=2,
         )
 
-        ax.text(yhat_x, arrow_y, "ŷ", ha="left", va="center", fontsize=12.0, color=INK)
+        ax.text(yhat_x, arrow_y, "ŷ", ha="left", va="center", fontsize=7.0, color=INK)
 
 
 def render_figure(

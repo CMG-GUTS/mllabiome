@@ -153,6 +153,18 @@ def run_compute_accounting(
 ) -> dict[str, Any]:
     tables_dir = root / "report" / "tables"
     tables_dir.mkdir(parents=True, exist_ok=True)
+    run_summary = _read_json(root / "run_summary.json")
+    environment = (
+        run_summary.get("machine", {})
+        if isinstance(run_summary.get("machine"), dict)
+        else {}
+    )
+    environment = {
+        **environment,
+        "evaluation_workers": run_summary.get("workers"),
+        "threads_per_worker": run_summary.get("threads_per_worker"),
+        "latest_evaluation_invocation_wall_time_s": run_summary.get("elapsed_s"),
+    }
     resources = _read_table(root / "tables" / "job_resources.parquet")
     configs = _read_table(root / "configs.parquet")
     if resources.empty or configs.empty:
@@ -164,6 +176,7 @@ def run_compute_accounting(
             {
                 "available": False,
                 "reason": "No per-job resource accounting is available for this run.",
+                "hardware": environment,
             },
             manifest_path,
         )
@@ -172,7 +185,7 @@ def run_compute_accounting(
             "display": empty,
             "compute_path": compute_path,
             "manifest_path": manifest_path,
-            "environment": {},
+            "environment": environment,
         }
     outer_keys = _outer_keys(root, resources)
     pool_ids = _eligible_config_ids(configs, sweep.ensemble)
@@ -233,18 +246,6 @@ def run_compute_accounting(
     frame = pd.DataFrame(rows)
     compute_path = tables_dir / "strategy_compute.parquet"
     write_table(compute_path, frame)
-    run_summary = _read_json(root / "run_summary.json")
-    environment = (
-        run_summary.get("machine", {})
-        if isinstance(run_summary.get("machine"), dict)
-        else {}
-    )
-    environment = {
-        **environment,
-        "evaluation_workers": run_summary.get("workers"),
-        "threads_per_worker": run_summary.get("threads_per_worker"),
-        "latest_evaluation_invocation_wall_time_s": run_summary.get("elapsed_s"),
-    }
     manifest = {
         "available": not frame.empty,
         "primary_compute_measure": "CPU core-hours = summed process and child-process CPU time / 3600",

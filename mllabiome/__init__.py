@@ -4,7 +4,7 @@ from .threading import configure_thread_limits
 
 configure_thread_limits()
 
-__version__ = "0.1.0rc59"
+__version__ = "0.1.0rc64"
 from .configs_sweep import (
     MPDR,
     MPMA,
@@ -34,7 +34,7 @@ from .explainability import (
     ExplainabilityDependencyError,
 )
 from .final_explainability import explain
-from .learners import FLAMLClassifier, build_learner
+from .learners import FLAMLClassifier, build_learner, validate_model_specs
 from .metrics import compute_metrics, compute_regression_metrics
 from .pipeline import run_all
 from .report import write_report
@@ -100,6 +100,7 @@ __all__ = [
     "FLAMLClassifier",
     "configure_thread_limits",
     "build_learner",
+    "validate_model_specs",
     "build_sweep_configs",
     "build_sweep_from_module",
     "compute_metrics",

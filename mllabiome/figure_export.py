@@ -42,7 +42,7 @@ def export_svg_tree(
             target = directory / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             if fmt == "png":
-                cairosvg.svg2png(url=str(source), write_to=str(target), dpi=300)
+                cairosvg.svg2png(url=str(source), write_to=str(target), dpi=450)
             else:
                 cairosvg.svg2pdf(url=str(source), write_to=str(target))
             exported.append(

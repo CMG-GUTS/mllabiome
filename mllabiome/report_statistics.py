@@ -62,6 +62,8 @@ METRIC_LABELS = {
     "F1w": "F1w",
     "Precision": "Precision",
     "Recall": "Recall",
+    "log_loss": "Log loss",
+    "brier": "Brier score",
 }
 _LODO_PROTOCOLS = {"lodo", "leave_one_dataset_out"}
 
@@ -421,6 +423,7 @@ def _pairwise_rows(
     protocol: str,
     n_bootstrap: int,
     random_state: int,
+    metrics: tuple[str, ...] = DISPLAY_METRICS,
 ) -> pd.DataFrame:
     if unit_metrics.empty:
         return pd.DataFrame()
@@ -437,7 +440,7 @@ def _pairwise_rows(
         )
         if merged.empty:
             continue
-        for metric in DISPLAY_METRICS:
+        for metric in metrics:
             metric_a = f"{metric}_a"
             metric_b = f"{metric}_b"
             if metric_a not in merged.columns or metric_b not in merged.columns:
@@ -1469,7 +1472,7 @@ def _statistics_fingerprint(
         "oof_metrics": list(OOF_METRIC_ORDER),
         "calibration_bins": int(calibration_bins),
         "files": [_file_signature(path) for path in paths],
-        "schema_version": 6,
+        "schema_version": 7,
     }
     text = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -1565,11 +1568,22 @@ def run_report_statistics(
     unit_metrics = (
         pd.concat(unit_frames, ignore_index=True) if unit_frames else pd.DataFrame()
     )
-    summary_metrics = tuple(
-        metric
-        for metric in DISPLAY_METRICS
-        if unit_metrics.empty or metric in unit_metrics.columns
+    metric_lookup = {
+        str(column).casefold(): str(column) for column in unit_metrics.columns
+    }
+    requested_metric = str(resolved_selection).strip()
+    selection_key = requested_metric.casefold().replace("-", "_").replace(" ", "_")
+    aliases = {"logloss": "log_loss", "brier_loss": "brier"}
+    selection_key = aliases.get(selection_key, selection_key)
+    selected_metric = metric_lookup.get(selection_key.casefold(), selection_key)
+    inference_metrics = tuple(
+        dict.fromkeys(
+            metric
+            for metric in (*DISPLAY_METRICS, selected_metric)
+            if unit_metrics.empty or metric in unit_metrics.columns
+        )
     )
+    summary_metrics = inference_metrics
     summary = (
         _summary_rows(
             unit_metrics,
@@ -1587,6 +1601,7 @@ def run_report_statistics(
             protocol,
             int(n_bootstrap),
             int(random_state),
+            inference_metrics,
         )
         if not unit_metrics.empty
         else pd.DataFrame()
@@ -1648,12 +1663,12 @@ def run_report_statistics(
     }
     dump_json_standard(oof_manifest, oof_manifest_path)
     manifest = {
-        "schema_version": 4,
+        "schema_version": 5,
         "fingerprint": fingerprint,
         "protocol": str(protocol),
         "strategies": list(frames),
         "display_metrics_bootstrapped": list(summary_metrics),
-        "pairwise_metrics": list(DISPLAY_METRICS),
+        "pairwise_metrics": list(inference_metrics),
         "n_bootstrap": int(n_bootstrap),
         "confidence_level": 0.95,
         "nested_cv_bootstrap": "hierarchical repeat/outer-fold bootstrap of held-out displayed-strategy metrics",
@@ -1662,7 +1677,7 @@ def run_report_statistics(
         "lodo_pairwise_test": "paired sign-flip randomization test at held-out cohort level",
         "multiple_testing": "Holm adjustment across displayed strategy pairs within each displayed metric",
         "scope": "displayed report strategies only",
-        "selection_metric": resolved_selection,
+        "selection_metric": selected_metric,
         "cache": "statistics are reused when source artefacts and statistical settings are unchanged",
     }
     dump_json_standard(manifest, manifest_path)
@@ -1683,6 +1698,6 @@ def run_report_statistics(
         "oof_coverage_path": oof_coverage_path,
         "oof_pairwise_coverage_path": oof_pairwise_coverage_path,
         "manifest_path": manifest_path,
-        "selection_metric": resolved_selection,
+        "selection_metric": selected_metric,
         "cache_hit": False,
     }

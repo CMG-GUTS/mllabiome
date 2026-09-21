@@ -29,7 +29,7 @@ from .explainability_methods import (
     method_has_local,
     normalise_profile,
 )
-from .learners import _learner_factory, _learner_name
+from .learners import _learner_factory, _learner_name, validate_model_specs
 from .metrics import (
     _estimator_call,
     _predict_proba_aligned as _metrics_predict_proba_aligned,
@@ -357,7 +357,7 @@ class Sweep:
     count_transformations: Sequence[Any] = field(
         default_factory=_default_transformations
     )
-    learners: Any = field(default_factory=lambda: ("RF_1000_msl5",))
+    learners: Any = field(default_factory=tuple)
     evaluation: Evaluation = field(default_factory=Evaluation)
     gate: QualificationGate = field(default_factory=QualificationGate)
     ensemble: Ensemble = field(default_factory=Ensemble)
@@ -370,6 +370,9 @@ class Sweep:
     integrations: Sequence[Integration] = field(
         default_factory=lambda: (Integration("unimodal"),)
     )
+
+    def __post_init__(self) -> None:
+        validate_model_specs(self.learners, context="Sweep.learners / MODELS")
 
     def root(self) -> Path:
         return Path(self.experiment_dir)
@@ -489,13 +492,7 @@ def build_sweep_from_module(mod: Any) -> Sweep:
             integrations=integrations,
         )
 
-    required = [
-        "EXPERIMENT_DIR",
-        "DATA",
-        "_RESOLUTION_SETS",
-        "_build_count_transformations",
-        "_build_models",
-    ]
+    required = ["EXPERIMENT_DIR", "DATA"]
     missing = [name for name in required if not hasattr(mod, name)]
     if missing:
         raise TypeError(
@@ -506,13 +503,42 @@ def build_sweep_from_module(mod: Any) -> Sweep:
     data = getattr(mod, "DATA")
     if not isinstance(data, Data):
         raise TypeError("DATA must be an instance of mllabiome.Data(...).")
+
+    if hasattr(mod, "RESOLUTIONS"):
+        resolutions = getattr(mod, "RESOLUTIONS")
+    elif hasattr(mod, "_RESOLUTION_SETS"):
+        resolutions = getattr(mod, "_RESOLUTION_SETS")
+    else:
+        raise TypeError(
+            "Config must define RESOLUTIONS. Legacy _RESOLUTION_SETS is still accepted for compatibility."
+        )
+
+    if hasattr(mod, "COUNT_TRANSFORMATIONS"):
+        count_transformations = getattr(mod, "COUNT_TRANSFORMATIONS")
+    elif hasattr(mod, "_build_count_transformations"):
+        count_transformations = mod._build_count_transformations()
+    else:
+        raise TypeError(
+            "Config must define COUNT_TRANSFORMATIONS. Legacy _build_count_transformations() is still accepted for compatibility."
+        )
+
+    if hasattr(mod, "MODELS"):
+        learners = getattr(mod, "MODELS")
+    elif hasattr(mod, "_build_models"):
+        learners = mod._build_models()
+    else:
+        raise TypeError(
+            "Config must define MODELS as explicit (name, estimator) pairs. Legacy _build_models() is still accepted for compatibility."
+        )
+    validate_model_specs(learners, context="MODELS")
+
     return Sweep(
         title=getattr(mod, "TITLE", Path(getattr(mod, "EXPERIMENT_DIR")).name),
         experiment_dir=getattr(mod, "EXPERIMENT_DIR"),
         data=data,
-        resolutions=getattr(mod, "_RESOLUTION_SETS"),
-        count_transformations=mod._build_count_transformations(),
-        learners=mod._build_models(),
+        resolutions=resolutions,
+        count_transformations=count_transformations,
+        learners=learners,
         evaluation=getattr(mod, "EVALUATION", Evaluation()),
         gate=getattr(mod, "GATE", QualificationGate()),
         ensemble=getattr(mod, "ENSEMBLE", Ensemble()),

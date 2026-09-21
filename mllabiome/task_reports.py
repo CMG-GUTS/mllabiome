@@ -209,12 +209,18 @@ def _format_metric(
     return f"<strong>{body}</strong>" if bold else body
 
 
-def _regression_performance_table(statistics: pd.DataFrame) -> pd.DataFrame:
+def _regression_performance_table(
+    statistics: pd.DataFrame, primary_metric: str = "RMSE"
+) -> pd.DataFrame:
     if statistics.empty:
         return pd.DataFrame()
+    primary = str(primary_metric).strip()
+    display_metrics = [primary] + [
+        metric for metric in _REGRESSION_DISPLAY_METRICS if metric != primary
+    ]
     strategies = statistics["Strategy"].dropna().astype(str).drop_duplicates().tolist()
     best: dict[str, str] = {}
-    for metric in _REGRESSION_DISPLAY_METRICS:
+    for metric in display_metrics:
         sub = statistics[statistics["metric"].astype(str).eq(metric)].copy()
         sub["estimate"] = pd.to_numeric(sub["estimate"], errors="coerce")
         sub = sub[np.isfinite(sub["estimate"].to_numpy(dtype=float))]
@@ -225,7 +231,7 @@ def _regression_performance_table(statistics: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for strategy in strategies:
         row: dict[str, Any] = {"Strategy": strategy}
-        for metric in _REGRESSION_DISPLAY_METRICS:
+        for metric in display_metrics:
             sub = statistics[
                 statistics["Strategy"].astype(str).eq(strategy)
                 & statistics["metric"].astype(str).eq(metric)
@@ -329,11 +335,15 @@ def _regression_top_mpmas(root: Path, metric: str, n: int = 5) -> pd.DataFrame:
             row["Integration"] = item.get("integration", "")
             components = item.get("integration_n_components", "")
             row["Components"] = "" if pd.isna(components) else components
-            row["Representation"] = item.get("resolution", "")
-            row["Transformation"] = item.get("count_transformation", "")
+            row["Representation"] = _report._display_token(item.get("resolution", ""))
+            row["Transformation"] = _report._display_token(
+                item.get("count_transformation", "")
+            )
         else:
-            row["Resolution"] = item.get("resolution", "")
-            row["Count transformation"] = item.get("count_transformation", "")
+            row["Resolution"] = _report._display_token(item.get("resolution", ""))
+            row["Count transformation"] = _report._display_token(
+                item.get("count_transformation", "")
+            )
         row["Learner"] = item.get("learner", "")
         for name in metric_order:
             label = labels.get(name, name)
@@ -583,7 +593,7 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
         statistics, pairwise = _regression_statistics(
             root, int(sweep.evaluation.random_state)
         )
-        performance = _regression_performance_table(statistics)
+        performance = _regression_performance_table(statistics, metric)
         phase.phase("rankings and ensemble summaries")
         top_mpmas = _regression_top_mpmas(root, metric, 5)
         ensemble_summary = _report._ensemble_summary_table(root)
@@ -592,12 +602,19 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
         phase.phase("compute accounting")
         compute = run_compute_accounting(root, sweep, strategy_rows)
         compute_display = compute.get("display", pd.DataFrame())
+        compute_environment = compute.get("environment", {})
         phase.phase("outer-unit summaries")
         outer_units = _regression_outer_unit_table(root)
         phase.phase("explainability visuals")
         explainability_html, explainability_count = _regression_explainability_blocks(
             root, report_dir, int(getattr(sweep.explainability, "top_k", 15))
         )
+    feature_summary = _report._feature_support_table(root, top_n=8)
+    feature_summary_path = tables_dir / "important_features.parquet"
+    write_table(feature_summary_path, feature_summary)
+    hardware_summary = _report._hardware_summary_table(compute_environment)
+    hardware_summary_path = tables_dir / "hardware_environment.parquet"
+    write_table(hardware_summary_path, hardware_summary)
     primary_pairwise = _report._primary_pairwise_display(pairwise, metric)
     statistics_path = tables_dir / "strategy_metrics_bootstrap.parquet"
     pairwise_path = tables_dir / "strategy_pairwise_tests.parquet"
@@ -649,17 +666,19 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
     html_text = f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>mllabiome report</title><link rel="icon" type="image/svg+xml" href="{_report._favicon_href()}"><style>{css}</style></head>
-<body><header class="report-nav"><div class="report-nav-inner"><a class="brand" href="#top" aria-label="mllabiome report"><span class="brand-mark">mll</span><span>mllabiome</span></a><nav class="report-links" aria-label="Report navigation"><a href="#procedure">Evaluation</a><a href="#performance">Performance</a><a href="#mpma-b-composition">MPMA-B</a><a href="#mpma-e">MPMA-E</a><a href="#explainability-comparison">Explainability</a><a href="#figures">Figures</a><a href="#statistics">Statistics</a></nav></div></header>
+<body><header class="report-nav"><div class="report-nav-inner"><a class="brand" href="#top" aria-label="mllabiome report"><span class="brand-mark">mll</span><span>mllabiome</span></a><nav class="report-links" aria-label="Report navigation"><a href="#procedure">Evaluation</a><a href="#performance">Performance</a><a href="#mpma-b-composition">MPMA-B</a><a href="#mpma-e">MPMA-E</a><a href="#statistics">Statistics</a><a href="#important-features">Features</a><a href="#explainability-comparison">Explainability</a><a href="#figures">Figures</a><a href="#compute">Compute</a></nav></div></header>
 <div class="report-shell"><main id="top" class="report-content">
 <h2 id="procedure" class="first-section">Evaluation procedure</h2>{_report._procedure_grid_html(procedure)}
 <h2 id="performance">Task performance summary</h2><p>Held-out strategy performance is reported as mean ± SD across outer evaluation units with 95% bootstrap confidence intervals. Lower values are better for loss metrics; higher values are better for R² and correlation metrics.</p>{_report._html_table(performance, raw_html_cols=raw_metric_cols)}
 <section id="mpma-b-composition"><h3>Final MPMA-B specification</h3>{_report._html_table(mpma_b)}</section>
 <section id="mpma-e-specification"><h3 id="mpma-e">Final MPMA-E specification</h3>{ensemble_html}</section>
-<h3 id="statistics">Statistical comparisons</h3><p>Pairwise differences are Strategy A minus Strategy B on matched held-out outer units. Holm adjustment is applied across strategy pairs within each metric.</p>{pairwise_html}
-<h2 id="top-mpmas">Top 5 MPMA-B configurations</h2>{_report._html_table(top_mpmas)}
+<h3 id="statistics">Outer-unit strategy comparisons</h3><p><strong>Inferential layer.</strong> Pairwise differences are Strategy A minus Strategy B on matched held-out outer units. Holm adjustment is applied across strategy pairs within each metric.</p>{pairwise_html}
+<h2 id="top-mpmas">{_report._top_mpma_heading(top_mpmas)}</h2>{_report._html_table(top_mpmas)}
+<h2 id="important-features">Important features</h2><p>Ranked feature summaries are shown when explainability artefacts are available. Display labels are shortened from the left so the most specific taxonomic suffix is preserved.</p>{_report._html_table(feature_summary) if not feature_summary.empty else "<p>No ranked feature table is available yet.</p>"}
 <h2 id="explainability-comparison">Explainability</h2>{explainability_html if explainability_html else "<p>No explainability artefacts are available yet.</p>"}
 <h2 id="figures">Global figures</h2>{"".join(figs) if figs else "<p>No figure artefacts found yet.</p>"}
 <h3 id="compute">Computational resources</h3><p>Compute is summarized by additive CPU core-hours, model-fit count, and peak resident memory for the worker process tree. MPMA-B and MPMA-E share the MPMA search pool, so their compute totals overlap.</p>{_report._html_table(compute_display)}
+<h4>Hardware and runtime environment</h4>{_report._html_table(hardware_summary) if not hardware_summary.empty else "<p>Hardware details are unavailable for this run.</p>"}
 <p class="report-footer">mllabiome · generated report</p></main></div></body></html>'''
     html_path = report_dir / "index.html"
     html_path.write_text(html_text, encoding="utf-8")
@@ -668,6 +687,8 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
         {
             "report_dir": report_dir,
             "task": "regression",
+            "report_template": _report.REPORT_TEMPLATE_VERSION,
+            "report_layers": list(_report.REPORT_LAYERS),
             "target": str(
                 sweep.samples.target_col
                 if getattr(sweep, "uses_modalities", False)
@@ -690,7 +711,21 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
         "compute_accounting_manifest": compute.get(
             "manifest_path", tables_dir / "compute_accounting_manifest.json"
         ),
+        "important_features": feature_summary_path,
+        "hardware_environment": hardware_summary_path,
     }
+    _report._print_report_summary(
+        sweep,
+        root,
+        procedure,
+        performance,
+        top_mpmas,
+        ensemble_summary,
+        ensemble_members,
+        primary_pairwise=primary_pairwise,
+        compute_display=compute_display,
+        compute_environment=compute_environment,
+    )
     success("Report completed")
     path_table("Report outputs", outputs)
     return outputs
@@ -737,13 +772,17 @@ def _target_report_section(child: Sweep, parent_report_dir: Path) -> str:
     if task == "regression":
         procedure = _regression_procedure(child, root)
         statistics = _read_table(tables_dir / "strategy_metrics_bootstrap.parquet")
-        performance = _regression_performance_table(statistics)
+        performance = _regression_performance_table(statistics, metric)
         top_mpmas = _regression_top_mpmas(root, metric, 5)
     else:
         procedure = _report._procedure_table(child, root)
-        performance = _report._strategy_performance_display(root, html_mode=True)
+        performance = _report._strategy_performance_display(
+            root, selection_metric=metric, html_mode=True
+        )
         top_mpmas = _report._top_mpma_display(
-            _report._top_mpma_raw(root, 5), html_mode=True
+            _report._top_mpma_raw(root, 5, metric),
+            selection_metric=metric,
+            html_mode=True,
         )
         if getattr(child, "uses_modalities", False) and not top_mpmas.empty:
             top_mpmas = top_mpmas.rename(
@@ -758,6 +797,20 @@ def _target_report_section(child: Sweep, parent_report_dir: Path) -> str:
         _read_table(tables_dir / "strategy_pairwise_tests.parquet"), metric
     )
     compute = compute_display(_read_table(tables_dir / "strategy_compute.parquet"))
+    feature_summary = _report._feature_support_table(root, top_n=8)
+    run_summary = _read_json(root / "run_summary.json")
+    machine = (
+        run_summary.get("machine", {})
+        if isinstance(run_summary.get("machine"), dict)
+        else {}
+    )
+    compute_environment = {
+        **machine,
+        "evaluation_workers": run_summary.get("workers"),
+        "threads_per_worker": run_summary.get("threads_per_worker"),
+        "latest_evaluation_invocation_wall_time_s": run_summary.get("elapsed_s"),
+    }
+    hardware_summary = _report._hardware_summary_table(compute_environment)
     if task == "regression":
         xai, _ = _regression_explainability_blocks(
             root, parent_report_dir, int(getattr(child.explainability, "top_k", 15))
@@ -806,11 +859,13 @@ def _target_report_section(child: Sweep, parent_report_dir: Path) -> str:
 <h3>Final MPMA-B specification</h3>{_report._html_table(mpma_b)}
 <h3>Final MPMA-E specification</h3>{_report._html_table(selection)}{_report._html_table(members)}
 {oof}
-<h3>Statistical comparisons</h3>{_report._html_table(pairwise)}
-<h3>Top 5 MPMA-B configurations</h3>{_report._html_table(top_mpmas, raw_html_cols=top_raw)}
+<h3>Outer-unit strategy comparisons</h3><p><strong>Inferential layer.</strong> Pairwise comparisons use matched held-out outer units with task-appropriate statistics and multiplicity correction.</p>{_report._html_table(pairwise)}
+<h3>{_report._top_mpma_heading(top_mpmas)}</h3>{_report._html_table(top_mpmas, raw_html_cols=top_raw)}
+<h3>Important features</h3>{_report._html_table(feature_summary) if not feature_summary.empty else "<p>No ranked feature table is available yet.</p>"}
 <h3>Explainability</h3>{xai if xai else "<p>No explainability artefacts are available yet.</p>"}
 <h3>Global figures</h3>{"".join(figures) if figures else "<p>No figure artefacts found yet.</p>"}
-<h3>Computational resources</h3>{_report._html_table(compute)}</section>'''
+<h3>Computational resources</h3>{_report._html_table(compute)}
+<h4>Hardware and runtime environment</h4>{_report._html_table(hardware_summary) if not hardware_summary.empty else "<p>Hardware details are unavailable for this run.</p>"}</section>'''
 
 
 def _multilabel_summary(children: list[Sweep]) -> pd.DataFrame:
@@ -859,6 +914,8 @@ def write_multi_target_report(
     root = Path(sweep.root())
     report_dir = root / "report"
     report_dir.mkdir(parents=True, exist_ok=True)
+    tables_dir = report_dir / "tables"
+    tables_dir.mkdir(parents=True, exist_ok=True)
     stage("Report", str(report_dir))
     with phase_progress("Combined report", 3) as phase:
         phase.phase("target overview")
@@ -911,11 +968,50 @@ def write_multi_target_report(
 {sections}<p class="report-footer">mllabiome · generated report</p></main></div></body></html>'''
     html_path = report_dir / "index.html"
     html_path.write_text(html_text, encoding="utf-8")
+
+    important_frames: list[pd.DataFrame] = []
+    hardware_frames: list[pd.DataFrame] = []
+    for child in children:
+        target = str(child.data.target_col)
+        task_name = _target_task(child.data, target)
+        child_features = _read_table(
+            Path(child.root()) / "report" / "tables" / "important_features.parquet"
+        )
+        if not child_features.empty:
+            child_features = child_features.copy()
+            child_features.insert(0, "Task", task_name)
+            child_features.insert(0, "Target", target)
+            important_frames.append(child_features)
+        child_hardware = _read_table(
+            Path(child.root()) / "report" / "tables" / "hardware_environment.parquet"
+        )
+        if not child_hardware.empty:
+            child_hardware = child_hardware.copy()
+            child_hardware.insert(0, "Task", task_name)
+            child_hardware.insert(0, "Target", target)
+            hardware_frames.append(child_hardware)
+    important_features_path = tables_dir / "important_features.parquet"
+    hardware_environment_path = tables_dir / "hardware_environment.parquet"
+    write_table(
+        important_features_path,
+        pd.concat(important_frames, ignore_index=True)
+        if important_frames
+        else pd.DataFrame(),
+    )
+    write_table(
+        hardware_environment_path,
+        pd.concat(hardware_frames, ignore_index=True)
+        if hardware_frames
+        else pd.DataFrame(),
+    )
+
     manifest_path = report_dir / "report_manifest.json"
     dump_json_standard(
         {
             "report_dir": report_dir,
             "task": task,
+            "report_template": _report.REPORT_TEMPLATE_VERSION,
+            "report_layers": list(_report.REPORT_LAYERS),
             "targets": [
                 {
                     "target": str(child.data.target_col),
@@ -928,7 +1024,37 @@ def write_multi_target_report(
         },
         manifest_path,
     )
-    outputs = {"html_report": html_path, "manifest": manifest_path}
+    outputs = {
+        "html_report": html_path,
+        "manifest": manifest_path,
+        "important_features": important_features_path,
+        "hardware_environment": hardware_environment_path,
+    }
+    stage("Combined run summary", str(root))
+    _report._terminal_table(
+        "Evaluation procedure", _report._compact_procedure_for_terminal(procedure)
+    )
+    _report._terminal_table("Target performance overview", overview)
+    if not macro.empty:
+        _report._terminal_table("Macro target summary", macro)
+    for child in children:
+        child_root = Path(child.root())
+        summary = _read_json(child_root / "run_summary.json")
+        machine = (
+            summary.get("machine", {})
+            if isinstance(summary.get("machine"), dict)
+            else {}
+        )
+        environment = {
+            **machine,
+            "evaluation_workers": summary.get("workers"),
+            "threads_per_worker": summary.get("threads_per_worker"),
+        }
+        hardware = _report._hardware_summary_table(environment)
+        if not hardware.empty:
+            _report._terminal_table(
+                f"Hardware and runtime · {child.data.target_col}", hardware
+            )
     success("Report completed")
     path_table("Report outputs", outputs)
     return outputs

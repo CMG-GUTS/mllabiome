@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,58 @@ REGRESSION_METRIC_COLUMNS = [
 ]
 
 METRIC_COLUMNS = CLASSIFICATION_METRIC_COLUMNS + REGRESSION_METRIC_COLUMNS
+
+
+def tail_ellipsis(value: Any, max_len: int, *, ellipsis: str = "...") -> str:
+    text = str(value)
+    limit = max(1, int(max_len))
+    if len(text) <= limit:
+        return text
+    marker = str(ellipsis)
+    if limit <= len(marker):
+        return marker[:limit]
+    return marker + text[-(limit - len(marker)) :].lstrip()
+
+
+def rank_tail_ellipsis(value: Any, max_len: int, *, ellipsis: str = "...") -> str:
+    text = str(value).strip()
+    limit = max(1, int(max_len))
+    if len(text) <= limit:
+        return text
+    marker = str(ellipsis)
+    match = re.match(r"^([A-Za-z]\.\s+)(.*)$", text)
+    if match is None:
+        return tail_ellipsis(text, limit, ellipsis=marker)
+    prefix = match.group(1)
+    body = match.group(2).strip()
+    if limit <= len(prefix):
+        return prefix[:limit]
+    if limit <= len(prefix) + len(marker):
+        return (prefix + marker)[:limit]
+    budget = limit - len(prefix) - len(marker)
+    return prefix + marker + body[-budget:].lstrip()
+
+
+def feature_tail_ellipsis(value: Any, max_len: int, *, ellipsis: str = "...") -> str:
+    text = str(value).strip()
+    limit = max(1, int(max_len))
+    if len(text) <= limit:
+        return text
+    if text.startswith("ALR[") and text.endswith("]") and " / " in text:
+        left, right = text[4:-1].split(" / ", 1)
+        available = limit - len("ALR[") - len(" / ") - len("]")
+        minimum_left = 8
+        if available >= minimum_left + 4:
+            if len(right) <= available - minimum_left:
+                right_budget = len(right)
+                left_budget = available - right_budget
+            else:
+                right_budget = max(4, int(round(available * 0.58)))
+                left_budget = available - right_budget
+            left_text = rank_tail_ellipsis(left, left_budget, ellipsis=ellipsis)
+            right_text = rank_tail_ellipsis(right, right_budget, ellipsis=ellipsis)
+            return f"ALR[{left_text} / {right_text}]"
+    return rank_tail_ellipsis(text, limit, ellipsis=ellipsis)
 
 
 def _as_float_matrix(X: np.ndarray) -> np.ndarray:

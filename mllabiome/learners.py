@@ -104,10 +104,54 @@ def _require_probability_estimator(estimator: BaseEstimator) -> BaseEstimator:
     )
 
 
+def validate_model_specs(models: Any, *, context: str = "MODELS") -> None:
+
+    if isinstance(models, dict):
+        if not models:
+            raise TypeError(f"{context} must not be empty.")
+        for key, value in models.items():
+            validate_model_specs(value, context=f"{context}[{key!r}]")
+        return
+    if isinstance(models, (str, bytes)):
+        raise TypeError(
+            f"{context} must contain explicit (name, estimator) pairs; "
+            f"string model aliases such as {models!r} are not allowed."
+        )
+    try:
+        items = tuple(models)
+    except TypeError as exc:
+        raise TypeError(
+            f"{context} must be a sequence of (name, estimator) pairs."
+        ) from exc
+    if not items:
+        raise TypeError(f"{context} must contain at least one model specification.")
+    for index, item in enumerate(items):
+        if not isinstance(item, tuple) or len(item) != 2:
+            raise TypeError(
+                f"{context}[{index}] must be exactly (name, estimator); got {item!r}."
+            )
+        name, spec = item
+        if not str(name).strip():
+            raise TypeError(f"{context}[{index}] has an empty model name.")
+        if not isinstance(spec, BaseEstimator):
+            raise TypeError(
+                f"{context}[{index}] ({name!r}) must contain an instantiated "
+                "scikit-learn BaseEstimator; factories and string aliases are not allowed."
+            )
+
+
 def _learner_name(item: Any) -> str:
-    if hasattr(item, "name") and not isinstance(item, tuple):
-        return str(getattr(item, "name"))
-    return item if isinstance(item, str) else str(item[0])
+    if isinstance(item, (str, bytes)):
+        raise TypeError(
+            "String model aliases are not allowed in sweep configs. Define models "
+            "as explicit (name, estimator) pairs, for example "
+            "('RF_1000_msl5', RandomForestClassifier(...))."
+        )
+    if not isinstance(item, tuple) or len(item) != 2:
+        raise TypeError(
+            f"Model specification must be (name, estimator_or_factory); got {item!r}."
+        )
+    return str(item[0])
 
 
 def _learner_factory(
@@ -124,7 +168,12 @@ def _learner_factory(
             return estimator
         return _require_probability_estimator(estimator)
 
-    if isinstance(item, tuple):
+    if isinstance(item, (str, bytes)):
+        raise TypeError(
+            "String model aliases are not allowed in sweep configs. Define models "
+            "as explicit (name, estimator) pairs."
+        )
+    if isinstance(item, tuple) and len(item) == 2:
         name, spec = item
         if isinstance(spec, BaseEstimator):
             return str(name), lambda spec=spec: validate(clone(spec))
@@ -142,7 +191,9 @@ def _learner_factory(
         raise TypeError(
             f"Learner tuple for {name!r} must contain an estimator or factory."
         )
-    return str(item), lambda item=item: build_learner(str(item), task=task)
+    raise TypeError(
+        f"Model specification must be (name, estimator_or_factory); got {item!r}."
+    )
 
 
 class FLAMLClassifier(BaseEstimator):

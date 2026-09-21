@@ -96,7 +96,7 @@ _ESTIMAND_LABELS = {
 }
 _SECTION_START = '<section id="oof-inference">'
 _SECTION_END = "</section>"
-_STATISTICS_ANCHOR = '<h3 id="statistics">Statistical comparisons</h3>'
+_STATISTICS_ANCHOR = '<h3 id="statistics">Outer-unit strategy comparisons</h3>'
 _COMPUTE_ANCHOR = '<h3 id="compute">Computational resources</h3>'
 _NAV_ANCHOR = '<a href="#statistics">Statistics</a>'
 _NAV_LINK = '<a href="#oof-performance">OOF inference</a>'
@@ -666,7 +666,7 @@ def oof_section_html(
     prefix = f"{id_prefix}-" if id_prefix else ""
     parts = [
         f'<section id="{prefix}oof-inference">',
-        f'<{heading} id="{prefix}oof-performance">Out-of-fold statistical inference</{heading}>',
+        f'<{heading} id="{prefix}oof-performance">Pooled OOF inference</{heading}>',
         "<p>Held-out predictions are pooled at the protocol-defined inference unit. "
         "Tables report point estimates and 95% confidence intervals.</p>",
         _methodology_html(manifest),

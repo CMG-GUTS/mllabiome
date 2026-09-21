@@ -10,6 +10,7 @@ import pandas as pd
 from .configs_sweep import Sweep, target_sweeps
 from .console import summary_table, warn
 from .storage import read_table, table_exists
+from .utils import tail_ellipsis
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -179,6 +180,50 @@ def _ensemble_members(root: Path, candidate: dict[str, Any]) -> list[str]:
     return out
 
 
+def _hardware_rows(root: Path, target: str) -> list[tuple[str, object]]:
+    summary = _read_json(root / "run_summary.json")
+    machine = (
+        summary.get("machine", {}) if isinstance(summary.get("machine"), dict) else {}
+    )
+    rows: list[tuple[str, object]] = []
+    cpu_model = str(machine.get("cpu_model", "")).strip()
+    physical = machine.get("physical_cpus")
+    logical = machine.get("logical_cpus")
+    cpu_bits = [x for x in [cpu_model] if x]
+    if physical not in (None, "") or logical not in (None, ""):
+        cpu_bits.append(
+            f"{physical if physical not in (None, '') else '?'} physical / "
+            f"{logical if logical not in (None, '') else '?'} logical CPUs"
+        )
+    if cpu_bits:
+        rows.append((f"{target} · hardware", " · ".join(cpu_bits)))
+
+    def gib(key: str) -> float | None:
+        value = _finite(machine.get(key))
+        return value / (1024**3) if value is not None else None
+
+    available = gib("memory_available_bytes")
+    total = gib("memory_total_bytes")
+    if available is not None or total is not None:
+        parts = []
+        if available is not None:
+            parts.append(f"available={available:.3f} GiB")
+        if total is not None:
+            parts.append(f"total={total:.3f} GiB")
+        rows.append((f"{target} · memory", " · ".join(parts)))
+    workers = summary.get("workers")
+    threads = summary.get("threads_per_worker")
+    if workers not in (None, "") or threads not in (None, ""):
+        rows.append(
+            (
+                f"{target} · parallelism",
+                f"{workers if workers not in (None, '') else '?'} workers × "
+                f"{threads if threads not in (None, '') else '?'} threads/worker",
+            )
+        )
+    return rows
+
+
 def _evaluation_rows(sweep: Sweep) -> list[tuple[str, object]]:
     rows = []
     for child in _children(sweep):
@@ -197,6 +242,7 @@ def _evaluation_rows(sweep: Sweep) -> list[tuple[str, object]]:
                 (f"{target} · selection score", _selection_score(candidate)),
             ]
         )
+        rows.extend(_hardware_rows(root, target))
     return rows
 
 
@@ -311,8 +357,11 @@ def _top_feature_rows(target_dir: Path, top_n: int = 5) -> list[tuple[str, str]]
             if not feature or feature in seen:
                 continue
             seen.add(feature)
+            display_feature = tail_ellipsis(feature, 80)
             score = _feature_score(item)
-            selected.append(f"{feature} ({score})" if score else feature)
+            selected.append(
+                f"{display_feature} ({score})" if score else display_feature
+            )
             if len(selected) >= int(top_n):
                 break
         if selected:

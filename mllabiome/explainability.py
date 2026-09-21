@@ -59,7 +59,7 @@ from .style import ACC_D, ACC_L, BG, COL_W_2, DIM, INK, MID, TRACK
 from .style import apply as apply_style
 from .style import save_all
 from .transformations import CountTransformationAdapter, _count_transformation_factory
-from .utils import _as_float_matrix, dump_json_standard
+from .utils import _as_float_matrix, dump_json_standard, feature_tail_ellipsis
 from .storage import read_table, write_table, table_exists, glob_tables
 
 
@@ -1444,20 +1444,20 @@ def _plot_ale_curves(
                             x_plot,
                             median,
                             color=ACC_D,
-                            lw=1.05,
+                            lw=1.0,
                             zorder=4,
                             solid_capstyle="round",
                         )
         ax.text(
             0.0,
             1.055,
-            _plain_taxon_label(feat, 34),
+            _plain_taxon_label(feat, 46),
             ha="left",
             va="bottom",
             fontsize=5.2,
             color=INK,
             transform=ax.transAxes,
-            path_effects=[mpe.withStroke(linewidth=1.4, foreground="white")],
+            path_effects=[mpe.withStroke(linewidth=1.0, foreground="white")],
         )
         for side in ("top", "right", "left"):
             ax.spines[side].set_visible(False)
@@ -1465,9 +1465,9 @@ def _plot_ale_curves(
         ax.spines["bottom"].set_color("#000000")
         ax.spines["bottom"].set_linewidth(0.45)
         ax.tick_params(
-            axis="x", length=2.0, width=0.4, labelsize=4.5, pad=1, colors="#000000"
+            axis="x", length=2.0, width=0.4, labelsize=5.0, pad=1, colors="#000000"
         )
-        ax.tick_params(axis="y", length=0, labelsize=4.5, pad=1, colors=MID)
+        ax.tick_params(axis="y", length=0, labelsize=5.0, pad=1, colors=MID)
         ax.yaxis.set_ticks_position("none")
         try:
             ax.locator_params(axis="x", nbins=3)
@@ -4931,7 +4931,7 @@ def _plain_taxon_label(feature_name: str, max_len: int = 34) -> str:
     if text.startswith("ALR[") and text.endswith("]"):
         body = text[4:-1]
         if "/" in body:
-            numerator, reference = body.split("/", 1)
+            numerator, reference = (part.strip() for part in body.split("/", 1))
             out = f"ALR[{_terminal_taxon_label(numerator)} / {_terminal_taxon_label(reference)}]"
         else:
             out = text
@@ -4943,7 +4943,7 @@ def _plain_taxon_label(feature_name: str, max_len: int = 34) -> str:
             out = text.replace("_", " ")
     else:
         out = _terminal_taxon_label(text)
-    return out if len(out) <= max_len else out[: max_len - 1].rstrip() + "…"
+    return feature_tail_ellipsis(out, max_len)
 
 
 def _plot_feature_importance(
