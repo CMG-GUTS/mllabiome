@@ -1408,6 +1408,9 @@ def _explainability_report_blocks(
                 if global_fig:
                     parts.append(global_fig)
                 if ale_curve:
+                    parts.append(
+                        f"<p>Thin pale lines show the outer-fold ALE curves; the thick blue line is their pointwise median and the shaded band is the interquartile range. The dashed horizontal line marks zero centered ALE effect: values above or below it indicate feature regions associated with higher or lower predicted P({html.escape(class_label)}), respectively. ALE describes model behavior rather than a causal effect.</p>"
+                    )
                     parts.append(ale_curve)
             if "interactions" in methods:
                 interaction_figs_class = []

@@ -28,7 +28,7 @@ RESOLUTIONS = (
 
 COUNT_TRANSFORMATIONS = (
     mll.Transformation("arcsine_sqrt"),
-    mll.Transformation("alr"),
+    # mll.Transformation("alr"),
 )
 
 

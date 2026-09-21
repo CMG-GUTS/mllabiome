@@ -512,7 +512,7 @@ def _regression_explainability_blocks(
         if not curves.empty:
             parts.append("<h4>ALE</h4>")
             parts.append(
-                "<p>Accumulated local effects summarize the shape of the fitted regression response over the observed feature range.</p>"
+                "<p>Accumulated local effects summarize how the fitted regression prediction changes over the observed feature range. Thin pale lines show the outer-fold ALE curves; the thick blue line is their pointwise median and the shaded band is the interquartile range. The dashed horizontal line marks zero centered ALE effect, so values above or below it indicate predictions higher or lower than the centered reference in target units. ALE describes model behavior rather than a causal effect.</p>"
             )
             curve_figure = _report._fig(
                 target_dir / "figures" / "ale_curves",
@@ -521,9 +521,6 @@ def _regression_explainability_blocks(
             )
             if curve_figure:
                 parts.append(curve_figure)
-            parts.append(
-                "<p>The x-axis is the model-input feature coordinate and the y-axis is the centered ALE effect in target units. Positive values indicate predictions above the feature's average local effect and negative values indicate predictions below it. The thick curve is the cross-fold median; the band shows the interquartile range across outer folds where supported.</p>"
-            )
             parts.append(
                 "<p>Per-fold numerical ALE coordinates are retained in the technical artifact <code>ale_curves.parquet</code>.</p>"
             )

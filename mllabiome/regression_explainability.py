@@ -27,6 +27,7 @@ from .console import (
 from .data import load_dataset
 from .explainability import (
     _AleModelWrapper,
+    _ale_1d_effect_summary,
     _ale_result_values,
     _auto_ale_bins,
     _plot_ale_curves,
@@ -831,17 +832,19 @@ def _ale_importance(
             if progress_callback is not None:
                 progress_callback(feature_no, len(names), str(name))
             continue
-        centred = vals - float(np.mean(vals))
+        strength, signed_mean, effect_sd = _ale_1d_effect_summary(result, vals)
+        if not np.isfinite(strength):
+            if progress_callback is not None:
+                progress_callback(feature_no, len(names), str(name))
+            continue
         rows.append(
             {
                 "method": "ale",
                 "feature": str(name),
-                "importance_mean": float(np.sqrt(np.mean(centred**2))),
-                "signed_importance_mean": float(np.mean(vals)),
-                "within_fold_importance_sd": float(np.std(centred, ddof=1))
-                if len(centred) > 1
-                else 0.0,
-                "scoring": "rms_centered_regression_ale",
+                "importance_mean": strength,
+                "signed_importance_mean": signed_mean,
+                "within_fold_importance_sd": effect_sd,
+                "scoring": "rms_distribution_weighted_regression_ale",
             }
         )
         if grid is not None and len(grid) == len(vals):
@@ -1088,7 +1091,14 @@ def _write_regression_ale_figure(
             : int(top_k)
         ]
     stem = target_dir / "figures" / "ale_curves"
-    _plot_ale_curves(curve_table, top_features, stem, max_panels=min(12, int(top_k)))
+    _plot_ale_curves(
+        curve_table,
+        top_features,
+        stem,
+        max_panels=min(12, int(top_k)),
+        x_label="Model-input feature value",
+        y_label="Centered ALE effect on prediction (target units)",
+    )
     return {"ale_curves_svg": stem.with_suffix(".svg")}
 
 

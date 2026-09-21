@@ -649,6 +649,43 @@ def _ale_result_values(
     return vals[finite], None, None
 
 
+def _ale_1d_effect_summary(result: Any, vals: np.ndarray) -> tuple[float, float, float]:
+    values = np.asarray(vals, dtype=float).ravel()
+    values = values[np.isfinite(values)]
+    representative = values
+    weights: np.ndarray | None = None
+    if isinstance(result, pd.DataFrame) and {"eff", "size"}.issubset(result.columns):
+        eff = pd.to_numeric(result["eff"], errors="coerce").to_numpy(dtype=float)
+        size = pd.to_numeric(result["size"], errors="coerce").to_numpy(dtype=float)
+        if len(eff) == len(size) and len(eff):
+            if len(eff) > 1 and not np.isfinite(size[0]):
+                representative = (eff[1:] + eff[:-1]) / 2.0
+                weights = size[1:]
+            else:
+                representative = eff
+                weights = size
+    representative = np.asarray(representative, dtype=float).ravel()
+    if weights is None:
+        finite = np.isfinite(representative)
+        representative = representative[finite]
+        if not len(representative):
+            return float("nan"), float("nan"), float("nan")
+        mean = float(np.mean(representative))
+        rms = float(np.sqrt(np.mean(representative**2)))
+        sd = float(np.std(representative, ddof=1)) if len(representative) > 1 else 0.0
+        return rms, mean, sd
+    weights = np.asarray(weights, dtype=float).ravel()
+    finite = np.isfinite(representative) & np.isfinite(weights) & (weights > 0)
+    representative = representative[finite]
+    weights = weights[finite]
+    if not len(representative) or float(np.sum(weights)) <= 0:
+        return float("nan"), float("nan"), float("nan")
+    mean = float(np.average(representative, weights=weights))
+    rms = float(np.sqrt(np.average(representative**2, weights=weights)))
+    sd = float(np.sqrt(np.average((representative - mean) ** 2, weights=weights)))
+    return rms, mean, sd
+
+
 def _ale_feature_importance(
     clf: BaseEstimator,
     X: np.ndarray,
@@ -738,8 +775,9 @@ def _ale_feature_importance(
                         }
                     )
                     continue
-                centred = vals - float(np.mean(vals))
-                strength = float(np.sqrt(np.mean(centred**2)))
+                strength, _, effect_sd = _ale_1d_effect_summary(result, vals)
+                if not np.isfinite(strength):
+                    continue
                 rows.append(
                     {
                         "method": "ale",
@@ -747,10 +785,8 @@ def _ale_feature_importance(
                         "class_label": str(class_labels[c]),
                         "feature": fname,
                         "importance_mean": strength,
-                        "within_fold_importance_sd": float(np.std(centred, ddof=1))
-                        if len(centred) > 1
-                        else 0.0,
-                        "scoring": "rms_centered_class_probability_ale",
+                        "within_fold_importance_sd": effect_sd,
+                        "scoring": "rms_distribution_weighted_class_probability_ale",
                     }
                 )
                 if grid is not None and len(grid) == len(vals):
@@ -1284,6 +1320,8 @@ def _plot_ale_curves(
     out_stem: Path,
     *,
     max_panels: int = 12,
+    x_label: str = "Model-input feature value",
+    y_label: str = "ALE effect",
 ) -> None:
     apply_style()
     import math as _math
@@ -1293,6 +1331,8 @@ def _plot_ale_curves(
 
     from .style import ACC_D, ACC_L, BG, INK, MID, MM, TRACK, save_all
 
+    if curves is not None and "grid" not in curves.columns and "grid_value" in curves.columns:
+        curves = curves.rename(columns={"grid_value": "grid"}).copy()
     if (
         curves is None
         or curves.empty
@@ -1366,7 +1406,7 @@ def _plot_ale_curves(
                 else [("all", d)]
             )
             fold_curves: list[tuple[np.ndarray, np.ndarray]] = []
-            ax.axhline(0, color=TRACK, lw=0.55, zorder=1)
+            ax.axhline(0, color=MID, lw=0.45, ls=(0, (2.2, 2.2)), alpha=0.55, zorder=1)
             for _, fold_frame in grouped:
                 fold_frame = (
                     fold_frame.groupby("grid", as_index=False)["ale_effect"]
@@ -1380,7 +1420,6 @@ def _plot_ale_curves(
                 y_fold = y_fold[finite]
                 if not len(x_fold):
                     continue
-                y_fold = y_fold - float(np.mean(y_fold))
                 fold_curves.append((x_fold, y_fold))
                 if len(grouped) > 1:
                     ax.plot(
@@ -1459,16 +1498,20 @@ def _plot_ale_curves(
             transform=ax.transAxes,
             path_effects=[mpe.withStroke(linewidth=1.0, foreground="white")],
         )
-        for side in ("top", "right", "left"):
+        for side in ("top", "right"):
             ax.spines[side].set_visible(False)
-        ax.spines["bottom"].set_visible(True)
-        ax.spines["bottom"].set_color("#000000")
-        ax.spines["bottom"].set_linewidth(0.45)
+        for side in ("bottom", "left"):
+            ax.spines[side].set_visible(True)
+            ax.spines[side].set_color("#000000")
+            ax.spines[side].set_linewidth(0.45)
         ax.tick_params(
-            axis="x", length=2.0, width=0.4, labelsize=5.0, pad=1, colors="#000000"
+            axis="x", length=2.0, width=0.4, labelsize=5.0, pad=1, color="#000000", labelcolor="#000000"
         )
-        ax.tick_params(axis="y", length=0, labelsize=5.0, pad=1, colors=MID)
-        ax.yaxis.set_ticks_position("none")
+        ax.tick_params(
+            axis="y", length=2.0, width=0.4, labelsize=5.0, pad=1, color="#000000", labelcolor="#000000"
+        )
+        ax.set_xlabel(str(x_label), fontsize=5.0, color="#000000", labelpad=2)
+        ax.set_ylabel(str(y_label), fontsize=5.0, color="#000000", labelpad=2)
         try:
             ax.locator_params(axis="x", nbins=3)
             ax.locator_params(axis="y", nbins=3)
@@ -4341,7 +4384,7 @@ def _explain_one(
             feature_names,
             class_indices,
             dataset.class_labels,
-            "outer_fold_rms_centered_class_probability_ale",
+            "outer_fold_rms_distribution_weighted_class_probability_ale",
             sweep.explainability.top_k,
         )
         if curve_frames:
@@ -4367,6 +4410,8 @@ def _explain_one(
                     top_features,
                     curve_stem,
                     max_panels=min(12, sweep.explainability.top_k),
+                    x_label="Model-input feature value",
+                    y_label=f"Centered ALE effect on P({label})",
                 )
                 method_outputs[f"ale_curves_{slug}"] = curve_stem.with_suffix(".svg")
         method_frames.append(ale_frame)
