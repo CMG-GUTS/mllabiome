@@ -48,6 +48,7 @@ from .transformations import (
 )
 from .selection import write_mpma_b_selection_outputs
 from .storage import read_table, write_table, table_exists, remove_table
+from .splits import resolve_cv_splits
 from .runtime import (
     configure_estimator_threads,
     iter_parallel_tasks,
@@ -131,7 +132,7 @@ class Ensemble:
     )
     optimize_metric: Any = "nMCC"
 
-    include_inactive: bool = False
+    include_inactive: bool = True
 
     threshold_score: float = 0.30
     threshold_max_members: int = 50
@@ -894,7 +895,7 @@ def _load_checkpoint_frames(
         conn.close()
     buckets = {k: [] for k in empty}
     for config_id, split_key, blob in rows:
-        if str(config_id) not in current_config_ids or str(split_key) not in outer_keys:
+        if str(split_key) not in outer_keys:
             continue
         try:
             payload = json.loads(zlib.decompress(blob).decode("utf-8"))
@@ -1229,6 +1230,62 @@ def _regression_inner_splits(
     ]
 
 
+def _resolved_evaluation_splits(
+    root: Path,
+    plan: Evaluation,
+    dataset: Any,
+    groups: np.ndarray | None,
+    strata: np.ndarray | None = None,
+    stratify_col: str | Sequence[str] | None = None,
+    group_col: str | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, list[tuple[np.ndarray, np.ndarray]]]]:
+    task = str(dataset.task).lower()
+
+    def create():
+        if task == "regression":
+            outer = _regression_outer_splits(plan, len(dataset.y), groups)
+            inner = {
+                str(split["split_key"]): _regression_inner_splits(
+                    plan, np.asarray(split["train_idx"], dtype=int), groups, split
+                )
+                for split in outer
+            }
+            return outer, inner
+        outer = _outer_splits(plan, dataset.y, groups, strata, stratify_col)
+        inner = {
+            str(split["split_key"]): _inner_splits(
+                plan,
+                dataset.y,
+                np.asarray(split["train_idx"], dtype=int),
+                groups,
+                split,
+                strata,
+                stratify_col,
+            )
+            for split in outer
+        }
+        return outer, inner
+
+    outer, inner, _ = resolve_cv_splits(
+        root=Path(root),
+        sample_ids=tuple(dataset.sample_ids),
+        y=dataset.y,
+        groups=groups,
+        strata=strata,
+        task=task,
+        target_name=str(dataset.target_name),
+        protocol=str(plan.protocol),
+        outer_folds=int(plan.outer_folds),
+        inner_folds=int(plan.inner_folds),
+        repeats=int(plan.repeats),
+        random_state=int(plan.random_state),
+        group_col=group_col,
+        stratify_col=stratify_col,
+        create=create,
+    )
+    return outer, inner
+
+
 def _regression_metric_row(
     metrics: dict[str, float],
     split_key: str,
@@ -1535,7 +1592,13 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
         _clear_evaluation_checkpoints(root)
     _write_manifest(root, sweep, dataset)
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
-    outer_splits = _regression_outer_splits(sweep.evaluation, len(dataset.y), groups)
+    outer_splits, inner_splits_by_outer = _resolved_evaluation_splits(
+        root,
+        sweep.evaluation,
+        dataset,
+        groups,
+        group_col=sweep.data.group_col,
+    )
     current_config_ids = set(configs["config_id"].astype(str))
     current_outer_keys = {str(split["split_key"]) for split in outer_splits}
     existing = _load_existing_evaluation(
@@ -1572,9 +1635,7 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
         test_idx = np.asarray(split["test_idx"], dtype=int)
         if len(train_idx) == 0 or len(test_idx) == 0:
             continue
-        inner_splits = _regression_inner_splits(
-            sweep.evaluation, train_idx, groups, split
-        )
+        inner_splits = inner_splits_by_outer.get(split_key, [])
         inner_keys = [
             f"{split_key}__i{inner_no}" for inner_no in range(len(inner_splits))
         ]
@@ -1685,7 +1746,7 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
     )
     if completed_pairs and completed_pairs < expected_pairs:
         info(
-            "Resuming regression sweep: completed MPMA/split pairs are kept; missing pairs will be evaluated."
+            "Resuming regression sweep: completed MPMA/split pairs are kept; only new or missing pairs will be evaluated."
         )
     if not prepared_tasks:
         success(
@@ -1893,8 +1954,14 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
     y = dataset.y
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
     strata = _strata_from_metadata(dataset.metadata, y, sweep.data.stratify_col)
-    outer_splits = _outer_splits(
-        sweep.evaluation, y, groups, strata, sweep.data.stratify_col
+    outer_splits, inner_splits_by_outer = _resolved_evaluation_splits(
+        root,
+        sweep.evaluation,
+        dataset,
+        groups,
+        strata,
+        sweep.data.stratify_col,
+        sweep.data.group_col,
     )
     current_config_ids = set(configs["config_id"].astype(str))
     current_outer_keys = {str(s["split_key"]) for s in outer_splits}
@@ -1940,15 +2007,7 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
         test_idx = np.asarray(split["test_idx"], dtype=int)
         if len(np.unique(y[train_idx])) < 2 or len(test_idx) == 0:
             continue
-        inner_splits = _inner_splits(
-            sweep.evaluation,
-            y,
-            train_idx,
-            groups,
-            split,
-            strata,
-            sweep.data.stratify_col,
-        )
+        inner_splits = inner_splits_by_outer.get(split_key, [])
         inner_keys = [
             f"{split_key}__i{inner_no}" for inner_no in range(len(inner_splits))
         ]
@@ -2056,7 +2115,7 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
     )
     if completed_pairs and completed_pairs < expected_pairs:
         info(
-            "Resuming sweep: completed MPMA/split pairs are kept; newly enabled or missing pairs will be evaluated."
+            "Resuming sweep: completed MPMA/split pairs are kept; only new or missing pairs will be evaluated."
         )
     if not prepared_tasks:
         success(
@@ -2215,6 +2274,7 @@ def _existing_outputs(root: Path) -> dict[str, Path]:
         "mpma_b_summary": root / "tables" / "mpma_b_strategy_summary.json",
         "mpma_b_final_candidate": root / "tables" / "mpma_b_final_candidate.json",
         "job_resources": root / "tables" / "job_resources.parquet",
+        "cv_splits": root / "tables" / "cv_splits.parquet",
         "mpma_b_selection_resources": root
         / "tables"
         / "mpma_b_selection_resources.json",
@@ -2229,14 +2289,10 @@ def _write_dataframe(path: Path, frame: pd.DataFrame) -> None:
     write_table(path, frame)
 
 
-def _filter_current(
-    df: pd.DataFrame, current_config_ids: set[str], outer_keys: set[str]
-) -> pd.DataFrame:
+def _filter_existing(df: pd.DataFrame, outer_keys: set[str]) -> pd.DataFrame:
     if df.empty:
         return df
     out = df.copy()
-    if "config_id" in out.columns:
-        out = out[out["config_id"].astype(str).isin(current_config_ids)]
     if "outer_split_key" in out.columns:
         out = out[out["outer_split_key"].astype(str).isin(outer_keys)]
     elif "split_key" in out.columns:
@@ -2251,16 +2307,6 @@ def _filter_current(
 def _load_existing_evaluation(
     root: Path, current_config_ids: set[str], outer_keys: set[str], redo: bool = False
 ) -> dict[str, pd.DataFrame]:
-    empty = {
-        "outer_metrics": pd.DataFrame(),
-        "inner_metrics": pd.DataFrame(),
-        "outer_predictions": pd.DataFrame(),
-        "inner_predictions": pd.DataFrame(),
-        "qualification": pd.DataFrame(),
-        "job_resources": pd.DataFrame(),
-    }
-    if redo:
-        return empty
     tables = {
         "outer_metrics": root / "results" / "outer_results.parquet",
         "inner_metrics": root / "inner_results" / "inner_results.parquet",
@@ -2270,7 +2316,7 @@ def _load_existing_evaluation(
         "job_resources": root / "tables" / "job_resources.parquet",
     }
     base = {
-        name: _filter_current(_read_table(path), current_config_ids, outer_keys)
+        name: _filter_existing(_read_table(path), outer_keys)
         for name, path in tables.items()
     }
     checkpoints = _load_checkpoint_frames(root, current_config_ids, outer_keys)
@@ -2289,6 +2335,10 @@ def _load_existing_evaluation(
             cp.to_dict(orient="records") if cp is not None and not cp.empty else [],
             subsets[key],
         )
+        if redo and not base[key].empty and "config_id" in base[key].columns:
+            base[key] = base[key][
+                ~base[key]["config_id"].astype(str).isin(current_config_ids)
+            ].reset_index(drop=True)
     return base
 
 
@@ -2380,6 +2430,7 @@ def _write_manifest(root: Path, sweep: Sweep, dataset: Dataset) -> None:
         "target": dataset.target_name,
         "class_labels": dataset.class_labels,
         "n_samples": len(dataset.y),
+        "cv_splits": "tables/cv_splits.parquet",
         "transformations": [label.key for label in TRANSFORMATION_LABELS],
         "mpdr_semantics": _MPDR_SEMANTICS,
     }
@@ -2428,7 +2479,7 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
         for name, sql_type in extra_columns.items():
             if name not in columns:
                 conn.execute(f"ALTER TABLE configs ADD COLUMN {name} {sql_type}")
-        conn.execute("UPDATE configs SET active=0")
+        conn.execute("UPDATE configs SET active=1")
         for r in configs.to_dict(orient="records"):
             conn.execute(
                 """INSERT INTO configs

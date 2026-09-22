@@ -1034,14 +1034,11 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         _existing_inner_scores,
         _existing_outputs,
         _groups_from_metadata,
-        _inner_splits,
         _load_existing_evaluation,
         _outer_pair_complete,
-        _outer_splits,
+        _resolved_evaluation_splits,
         _prepare_dirs,
         _qualification_map,
-        _regression_inner_splits,
-        _regression_outer_splits,
         _strata_from_metadata,
         _write_config_table,
         _write_manifest,
@@ -1075,6 +1072,7 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         "primary_modality": dataset.primary_modality,
         "sample_alignment": "primary_modality_required_in_all_modalities",
         "n_samples": len(dataset.sample_ids),
+        "cv_splits": "tables/cv_splits.parquet",
         "modalities": {
             name: {"n_features": int(modality.X.shape[1]), "format": modality.format}
             for name, modality in dataset.modalities.items()
@@ -1105,17 +1103,20 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         if sweep.samples.group_col is None
         else dataset.metadata[sweep.samples.group_col].to_numpy()
     )
-    if dataset.task == "classification":
-        strata = _strata_from_metadata(
-            dataset.metadata, dataset.y, sweep.samples.stratify_col
-        )
-        outer_splits = _outer_splits(
-            sweep.evaluation, dataset.y, groups, strata, sweep.samples.stratify_col
-        )
-    else:
-        outer_splits = _regression_outer_splits(
-            sweep.evaluation, len(dataset.y), groups
-        )
+    strata = (
+        _strata_from_metadata(dataset.metadata, dataset.y, sweep.samples.stratify_col)
+        if dataset.task == "classification"
+        else None
+    )
+    outer_splits, inner_splits_by_outer = _resolved_evaluation_splits(
+        root,
+        sweep.evaluation,
+        dataset,
+        groups,
+        strata,
+        sweep.samples.stratify_col,
+        sweep.samples.group_col,
+    )
     current_ids = set(configs["config_id"].astype(str))
     outer_keys = {str(x["split_key"]) for x in outer_splits}
     existing = _load_existing_evaluation(
@@ -1153,20 +1154,11 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         split_key = str(split["split_key"])
         train_idx = np.asarray(split["train_idx"], dtype=int)
         test_idx = np.asarray(split["test_idx"], dtype=int)
-        if dataset.task == "classification":
-            if len(np.unique(dataset.y[train_idx])) < 2 or len(test_idx) == 0:
-                continue
-            inner = _inner_splits(
-                sweep.evaluation,
-                dataset.y,
-                train_idx,
-                groups,
-                split,
-                strata,
-                sweep.samples.stratify_col,
-            )
-        else:
-            inner = _regression_inner_splits(sweep.evaluation, train_idx, groups, split)
+        if dataset.task == "classification" and (
+            len(np.unique(dataset.y[train_idx])) < 2 or len(test_idx) == 0
+        ):
+            continue
+        inner = inner_splits_by_outer.get(split_key, [])
         inner_keys = [f"{split_key}__i{i}" for i in range(len(inner))]
         for spec in specs:
             missing_inner = {
@@ -1442,7 +1434,7 @@ def candidate_from_row(
 def fit_modality_candidate_oof_for_explainability(sweep, row):
     from .configs_sweep import (
         _groups_from_metadata,
-        _outer_splits,
+        _resolved_evaluation_splits,
         _strata_from_metadata,
         _learner_factory,
         _predict_proba_aligned,
@@ -1462,8 +1454,14 @@ def fit_modality_candidate_oof_for_explainability(sweep, row):
     strata = _strata_from_metadata(
         dataset.metadata, dataset.y, sweep.samples.stratify_col
     )
-    splits = _outer_splits(
-        sweep.evaluation, dataset.y, groups, strata, sweep.samples.stratify_col
+    splits, _ = _resolved_evaluation_splits(
+        sweep.root(),
+        sweep.evaluation,
+        dataset,
+        groups,
+        strata,
+        sweep.samples.stratify_col,
+        sweep.samples.group_col,
     )
     learner_lookup = dict(_learner_factory(item) for item in sweep.learners)
     learner_factory = learner_lookup[spec.learner]
@@ -1565,7 +1563,7 @@ def fit_modality_candidate_oof_for_explainability(sweep, row):
 def fit_modality_regression_candidate_folds(sweep, row, progress_callback=None):
     from .configs_sweep import (
         _groups_from_metadata,
-        _regression_outer_splits,
+        _resolved_evaluation_splits,
         _learner_factory,
         _count_transformation_factory,
         _lodo_feature_pair,
@@ -1577,7 +1575,13 @@ def fit_modality_regression_candidate_folds(sweep, row, progress_callback=None):
         if sweep.samples.group_col is None
         else dataset.metadata[sweep.samples.group_col].astype(str).to_numpy()
     )
-    splits = _regression_outer_splits(sweep.evaluation, len(dataset.y), groups)
+    splits, _ = _resolved_evaluation_splits(
+        sweep.root(),
+        sweep.evaluation,
+        dataset,
+        groups,
+        group_col=sweep.samples.group_col,
+    )
     learner_lookup = dict(
         _learner_factory(item, task="regression") for item in sweep.learners
     )

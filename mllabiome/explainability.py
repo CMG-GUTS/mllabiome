@@ -23,7 +23,7 @@ from .configs_sweep import (
     Sweep,
     _effective_local_explanations_mode,
     _groups_from_metadata,
-    _outer_splits,
+    _resolved_evaluation_splits,
     _strata_from_metadata,
 )
 from .console import info, path_table, progress, stage, success, summary_table
@@ -1331,7 +1331,11 @@ def _plot_ale_curves(
 
     from .style import ACC_D, ACC_L, BG, INK, MID, MM, TRACK, save_all
 
-    if curves is not None and "grid" not in curves.columns and "grid_value" in curves.columns:
+    if (
+        curves is not None
+        and "grid" not in curves.columns
+        and "grid_value" in curves.columns
+    ):
         curves = curves.rename(columns={"grid_value": "grid"}).copy()
     if (
         curves is None
@@ -1505,10 +1509,22 @@ def _plot_ale_curves(
             ax.spines[side].set_color("#000000")
             ax.spines[side].set_linewidth(0.45)
         ax.tick_params(
-            axis="x", length=2.0, width=0.4, labelsize=5.0, pad=1, color="#000000", labelcolor="#000000"
+            axis="x",
+            length=2.0,
+            width=0.4,
+            labelsize=5.0,
+            pad=1,
+            color="#000000",
+            labelcolor="#000000",
         )
         ax.tick_params(
-            axis="y", length=2.0, width=0.4, labelsize=5.0, pad=1, color="#000000", labelcolor="#000000"
+            axis="y",
+            length=2.0,
+            width=0.4,
+            labelsize=5.0,
+            pad=1,
+            color="#000000",
+            labelcolor="#000000",
         )
         ax.set_xlabel(str(x_label), fontsize=5.0, color="#000000", labelpad=2)
         ax.set_ylabel(str(y_label), fontsize=5.0, color="#000000", labelpad=2)
@@ -2583,7 +2599,15 @@ def _explainability_outer_splits(sweep: Sweep, dataset: Any) -> list[dict[str, A
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
     y = np.asarray(dataset.y, dtype=int)
     strata = _strata_from_metadata(dataset.metadata, y, sweep.data.stratify_col)
-    splits = _outer_splits(sweep.evaluation, y, groups, strata, sweep.data.stratify_col)
+    splits, _ = _resolved_evaluation_splits(
+        sweep.root(),
+        sweep.evaluation,
+        dataset,
+        groups,
+        strata,
+        sweep.data.stratify_col,
+        sweep.data.group_col,
+    )
     if not splits:
         raise ExplainabilityConfigurationError(
             "No outer splits are available for out-of-fold explainability."

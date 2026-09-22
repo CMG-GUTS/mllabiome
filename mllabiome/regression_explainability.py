@@ -13,7 +13,7 @@ from .configs_sweep import (
     _effective_local_explanations_mode,
     _groups_from_metadata,
     _lodo_feature_pair,
-    _regression_outer_splits,
+    _resolved_evaluation_splits,
 )
 from .console import (
     info,
@@ -231,7 +231,13 @@ def _fit_individual_folds(
     dataset = load_dataset(sweep.data, levels)
     X_base, base_names = materialize_mpdr(dataset, levels)
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
-    splits = _regression_outer_splits(sweep.evaluation, len(dataset.y), groups)
+    splits, _ = _resolved_evaluation_splits(
+        sweep.root(),
+        sweep.evaluation,
+        dataset,
+        groups,
+        group_col=sweep.data.group_col,
+    )
     transforms, learners = _factories(sweep)
     transform_key = str(row["count_transformation"])
     learner_key = str(row["learner"])
@@ -306,7 +312,13 @@ def _fit_ensemble_folds(
                 all_levels.append(level)
     dataset = load_dataset(sweep.data, tuple(all_levels or ["all"]))
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
-    splits = _regression_outer_splits(sweep.evaluation, len(dataset.y), groups)
+    splits, _ = _resolved_evaluation_splits(
+        sweep.root(),
+        sweep.evaluation,
+        dataset,
+        groups,
+        group_col=sweep.data.group_col,
+    )
     transforms, learners = _factories(sweep)
     materialized: list[tuple[pd.Series, np.ndarray, list[str]]] = []
     for row in member_rows:
