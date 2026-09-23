@@ -28,6 +28,7 @@ from .configs_sweep import (
 )
 from .console import info, path_table, progress, stage, success, summary_table
 from .data import load_dataset
+from .explainability_context import build_local_relative_abundance_context
 from .explainability_visuals import plot_feature_support as _plot_feature_support_visual
 from .explainability_support import top_k_rank_support
 from .explainability_methods import (
@@ -48,7 +49,7 @@ from .explainability_visuals import (
 )
 from .learners import _learner_factory
 from .metrics import _predict_proba_aligned
-from .resolutions import materialize_mpdr
+from .resolutions import materialize_mpdr_with_blocks
 from .runtime import (
     configure_estimator_threads,
     iter_parallel_tasks,
@@ -231,10 +232,14 @@ def _preflight_explainability_dependencies(methods: Sequence[str]) -> None:
 
 
 def _configured_count_transformation_factory(
-    sweep: Sweep, key: str
+    sweep: Sweep, key: str, feature_blocks: Any = None
 ) -> Callable[[], CountTransformationAdapter]:
     factories = dict(
-        _count_transformation_factory(x, random_state=sweep.explainability.random_state)
+        _count_transformation_factory(
+            x,
+            random_state=sweep.explainability.random_state,
+            feature_blocks=feature_blocks,
+        )
         for x in sweep.count_transformations
     )
     if key not in factories:
@@ -2062,6 +2067,7 @@ def _existing_explainability_outputs(target_dir: Path) -> dict[str, Path]:
         "importance": target_dir / "feature_importance.parquet",
         "stability": target_dir / "feature_stability.parquet",
         "local_explanations": target_dir / "local_explanations.parquet",
+        "local_cohort_context": target_dir / "local_cohort_context.parquet",
         "local_explanations_figure": target_dir / "figures" / "local_explanations.svg",
     }
     for key, path in candidates.items():
@@ -2681,11 +2687,15 @@ def _fit_oof_single_for_explainability(
         return fit_modality_candidate_oof_for_explainability(sweep, row)
     levels = tuple(str(row["levels"]).split(","))
     dataset = load_dataset(sweep.data, levels)
-    X_base, feature_names = materialize_mpdr(dataset, levels)
+    X_base, feature_names, feature_blocks = materialize_mpdr_with_blocks(
+        dataset, levels
+    )
     splits = _explainability_outer_splits(sweep, dataset)
     transformation_key = str(row["count_transformation"])
     learner_key = str(row["learner"])
-    ct_factory = _configured_count_transformation_factory(sweep, transformation_key)
+    ct_factory = _configured_count_transformation_factory(
+        sweep, transformation_key, feature_blocks
+    )
     learner_factory = _configured_learner_factory(sweep, learner_key)
     execution = _xai_execution_plan(sweep, len(splits))
     tasks = [
@@ -2767,7 +2777,9 @@ def _mpma_e_reference_and_folds(
     member_materialized: list[dict[str, Any]] = []
     for member_i, (_, r) in enumerate(member_rows.iterrows(), start=1):
         levels = _row_levels(r) or ("all",)
-        X_base_member, names_member = materialize_mpdr(dataset, levels)
+        X_base_member, names_member, blocks_member = materialize_mpdr_with_blocks(
+            dataset, levels
+        )
         transformation_key = str(r["count_transformation"])
         learner_key = str(r["learner"])
         label_prefix = (
@@ -2776,7 +2788,9 @@ def _mpma_e_reference_and_folds(
             f"|{learner_key}"
             f"|{str(r.get('config_id', member_i))}"
         )
-        ct_ref = _configured_count_transformation_factory(sweep, transformation_key)()
+        ct_ref = _configured_count_transformation_factory(
+            sweep, transformation_key, blocks_member
+        )()
         X_ref_member, _ = ct_ref.apply_pair(X_base_member, X_base_member)
         transformed_names = ct_ref.get_feature_names_out(list(names_member))
         if X_ref_member.shape[1] != len(transformed_names):
@@ -2790,6 +2804,7 @@ def _mpma_e_reference_and_folds(
                 "row": r,
                 "levels": levels,
                 "X_base": X_base_member,
+                "feature_blocks": blocks_member,
                 "n_features": X_base_member.shape[1],
                 "transformation_key": transformation_key,
                 "learner_key": learner_key,
@@ -2822,7 +2837,7 @@ def _mpma_e_reference_and_folds(
                 f"{spec['transformation_key']} · {spec['learner_key']}"
             )
             ct = _configured_count_transformation_factory(
-                sweep, spec["transformation_key"]
+                sweep, spec["transformation_key"], spec["feature_blocks"]
             )()
             X_train_member, X_test_member = ct.apply_pair(
                 spec["X_base"][train_idx], spec["X_base"][test_idx]
@@ -3223,12 +3238,22 @@ def _ensure_local_explanation_outputs(
             cache_path,
         )
     outputs: dict[str, Path] = {"local_explanations": local_path}
+    context_table = pd.DataFrame()
+    if not local_table.empty:
+        context_table = build_local_relative_abundance_context(
+            dataset, local_table["feature"].astype(str).tolist()
+        )
+        if not context_table.empty:
+            context_path = target_dir / "local_cohort_context.parquet"
+            write_table(context_path, context_table)
+            outputs["local_cohort_context"] = context_path
     if not local_table.empty and selected_pairs:
         figure_path = plot_local_attributions(
             local_table,
             target_dir / "figures" / "local_explanations",
             task="classification",
             top_n=int(sweep.explainability.local.displayed_features),
+            cohort_context=context_table,
         )
         if figure_path is not None:
             outputs["local_explanations_figure"] = figure_path
@@ -4774,7 +4799,10 @@ def _resolve_baseline_rf_row(rankings: pd.DataFrame) -> pd.Series | None:
         return None
     required = required[
         required["learner"].astype(str).eq("RF_1000_msl5")
-        & required["count_transformation"].astype(str).eq("arcsine_sqrt")
+        & required["count_transformation"]
+        .astype(str)
+        .str.fullmatch(r"arcsine_sqrt(?:@(rank|global))?", case=False)
+        .fillna(False)
     ].copy()
     if required.empty:
         return None

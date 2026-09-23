@@ -4,6 +4,9 @@ from pathlib import Path
 
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 from mllabiome import mll
 
@@ -122,6 +125,28 @@ MODELS = (
             random_state=42,
         ),
     ),
+    (
+        "MLP_32_relu_lbfgs",
+        Pipeline(
+            steps=(
+                (
+                    "scaler",
+                    StandardScaler(),
+                ),
+                (
+                    "mlp",
+                    MLPClassifier(
+                        hidden_layer_sizes=(32,),
+                        activation="relu",
+                        solver="lbfgs",
+                        alpha=1e-3,
+                        max_iter=2000,
+                        random_state=42,
+                    ),
+                ),
+            ),
+        ),
+    ),
 )
 
 EVALUATION = mll.Evaluation(
@@ -158,13 +183,17 @@ ENSEMBLE = mll.Ensemble(
 )
 
 EXPLAINABILITY = mll.Explainability(
-    targets="auto",
-    top_k=30,
-    representative_instances=True,
-    instance_sample_ids=(),
-    top_instance_features=5,
+    targets=("mpma_b",),
+    profile="screening",
+    methods=(
+        mll.Permutation(),
+        mll.SHAP(),
+        mll.ALE(),
+        mll.LIME(),
+        mll.ALEInteractions(),
+    ),
+    classes="auto",
 )
-
 SWEEP = mll.Sweep(
     data=DATA,
     experiment_dir=EXPERIMENT_DIR,

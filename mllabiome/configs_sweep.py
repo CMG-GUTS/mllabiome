@@ -13,10 +13,15 @@ import numpy as np
 import pandas as pd
 from joblib import delayed
 from sklearn.base import BaseEstimator
-from sklearn.model_selection import KFold, StratifiedKFold
+from sklearn.model_selection import (
+    GroupKFold,
+    KFold,
+    StratifiedGroupKFold,
+    StratifiedKFold,
+)
 from threadpoolctl import threadpool_limits
 
-from .data import Data, Dataset, load_dataset
+from .data import Data, Dataset, dataset_fingerprint, load_dataset
 from .integrations import Integration
 from .modalities import Samples, Modality
 from .console import info, path_table, progress, stage, success, summary_table
@@ -29,7 +34,12 @@ from .explainability_methods import (
     method_has_local,
     normalise_profile,
 )
-from .learners import _learner_factory, _learner_name, validate_model_specs
+from .learners import (
+    _learner_factory,
+    _learner_name,
+    learner_display_label,
+    validate_model_specs,
+)
 from .metrics import (
     _estimator_call,
     _predict_proba_aligned as _metrics_predict_proba_aligned,
@@ -38,13 +48,17 @@ from .metrics import (
     metric_is_loss,
     metric_passes_threshold,
 )
-from .resolutions import _parse_resolution, materialize_mpdr
-from .utils import METRIC_COLUMNS, dump_json_standard
+from .resolutions import (
+    _parse_resolution,
+    mask_feature_blocks,
+    materialize_mpdr_with_blocks,
+)
+from .utils import METRIC_COLUMNS, TAXONOMIC_LEVELS, dump_json_standard
 from .transformations import (
     TRANSFORMATION_LABELS,
     _count_transformation_factory,
     _count_transformation_name,
-    _count_transformation_spec,
+    _count_transformation_specs_for_blocks,
 )
 from .selection import write_mpma_b_selection_outputs
 from .storage import read_table, write_table, table_exists, remove_table
@@ -547,7 +561,7 @@ def build_sweep_from_module(mod: Any) -> Sweep:
     )
 
 
-_MPDR_SEMANTICS = "select_then_transform_fold_local_lodo_v2"
+_MPDR_SEMANTICS = "select_then_transform_fold_local_rank_composition_v3"
 
 
 def _mpdr_id(count_transformation: str, resolution: str) -> str:
@@ -566,14 +580,46 @@ def build_sweep_configs(
     resolutions: Sequence[Any],
     count_transformations: Sequence[Any],
     learners: Sequence[Any],
+    resolution_feature_blocks: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
-    learner_names = [_learner_name(x) for x in learners]
+    learner_specs = [(_learner_name(x), learner_display_label(x)) for x in learners]
+    block_map = (
+        {} if resolution_feature_blocks is None else dict(resolution_feature_blocks)
+    )
     for res in resolutions:
         res_name, levels = _parse_resolution(res)
-        for ct in count_transformations:
-            ct_name = _count_transformation_name(ct)
-            for lname in learner_names:
+        feature_blocks = block_map.get(res_name)
+        if feature_blocks is None and "all" not in levels:
+            feature_blocks = tuple(
+                (level, (index,)) for index, level in enumerate(levels)
+            )
+        nonempty_blocks = tuple(
+            (str(name), tuple(indices))
+            for name, indices in (feature_blocks or ())
+            if tuple(indices)
+        )
+        taxonomic_blocks = tuple(
+            name for name, _ in nonempty_blocks if name in TAXONOMIC_LEVELS
+        )
+        taxonomic_block_count = len(dict.fromkeys(taxonomic_blocks))
+        if taxonomic_block_count == 0 and "all" not in levels:
+            taxonomic_blocks = tuple(
+                level for level in levels if level in TAXONOMIC_LEVELS
+            )
+            taxonomic_block_count = len(dict.fromkeys(taxonomic_blocks))
+        representation_scope = (
+            "single-rank"
+            if taxonomic_block_count == 1
+            else "multi-rank"
+            if taxonomic_block_count > 1
+            else "unresolved"
+        )
+        transformation_specs = _count_transformation_specs_for_blocks(
+            count_transformations, feature_blocks
+        )
+        for ct_name, _ in transformation_specs:
+            for lname, learner_display in learner_specs:
                 rows.append(
                     {
                         "config_id": _config_id(ct_name, res_name, lname),
@@ -581,7 +627,11 @@ def build_sweep_configs(
                         "count_transformation": ct_name,
                         "resolution": res_name,
                         "levels": ",".join(levels),
+                        "taxonomic_blocks": ",".join(taxonomic_blocks),
+                        "taxonomic_block_count": taxonomic_block_count,
+                        "representation_scope": representation_scope,
                         "learner": lname,
+                        "learner_display": learner_display,
                         "active": 1,
                     }
                 )
@@ -644,6 +694,7 @@ def _prediction_rows_values(
 
 def _evaluate_mpma_split_task(
     X_base: np.ndarray,
+    feature_blocks: Any,
     y: np.ndarray,
     classes: np.ndarray,
     class_labels: Sequence[str],
@@ -700,13 +751,16 @@ def _evaluate_mpma_split_task(
             va_idx = train_idx[np.asarray(inner_val_local, dtype=int)]
             if len(np.unique(y[tr_idx])) < 2 or len(va_idx) == 0:
                 continue
-            _, inner_ct_factory = transformation_factory_builder(
-                ct_item, random_state=random_state
-            )
-            fitted = inner_ct_factory()
-            X_inner_train, X_inner_val, _ = _lodo_feature_pair(
+            X_inner_train, X_inner_val, feature_mask = _lodo_feature_pair(
                 X_base, tr_idx, va_idx, protocol
             )
+            inner_blocks = mask_feature_blocks(feature_blocks, feature_mask)
+            _, inner_ct_factory = transformation_factory_builder(
+                ct_item,
+                random_state=random_state,
+                feature_blocks=inner_blocks,
+            )
+            fitted = inner_ct_factory()
             try:
                 X_tr, X_va = fitted.apply_pair(X_inner_train, X_inner_val)
                 clf = configure_estimator_threads(learner_factory(), threads_per_worker)
@@ -771,13 +825,16 @@ def _evaluate_mpma_split_task(
                     }
                 )
         if needs_outer and qualified:
-            _, outer_ct_factory = transformation_factory_builder(
-                ct_item, random_state=random_state
-            )
-            fitted_outer = outer_ct_factory()
-            X_outer_train, X_outer_test, _ = _lodo_feature_pair(
+            X_outer_train, X_outer_test, feature_mask = _lodo_feature_pair(
                 X_base, train_idx, test_idx, protocol
             )
+            outer_blocks = mask_feature_blocks(feature_blocks, feature_mask)
+            _, outer_ct_factory = transformation_factory_builder(
+                ct_item,
+                random_state=random_state,
+                feature_blocks=outer_blocks,
+            )
+            fitted_outer = outer_ct_factory()
             try:
                 X_train, X_test = fitted_outer.apply_pair(X_outer_train, X_outer_test)
                 clf = configure_estimator_threads(learner_factory(), threads_per_worker)
@@ -1173,18 +1230,23 @@ def _regression_outer_splits(
         return out
     repeats = plan.repeats if protocol == "repeated_nested_cv" else 1
     out = []
-    n_splits = min(int(plan.outer_folds), int(n_samples))
+    if groups is None:
+        n_splits = min(int(plan.outer_folds), int(n_samples))
+    else:
+        n_splits = min(int(plan.outer_folds), int(pd.Series(groups).nunique()))
     if n_splits < 2:
         raise ValueError(
-            "Regression cross-validation requires at least two outer folds."
+            "Regression cross-validation requires at least two samples or groups."
         )
     for repeat_no in range(repeats):
-        splitter = KFold(
-            n_splits=n_splits, shuffle=True, random_state=plan.random_state + repeat_no
-        )
-        for fold_no, (train_idx, test_idx) in enumerate(
-            splitter.split(np.arange(n_samples))
-        ):
+        seed = plan.random_state + repeat_no
+        if groups is None:
+            splitter = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+            iterator = splitter.split(np.arange(n_samples))
+        else:
+            splitter = GroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+            iterator = splitter.split(np.arange(n_samples), groups=groups)
+        for fold_no, (train_idx, test_idx) in enumerate(iterator):
             out.append(
                 {
                     "split_key": f"r{repeat_no}_o{fold_no}",
@@ -1216,7 +1278,11 @@ def _regression_inner_splits(
                 result.append((train, val))
         if result:
             return result
-    n_splits = min(int(plan.inner_folds), len(outer_train_idx))
+    local_groups = None if groups is None else groups[outer_train_idx]
+    if local_groups is None:
+        n_splits = min(int(plan.inner_folds), len(outer_train_idx))
+    else:
+        n_splits = min(int(plan.inner_folds), int(pd.Series(local_groups).nunique()))
     if n_splits < 2:
         return []
     seed = (
@@ -1224,10 +1290,13 @@ def _regression_inner_splits(
         + int(split.get("repeat", 0)) * 1009
         + int(split.get("outer_fold", 0))
     )
-    splitter = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
-    return [
-        (train, val) for train, val in splitter.split(np.arange(len(outer_train_idx)))
-    ]
+    if local_groups is None:
+        splitter = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+        iterator = splitter.split(np.arange(len(outer_train_idx)))
+    else:
+        splitter = GroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+        iterator = splitter.split(np.arange(len(outer_train_idx)), groups=local_groups)
+    return [(train, val) for train, val in iterator]
 
 
 def _resolved_evaluation_splits(
@@ -1333,6 +1402,7 @@ def _regression_prediction_rows(
 
 def _evaluate_regression_split_task(
     X_base: np.ndarray,
+    feature_blocks: Any,
     y: np.ndarray,
     sample_ids: Sequence[str],
     target_name: str,
@@ -1388,13 +1458,16 @@ def _evaluate_regression_split_task(
             va_idx = train_idx[np.asarray(inner_val_local, dtype=int)]
             if len(tr_idx) == 0 or len(va_idx) == 0:
                 continue
-            _, inner_ct_factory = transformation_factory_builder(
-                ct_item, random_state=random_state
-            )
-            fitted = inner_ct_factory()
-            X_inner_train, X_inner_val, _ = _lodo_feature_pair(
+            X_inner_train, X_inner_val, feature_mask = _lodo_feature_pair(
                 X_base, tr_idx, va_idx, protocol
             )
+            inner_blocks = mask_feature_blocks(feature_blocks, feature_mask)
+            _, inner_ct_factory = transformation_factory_builder(
+                ct_item,
+                random_state=random_state,
+                feature_blocks=inner_blocks,
+            )
+            fitted = inner_ct_factory()
             try:
                 X_tr, X_va = fitted.apply_pair(X_inner_train, X_inner_val)
                 reg = configure_estimator_threads(learner_factory(), threads_per_worker)
@@ -1460,13 +1533,16 @@ def _evaluate_regression_split_task(
                     }
                 )
         if needs_outer and qualified:
-            _, outer_ct_factory = transformation_factory_builder(
-                ct_item, random_state=random_state
-            )
-            fitted_outer = outer_ct_factory()
-            X_outer_train, X_outer_test, _ = _lodo_feature_pair(
+            X_outer_train, X_outer_test, feature_mask = _lodo_feature_pair(
                 X_base, train_idx, test_idx, protocol
             )
+            outer_blocks = mask_feature_blocks(feature_blocks, feature_mask)
+            _, outer_ct_factory = transformation_factory_builder(
+                ct_item,
+                random_state=random_state,
+                feature_blocks=outer_blocks,
+            )
+            fitted_outer = outer_ct_factory()
             try:
                 X_train, X_test = fitted_outer.apply_pair(X_outer_train, X_outer_test)
                 reg = configure_estimator_threads(learner_factory(), threads_per_worker)
@@ -1580,17 +1656,30 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
         )
     )
     dataset = load_dataset(sweep.data, levels or ("all",))
+    _validate_dataset_identity(root, dataset)
     learners = [_learner_factory(item, task="regression") for item in sweep.learners]
-    count_transformation_specs = [
-        _count_transformation_spec(x) for x in sweep.count_transformations
-    ]
+    mpdr_cache = {}
+    for name, lvls in resolutions:
+        matrix, _, blocks = materialize_mpdr_with_blocks(dataset, lvls)
+        mpdr_cache[name] = (np.asarray(matrix, dtype=np.float32), blocks)
+    feature_blocks_by_resolution = {
+        name: blocks for name, (_, blocks) in mpdr_cache.items()
+    }
+    transformation_specs_by_resolution = {
+        name: _count_transformation_specs_for_blocks(
+            sweep.count_transformations, feature_blocks_by_resolution[name]
+        )
+        for name, _ in resolutions
+    }
     configs = build_sweep_configs(
-        sweep.resolutions, sweep.count_transformations, sweep.learners
+        sweep.resolutions,
+        sweep.count_transformations,
+        sweep.learners,
+        resolution_feature_blocks=feature_blocks_by_resolution,
     )
     _write_config_table(root, configs)
     if sweep.evaluation.redo:
         _clear_evaluation_checkpoints(root)
-    _write_manifest(root, sweep, dataset)
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
     outer_splits, inner_splits_by_outer = _resolved_evaluation_splits(
         root,
@@ -1599,6 +1688,7 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
         groups,
         group_col=sweep.data.group_col,
     )
+    _write_manifest(root, sweep, dataset)
     current_config_ids = set(configs["config_id"].astype(str))
     current_outer_keys = {str(split["split_key"]) for split in outer_splits}
     existing = _load_existing_evaluation(
@@ -1623,10 +1713,6 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
     qualification_map = (
         _qualification_map(existing["qualification"]) if sweep.gate.enabled else {}
     )
-    mpdr_cache = {
-        name: np.asarray(materialize_mpdr(dataset, lvls)[0], dtype=np.float32)
-        for name, lvls in resolutions
-    }
     tasks = []
     split_task_counts: dict[str, int] = {}
     for split in outer_splits:
@@ -1640,8 +1726,8 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
             f"{split_key}__i{inner_no}" for inner_no in range(len(inner_splits))
         ]
         for res_name, lvls in resolutions:
-            X_base = mpdr_cache[res_name]
-            for ct_name, ct_spec in count_transformation_specs:
+            X_base, feature_blocks = mpdr_cache[res_name]
+            for ct_name, ct_spec in transformation_specs_by_resolution[res_name]:
                 ct_item = (ct_name, ct_spec) if ct_spec is not None else ct_name
                 for learner_name, learner_factory in learners:
                     cid = _config_id(str(ct_name), res_name, learner_name)
@@ -1655,6 +1741,7 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
                         continue
                     task = delayed(_evaluate_regression_split_task)(
                         X_base,
+                        feature_blocks,
                         dataset.y,
                         tuple(dataset.sample_ids),
                         dataset.target_name,
@@ -1727,7 +1814,7 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
             "target": dataset.target_name,
             "samples": f"{len(y):,}",
             "target range": f"{float(np.min(y)):.4g} to {float(np.max(y)):.4g}",
-            "MPDRs": f"{len(sweep.resolutions) * len(count_transformation_specs):,}",
+            "MPDRs": f"{configs['mpdr_id'].nunique():,}",
             "MPMAs": f"{len(configs):,}",
             "protocol": sweep.evaluation.protocol,
             "outer splits": f"{len(outer_splits):,}",
@@ -1940,17 +2027,30 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
         )
     )
     dataset = load_dataset(sweep.data, all_levels or ("all",))
+    _validate_dataset_identity(root, dataset)
     learner_factories = [_learner_factory(x) for x in sweep.learners]
-    count_transformation_specs = [
-        _count_transformation_spec(x) for x in sweep.count_transformations
-    ]
+    mpdr_cache = {}
+    for res_name, levels in resolutions:
+        matrix, _, blocks = materialize_mpdr_with_blocks(dataset, levels)
+        mpdr_cache[res_name] = (np.asarray(matrix, dtype=np.float32), blocks)
+    feature_blocks_by_resolution = {
+        name: blocks for name, (_, blocks) in mpdr_cache.items()
+    }
+    transformation_specs_by_resolution = {
+        name: _count_transformation_specs_for_blocks(
+            sweep.count_transformations, feature_blocks_by_resolution[name]
+        )
+        for name, _ in resolutions
+    }
     configs = build_sweep_configs(
-        sweep.resolutions, sweep.count_transformations, sweep.learners
+        sweep.resolutions,
+        sweep.count_transformations,
+        sweep.learners,
+        resolution_feature_blocks=feature_blocks_by_resolution,
     )
     _write_config_table(root, configs)
     if sweep.evaluation.redo:
         _clear_evaluation_checkpoints(root)
-    _write_manifest(root, sweep, dataset)
     y = dataset.y
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
     strata = _strata_from_metadata(dataset.metadata, y, sweep.data.stratify_col)
@@ -1963,6 +2063,7 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
         sweep.data.stratify_col,
         sweep.data.group_col,
     )
+    _write_manifest(root, sweep, dataset)
     current_config_ids = set(configs["config_id"].astype(str))
     current_outer_keys = {str(s["split_key"]) for s in outer_splits}
     existing = _load_existing_evaluation(
@@ -1995,10 +2096,6 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
     qualification_map = (
         _qualification_map(existing["qualification"]) if sweep.gate.enabled else {}
     )
-    mpdr_cache = {
-        res_name: np.asarray(materialize_mpdr(dataset, levels)[0], dtype=np.float32)
-        for res_name, levels in resolutions
-    }
     tasks = []
     split_task_counts: dict[str, int] = {}
     for split in outer_splits:
@@ -2012,8 +2109,8 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
             f"{split_key}__i{inner_no}" for inner_no in range(len(inner_splits))
         ]
         for res_name, levels in resolutions:
-            X_base = mpdr_cache[res_name]
-            for ct_name, ct_spec in count_transformation_specs:
+            X_base, feature_blocks = mpdr_cache[res_name]
+            for ct_name, ct_spec in transformation_specs_by_resolution[res_name]:
                 ct_item = (ct_name, ct_spec) if ct_spec is not None else ct_name
                 for learner_name, learner_factory in learner_factories:
                     cid = _config_id(str(ct_name), res_name, learner_name)
@@ -2027,6 +2124,7 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
                         continue
                     task = delayed(_evaluate_mpma_split_task)(
                         X_base,
+                        feature_blocks,
                         y,
                         dataset.classes,
                         tuple(dataset.class_labels),
@@ -2094,7 +2192,7 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
         {
             "samples": f"{len(y):,}",
             "classes": dataset.class_labels,
-            "MPDRs": f"{len(sweep.resolutions) * len(count_transformation_specs):,}",
+            "MPDRs": f"{configs['mpdr_id'].nunique():,}",
             "MPMAs": f"{len(configs):,}",
             "protocol": sweep.evaluation.protocol,
             "stratification": "target"
@@ -2345,7 +2443,11 @@ def _load_existing_evaluation(
 def _done_pairs(df: pd.DataFrame, split_col: str) -> set[tuple[str, str]]:
     if df.empty or split_col not in df.columns or "config_id" not in df.columns:
         return set()
-    return set(zip(df[split_col].astype(str), df["config_id"].astype(str)))
+    complete = df
+    if "ok" in complete.columns:
+        ok = pd.to_numeric(complete["ok"], errors="coerce").fillna(0).astype(int)
+        complete = complete.loc[ok.eq(1)]
+    return set(zip(complete[split_col].astype(str), complete["config_id"].astype(str)))
 
 
 def _qualification_map(df: pd.DataFrame) -> dict[tuple[str, str], dict[str, Any]]:
@@ -2412,6 +2514,24 @@ def _concat_existing_new(
     return out
 
 
+def _validate_dataset_identity(root: Path, dataset: Dataset) -> None:
+    path = root / "manifest.json"
+    if not path.exists():
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Existing experiment manifest cannot be read.") from exc
+    stored = payload.get("dataset_fingerprint")
+    if not stored:
+        return
+    current = dataset_fingerprint(dataset)
+    if str(stored) != current:
+        raise ValueError(
+            "Existing experiment results were produced from different dataset content. Use a new experiment directory or restore the original scientific inputs."
+        )
+
+
 def _write_manifest(root: Path, sweep: Sweep, dataset: Dataset) -> None:
     safe_sweep = asdict(sweep)
     for section in ["data"]:
@@ -2430,6 +2550,8 @@ def _write_manifest(root: Path, sweep: Sweep, dataset: Dataset) -> None:
         "target": dataset.target_name,
         "class_labels": dataset.class_labels,
         "n_samples": len(dataset.y),
+        "dataset_fingerprint": dataset_fingerprint(dataset),
+        "dataset_fingerprint_algorithm": "sha256-model-input-v1",
         "cv_splits": "tables/cv_splits.parquet",
         "transformations": [label.key for label in TRANSFORMATION_LABELS],
         "mpdr_semantics": _MPDR_SEMANTICS,
@@ -2445,6 +2567,10 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
         "modalities": "TEXT",
         "integration": "TEXT",
         "integration_n_components": "TEXT",
+        "taxonomic_blocks": "TEXT",
+        "taxonomic_block_count": "INTEGER",
+        "representation_scope": "TEXT",
+        "learner_display": "TEXT",
     }
     try:
         conn.execute("PRAGMA journal_mode=WAL")
@@ -2483,13 +2609,15 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
         for r in configs.to_dict(orient="records"):
             conn.execute(
                 """INSERT INTO configs
-                   (config_id, mpdr_id, count_transformation, resolution, levels, learner, active, candidate_family, modalities, integration, integration_n_components)
-                   VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                   (config_id, mpdr_id, count_transformation, resolution, levels, learner, active, candidate_family, modalities, integration, integration_n_components, taxonomic_blocks, taxonomic_block_count, representation_scope, learner_display)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(config_id) DO UPDATE SET
                      mpdr_id=excluded.mpdr_id, count_transformation=excluded.count_transformation,
                      resolution=excluded.resolution, levels=excluded.levels, learner=excluded.learner,
                      active=1, candidate_family=excluded.candidate_family, modalities=excluded.modalities,
-                     integration=excluded.integration, integration_n_components=excluded.integration_n_components""",
+                     integration=excluded.integration, integration_n_components=excluded.integration_n_components,
+                     taxonomic_blocks=excluded.taxonomic_blocks, taxonomic_block_count=excluded.taxonomic_block_count,
+                     representation_scope=excluded.representation_scope, learner_display=excluded.learner_display""",
                 (
                     str(r.get("config_id")),
                     str(r.get("mpdr_id", "")),
@@ -2507,6 +2635,18 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
                     None
                     if pd.isna(r.get("integration_n_components"))
                     else str(r.get("integration_n_components")),
+                    None
+                    if pd.isna(r.get("taxonomic_blocks"))
+                    else str(r.get("taxonomic_blocks")),
+                    None
+                    if pd.isna(r.get("taxonomic_block_count"))
+                    else int(r.get("taxonomic_block_count")),
+                    None
+                    if pd.isna(r.get("representation_scope"))
+                    else str(r.get("representation_scope")),
+                    None
+                    if pd.isna(r.get("learner_display"))
+                    else str(r.get("learner_display")),
                 ),
             )
         conn.commit()
@@ -2516,6 +2656,7 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
         )
     finally:
         conn.close()
+    write_table(root / "configs.parquet", export)
 
 
 def _groups_from_metadata(
@@ -2525,7 +2666,13 @@ def _groups_from_metadata(
         return None
     if group_col not in meta.columns:
         raise ValueError(f"Group column {group_col!r} not found in metadata.")
-    return meta[group_col].astype(str).to_numpy()
+    values = meta[group_col]
+    if values.isna().any():
+        raise ValueError(f"Group column {group_col!r} contains missing values.")
+    groups = values.astype(str).str.strip()
+    if groups.eq("").any():
+        raise ValueError(f"Group column {group_col!r} contains empty values.")
+    return groups.to_numpy()
 
 
 def _normalise_column_names(value: str | Sequence[str] | None) -> tuple[str, ...]:
@@ -2562,6 +2709,23 @@ def _safe_n_splits(strata: np.ndarray, requested: int) -> int:
     if counts.empty:
         return 0
     return int(max(0, min(requested, counts.min(), len(strata))))
+
+
+def _safe_group_n_splits(strata: np.ndarray, groups: np.ndarray, requested: int) -> int:
+    frame = pd.DataFrame({"stratum": strata, "group": groups}).drop_duplicates()
+    if frame.empty:
+        return 0
+    per_stratum = frame.groupby("stratum", dropna=False)["group"].nunique()
+    return int(
+        max(
+            0,
+            min(
+                requested,
+                int(frame["group"].nunique()),
+                int(per_stratum.min()),
+            ),
+        )
+    )
 
 
 def _stratification_error_context(
@@ -2602,17 +2766,28 @@ def _outer_splits(
     n_repeats = plan.repeats if protocol == "repeated_nested_cv" else 1
     split_strata = np.asarray(strata if strata is not None else y, dtype=str)
     for r in range(n_repeats):
-        n_splits = _safe_n_splits(split_strata, plan.outer_folds)
+        if groups is None:
+            n_splits = _safe_n_splits(split_strata, plan.outer_folds)
+        else:
+            n_splits = _safe_group_n_splits(split_strata, groups, plan.outer_folds)
         if n_splits < 2:
             context = _stratification_error_context(plan, stratify_col)
             raise ValueError(
-                f"Not enough samples in each stratum for outer cross-validation using {context}. "
+                f"Not enough samples or groups for outer cross-validation using {context}. "
                 "Reduce outer_folds, remove/merge sparse strata, or omit DATA.stratify_col."
             )
-        skf = StratifiedKFold(
-            n_splits=n_splits, shuffle=True, random_state=plan.random_state + r
-        )
-        for o, (tr, te) in enumerate(skf.split(np.zeros(len(y)), split_strata)):
+        seed = plan.random_state + r
+        if groups is None:
+            splitter = StratifiedKFold(
+                n_splits=n_splits, shuffle=True, random_state=seed
+            )
+            iterator = splitter.split(np.zeros(len(y)), split_strata)
+        else:
+            splitter = StratifiedGroupKFold(
+                n_splits=n_splits, shuffle=True, random_state=seed
+            )
+            iterator = splitter.split(np.zeros(len(y)), split_strata, groups)
+        for o, (tr, te) in enumerate(iterator):
             out.append(
                 {
                     "split_key": f"r{r}_o{o}",
@@ -2653,7 +2828,11 @@ def _inner_splits(
     split_strata = np.asarray(
         strata[outer_train_idx] if strata is not None else y_train, dtype=str
     )
-    n_splits = _safe_n_splits(split_strata, plan.inner_folds)
+    local_groups = None if groups is None else groups[outer_train_idx]
+    if local_groups is None:
+        n_splits = _safe_n_splits(split_strata, plan.inner_folds)
+    else:
+        n_splits = _safe_group_n_splits(split_strata, local_groups, plan.inner_folds)
     if n_splits < 2:
         return []
     seed = (
@@ -2661,8 +2840,15 @@ def _inner_splits(
         + int(outer_split.get("repeat", 0)) * 1009
         + int(outer_split.get("outer_fold", 0))
     )
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
-    return [(tr, va) for tr, va in skf.split(np.zeros(len(y_train)), split_strata)]
+    if local_groups is None:
+        splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+        iterator = splitter.split(np.zeros(len(y_train)), split_strata)
+    else:
+        splitter = StratifiedGroupKFold(
+            n_splits=n_splits, shuffle=True, random_state=seed
+        )
+        iterator = splitter.split(np.zeros(len(y_train)), split_strata, local_groups)
+    return [(tr, va) for tr, va in iterator]
 
 
 def _predict_proba_aligned(

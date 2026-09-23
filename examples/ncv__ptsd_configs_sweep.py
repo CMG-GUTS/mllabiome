@@ -6,73 +6,73 @@ from lightgbm import LGBMClassifier
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.naive_bayes import BernoulliNB
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.semi_supervised import LabelSpreading
 from xgboost import XGBClassifier
 
 from mllabiome import mll
 
-TITLE = "PTSD within-dataset MPMA sweep"
-EXPERIMENT_DIR = Path("examples/runs/PTSD-NCV")
+HERE = Path(__file__).resolve().parent
+TITLE = "PTSD within-dataset grouped MPMA sweep"
+EXPERIMENT_DIR = HERE / "runs" / "PTSD-NCV-grouped"
 
 DATA = mll.Data(
-    abundance_path=Path("examples/data/PTSD/PTSD_profiles.tsv"),
-    metadata_path=Path("examples/data/PTSD/PTSD_metadata.tsv"),
+    abundance_path=HERE / "data" / "PTSD" / "PTSD_profiles.tsv",
+    metadata_path=HERE / "data" / "PTSD" / "PTSD_metadata.tsv",
     format="metaphlan_tsv",
     sample_id_col="sampleId",
     target_col="group",
     task="classification",
     class_labels=("Placebo", "Active"),
     positive_class="Active",
-)
-
-DATA = mll.Data(
-    abundance_path=Path("examples/data/UC/microbiome.tsv"),
-    metadata_path=Path("examples/data/UC/metadata.tsv"),
-    format="metaphlan_tsv",
-    sample_id_col="patientId",
-    target_col="group",
-    task="classification",
-    class_labels=("control", "colitis"),
-    positive_class="colitis",
+    group_col="Participant_Id",
 )
 
 RESOLUTIONS = (
-    ("phylum", ("phylum",)),
-    ("class", ("class",)),
-    ("order", ("order",)),
-    ("family", ("family",)),
-    ("genus", ("genus",)),
-    ("domain-phylum", ("domain", "phylum")),
-    ("domain-class", ("domain", "phylum", "class")),
-    ("domain-order", ("domain", "phylum", "class", "order")),
-    ("domain-family", ("domain", "phylum", "class", "order", "family")),
-    ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
-    ("phylum-class", ("phylum", "class")),
-    ("phylum-order", ("phylum", "class", "order")),
-    ("phylum-family", ("phylum", "class", "order", "family")),
-    ("phylum-genus", ("phylum", "class", "order", "family", "genus")),
-    ("class-order", ("class", "order")),
-    ("class-family", ("class", "order", "family")),
-    ("class-genus", ("class", "order", "family", "genus")),
-    ("order-family", ("order", "family")),
-    ("order-genus", ("order", "family", "genus")),
+    # ("phylum", ("phylum",)),
+    # ("class", ("class",)),
+    # ("order", ("order",)),
+    # ("family", ("family",)),
+    # ("genus", ("genus",)),
+    # ("domain-phylum", ("domain", "phylum")),
+    # ("domain-class", ("domain", "phylum", "class")),
+    # ("domain-order", ("domain", "phylum", "class", "order")),
+    # ("domain-family", ("domain", "phylum", "class", "order", "family")),
+    # ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
+    # ("phylum-class", ("phylum", "class")),
+    # ("phylum-order", ("phylum", "class", "order")),
+    # ("phylum-family", ("phylum", "class", "order", "family")),
+    # ("phylum-genus", ("phylum", "class", "order", "family", "genus")),
+    # ("class-order", ("class", "order")),
+    # ("class-family", ("class", "order", "family")),
+    # ("class-genus", ("class", "order", "family", "genus")),
+    # ("order-family", ("order", "family")),
+    # ("order-genus", ("order", "family", "genus")),
     ("family-genus", ("family", "genus")),
-    # ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
     mll.Transformation("presence_absence"),
     mll.Transformation("identity"),
-    mll.Transformation("arcsine_sqrt"),
-    mll.Transformation("yeo_johnson"),
-    mll.Transformation("hellinger"),
-    mll.Transformation("relative_abundance"),
-    mll.Transformation("clr"),
-    mll.Transformation("log10"),
+
+    mll.Transformation("arcsine_sqrt", composition_scope="rank-wise"),
+    mll.Transformation("arcsine_sqrt", composition_scope="joint"),
+
+    # mll.Transformation("yeo_johnson", composition_scope="rank-wise"),
+    mll.Transformation("yeo_johnson", composition_scope="joint"),
+
+    # mll.Transformation("hellinger", composition_scope="rank-wise"),
+    # mll.Transformation("hellinger", composition_scope="joint"),
+
+    # mll.Transformation("relative_abundance", composition_scope="rank-wise"),
+    # mll.Transformation("relative_abundance", composition_scope="joint"),
+
+    # mll.Transformation("clr", composition_scope="rank-wise"),
+    # mll.Transformation("clr", composition_scope="joint"),
+
+    # mll.Transformation("log10", composition_scope="rank-wise"),
+    # mll.Transformation("log10", composition_scope="joint"),
 )
 
 
@@ -93,36 +93,6 @@ MODELS = (
             shrinkage="auto",
         ),
     ),
-    # (
-    #     "LabelSpreading_rbf_g0.25_a0.2",
-    #     LabelSpreading(
-    #         kernel="rbf",
-    #         gamma=0.25,
-    #         alpha=0.2,
-    #         max_iter=1000,
-    #         n_jobs=1,
-    #     ),
-    # ),
-    # (
-    #     "MLP_64_16_relu_lbfgs_a0.01",
-    #     Pipeline(
-    #         steps=(
-    #             ("scaler", StandardScaler()),
-    #             (
-    #                 "mlp",
-    #                 MLPClassifier(
-    #                     hidden_layer_sizes=(64, 16),
-    #                     activation="relu",
-    #                     solver="lbfgs",
-    #                     alpha=1e-2,
-    #                     max_iter=3000,
-    #                     max_fun=50000,
-    #                     random_state=42,
-    #                 ),
-    #             ),
-    #         ),
-    #     ),
-    # ),
     (
         "MLP_32_relu_lbfgs",
         Pipeline(
@@ -202,28 +172,6 @@ MODELS = (
             ),
         ),
     ),
-    # (
-    #     "LightGBM_400_lr0.03_nl7_md3_mcs10_sub0.8_col0.6_l10.1_l21",
-    #     LGBMClassifier(
-    #         objective="binary",
-    #         boosting_type="gbdt",
-    #         n_estimators=400,
-    #         learning_rate=0.03,
-    #         num_leaves=7,
-    #         max_depth=3,
-    #         min_child_samples=10,
-    #         subsample=0.8,
-    #         subsample_freq=1,
-    #         colsample_bytree=0.6,
-    #         reg_alpha=0.1,
-    #         reg_lambda=1.0,
-    #         random_state=42,
-    #         n_jobs=1,
-    #         deterministic=True,
-    #         force_col_wise=True,
-    #         verbose=-1,
-    #     ),
-    # ),
     (
         "ExtraTrees_1000_msl5",
         ExtraTreesClassifier(
@@ -234,32 +182,6 @@ MODELS = (
             random_state=42,
         ),
     ),
-    # (
-    #     "MLP_32_tanh_lbfgs_a0.01",
-    #     Pipeline(
-    #         steps=(
-    #             ("scaler", StandardScaler()),
-    #             (
-    #                 "mlp",
-    #                 MLPClassifier(
-    #                     hidden_layer_sizes=(32,),
-    #                     activation="tanh",
-    #                     solver="lbfgs",
-    #                     alpha=1e-2,
-    #                     max_iter=3000,
-    #                     max_fun=50000,
-    #                     random_state=42,
-    #                 ),
-    #             ),
-    #         ),
-    #     ),
-    # ),
-    # (
-    #     "BernoulliNB_a0.1",
-    #     BernoulliNB(
-    #         alpha=0.1,
-    #     ),
-    # ),
 )
 
 EVALUATION = mll.Evaluation(

@@ -90,19 +90,17 @@ _METRIC_LABELS = {
     "CalibrationSlope": "Calibration slope",
 }
 _ESTIMAND_LABELS = {
-    "mean_repeat_pooled_oof": "Pooled OOF across outer folds; mean across repeats",
-    "pooled_sample_weighted": "Pooled OOF, sample-weighted",
-    "cohort_macro_equal_weight": "Pooled OOF, equal-cohort weighting",
+    "mean_repeat_pooled_oof": "Pooled out-of-fold across outer folds, mean across repeats",
+    "pooled_sample_weighted": "Pooled out-of-fold, sample-weighted",
+    "cohort_macro_equal_weight": "Pooled out-of-fold, equal-cohort weighting",
 }
 _SECTION_START = '<section id="oof-inference">'
 _SECTION_END = "</section>"
 _STATISTICS_ANCHOR = '<h3 id="statistics">Outer-unit strategy comparisons</h3>'
-_COMPUTE_ANCHOR = '<h3 id="compute">Computational resources</h3>'
-_NAV_ANCHOR = '<a href="#statistics">Statistics</a>'
-_NAV_LINK = '<a href="#oof-performance">OOF inference</a>'
+_COMPUTE_ANCHOR = '<h2 id="compute">Computational resources</h2>'
 _FOOTER_ANCHOR = '<p class="report-footer">'
-_PROCEDURE_ANCHOR = '<h2 id="procedure" class="first-section">Evaluation procedure</h2>'
-_PERFORMANCE_ANCHOR = '<h2 id="performance">Task performance summary</h2>'
+_PROCEDURE_ANCHOR = '<h2 id="performance-evaluation" class="first-section">Task definition and evaluation procedure</h2>'
+_PERFORMANCE_ANCHOR = '<h2 id="performance-summary">Task performance summary</h2>'
 _MPMA_B_SECTION_START = '<section id="mpma-b-composition">'
 _MPMA_B_SECTION_END = "</section>"
 
@@ -200,7 +198,7 @@ def _format_ci_cell(row: pd.Series, metric: str) -> str:
     low = _safe_float(row.get("ci_low"))
     high = _safe_float(row.get("ci_high"))
     if not np.isfinite(estimate):
-        return "—"
+        return "NA"
     if metric in _PERCENT_METRICS:
         body = f"{100.0 * estimate:.3f}"
         if np.isfinite(low) and np.isfinite(high):
@@ -213,7 +211,7 @@ def _format_ci_cell(row: pd.Series, metric: str) -> str:
 
 
 def _wide_metric_table(
-    performance: pd.DataFrame, metric_order: tuple[str, ...]
+    performance: pd.DataFrame, metric_order: tuple[str, ...], *, bold_best: bool = False
 ) -> pd.DataFrame:
     required = {"Strategy", "estimand", "metric", "estimate", "ci_low", "ci_high"}
     if performance.empty or not required.issubset(performance.columns):
@@ -228,6 +226,19 @@ def _wide_metric_table(
         if str(x)
     ]
     show_estimand = len(set(estimands)) > 1
+    best: dict[tuple[str, str], str] = {}
+    if bold_best:
+        for estimand in estimands:
+            group = performance[performance["estimand"].astype(str).eq(estimand)]
+            for metric in metrics:
+                sub = group[group["metric"].astype(str).eq(metric)].copy()
+                sub["estimate"] = pd.to_numeric(sub.get("estimate"), errors="coerce")
+                sub = sub[np.isfinite(sub["estimate"].to_numpy(dtype=float))]
+                if sub.empty:
+                    continue
+                ascending = metric in {"Brier", "Brier_multiclass", "LogLoss"}
+                sub = sub.sort_values("estimate", ascending=ascending, kind="mergesort")
+                best[(estimand, metric)] = str(sub.iloc[0]["Strategy"])
     rows: list[dict[str, Any]] = []
     for (strategy, estimand), group in performance.groupby(
         ["Strategy", "estimand"], sort=False
@@ -238,13 +249,19 @@ def _wide_metric_table(
         for metric in metrics:
             sub = group[group["metric"].astype(str).eq(metric)]
             label = _METRIC_LABELS.get(metric, metric)
-            row[label] = "—" if sub.empty else _format_ci_cell(sub.iloc[0], metric)
+            if sub.empty:
+                row[label] = "NA"
+            else:
+                value = _format_ci_cell(sub.iloc[0], metric)
+                if bold_best and best.get((str(estimand), metric)) == str(strategy):
+                    value = f"<strong>{value}</strong>"
+                row[label] = value
         rows.append(row)
     return pd.DataFrame(rows)
 
 
 def _performance_display(performance: pd.DataFrame) -> pd.DataFrame:
-    return _wide_metric_table(performance, _PRIMARY_METRIC_ORDER)
+    return _wide_metric_table(performance, _PRIMARY_METRIC_ORDER, bold_best=True)
 
 
 def _multiclass_display(
@@ -273,12 +290,26 @@ def _calibration_display(performance: pd.DataFrame) -> pd.DataFrame:
     calibration = performance[
         performance["metric"].astype(str).isin(_CALIBRATION_METRIC_ORDER)
     ].copy()
+    coefficient = (
+        calibration["metric"]
+        .astype(str)
+        .isin({"CalibrationIntercept", "CalibrationSlope"})
+    )
+    unstable = pd.Series(False, index=calibration.index)
+    for column in ("estimate", "ci_low", "ci_high"):
+        if column in calibration.columns:
+            values = pd.to_numeric(calibration[column], errors="coerce")
+            unstable = unstable | (coefficient & values.abs().gt(100.0))
+    for column in ("estimate", "ci_low", "ci_high"):
+        if column in calibration.columns:
+            calibration.loc[unstable, column] = np.nan
     return _wide_metric_table(calibration, _CALIBRATION_METRIC_ORDER)
 
 
-def _html_table(df: pd.DataFrame) -> str:
+def _html_table(df: pd.DataFrame, *, raw_html_cols: set[str] | None = None) -> str:
     if df.empty:
         return "<p>No rows available.</p>"
+    raw_html_cols = raw_html_cols or set()
     cols = list(df.columns)
     parts = ['<div class="table-wrap"><table><thead><tr>']
     parts.extend(f"<th>{html.escape(str(c))}</th>" for c in cols)
@@ -298,7 +329,7 @@ def _html_table(df: pd.DataFrame) -> str:
             ):
                 text = f"{float(value):.3f}" if np.isfinite(float(value)) else ""
             else:
-                text = html.escape(str(value))
+                text = str(value) if col in raw_html_cols else html.escape(str(value))
             parts.append(f"<td>{text}</td>")
         parts.append("</tr>")
     parts.append("</tbody></table></div>")
@@ -364,7 +395,7 @@ def _probability_semantics_html(manifest: dict[str, Any]) -> str:
     return (
         "<p>Brier score, log loss, and calibration summaries are shown for "
         "probability-valued predictions. Probability-based summaries are not shown for "
-        + "; ".join(excluded)
+        + ", ".join(excluded)
         + ".</p>"
     )
 
@@ -372,7 +403,7 @@ def _probability_semantics_html(manifest: dict[str, Any]) -> str:
 def _format_contrast_value(value: Any, metric: str) -> str:
     v = _safe_float(value)
     if not np.isfinite(v):
-        return "—"
+        return "NA"
     if metric in _PERCENT_METRICS:
         return f"{100.0 * v:.3f}"
     return f"{v:.3f}"
@@ -439,12 +470,22 @@ def _contrast_display(
             item["Estimand"] = _ESTIMAND_LABELS.get(
                 str(row.get("estimand", "")), str(row.get("estimand", ""))
             )
+        if np.isfinite(low) and np.isfinite(high):
+            if low > 0.0:
+                interpretation = "95% CI excludes 0 and favors Strategy A"
+            elif high < 0.0:
+                interpretation = "95% CI excludes 0 and favors Strategy B"
+            else:
+                interpretation = "95% CI includes 0 with no clear difference"
+        else:
+            interpretation = "Confidence interval not estimable"
         item.update(
             {
                 "Metric": metric_label,
                 "A": _format_contrast_value(row.get("estimate_a"), metric),
                 "B": _format_contrast_value(row.get("estimate_b"), metric),
                 "Effect favoring A (95% CI)": advantage_text,
+                "Interpretation": interpretation,
             }
         )
         rows.append(item)
@@ -478,14 +519,62 @@ def _design_display(manifest: dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _classification_metric_note() -> str:
+    return (
+        "<p>ROC-AUC measures how well predicted scores rank classes across decision thresholds. "
+        "PR-AUC (AP) is average precision and summarizes the precision-recall trade-off. "
+        "nMCC is Matthews correlation coefficient rescaled from [-1, 1] to [0, 1]. "
+        "F1w is support-weighted F1. Precision and recall are macro-averaged across classes. "
+        "Balanced accuracy is the mean class-specific recall, whereas accuracy is the overall fraction of correct predictions. Higher values are better for all metrics in this table.</p>"
+    )
+
+
+def _probability_quality_note(n_classes: int | None) -> str:
+    brier = "Brier score is the mean squared error of predicted probabilities"
+    if n_classes is not None and int(n_classes) > 2:
+        brier = "Multiclass Brier score is the mean summed squared error across class probabilities"
+    return (
+        f"<p>{html.escape(brier)}. A value of 0 is ideal and lower values are better. "
+        "Log loss is the mean negative log-probability assigned to the observed class. It penalizes confident wrong predictions more strongly. A value of 0 is ideal and lower values are better. "
+        "Confidence intervals use the same protocol-aware bootstrap as the pooled performance estimates.</p>"
+    )
+
+
+def _paired_contrast_note(manifest: dict[str, Any]) -> str:
+    protocol = str(manifest.get("protocol", "")).strip().lower()
+    try:
+        n_bootstrap = int(manifest.get("n_bootstrap", 0))
+    except (TypeError, ValueError):
+        n_bootstrap = 0
+    count = f"{n_bootstrap:,} " if n_bootstrap > 0 else ""
+    if protocol in {"lodo", "leave_one_dataset_out"}:
+        sampling = "held-out cohorts and then subjects within sampled cohorts"
+    else:
+        sampling = "repeats and then subjects within sampled repeats"
+    return (
+        "<p>Contrasts are computed from predictions available for both strategies on the same held-out observations. "
+        f"Each of the {count}paired bootstrap replicates resamples {html.escape(sampling)} and applies the identical draw to both strategies before recomputing each metric. "
+        "For higher-is-better metrics the effect is A − B. For loss metrics it is B − A. Positive effects therefore favor Strategy A. "
+        "The interval is the 2.5th to 97.5th percentile of the paired bootstrap effects.</p>"
+    )
+
+
+def _calibration_note() -> str:
+    return (
+        "<p>Calibration-in-the-large assesses systematic over- or under-prediction using an offset-only logistic recalibration and is ideally 0. "
+        "Calibration intercept and slope come from logistic recalibration of the observed outcome on the logit of the predicted probability. Their ideal values are 0 and 1, respectively. "
+        "Complete or quasi-complete separation, or nearly degenerate probabilities, can make the unpenalized calibration intercept and slope non-identifiable. Unstable estimates are reported as NA because extremely large coefficients are not interpretable.</p>"
+    )
+
+
 def _links_html(tables_dir: Path) -> str:
     names = [
-        ("strategy_oof_performance.parquet", "Long-form OOF estimates"),
+        ("strategy_oof_performance.parquet", "Long-form out-of-fold estimates"),
         ("strategy_oof_calibration.parquet", "Reliability-curve data"),
-        ("strategy_oof_pairwise_contrasts.parquet", "Paired OOF contrasts"),
-        ("strategy_oof_statistics_manifest.json", "OOF methods manifest"),
-        ("strategy_oof_coverage.parquet", "OOF coverage"),
-        ("strategy_oof_pairwise_coverage.parquet", "Paired OOF coverage"),
+        ("strategy_oof_pairwise_contrasts.parquet", "Paired out-of-fold contrasts"),
+        ("strategy_oof_statistics_manifest.json", "Out-of-fold methods manifest"),
+        ("strategy_oof_coverage.parquet", "Out-of-fold coverage"),
+        ("strategy_oof_pairwise_coverage.parquet", "Paired out-of-fold coverage"),
     ]
     links = []
     for filename, label in names:
@@ -504,20 +593,13 @@ def _procedure_grid_html(procedure: pd.DataFrame) -> str:
 
 
 def _human_token(value: Any) -> str:
-    text = str(value).strip()
-    if not text or text.lower() == "nan":
-        return "—"
-    replacements = {
-        "relative_abundance": "relative abundance",
-        "arcsine_sqrt": "arcsin√x",
-        "log1p": "ln(1+x)",
-        "log10p": "log10(1+x)",
-        "log2p": "log2(1+x)",
-    }
-    return replacements.get(text, text.replace("_", " "))
+    label = _report_module._display_token(value)
+    return label or "NA"
 
 
-def _mpma_b_composition(root: Path) -> pd.DataFrame:
+def _mpma_b_composition(
+    root: Path, learner_labels: dict[str, str] | None = None
+) -> pd.DataFrame:
     final = load_final_models(root)["MPMA-B"]
     representation = final.get("resolution", final.get("levels", ""))
     return pd.DataFrame(
@@ -525,7 +607,10 @@ def _mpma_b_composition(root: Path) -> pd.DataFrame:
             {
                 "Data representation": _human_token(representation),
                 "Transformation": _human_token(final.get("count_transformation", "")),
-                "Learner": str(final.get("learner", "")).strip() or "—",
+                "Learner": _report_module._display_learner(
+                    final.get("learner", ""), learner_labels
+                )
+                or "NA",
             }
         ]
     )
@@ -563,14 +648,20 @@ def _replace_procedure_layout(text: str, report_dir: Path) -> str:
         return text
     table_end = text.find("</div>", table_start)
     if table_end == -1:
-        raise RuntimeError("Malformed Evaluation procedure table in report/index.html")
+        raise RuntimeError(
+            "Malformed task-definition and evaluation-procedure table in report/index.html"
+        )
     table_end += len("</div>")
     return text[:table_start] + grid + text[table_end:]
 
 
-def _insert_mpma_b_composition(text: str, report_dir: Path) -> str:
+def _insert_mpma_b_composition(
+    text: str,
+    report_dir: Path,
+    learner_labels: dict[str, str] | None = None,
+) -> str:
     text = _remove_mpma_b_section(text)
-    table = _mpma_b_composition(report_dir.parent)
+    table = _mpma_b_composition(report_dir.parent, learner_labels)
     if table.empty:
         return text
     heading = text.find(_PERFORMANCE_ANCHOR)
@@ -607,9 +698,13 @@ def _inject_compact_report_css(text: str) -> str:
     )
 
 
-def _enhance_compact_layout(text: str, report_dir: Path) -> str:
+def _enhance_compact_layout(
+    text: str,
+    report_dir: Path,
+    learner_labels: dict[str, str] | None = None,
+) -> str:
     text = _replace_procedure_layout(text, report_dir)
-    text = _insert_mpma_b_composition(text, report_dir)
+    text = _insert_mpma_b_composition(text, report_dir, learner_labels)
     return _inject_compact_report_css(text)
 
 
@@ -666,9 +761,8 @@ def oof_section_html(
     prefix = f"{id_prefix}-" if id_prefix else ""
     parts = [
         f'<section id="{prefix}oof-inference">',
-        f'<{heading} id="{prefix}oof-performance">Pooled OOF inference</{heading}>',
-        "<p>Held-out predictions are pooled at the protocol-defined inference unit. "
-        "Tables report point estimates and 95% confidence intervals.</p>",
+        f'<{heading} id="{prefix}oof-performance">Pooled out-of-fold inference</{heading}>',
+        "<p>Held-out predictions are pooled before the metrics are recomputed. Each estimate therefore reflects performance at the protocol-defined inference unit instead of an average of fold-level metric values. Point estimates and 95% confidence intervals are reported below.</p>",
         _methodology_html(manifest),
     ]
     if not design_table.empty:
@@ -682,7 +776,11 @@ def oof_section_html(
         parts.extend(
             [
                 f'<{subheading} id="{prefix}oof-primary-performance">Performance</{subheading}>',
-                _html_table(primary_table),
+                _classification_metric_note(),
+                _html_table(
+                    primary_table,
+                    raw_html_cols=set(primary_table.columns) - {"Strategy", "Estimand"},
+                ),
             ]
         )
     if not multiclass_table.empty:
@@ -696,6 +794,7 @@ def oof_section_html(
         parts.extend(
             [
                 f'<{subheading} id="{prefix}oof-probability-quality">Probability quality</{subheading}>',
+                _probability_quality_note(n_classes),
                 _html_table(probability_table),
                 _probability_semantics_html(manifest),
             ]
@@ -704,9 +803,7 @@ def oof_section_html(
         parts.extend(
             [
                 f'<{subheading} id="{prefix}oof-contrasts">Paired strategy contrasts</{subheading}>',
-                "<p>Contrasts use matched held-out predictions and the same bootstrap "
-                "draws for both strategies. Positive effects favor Strategy A after "
-                "accounting for metric direction.</p>",
+                _paired_contrast_note(manifest),
                 _html_table(contrast_table),
             ]
         )
@@ -714,8 +811,7 @@ def oof_section_html(
         parts.extend(
             [
                 f'<{subheading} id="{prefix}oof-calibration-summary">Calibration</{subheading}>',
-                "<p>Calibration-in-the-large and intercept are referenced to 0; "
-                "calibration slope is referenced to 1.</p>",
+                _calibration_note(),
                 _html_table(calibration_table),
             ]
         )
@@ -783,7 +879,11 @@ def _extract_compute_block(text: str) -> tuple[str, str]:
     return text[:start] + text[end:], block
 
 
-def enhance_html_report(report_dir: Path | str, n_classes: int | None = None) -> bool:
+def enhance_html_report(
+    report_dir: Path | str,
+    n_classes: int | None = None,
+    learner_labels: dict[str, str] | None = None,
+) -> bool:
     report_dir = Path(report_dir)
     index_path = report_dir / "index.html"
     if not index_path.exists():
@@ -792,6 +892,7 @@ def enhance_html_report(report_dir: Path | str, n_classes: int | None = None) ->
     text = _enhance_compact_layout(
         index_path.read_text(encoding="utf-8"),
         report_dir,
+        learner_labels,
     )
     text = _remove_existing_section(text)
     if section:
@@ -802,11 +903,10 @@ def enhance_html_report(report_dir: Path | str, n_classes: int | None = None) ->
     if footer_pos == -1:
         body_close = text.rfind("</body>")
         footer_pos = body_close if body_close != -1 else len(text)
+    abbreviations_pos = text.find('<h2 id="abbreviations">')
+    compute_pos = abbreviations_pos if abbreviations_pos != -1 else footer_pos
     if compute_block:
-        text = text[:footer_pos] + compute_block + "\n" + text[footer_pos:]
-    text = text.replace(_NAV_LINK + "\n", "").replace("\n" + _NAV_LINK, "")
-    if section and _NAV_ANCHOR in text:
-        text = text.replace(_NAV_ANCHOR, _NAV_ANCHOR + "\n" + _NAV_LINK, 1)
+        text = text[:compute_pos] + compute_block + "\n" + text[compute_pos:]
     text = text.replace("Learner family", "Learner type")
     index_path.write_text(text, encoding="utf-8")
     return bool(section)
@@ -818,7 +918,7 @@ def _terminal_oof_summary(report_dir: Path) -> None:
     )
     if performance.empty:
         return
-    display = _performance_display(performance)
+    display = _wide_metric_table(performance, _PRIMARY_METRIC_ORDER)
     if display.empty:
         return
     preferred = [
@@ -835,7 +935,7 @@ def _terminal_oof_summary(report_dir: Path) -> None:
         cols = list(display.columns[:8])
     from rich.table import Table
 
-    table = Table(title="Pooled OOF performance (95% CI)", show_lines=False)
+    table = Table(title="Pooled out-of-fold performance (95% CI)", show_lines=False)
     for col in cols:
         table.add_column(str(col), overflow="fold", no_wrap=False)
     for _, row in display[cols].iterrows():
@@ -859,10 +959,7 @@ def _procedure_table_publication(table: pd.DataFrame) -> pd.DataFrame:
     out.loc[
         mask,
         "Value",
-    ] = (
-        "Model and ensemble selection use inner-validation performance; "
-        "reported performance uses held-out outer evaluation predictions."
-    )
+    ] = "Reported performance uses held-out outer evaluation predictions."
     return out
 
 
@@ -906,11 +1003,12 @@ def write_report(sweep: Any) -> dict[str, Path]:
         raise RuntimeError(
             "Report statistics did not produce strategy_oof_performance.parquet."
         )
-    with phase_progress("OOF report integration", 2) as phase:
+    with phase_progress("Out-of-fold report integration", 2) as phase:
         phase.phase("HTML inference section")
         inserted = enhance_html_report(
             report_dir,
             n_classes=_task_class_count(sweep),
+            learner_labels=_report_module._learner_display_map(sweep),
         )
         phase.phase("terminal inference summary")
         if inserted:
@@ -930,7 +1028,7 @@ def write_report(sweep: Any) -> dict[str, Path]:
     outputs.update(existing)
     if existing:
         stage("Out-of-fold inference", str(report_dir))
-        path_table("OOF report outputs", existing)
+        path_table("Out-of-fold report outputs", existing)
     if inserted:
         success("Out-of-fold inference added to index.html")
     return outputs

@@ -9,6 +9,7 @@ import pandas as pd
 from .metrics import compute_metrics, compute_regression_metrics, metric_is_loss
 from .utils import dump_json_standard
 from .storage import read_table, write_table, table_exists
+from .transformations import _count_transformation_name
 
 
 def _eligible_config_ids(configs: pd.DataFrame, plan: Any | None = None) -> set[str]:
@@ -26,7 +27,8 @@ def _eligible_config_ids(configs: pd.DataFrame, plan: Any | None = None) -> set[
         exclude_learners = {str(x) for x in getattr(plan, "exclude_learners", ())}
         exclude_resolutions = {str(x) for x in getattr(plan, "exclude_resolutions", ())}
         exclude_transformations = {
-            str(x) for x in getattr(plan, "exclude_transformations", ())
+            _count_transformation_name(x)
+            for x in getattr(plan, "exclude_transformations", ())
         }
         if exclude_ids:
             frame = frame[~frame["config_id"].astype(str).isin(exclude_ids)]

@@ -1401,18 +1401,16 @@ def _raw_input_matrix_for_figure(sweep: Sweep) -> tuple[np.ndarray, list[str]]:
     spec = sweep.data
     abundance_path = Path(spec.abundance_path)
     metadata_path = Path(spec.metadata_path) if spec.metadata_path is not None else None
-    fmt = spec.format
+    fmt = str(spec.format).strip().casefold().replace("-", "_")
     if fmt == "auto":
         fmt = (
-            "metaphlan_tsv"
+            "mllab"
             if abundance_path.suffix.lower() in {".tsv", ".txt"} and metadata_path
             else "wide_csv"
         )
-    if fmt in {"matrix_tsv", "metaphlan_tsv", "profile_tsv"}:
+    if fmt in {"mllab", "matrix_tsv", "metaphlan", "metaphlan_tsv", "profile_tsv"}:
         if metadata_path is None:
-            raise ValueError(
-                "Data.metadata_path is required for MetaPhlAn-style TSV input."
-            )
+            raise ValueError("Data.metadata_path is required for mllab TSV input.")
         meta = pd.read_csv(metadata_path, sep=None, engine="python", dtype=str)
         bio = pd.read_csv(abundance_path, sep="\t", index_col=0, low_memory=False)
         bio.index = bio.index.astype(str).str.strip()

@@ -647,8 +647,78 @@ class _BuiltinTransformer:
         return (self.transform(X_tr), self.transform(X_te))
 
 
+_COMPOSITION_SENSITIVE = frozenset(
+    {
+        "relative_abundance",
+        "hellinger",
+        "arcsine_sqrt",
+        "log10_relative_abundance_half_min_pseudocount",
+        "centered_log_ratio_multiplicative_replacement",
+        "additive_log_ratio_first_reference_multiplicative_replacement",
+        "isometric_log_ratio_egozcue_multiplicative_replacement",
+        "standardized_centered_log_ratio_multiplicative_replacement",
+        "yeo_johnson_relative_abundance",
+        "quantile_normal_relative_abundance",
+        "robust_scaled_relative_abundance",
+        "within_sample_fractional_rank",
+        "prevalence_weighted_relative_abundance",
+    }
+)
+_LOG_RATIO_COORDINATES = frozenset(
+    {
+        "additive_log_ratio_first_reference_multiplicative_replacement",
+        "isometric_log_ratio_egozcue_multiplicative_replacement",
+    }
+)
+_LOG_RATIO_BLOCK_TRANSFORMS = frozenset(
+    {
+        "centered_log_ratio_multiplicative_replacement",
+        "standardized_centered_log_ratio_multiplicative_replacement",
+        "additive_log_ratio_first_reference_multiplicative_replacement",
+        "isometric_log_ratio_egozcue_multiplicative_replacement",
+    }
+)
+_COMPOSITION_SCOPES = frozenset({"rank-wise", "joint"})
+
+
+def _normalise_composition_scope(name: str, scope: str | None) -> str:
+    base = transformation_label(str(name)).key
+    default = "rank-wise" if base in _COMPOSITION_SENSITIVE else "joint"
+    if scope is None:
+        return default
+    value = str(scope).strip().lower()
+    if value not in _COMPOSITION_SCOPES:
+        raise ValueError(
+            f"composition_scope must be one of {sorted(_COMPOSITION_SCOPES)!r}; got {scope!r}."
+        )
+    if base not in _COMPOSITION_SENSITIVE and value != "joint":
+        raise ValueError(
+            f"Transformation {base!r} is feature-wise and does not accept composition_scope={value!r}."
+        )
+    return value
+
+
+def _parse_transformation_identity(value: Any) -> tuple[str, str]:
+    text = str(value).strip()
+    if "@" in text:
+        raw_name, raw_scope = text.rsplit("@", 1)
+        if raw_scope.strip().lower() in _COMPOSITION_SCOPES:
+            base = transformation_label(raw_name).key
+            return base, _normalise_composition_scope(base, raw_scope)
+    base = transformation_label(text).key
+    return base, _normalise_composition_scope(base, None)
+
+
+def _transformation_identity(name: str, scope: str | None = None) -> str:
+    base = transformation_label(str(name)).key
+    resolved = _normalise_composition_scope(base, scope)
+    if base in _COMPOSITION_SENSITIVE:
+        return f"{base}@{resolved}"
+    return base
+
+
 class Transform:
-    __slots__ = ("name", "_fn", "_is_bw")
+    __slots__ = ("name", "composition_scope", "identity", "_fn", "_is_bw")
 
     def __init__(
         self,
@@ -656,6 +726,7 @@ class Transform:
         fn: Callable[..., Any] | None = None,
         is_bw: bool = False,
         abbreviation: str | None = None,
+        composition_scope: str | None = None,
     ):
         requested = str(name).strip()
         info = transformation_label(requested)
@@ -668,6 +739,10 @@ class Transform:
                 "Two-array custom transformations are disabled because passing both training and held-out matrices to the same callable cannot enforce train-only fitting. Use a stateless fn(X), or provide an estimator-like object with fit(X_train) and transform/apply(X)."
             )
         self.name = info.key
+        self.composition_scope = _normalise_composition_scope(
+            self.name, composition_scope
+        )
+        self.identity = _transformation_identity(self.name, self.composition_scope)
         self._fn = fn
         self._is_bw = False
 
@@ -708,9 +783,18 @@ def build_count_transformations(
 
 class CountTransformation:
     def __init__(
-        self, name: str, pseudo_count: float | None = None, random_state: int = 42
+        self,
+        name: str,
+        pseudo_count: float | None = None,
+        random_state: int = 42,
+        composition_scope: str | None = None,
     ):
-        self.name = transformation_label(str(name)).key
+        base, parsed_scope = _parse_transformation_identity(name)
+        self.name = base
+        self.composition_scope = _normalise_composition_scope(
+            base, parsed_scope if composition_scope is None else composition_scope
+        )
+        self.identity = _transformation_identity(base, self.composition_scope)
         if pseudo_count is not None:
             raise ValueError(
                 "pseudo_count is not configurable. 'log10_relative_abundance_half_min_pseudocount' estimates exactly half the minimum positive relative abundance from the training fold."
@@ -767,40 +851,135 @@ class CountTransformation:
 
 def _count_transformation_name(item: Any) -> str:
     if isinstance(item, Transform):
-        name = item.name
-    elif hasattr(item, "name") and hasattr(item, "apply"):
+        return item.identity
+    if hasattr(item, "identity"):
+        return str(getattr(item, "identity"))
+    if hasattr(item, "name") and hasattr(item, "apply"):
         name = str(getattr(item, "name"))
-    else:
-        name = item if isinstance(item, str) else str(item[0])
-    return transformation_label(str(name)).key
+        scope = getattr(item, "composition_scope", None)
+        return _transformation_identity(name, scope)
+    if isinstance(item, tuple):
+        return _count_transformation_name(item[0])
+    base, scope = _parse_transformation_identity(item)
+    return _transformation_identity(base, scope)
 
 
 def _count_transformation_spec(item: Any) -> tuple[str, Any | None]:
     if isinstance(item, Transform):
-        return (transformation_label(item.name).key, item)
+        return (item.identity, item)
     if hasattr(item, "name") and hasattr(item, "apply"):
-        return (transformation_label(str(getattr(item, "name"))).key, item)
+        return (_count_transformation_name(item), item)
     if isinstance(item, tuple):
-        return (transformation_label(str(item[0])).key, item[1])
-    return (transformation_label(str(item)).key, None)
+        raw_name, spec = item
+        if isinstance(spec, Transform):
+            return (spec.identity, spec)
+        return (_count_transformation_name(raw_name), spec)
+    return (_count_transformation_name(item), None)
+
+
+def _effective_count_transformation_spec(
+    item: Any, feature_blocks: Any = None
+) -> tuple[str, Any | None]:
+    name, spec = _count_transformation_spec(item)
+    base, _ = _parse_transformation_identity(name)
+    if base in _COMPOSITION_SENSITIVE and feature_blocks is not None:
+        block_count = sum(1 for _, indices in feature_blocks if tuple(indices))
+        if block_count <= 1:
+            name = _transformation_identity(base, "rank-wise")
+            if isinstance(spec, Transform) and spec.composition_scope != "rank-wise":
+                spec = Transform(
+                    spec.name,
+                    fn=spec._fn,
+                    composition_scope="rank-wise",
+                )
+    return name, spec
+
+
+def _count_transformation_specs_for_blocks(
+    items: Any, feature_blocks: Any = None
+) -> tuple[tuple[str, Any | None], ...]:
+    out: list[tuple[str, Any | None]] = []
+    seen: set[str] = set()
+    for item in items:
+        name, spec = _effective_count_transformation_spec(item, feature_blocks)
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append((name, spec))
+    return tuple(out)
+
+
+def _normalise_feature_blocks(
+    blocks: Any, n_features: int
+) -> tuple[tuple[str, tuple[int, ...]], ...]:
+    if blocks is None:
+        return (("all", tuple(range(int(n_features)))),)
+    out: list[tuple[str, tuple[int, ...]]] = []
+    seen: set[int] = set()
+    for raw_name, raw_indices in blocks:
+        indices = tuple(int(index) for index in raw_indices)
+        if not indices:
+            continue
+        for index in indices:
+            if index < 0 or index >= int(n_features):
+                raise ValueError(
+                    f"Feature block {raw_name!r} references column {index}, outside matrix width {n_features}."
+                )
+            if index in seen:
+                raise ValueError(f"Feature column {index} occurs in multiple blocks.")
+            seen.add(index)
+        out.append((str(raw_name), indices))
+    if seen != set(range(int(n_features))):
+        missing = sorted(set(range(int(n_features))) - seen)
+        raise ValueError(
+            f"Feature blocks do not cover the transformed matrix exactly; missing columns: {missing[:8]!r}."
+        )
+    return tuple(out)
 
 
 class CountTransformationAdapter:
-    def __init__(self, name: str, spec: Any = None, *, random_state: int = 42):
-        self.name = transformation_label(str(name)).key
+    def __init__(
+        self,
+        name: str,
+        spec: Any = None,
+        *,
+        random_state: int = 42,
+        feature_blocks: Any = None,
+        composition_scope: str | None = None,
+    ):
+        base, parsed_scope = _parse_transformation_identity(name)
+        spec_scope = getattr(spec, "composition_scope", None)
+        requested_scope = (
+            composition_scope
+            if composition_scope is not None
+            else spec_scope
+            if spec_scope is not None
+            else parsed_scope
+        )
+        self.name = base
+        self.composition_scope = _normalise_composition_scope(base, requested_scope)
+        self.identity = _transformation_identity(base, self.composition_scope)
         self.spec = spec
         self.random_state = int(random_state)
+        self.feature_blocks = feature_blocks
         self.obj: Any | None = None
+        self.block_objects_: list[tuple[str, tuple[int, ...], Any]] | None = None
         self.n_features_in_: int | None = None
         self.n_features_out_: int | None = None
 
     def _make(self) -> Any:
         if self.spec is None:
-            return CountTransformation(self.name, random_state=self.random_state)
+            return CountTransformation(
+                self.name,
+                random_state=self.random_state,
+                composition_scope="joint",
+            )
         if isinstance(self.spec, Transform):
             if self.spec._fn is None:
                 return CountTransformation(
-                    self.spec.name, random_state=self.random_state
+                    self.spec.name,
+                    random_state=self.random_state,
+                    composition_scope="joint",
                 )
             return self.spec
         if isinstance(self.spec, BaseEstimator):
@@ -815,94 +994,185 @@ class CountTransformationAdapter:
             )
         return self.spec
 
-    def fit(self, X: np.ndarray) -> "CountTransformationAdapter":
-        X_float = _as_float_matrix(X)
-        self.n_features_in_ = int(np.asarray(X_float).shape[1])
+    def _fit_single(self, X: np.ndarray) -> Any:
         obj = self._make()
         if hasattr(obj, "fit"):
-            obj.fit(X_float)
+            obj.fit(X)
+        return obj
+
+    def fit(self, X: np.ndarray) -> "CountTransformationAdapter":
+        X_float = _as_float_matrix(X)
+        n_features = int(np.asarray(X_float).shape[1])
+        self.n_features_in_ = n_features
+        use_blocks = (
+            self.name in _COMPOSITION_SENSITIVE
+            and self.composition_scope == "rank-wise"
+        )
+        if use_blocks:
+            blocks = _normalise_feature_blocks(self.feature_blocks, n_features)
+            unresolved = [name for name, _ in blocks if name == "unresolved"]
+            if unresolved:
+                raise ValueError(
+                    "Rank-wise compositional transformation requires every feature to have a resolved taxonomic rank. Use explicit taxonomic ranks or composition_scope='joint'."
+                )
+            fitted_blocks: list[tuple[str, tuple[int, ...], Any]] = []
+            total_out = 0
+            for block_name, indices in blocks:
+                if self.name in _LOG_RATIO_BLOCK_TRANSFORMS and len(indices) < 2:
+                    continue
+                block = np.asarray(X_float)[:, np.asarray(indices, dtype=int)]
+                obj = self._fit_single(block)
+                n_out = getattr(obj, "n_features_out_", None)
+                total_out += int(n_out) if n_out is not None else len(indices)
+                fitted_blocks.append((block_name, indices, obj))
+            if not fitted_blocks:
+                raise ValueError(
+                    f"Transformation {self.identity!r} produced no coordinates because every taxonomic block contains fewer than two features."
+                )
+            self.block_objects_ = fitted_blocks
+            self.obj = None
+            self.n_features_out_ = int(total_out)
+            return self
+        obj = self._fit_single(np.asarray(X_float))
         self.obj = obj
+        self.block_objects_ = None
         n_features_out = getattr(obj, "n_features_out_", None)
         self.n_features_out_ = (
             int(n_features_out) if n_features_out is not None else self.n_features_in_
         )
         return self
 
-    def apply(self, X: np.ndarray) -> np.ndarray:
-        if self.obj is None:
-            raise RuntimeError(
-                f"Count transformation {self.name!r} has not been fitted."
-            )
-        X_float = _as_float_matrix(X)
-        input_shape = np.asarray(X_float).shape
-        if self.n_features_in_ is not None and input_shape[1] != self.n_features_in_:
-            raise ValueError(
-                f"Feature count differs from the fitted abundance transformation: expected {self.n_features_in_}, got {input_shape[1]}."
-            )
-        obj = self.obj
+    def _apply_object(self, obj: Any, X: np.ndarray) -> np.ndarray:
         if isinstance(obj, Transform):
             raise RuntimeError(
                 "Callable Transformation objects must be applied to a train/test pair."
             )
         if hasattr(obj, "apply"):
-            result = obj.apply(X_float)
+            result = obj.apply(X)
         elif hasattr(obj, "transform"):
-            result = obj.transform(X_float)
+            result = obj.transform(X)
         elif callable(obj):
-            result = obj(X_float)
+            result = obj(X)
         else:
             raise TypeError(
                 f"Custom count transformation {self.name!r} must be callable or provide fit/apply or fit/transform."
             )
-        expected_features = (
-            int(self.n_features_out_)
-            if self.n_features_out_ is not None
-            else int(input_shape[1])
-        )
-        return _finite_output(
-            result,
-            expected_shape=(int(input_shape[0]), expected_features),
-            context=f"Count transformation {self.name!r}",
-        )
+        return np.asarray(result, dtype=np.float64)
 
-    def get_feature_names_out(
-        self, input_features: list[str] | tuple[str, ...] | np.ndarray | None = None
-    ) -> list[str]:
-        if self.obj is None:
-            raise RuntimeError(
-                f"Count transformation {self.name!r} has not been fitted."
-            )
-        if hasattr(self.obj, "get_feature_names_out"):
-            try:
-                names = self.obj.get_feature_names_out(input_features)
-            except TypeError:
-                names = self.obj.get_feature_names_out()
-            return [str(x) for x in list(names)]
+    def apply(self, X: np.ndarray) -> np.ndarray:
+        X_float = _as_float_matrix(X)
+        input_shape = np.asarray(X_float).shape
         if self.n_features_in_ is None or self.n_features_out_ is None:
             raise RuntimeError(
-                f"Count transformation {self.name!r} has not been fitted."
+                f"Count transformation {self.identity!r} has not been fitted."
+            )
+        if input_shape[1] != self.n_features_in_:
+            raise ValueError(
+                f"Feature count differs from the fitted abundance transformation: expected {self.n_features_in_}, got {input_shape[1]}."
+            )
+        if self.block_objects_ is not None:
+            pieces = []
+            for _, indices, obj in self.block_objects_:
+                block = np.asarray(X_float)[:, np.asarray(indices, dtype=int)]
+                pieces.append(self._apply_object(obj, block))
+            result = np.concatenate(pieces, axis=1)
+        else:
+            if self.obj is None:
+                raise RuntimeError(
+                    f"Count transformation {self.identity!r} has not been fitted."
+                )
+            result = self._apply_object(self.obj, np.asarray(X_float))
+        return _finite_output(
+            result,
+            expected_shape=(int(input_shape[0]), int(self.n_features_out_)),
+            context=f"Count transformation {self.identity!r}",
+        )
+
+    def _input_features(
+        self, input_features: list[str] | tuple[str, ...] | np.ndarray | None
+    ) -> list[str]:
+        if self.n_features_in_ is None:
+            raise RuntimeError(
+                f"Count transformation {self.identity!r} has not been fitted."
             )
         features = (
             _default_feature_names(self.n_features_in_)
             if input_features is None
             else [str(x) for x in list(input_features)]
         )
+        if len(features) != self.n_features_in_:
+            raise ValueError(
+                f"Input feature-name count differs from the fitted abundance transformation: expected {self.n_features_in_}, got {len(features)}."
+            )
+        return features
+
+    def get_feature_names_out(
+        self, input_features: list[str] | tuple[str, ...] | np.ndarray | None = None
+    ) -> list[str]:
+        features = self._input_features(input_features)
+        if self.block_objects_ is not None:
+            names: list[str] = []
+            for _, indices, obj in self.block_objects_:
+                block_names = [features[index] for index in indices]
+                if hasattr(obj, "get_feature_names_out"):
+                    try:
+                        raw = obj.get_feature_names_out(block_names)
+                    except TypeError:
+                        raw = obj.get_feature_names_out()
+                    names.extend(str(x) for x in list(raw))
+                else:
+                    names.extend(block_names)
+            if self.n_features_out_ != len(names):
+                raise ValueError(
+                    f"Transformation {self.identity!r} produced inconsistent feature names."
+                )
+            return names
+        if self.obj is None:
+            raise RuntimeError(
+                f"Count transformation {self.identity!r} has not been fitted."
+            )
+        if hasattr(self.obj, "get_feature_names_out"):
+            try:
+                names = self.obj.get_feature_names_out(features)
+            except TypeError:
+                names = self.obj.get_feature_names_out()
+            return [str(x) for x in list(names)]
         if self.n_features_out_ != len(features):
             raise ValueError(
-                f"Transformation {self.name!r} changes feature dimension but does not expose get_feature_names_out()."
+                f"Transformation {self.identity!r} changes feature dimension but does not expose get_feature_names_out()."
             )
         return features
 
     def coordinate_metadata(
         self, input_features: list[str] | tuple[str, ...] | np.ndarray | None = None
     ) -> list[TransformationCoordinate]:
+        features = self._input_features(input_features)
+        if self.block_objects_ is not None:
+            coordinates: list[TransformationCoordinate] = []
+            for _, indices, obj in self.block_objects_:
+                block_names = [features[index] for index in indices]
+                if hasattr(obj, "coordinate_metadata"):
+                    coordinates.extend(list(obj.coordinate_metadata(block_names)))
+                else:
+                    coordinates.extend(
+                        TransformationCoordinate(
+                            name=name,
+                            coordinate_type="feature_coordinate",
+                            anchor_feature=name,
+                            components=(name,),
+                            coefficients=(1.0,),
+                            exact_feature_identity=True,
+                        )
+                        for name in block_names
+                    )
+            return coordinates
         if self.obj is None:
             raise RuntimeError(
-                f"Count transformation {self.name!r} has not been fitted."
+                f"Count transformation {self.identity!r} has not been fitted."
             )
         if hasattr(self.obj, "coordinate_metadata"):
-            return list(self.obj.coordinate_metadata(input_features))
-        names = self.get_feature_names_out(input_features)
+            return list(self.obj.coordinate_metadata(features))
+        names = self.get_feature_names_out(features)
         return [
             TransformationCoordinate(
                 name=name,
@@ -919,6 +1189,32 @@ class CountTransformationAdapter:
         self, X_tr: np.ndarray, X_te: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
         if isinstance(self.spec, Transform) and self.spec._fn is not None:
+            blocks = _normalise_feature_blocks(
+                self.feature_blocks, np.asarray(_as_float_matrix(X_tr)).shape[1]
+            )
+            if (
+                self.composition_scope == "rank-wise"
+                and self.name in _COMPOSITION_SENSITIVE
+            ):
+                tr_parts = []
+                te_parts = []
+                for _, indices in blocks:
+                    if self.name in _LOG_RATIO_BLOCK_TRANSFORMS and len(indices) < 2:
+                        continue
+                    cols = np.asarray(indices, dtype=int)
+                    tr_part, te_part = self.spec.apply(
+                        np.asarray(_as_float_matrix(X_tr))[:, cols],
+                        np.asarray(_as_float_matrix(X_te))[:, cols],
+                    )
+                    tr_parts.append(tr_part)
+                    te_parts.append(te_part)
+                if not tr_parts:
+                    raise ValueError(
+                        f"Transformation {self.identity!r} produced no coordinates."
+                    )
+                return np.concatenate(tr_parts, axis=1), np.concatenate(
+                    te_parts, axis=1
+                )
             return self.spec.apply(_as_float_matrix(X_tr), _as_float_matrix(X_te))
         if callable(self.spec) and _callable_accepts_two_required(self.spec):
             raise TypeError(
@@ -961,31 +1257,50 @@ def _callable_accepts_two_required(fn: Callable[..., Any]) -> bool:
 
 
 def _count_transformation_factory(
-    item: Any, *, random_state: int
+    item: Any,
+    *,
+    random_state: int,
+    feature_blocks: Any = None,
 ) -> tuple[str, Callable[[], CountTransformationAdapter]]:
     if isinstance(item, Transform) or (
         hasattr(item, "name") and hasattr(item, "apply")
     ):
-        name = transformation_label(str(getattr(item, "name"))).key
+        name = _count_transformation_name(item)
         return (
             name,
-            lambda item=item, name=name, random_state=random_state: (
-                CountTransformationAdapter(name, item, random_state=random_state)
+            lambda item=item, name=name, random_state=random_state, feature_blocks=feature_blocks: (
+                CountTransformationAdapter(
+                    name,
+                    item,
+                    random_state=random_state,
+                    feature_blocks=feature_blocks,
+                )
             ),
         )
     if isinstance(item, tuple):
         raw_name, spec = item
-        name = transformation_label(str(raw_name)).key
+        name = _count_transformation_name(
+            spec if isinstance(spec, Transform) else raw_name
+        )
         return (
             name,
-            lambda name=name, spec=spec, random_state=random_state: (
-                CountTransformationAdapter(name, spec, random_state=random_state)
+            lambda name=name, spec=spec, random_state=random_state, feature_blocks=feature_blocks: (
+                CountTransformationAdapter(
+                    name,
+                    spec,
+                    random_state=random_state,
+                    feature_blocks=feature_blocks,
+                )
             ),
         )
-    name = transformation_label(str(item)).key
+    name = _count_transformation_name(item)
     return (
         name,
-        lambda name=name, random_state=random_state: CountTransformationAdapter(
-            name, random_state=random_state
+        lambda name=name, random_state=random_state, feature_blocks=feature_blocks: (
+            CountTransformationAdapter(
+                name,
+                random_state=random_state,
+                feature_blocks=feature_blocks,
+            )
         ),
     )

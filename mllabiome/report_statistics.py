@@ -630,30 +630,53 @@ def _calibration_binary(
     if len(y) < 4 or len(np.unique(y)) < 2:
         return float("nan"), float("nan"), float("nan")
     logit = np.log(p / (1.0 - p))
-    alpha = 0.0
-    for _ in range(60):
-        mu = _sigmoid(logit + alpha)
-        weight = np.clip(mu * (1.0 - mu), 1e-10, None)
-        step = float(np.sum(y - mu) / np.sum(weight))
-        alpha += step
-        if abs(step) < 1e-10:
-            break
+    low = -50.0
+    high = 50.0
+    for _ in range(120):
+        alpha = 0.5 * (low + high)
+        score = float(np.sum(y - _sigmoid(logit + alpha)))
+        if score > 0.0:
+            low = alpha
+        else:
+            high = alpha
+    alpha = 0.5 * (low + high)
     X = np.column_stack([np.ones(len(y), dtype=float), logit])
     beta = np.asarray([alpha, 1.0], dtype=float)
-    for _ in range(80):
+    converged = False
+    for _ in range(100):
         eta = X @ beta
         mu = _sigmoid(eta)
-        weight = np.clip(mu * (1.0 - mu), 1e-10, None)
+        weight = np.clip(mu * (1.0 - mu), 1e-12, None)
         gradient = X.T @ (y - mu)
-        hessian = X.T @ (weight[:, None] * X)
-        hessian += np.eye(2) * 1e-10
+        information = X.T @ (weight[:, None] * X)
         try:
-            step = np.linalg.solve(hessian, gradient)
+            step = np.linalg.solve(information, gradient)
         except np.linalg.LinAlgError:
-            step = np.linalg.pinv(hessian) @ gradient
-        beta = beta + step
-        if float(np.max(np.abs(step))) < 1e-9:
+            step = np.linalg.pinv(information) @ gradient
+        if not np.isfinite(step).all():
             break
+        beta = beta + step
+        if not np.isfinite(beta).all() or float(np.max(np.abs(beta))) > 1e3:
+            break
+        if float(np.max(np.abs(step))) < 1e-8:
+            converged = True
+            break
+    if not converged or not np.isfinite(beta).all():
+        return float(alpha), float("nan"), float("nan")
+    mu = _sigmoid(X @ beta)
+    weight = np.clip(mu * (1.0 - mu), 1e-12, None)
+    information = X.T @ (weight[:, None] * X)
+    try:
+        eigenvalues = np.linalg.eigvalsh(information)
+    except np.linalg.LinAlgError:
+        return float(alpha), float("nan"), float("nan")
+    if (
+        not np.isfinite(eigenvalues).all()
+        or float(np.min(eigenvalues)) <= 1e-8
+        or float(np.max(eigenvalues) / np.min(eigenvalues)) >= 1e10
+        or float(np.max(np.abs(beta))) > 100.0
+    ):
+        return float(alpha), float("nan"), float("nan")
     return float(alpha), float(beta[0]), float(beta[1])
 
 
@@ -1472,7 +1495,7 @@ def _statistics_fingerprint(
         "oof_metrics": list(OOF_METRIC_ORDER),
         "calibration_bins": int(calibration_bins),
         "files": [_file_signature(path) for path in paths],
-        "schema_version": 7,
+        "schema_version": 8,
     }
     text = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -1634,7 +1657,7 @@ def run_report_statistics(
     write_table(oof_coverage_path, advanced["coverage"])
     write_table(oof_pairwise_coverage_path, advanced["pairwise_coverage"])
     oof_manifest = {
-        "schema_version": 4,
+        "schema_version": 5,
         "protocol": str(protocol),
         "strategies": list(frames),
         "n_classes": int(advanced["n_classes"]),
@@ -1663,7 +1686,7 @@ def run_report_statistics(
     }
     dump_json_standard(oof_manifest, oof_manifest_path)
     manifest = {
-        "schema_version": 5,
+        "schema_version": 6,
         "fingerprint": fingerprint,
         "protocol": str(protocol),
         "strategies": list(frames),

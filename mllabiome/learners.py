@@ -34,6 +34,175 @@ from sklearn.svm import LinearSVC, SVC
 from sklearn.tree import DecisionTreeClassifier
 
 
+_COMPUTE_ONLY_DISPLAY_PARAMS = {
+    "n_jobs",
+    "random_state",
+    "verbose",
+    "verbosity",
+    "nthread",
+    "thread_count",
+    "allow_writing_files",
+    "cache_size",
+    "max_iter",
+    "tol",
+    "time_budget",
+}
+
+_DISPLAY_PARAM_PRIORITY = (
+    "n_estimators",
+    "max_depth",
+    "min_samples_split",
+    "min_samples_leaf",
+    "max_features",
+    "class_weight",
+    "criterion",
+    "bootstrap",
+    "C",
+    "penalty",
+    "solver",
+    "l1_ratio",
+    "kernel",
+    "gamma",
+    "degree",
+    "alpha",
+    "hidden_layer_sizes",
+    "activation",
+    "learning_rate",
+    "learning_rate_init",
+    "early_stopping",
+    "subsample",
+    "loss",
+    "reg_param",
+    "n_neighbors",
+    "weights",
+    "p",
+    "var_smoothing",
+)
+
+_LEARNER_DISPLAY_NAMES = {
+    "RandomForestClassifier": "Random forest",
+    "RandomForestRegressor": "Random forest",
+    "ExtraTreesClassifier": "Extremely randomized trees",
+    "ExtraTreesRegressor": "Extremely randomized trees",
+    "MLPClassifier": "Multilayer perceptron",
+    "MLPRegressor": "Multilayer perceptron",
+    "LogisticRegression": "Logistic regression",
+    "SVC": "Support vector machine",
+    "LinearSVC": "Linear support vector machine",
+    "KNeighborsClassifier": "k-nearest neighbours",
+    "KNeighborsRegressor": "k-nearest neighbours",
+    "DecisionTreeClassifier": "Decision tree",
+    "DecisionTreeRegressor": "Decision tree",
+    "HistGradientBoostingClassifier": "Histogram gradient boosting",
+    "HistGradientBoostingRegressor": "Histogram gradient boosting",
+    "RidgeClassifier": "Ridge classifier",
+    "Ridge": "Ridge regression",
+    "ElasticNet": "Elastic net",
+    "GaussianNB": "Gaussian naive Bayes",
+    "BernoulliNB": "Bernoulli naive Bayes",
+    "MultinomialNB": "Multinomial naive Bayes",
+    "LinearDiscriminantAnalysis": "Linear discriminant analysis",
+    "QuadraticDiscriminantAnalysis": "Quadratic discriminant analysis",
+    "SGDClassifier": "Stochastic gradient descent",
+    "FLAMLClassifier": "FLAML",
+    "XGBClassifier": "XGBoost",
+    "XGBRegressor": "XGBoost",
+    "LGBMClassifier": "LightGBM",
+    "LGBMRegressor": "LightGBM",
+    "CatBoostClassifier": "CatBoost",
+    "CatBoostRegressor": "CatBoost",
+}
+
+
+def _display_param_equal(left: Any, right: Any) -> bool:
+    try:
+        if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
+            return bool(np.array_equal(np.asarray(left), np.asarray(right)))
+        value = left == right
+        if isinstance(value, np.ndarray):
+            return bool(np.all(value))
+        return bool(value)
+    except Exception:
+        return False
+
+
+def _display_param_value(value: Any) -> str:
+    if isinstance(value, str):
+        return repr(value)
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, float):
+        return f"{value:g}"
+    if isinstance(value, tuple):
+        return (
+            "("
+            + ", ".join(_display_param_value(x) for x in value)
+            + ("," if len(value) == 1 else "")
+            + ")"
+        )
+    if isinstance(value, list):
+        return "[" + ", ".join(_display_param_value(x) for x in value) + "]"
+    return str(value)
+
+
+def _changed_display_params(estimator: Any) -> list[tuple[str, Any]]:
+    if not callable(getattr(estimator, "get_params", None)):
+        return []
+    try:
+        current = estimator.get_params(deep=False)
+        signature = inspect.signature(type(estimator).__init__)
+    except Exception:
+        return []
+    defaults = {
+        name: param.default
+        for name, param in signature.parameters.items()
+        if name != "self" and param.default is not inspect.Parameter.empty
+    }
+    try:
+        baseline = type(estimator)()
+        baseline_params = baseline.get_params(deep=False)
+    except Exception:
+        baseline_params = {}
+    for name, value in baseline_params.items():
+        defaults.setdefault(name, value)
+    changed = {
+        name: value
+        for name, value in current.items()
+        if name in defaults
+        and name not in _COMPUTE_ONLY_DISPLAY_PARAMS
+        and not callable(value)
+        and not callable(getattr(value, "get_params", None))
+        and not _display_param_equal(value, defaults[name])
+    }
+    ordered = [name for name in _DISPLAY_PARAM_PRIORITY if name in changed]
+    ordered.extend(sorted(name for name in changed if name not in ordered))
+    return [(name, changed[name]) for name in ordered[:2]]
+
+
+def learner_display_label(item: Any) -> str:
+    if not isinstance(item, tuple) or len(item) != 2:
+        return str(item).replace("_", " ")
+    name, specification = item
+    estimator = specification
+    if not isinstance(estimator, BaseEstimator) and callable(specification):
+        try:
+            estimator = specification()
+        except Exception:
+            estimator = None
+    if estimator is None:
+        return str(name).replace("_", " ")
+    label = _LEARNER_DISPLAY_NAMES.get(
+        type(estimator).__name__, str(name).replace("_", " ")
+    )
+    params = _changed_display_params(estimator)
+    if params:
+        body = ", ".join(
+            f"{key}={_display_param_value(value)}" for key, value in params
+        )
+        label = f"{label} ({body})"
+    return label
+
+
 def _feature_names_from_X(X: Any) -> list[str]:
     if hasattr(X, "columns"):
         return [str(c) for c in list(X.columns)]

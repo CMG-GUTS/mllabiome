@@ -13,7 +13,7 @@ import pandas as pd
 from .storage import read_table, table_exists, write_table
 
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _REQUIRED_COLUMNS = {
     "schema_version",
     "data_signature",
@@ -67,6 +67,30 @@ def _normalise_optional(values: np.ndarray | Sequence[Any] | None, n: int) -> li
     return [_json_value(value) for value in array.tolist()]
 
 
+def _plan_signature(
+    protocol: str,
+    outer_folds: int,
+    inner_folds: int,
+    repeats: int,
+    random_state: int,
+    group_col: str | None,
+    stratify_col: str | Sequence[str] | None,
+    schema_version: int,
+) -> str:
+    return _digest(
+        {
+            "schema_version": int(schema_version),
+            "protocol": str(protocol).lower(),
+            "outer_folds": int(outer_folds),
+            "inner_folds": int(inner_folds),
+            "repeats": int(repeats),
+            "random_state": int(random_state),
+            "group_col": group_col,
+            "stratify_col": _json_value(stratify_col),
+        }
+    )
+
+
 def split_signatures(
     sample_ids: Sequence[str],
     y: np.ndarray | Sequence[Any],
@@ -108,17 +132,15 @@ def split_signatures(
             "samples": records,
         }
     )
-    plan_signature = _digest(
-        {
-            "schema_version": _SCHEMA_VERSION,
-            "protocol": str(protocol).lower(),
-            "outer_folds": int(outer_folds),
-            "inner_folds": int(inner_folds),
-            "repeats": int(repeats),
-            "random_state": int(random_state),
-            "group_col": group_col,
-            "stratify_col": _json_value(stratify_col),
-        }
+    plan_signature = _plan_signature(
+        protocol,
+        outer_folds,
+        inner_folds,
+        repeats,
+        random_state,
+        group_col,
+        stratify_col,
+        _SCHEMA_VERSION,
     )
     return data_signature, plan_signature
 
@@ -211,6 +233,7 @@ def _read_manifest(
     sample_ids: Sequence[str],
     data_signature: str,
     plan_signature: str,
+    legacy_plan_signature: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[tuple[np.ndarray, np.ndarray]]]]:
     frame = read_table(path)
     missing = _REQUIRED_COLUMNS.difference(frame.columns)
@@ -223,13 +246,17 @@ def _read_manifest(
     schema_values = set(
         pd.to_numeric(frame["schema_version"], errors="coerce").dropna()
     )
-    if schema_values != {_SCHEMA_VERSION}:
+    if schema_values == {_SCHEMA_VERSION}:
+        expected_plan_signature = plan_signature
+    elif schema_values == {1} and legacy_plan_signature is not None:
+        expected_plan_signature = legacy_plan_signature
+    else:
         raise ValueError(
             "Stored cross-validation split manifest has an unsupported schema."
         )
     data_values = set(frame["data_signature"].astype(str))
     plan_values = set(frame["plan_signature"].astype(str))
-    if data_values != {data_signature} or plan_values != {plan_signature}:
+    if data_values != {data_signature} or plan_values != {expected_plan_signature}:
         raise ValueError(
             "Stored cross-validation splits do not match the current dataset or evaluation plan. Use a new experiment directory for a different split definition."
         )
@@ -500,6 +527,48 @@ def resolve_cv_splits(
         stratify_col,
     )
     if table_exists(path):
+        frame = read_table(path)
+        schema_values = (
+            set(pd.to_numeric(frame["schema_version"], errors="coerce").dropna())
+            if "schema_version" in frame.columns
+            else set()
+        )
+        legacy_allowed = group_col is None or str(protocol).lower() in {
+            "lodo",
+            "leave_one_dataset_out",
+        }
+        if schema_values == {1} and legacy_allowed:
+            legacy_plan_signature = _plan_signature(
+                protocol,
+                outer_folds,
+                inner_folds,
+                repeats,
+                random_state,
+                group_col,
+                stratify_col,
+                1,
+            )
+            outer_splits, inner_splits = _read_manifest(
+                path,
+                sample_ids,
+                data_signature,
+                plan_signature,
+                legacy_plan_signature,
+            )
+            upgraded = _manifest_frame(
+                sample_ids,
+                task,
+                protocol,
+                data_signature,
+                plan_signature,
+                outer_splits,
+                inner_splits,
+            )
+            write_table(path, upgraded)
+            outer_splits, inner_splits = _read_manifest(
+                path, sample_ids, data_signature, plan_signature
+            )
+            return outer_splits, inner_splits, path
         outer_splits, inner_splits = _read_manifest(
             path, sample_ids, data_signature, plan_signature
         )

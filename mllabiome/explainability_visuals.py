@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import matplotlib as mpl
 import matplotlib.colors as mcolors
@@ -52,6 +52,44 @@ def _support_text_color(value: float) -> str:
 
     lum = 0.2126 * rgba[0] + 0.7152 * rgba[1] + 0.0722 * rgba[2]
     return "#ffffff" if lum < 0.48 else INK
+
+
+def _annotate_support_matrix(axis: plt.Axes, matrix: np.ndarray) -> None:
+    if matrix.ndim != 2:
+        return
+    for yi in range(matrix.shape[0]):
+        for xi in range(matrix.shape[1]):
+            value = float(matrix[yi, xi])
+            if not np.isfinite(value):
+                continue
+            axis.text(
+                xi,
+                yi,
+                f"{value:.2f}",
+                ha="center",
+                va="center",
+                fontsize=3.8,
+                color=_support_text_color(value),
+                zorder=5,
+            )
+
+
+def _draw_mean_support(axis: plt.Axes, values: np.ndarray) -> None:
+    vals = np.asarray(values, dtype=float)
+    axis.set_xlim(0.0, 1.0)
+    axis.set_xticks([0.0, 1.0])
+    axis.set_xticklabels(["0", "1"], fontsize=4.6, color="#000000")
+    axis.tick_params(axis="x", length=1.6, width=0.35, pad=1, colors="#000000")
+    axis.spines["bottom"].set_visible(True)
+    axis.spines["bottom"].set_color("#000000")
+    axis.spines["bottom"].set_linewidth(0.4)
+    for yi, value in enumerate(vals):
+        axis.barh(
+            yi, 1.0, height=0.48, left=0.0, color=TRACK, edgecolor="none", zorder=1
+        )
+        if np.isfinite(value):
+            v = float(np.clip(value, 0.0, 1.0))
+            axis.plot([v, v], [yi - 0.20, yi + 0.20], color=ACC, lw=0.9, zorder=3)
 
 
 RC = {
@@ -392,21 +430,27 @@ def plot_feature_support(
         ax_dir = fig.add_axes(_bbox(panel, 0.485, 0.035, 0.145, 0.820), zorder=5)
         ax_hm = fig.add_axes(_bbox(panel, 0.715, 0.035, 0.085, 0.820), zorder=5)
         ax_stab = fig.add_axes(_bbox(panel, 0.885, 0.035, 0.085, 0.820), zorder=5)
+        ax_mean = None
         bracket_lab = (0.020, 0.455)
         bracket_dir = (0.485, 0.630)
         bracket_hm = (0.715, 0.800)
         bracket_stab = (0.885, 0.970)
     else:
-        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.035, 0.395, 0.820), zorder=5)
-        ax_dir = fig.add_axes(_bbox(panel, 0.425, 0.035, 0.105, 0.820), zorder=5)
-        ax_hm = fig.add_axes(_bbox(panel, 0.565, 0.035, 0.175, 0.820), zorder=5)
-        ax_stab = fig.add_axes(_bbox(panel, 0.790, 0.035, 0.175, 0.820), zorder=5)
-        bracket_lab = (0.020, 0.395)
-        bracket_dir = (0.425, 0.530)
-        bracket_hm = (0.565, 0.740)
-        bracket_stab = (0.790, 0.965)
+        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.035, 0.350, 0.820), zorder=5)
+        ax_dir = fig.add_axes(_bbox(panel, 0.380, 0.035, 0.095, 0.820), zorder=5)
+        ax_hm = fig.add_axes(_bbox(panel, 0.505, 0.035, 0.195, 0.820), zorder=5)
+        ax_mean = fig.add_axes(_bbox(panel, 0.725, 0.035, 0.060, 0.820), zorder=5)
+        ax_stab = fig.add_axes(_bbox(panel, 0.815, 0.035, 0.155, 0.820), zorder=5)
+        bracket_lab = (0.020, 0.350)
+        bracket_dir = (0.380, 0.475)
+        bracket_hm = (0.505, 0.700)
+        bracket_mean = (0.725, 0.785)
+        bracket_stab = (0.815, 0.970)
 
-    for ax in (ax_lab, ax_dir, ax_hm, ax_stab):
+    axes_to_style = [ax_lab, ax_dir, ax_hm, ax_stab]
+    if ax_mean is not None:
+        axes_to_style.append(ax_mean)
+    for ax in axes_to_style:
         ax.set_facecolor(BG)
         ax.set_ylim(n - 0.5, -0.5)
         ax.set_yticks([])
@@ -500,30 +544,25 @@ def plot_feature_support(
                 axis.axvline(x, color="white", lw=0.45)
             for yline in np.arange(-0.5, n + 0.5, 1):
                 axis.axhline(yline, color="white", lw=0.35)
-        if solo_method:
-            for axis, matrix in ((ax_hm, support_matrix), (ax_stab, fold_stability)):
-                for yi in range(n):
-                    val = float(matrix[yi, 0]) if matrix.shape[1] else np.nan
-                    text = f"{val:.3f}" if np.isfinite(val) else "NA"
-                    color = _support_text_color(val) if np.isfinite(val) else DIM
-                    axis.text(
-                        0,
-                        yi,
-                        text,
-                        ha="center",
-                        va="center",
-                        fontsize=5.0,
-                        color=color,
-                        zorder=5,
-                    )
+            _annotate_support_matrix(axis, matrix)
+        if ax_mean is not None:
+            with np.errstate(invalid="ignore"):
+                mean_support = np.nanmean(support_matrix, axis=1)
+            _draw_mean_support(ax_mean, mean_support)
     else:
         _soft_missing(ax_hm, "no method\nscores")
-        _soft_missing(ax_stab, "no fold\nstability")
+        _soft_missing(ax_stab, "no fold\nfrequency")
+        if ax_mean is not None:
+            _soft_missing(ax_mean, "no mean")
 
     _bracket(fig, panel, bracket_lab[0], bracket_lab[1], 0.900, "Ranked feature")
     _bracket(fig, panel, bracket_dir[0], bracket_dir[1], 0.900, "Class shift")
     _bracket(fig, panel, bracket_hm[0], bracket_hm[1], 0.900, "Top-k support")
-    _bracket(fig, panel, bracket_stab[0], bracket_stab[1], 0.900, "Fold stability")
+    if ax_mean is not None:
+        _bracket(fig, panel, bracket_mean[0], bracket_mean[1], 0.900, "Mean")
+    _bracket(
+        fig, panel, bracket_stab[0], bracket_stab[1], 0.900, "Fold top-k frequency"
+    )
     save_all(fig, out_stem)
     plt.close(fig)
     return True
@@ -591,17 +630,23 @@ def plot_regression_feature_support(
         ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.035, 0.570, 0.820), zorder=5)
         ax_hm = fig.add_axes(_bbox(panel, 0.665, 0.035, 0.125, 0.820), zorder=5)
         ax_stab = fig.add_axes(_bbox(panel, 0.845, 0.035, 0.125, 0.820), zorder=5)
+        ax_mean = None
         bracket_lab = (0.020, 0.570)
         bracket_hm = (0.665, 0.790)
         bracket_stab = (0.845, 0.970)
     else:
-        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.035, 0.500, 0.820), zorder=5)
-        ax_hm = fig.add_axes(_bbox(panel, 0.565, 0.035, 0.180, 0.820), zorder=5)
-        ax_stab = fig.add_axes(_bbox(panel, 0.800, 0.035, 0.180, 0.820), zorder=5)
-        bracket_lab = (0.020, 0.500)
-        bracket_hm = (0.565, 0.745)
-        bracket_stab = (0.800, 0.980)
-    for ax in (ax_lab, ax_hm, ax_stab):
+        ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.035, 0.455, 0.820), zorder=5)
+        ax_hm = fig.add_axes(_bbox(panel, 0.505, 0.035, 0.215, 0.820), zorder=5)
+        ax_mean = fig.add_axes(_bbox(panel, 0.745, 0.035, 0.065, 0.820), zorder=5)
+        ax_stab = fig.add_axes(_bbox(panel, 0.835, 0.035, 0.145, 0.820), zorder=5)
+        bracket_lab = (0.020, 0.455)
+        bracket_hm = (0.505, 0.720)
+        bracket_mean = (0.745, 0.810)
+        bracket_stab = (0.835, 0.980)
+    axes_to_style = [ax_lab, ax_hm, ax_stab]
+    if ax_mean is not None:
+        axes_to_style.append(ax_mean)
+    for ax in axes_to_style:
         ax.set_facecolor(BG)
         ax.set_ylim(n - 0.5, -0.5)
         ax.set_yticks([])
@@ -659,25 +704,19 @@ def plot_regression_feature_support(
             axis.axvline(x, color="white", lw=0.45)
         for yline in np.arange(-0.5, n + 0.5, 1):
             axis.axhline(yline, color="white", lw=0.35)
-    if solo_method:
-        for axis, matrix in ((ax_hm, support_matrix), (ax_stab, fold_stability)):
-            for yi in range(n):
-                value = float(matrix[yi, 0]) if matrix.shape[1] else np.nan
-                label = f"{value:.3f}" if np.isfinite(value) else "NA"
-                color = _support_text_color(value) if np.isfinite(value) else DIM
-                axis.text(
-                    0,
-                    yi,
-                    label,
-                    ha="center",
-                    va="center",
-                    fontsize=5.0,
-                    color=color,
-                    zorder=5,
-                )
+        _annotate_support_matrix(axis, matrix)
+    if ax_mean is not None:
+        mean_support = pd.to_numeric(top["mean_support"], errors="coerce").to_numpy(
+            dtype=float
+        )
+        _draw_mean_support(ax_mean, mean_support)
     _bracket(fig, panel, bracket_lab[0], bracket_lab[1], 0.900, "Ranked feature")
     _bracket(fig, panel, bracket_hm[0], bracket_hm[1], 0.900, "Top-k support")
-    _bracket(fig, panel, bracket_stab[0], bracket_stab[1], 0.900, "Fold stability")
+    if ax_mean is not None:
+        _bracket(fig, panel, bracket_mean[0], bracket_mean[1], 0.900, "Mean")
+    _bracket(
+        fig, panel, bracket_stab[0], bracket_stab[1], 0.900, "Fold top-k frequency"
+    )
     save_all(fig, out_stem)
     plt.close(fig)
     return True
@@ -927,47 +966,44 @@ def _draw_network(
         pos, hub, hub_deg = _net_compute_kamada_kawai_layout(G)
     else:
         pos, hub, hub_deg = _net_compute_layout(G, seed=42)
-    hub_pos = np.array(pos[hub])
+    pos = {node: np.asarray(value, dtype=float) * 0.78 for node, value in pos.items()}
     strengths = [G[u][v]["weight"] for u, v in G.edges()]
     s_min, s_max = float(min(strengths)), float(max(strengths))
 
-    def _ns(s):
-        return (float(s) - s_min) / (s_max - s_min) if s_max > s_min else 0.6
+    def _ns(value):
+        return (float(value) - s_min) / (s_max - s_min) if s_max > s_min else 0.6
 
     ax.set_facecolor(BG)
     ax.set_aspect("equal")
     ax.axis("off")
-    edge_list = sorted(G.edges(data=True), key=lambda e: e[2]["weight"])
-    badge_xy = []
-    for idx, (u, v, ed) in enumerate(edge_list):
+    edge_list = sorted(G.edges(data=True), key=lambda edge: edge[2]["weight"])
+    for idx, (u, v, edge) in enumerate(edge_list):
         p1, p2 = pos[u], pos[v]
-        n = _ns(ed["weight"])
-        curv = 0.11 * (1 if idx % 2 == 0 else -1)
-        xe, ye, _, _ = _net_bezier(p1, p2, curv=curv)
-        lw = _net_edge_linewidth(n)
-        col = NET_EDGE_CMAP(0.12 + n * 0.88)
+        norm = _ns(edge["weight"])
+        curvature = 0.10 * (1 if idx % 2 == 0 else -1)
+        xe, ye, _, _ = _net_bezier(p1, p2, curv=curvature)
         ax.plot(
             xe,
             ye,
-            color=col,
-            linewidth=lw,
-            alpha=0.82,
+            color=NET_EDGE_CMAP(0.12 + norm * 0.88),
+            linewidth=_net_edge_linewidth(norm),
+            alpha=0.80,
             zorder=1,
             solid_capstyle="round",
         )
-    badge_np = np.array(badge_xy) if badge_xy else np.zeros((0, 2))
 
+    radii: dict[Any, float] = {}
     for node in G.nodes():
-        nd = G.nodes[node]
+        data = G.nodes[node]
         is_hub = bool(node == hub and hub_deg >= 4)
-        c = _net_node_color(nd.get("standardized_shift", 0.0))
-        r = _net_node_radius(nd.get("strength_norm", 0.0), is_hub=is_hub)
+        radius = _net_node_radius(data.get("strength_norm", 0.0), is_hub=is_hub)
+        radii[node] = radius
         x, y = pos[node]
         ax.add_patch(
             plt.Circle(
                 (x, y),
-                r,
-                facecolor=c,
+                radius,
+                facecolor=_net_node_color(data.get("standardized_shift", 0.0)),
                 edgecolor=INK,
                 linewidth=0.8,
                 zorder=3,
@@ -975,140 +1011,63 @@ def _draw_network(
             )
         )
 
-    char_w = 0.058
-    line_h = 0.26
-    node_list = list(G.nodes())
-    nl = len(node_list)
-    node_xy = np.array([pos[n] for n in node_list], dtype=float)
-    node_r_arr = np.array(
-        [
-            _net_node_radius(
-                G.nodes[n].get("strength_norm", 0.0),
-                is_hub=(n == hub and hub_deg >= 4),
+    nodes = list(G.nodes())
+    left = [node for node in nodes if float(pos[node][0]) < 0.0]
+    right = [node for node in nodes if float(pos[node][0]) >= 0.0]
+    while abs(len(left) - len(right)) > 2:
+        source = left if len(left) > len(right) else right
+        target = right if source is left else left
+        move = min(source, key=lambda node: abs(float(pos[node][0])))
+        source.remove(move)
+        target.append(move)
+
+    def _draw_side(side_nodes: list[Any], side: str) -> None:
+        if not side_nodes:
+            return
+        ordered = sorted(side_nodes, key=lambda node: float(pos[node][1]), reverse=True)
+        slots = np.linspace(4.20, -4.20, len(ordered))
+        sign = -1.0 if side == "left" else 1.0
+        text_x = sign * 4.34
+        line_end = sign * 4.30
+        elbow_x = sign * 3.72
+        horizontal_alignment = "right" if side == "left" else "left"
+        for node, slot_y in zip(ordered, slots):
+            x, y = map(float, pos[node])
+            vector = np.array([elbow_x - x, float(slot_y) - y], dtype=float)
+            length = float(np.linalg.norm(vector))
+            if length <= 1e-12:
+                vector = np.array([sign, 0.0], dtype=float)
+                length = 1.0
+            anchor = np.array([x, y], dtype=float) + vector / length * (
+                radii[node] + 0.05
             )
-            for n in node_list
-        ],
-        dtype=float,
-    )
-    lbl_pos = np.zeros((nl, 2), dtype=float)
-    lbl_ideal = np.zeros((nl, 2), dtype=float)
-    lbl_anch = np.zeros((nl, 2), dtype=float)
-    lbl_text: list[str] = []
-    lbl_fs: list[float] = []
-    lbl_fw: list[str] = []
-    lbl_hw = np.zeros(nl, dtype=float)
-    lbl_hh = np.zeros(nl, dtype=float)
-
-    for ni, node in enumerate(node_list):
-        nd = G.nodes[node]
-        is_hub = bool(node == hub and hub_deg >= 4)
-        r = node_r_arr[ni]
-        x, y = pos[node]
-        raw = str(nd["label"])
-        lbl = _net_italic(raw)
-        fs = float(np.clip(5.8 + (r - 0.08) / max(0.32 - 0.08, 1e-9) * 1.2, 5.8, 7.0))
-        fw = "bold" if is_hub else "normal"
-        hw = len(raw) * char_w * (fs / 7.5) / 2 + 0.04
-        hh = line_h * (fs / 7.5) / 2
-        lbl_text.append(lbl)
-        lbl_fs.append(fs)
-        lbl_fw.append(fw)
-        lbl_hw[ni] = hw
-        lbl_hh[ni] = hh
-        if is_hub:
-            nat_angle = np.pi / 2
-        else:
-            dv = np.array([x, y]) - hub_pos
-            nat_angle = (
-                np.arctan2(dv[1], dv[0]) if np.linalg.norm(dv) > 0.01 else np.pi / 2
+            ax.plot(
+                [anchor[0], elbow_x, line_end],
+                [anchor[1], float(slot_y), float(slot_y)],
+                color=INK,
+                linewidth=0.42,
+                alpha=0.58,
+                linestyle=(0, (1.5, 2.2)),
+                solid_capstyle="round",
+                zorder=4,
             )
-        pad = r + (0.65 if is_hub else 0.52)
-        best_score, best_angle = 1e9, nat_angle
-        for angle in np.linspace(0, 2 * np.pi, 13)[:-1]:
-            lx = x + np.cos(angle) * pad
-            ly = y + np.sin(angle) * pad
-            score = 0.0
-            for pj in range(ni):
-                odx = abs(lx - lbl_pos[pj, 0]) - (hw + lbl_hw[pj] + 0.08)
-                ody = abs(ly - lbl_pos[pj, 1]) - (hh + lbl_hh[pj] + 0.05)
-                if odx < 0 and ody < 0:
-                    score += 5 + (-odx) * (-ody) * 3
-            for nj in range(nl):
-                dist = np.hypot(lx - node_xy[nj, 0], ly - node_xy[nj, 1])
-                if dist < node_r_arr[nj] + max(hw, hh) + 0.12:
-                    score += 3
-            angle_diff = abs(((angle - nat_angle) + np.pi) % (2 * np.pi) - np.pi)
-            score += angle_diff * 0.12
-            if score < best_score:
-                best_score, best_angle = score, angle
-        lx0 = x + np.cos(best_angle) * pad
-        ly0 = y + np.sin(best_angle) * pad
-        lbl_pos[ni] = [lx0, ly0]
-        lbl_ideal[ni] = [lx0, ly0]
-        lbl_anch[ni] = [
-            x + np.cos(best_angle) * (r + 0.05),
-            y + np.sin(best_angle) * (r + 0.05),
-        ]
+            label = _net_italic(str(G.nodes[node]["label"]))
+            is_hub = bool(node == hub and hub_deg >= 4)
+            ax.text(
+                text_x,
+                float(slot_y),
+                label,
+                ha=horizontal_alignment,
+                va="center",
+                fontsize=6.2 if not is_hub else 6.5,
+                color=INK,
+                fontweight="bold" if is_hub else "normal",
+                zorder=6,
+            )
 
-    k_s, k_l, k_n, k_b = 0.18, 0.70, 0.45, 0.35
-    badge_r, dt, lims = 0.18, 0.06, 4.85
-    for _ in range(1200):
-        forces = k_s * (lbl_ideal - lbl_pos)
-        for i in range(nl):
-            for j in range(nl):
-                if i == j:
-                    continue
-                dx = lbl_pos[i, 0] - lbl_pos[j, 0]
-                dy = lbl_pos[i, 1] - lbl_pos[j, 1]
-                px = (lbl_hw[i] + lbl_hw[j] + 0.10) - abs(dx)
-                py = (lbl_hh[i] + lbl_hh[j] + 0.06) - abs(dy)
-                if px > 0 and py > 0:
-                    if px <= py:
-                        forces[i, 0] += k_l * px * (1 if dx >= 0 else -1)
-                    else:
-                        forces[i, 1] += k_l * py * (1 if dy >= 0 else -1)
-            for nj in range(nl):
-                dx = lbl_pos[i, 0] - node_xy[nj, 0]
-                dy = lbl_pos[i, 1] - node_xy[nj, 1]
-                dist = np.hypot(dx, dy) + 1e-9
-                md = node_r_arr[nj] + max(lbl_hw[i], lbl_hh[i]) + 0.13
-                if dist < md:
-                    forces[i] += k_n * (md - dist) / dist * np.array([dx, dy])
-            for bi in range(len(badge_np)):
-                dx = lbl_pos[i, 0] - badge_np[bi, 0]
-                dy = lbl_pos[i, 1] - badge_np[bi, 1]
-                dist = np.hypot(dx, dy) + 1e-9
-                md = badge_r + max(lbl_hw[i], lbl_hh[i]) + 0.06
-                if dist < md:
-                    forces[i] += k_b * (md - dist) / dist * np.array([dx, dy])
-        lbl_pos += dt * forces
-        lbl_pos[:, 0] = np.clip(lbl_pos[:, 0], -lims, lims)
-        lbl_pos[:, 1] = np.clip(lbl_pos[:, 1], -lims, lims)
-
-    for k in range(nl):
-        ax.plot(
-            [lbl_anch[k, 0], lbl_pos[k, 0]],
-            [lbl_anch[k, 1], lbl_pos[k, 1]],
-            color=INK,
-            linewidth=0.34,
-            alpha=0.35,
-            linestyle=(0, (2, 3)),
-            solid_capstyle="round",
-            zorder=4,
-        )
-        ax.text(
-            lbl_pos[k, 0],
-            lbl_pos[k, 1],
-            lbl_text[k],
-            ha="center",
-            va="center",
-            fontsize=lbl_fs[k],
-            color=INK,
-            fontweight=lbl_fw[k],
-            path_effects=[mpe.withStroke(linewidth=1.0, foreground="white")],
-            zorder=6,
-        )
-    ax.set_xlim(-5.0, 5.0)
+    _draw_side(left, "left")
+    _draw_side(right, "right")
+    ax.set_xlim(-7.15, 7.15)
     ax.set_ylim(-5.0, 5.0)
     return float(s_min), float(s_max)
 
@@ -1312,15 +1271,295 @@ def plot_interaction_network(
     return True
 
 
+def _context_palette(
+    context: pd.DataFrame, task: str
+) -> tuple[list[tuple[Any, str, str]], dict[Any, str]]:
+    if str(task).lower() != "classification" or context.empty:
+        return [("cohort", "cohort", CLASS_CTRL)], {"cohort": CLASS_CTRL}
+    data = context.copy()
+    data["class_index"] = pd.to_numeric(data.get("class_index"), errors="coerce")
+    data = data[np.isfinite(data["class_index"].to_numpy(dtype=float))]
+    if data.empty:
+        return [("cohort", "cohort", CLASS_CTRL)], {"cohort": CLASS_CTRL}
+    colors = [
+        DIM,
+        ACC,
+        "#8b5cf6",
+        "#0f766e",
+        "#c2410c",
+        "#a16207",
+        "#be185d",
+        "#334155",
+    ]
+    groups: list[tuple[Any, str, str]] = []
+    mapping: dict[Any, str] = {}
+    for pos, class_index in enumerate(
+        sorted(data["class_index"].astype(int).unique().tolist())
+    ):
+        rows = data[data["class_index"].astype(int).eq(int(class_index))]
+        labels = [
+            str(x)
+            for x in rows.get("class_label", pd.Series(dtype=str)).dropna().tolist()
+            if str(x)
+        ]
+        label = labels[0] if labels else str(class_index)
+        color = colors[pos % len(colors)]
+        groups.append((int(class_index), label, color))
+        mapping[int(class_index)] = color
+    return groups, mapping
+
+
+def _class_display_label(value: Any) -> str:
+    text = str(value).strip().replace("_", " ")
+    return text[:1].upper() + text[1:] if text else text
+
+
+def _local_direction_colors(
+    context: pd.DataFrame,
+    task: str,
+    class_label: str,
+    class_index: int | None = None,
+) -> tuple[str, str]:
+    if str(task).lower() != "classification":
+        return ACC, CLASS_CTRL
+    groups, _ = _context_palette(context, task)
+    if not groups:
+        if class_index == 0:
+            return CLASS_CTRL, CLASS_CASE
+        if class_index == 1:
+            return CLASS_CASE, CLASS_CTRL
+        return ACC, DIM
+    matched_key: Any = None
+    positive = ACC
+    if class_index is not None:
+        for key, _, color in groups:
+            if key == int(class_index):
+                matched_key = key
+                positive = color
+                break
+    if matched_key is None:
+        target = str(class_label).strip().casefold()
+        for key, label, color in groups:
+            if str(label).strip().casefold() == target:
+                matched_key = key
+                positive = color
+                break
+    if len(groups) == 2 and matched_key is not None:
+        for key, _, color in groups:
+            if key != matched_key:
+                return positive, color
+    return positive, DIM
+
+
+def _draw_cohort_context(
+    ax: plt.Axes,
+    context: pd.DataFrame,
+    features: Sequence[str],
+    sample_id: str,
+    task: str,
+) -> tuple[list[tuple[Any, str, str]], dict[Any, str]]:
+    groups, colors = _context_palette(context, task)
+    if context.empty:
+        ax.set_xticks([])
+        return groups, colors
+    data = context.copy()
+    data["feature"] = data.get("feature", "").astype(str)
+    data["sample_id"] = data.get("sample_id", "").astype(str)
+    data["relative_abundance"] = pd.to_numeric(
+        data.get("relative_abundance"), errors="coerce"
+    )
+    data = data[np.isfinite(data["relative_abundance"].to_numpy(dtype=float))]
+    data["relative_abundance"] = data["relative_abundance"].clip(lower=0.0)
+    n_groups = max(1, len(groups))
+    if n_groups == 1:
+        offsets = {groups[0][0]: 0.0}
+    else:
+        values = np.linspace(0.17, -0.17, n_groups)
+        offsets = {key: float(values[i]) for i, (key, _, _) in enumerate(groups)}
+    for row_no, feature in enumerate(features):
+        rows = data[data["feature"].eq(str(feature))].copy()
+        if rows.empty:
+            continue
+        if str(task).lower() == "classification" and "class_index" in rows.columns:
+            rows["class_index"] = pd.to_numeric(rows["class_index"], errors="coerce")
+            for class_key, _, color in groups:
+                group = rows[rows["class_index"].eq(float(class_key))].sort_values(
+                    "sample_id", kind="stable"
+                )
+                if group.empty:
+                    continue
+                values = group["relative_abundance"].to_numpy(dtype=float)
+                jitter = 0.015 * np.sin(
+                    np.arange(len(group), dtype=float) * 2.399963229728653
+                )
+                y = (
+                    np.full(len(group), row_no + offsets[class_key], dtype=float)
+                    + jitter
+                )
+                ax.scatter(
+                    values,
+                    y,
+                    s=7.5,
+                    color=color,
+                    alpha=0.58 if class_key != groups[0][0] else 0.78,
+                    edgecolors="none",
+                    zorder=2,
+                )
+        else:
+            group = rows.sort_values("sample_id", kind="stable")
+            values = group["relative_abundance"].to_numpy(dtype=float)
+            jitter = 0.025 * np.sin(
+                np.arange(len(group), dtype=float) * 2.399963229728653
+            )
+            ax.scatter(
+                values,
+                row_no + jitter,
+                s=7.5,
+                color=CLASS_CTRL,
+                alpha=0.68,
+                edgecolors="none",
+                zorder=2,
+            )
+        focal = rows[rows["sample_id"].eq(str(sample_id))]
+        if not focal.empty:
+            point = focal.iloc[0]
+            x = float(point["relative_abundance"])
+            if str(task).lower() == "classification":
+                key_value = pd.to_numeric(
+                    pd.Series([point.get("class_index", np.nan)]), errors="coerce"
+                ).iloc[0]
+                if np.isfinite(key_value):
+                    key = int(key_value)
+                    y = row_no + offsets.get(key, 0.0)
+                    face = colors.get(key, ACC)
+                else:
+                    y = float(row_no)
+                    face = ACC
+            else:
+                y = float(row_no)
+                face = CLASS_CTRL
+            ax.scatter(
+                [x],
+                [y],
+                s=15.0,
+                facecolor=face,
+                edgecolor=INK,
+                linewidth=0.55,
+                zorder=5,
+            )
+    maximum = float(data["relative_abundance"].max()) if not data.empty else 0.1
+    maximum = max(maximum, 1e-4)
+    ax.set_xscale("symlog", linthresh=1e-5, linscale=0.70, base=10)
+    if maximum > 0.20:
+        ax.set_xlim(-5e-5, 2.50)
+        ax.set_xticks([0.0, 1e-4, 1e-2, 1.0])
+        ax.set_xticklabels(["0%", "0.01%", "1%", "100%"])
+    else:
+        ax.set_xlim(-5e-5, max(0.25, maximum * 1.50))
+        ax.set_xticks([0.0, 1e-4, 1e-2, 1e-1])
+        ax.set_xticklabels(["0%", "0.01%", "1%", "10%"])
+    ax.set_xlabel("Relative abundance", fontsize=5.0, color=INK, labelpad=2)
+    ax.tick_params(axis="x", labelsize=4.4, length=1.8, width=0.35, pad=1)
+    ax.spines["bottom"].set_visible(True)
+    ax.spines["bottom"].set_color("#000000")
+    ax.spines["bottom"].set_linewidth(0.4)
+    return groups, colors
+
+
+def _context_legend(
+    fig: plt.Figure,
+    context: pd.DataFrame,
+    sample_id: str,
+    task: str,
+    anchor: tuple[float, float],
+) -> None:
+    groups, colors = _context_palette(context, task)
+    handles: list[mlines.Line2D] = []
+    if str(task).lower() == "classification":
+        for key, label, color in groups:
+            handles.append(
+                mlines.Line2D(
+                    [],
+                    [],
+                    marker="o",
+                    linestyle="none",
+                    markersize=3.0,
+                    markerfacecolor=color,
+                    markeredgecolor="none",
+                    label=label,
+                )
+            )
+        focal_color = ACC
+        focal = (
+            context[
+                context.get("sample_id", pd.Series(dtype=str))
+                .astype(str)
+                .eq(str(sample_id))
+            ]
+            if not context.empty
+            else pd.DataFrame()
+        )
+        if not focal.empty:
+            value = pd.to_numeric(focal.get("class_index"), errors="coerce").dropna()
+            if not value.empty:
+                focal_color = colors.get(int(value.iloc[0]), ACC)
+    else:
+        handles.append(
+            mlines.Line2D(
+                [],
+                [],
+                marker="o",
+                linestyle="none",
+                markersize=3.0,
+                markerfacecolor=CLASS_CTRL,
+                markeredgecolor="none",
+                label="cohort",
+            )
+        )
+        focal_color = CLASS_CTRL
+    handles.append(
+        mlines.Line2D(
+            [],
+            [],
+            marker="o",
+            linestyle="none",
+            markersize=3.2,
+            markerfacecolor=focal_color,
+            markeredgecolor=INK,
+            markeredgewidth=0.55,
+            label="explained sample",
+        )
+    )
+    legend = fig.legend(
+        handles=handles,
+        ncol=len(handles),
+        loc="center",
+        bbox_to_anchor=anchor,
+        frameon=True,
+        fancybox=False,
+        framealpha=1.0,
+        borderpad=0.38,
+        columnspacing=0.8,
+        handlelength=0.8,
+        handletextpad=0.3,
+        fontsize=4.4,
+    )
+    legend.get_frame().set_edgecolor("#B9B9B9")
+    legend.get_frame().set_linewidth(0.65)
+    legend.get_frame().set_facecolor("white")
+
+
 def plot_local_attributions(
     table: pd.DataFrame,
     out_stem: Path,
     *,
     task: str,
     top_n: int,
+    cohort_context: pd.DataFrame | None = None,
 ) -> Path | None:
     if table is None or table.empty:
         return None
+    context = cohort_context.copy() if cohort_context is not None else pd.DataFrame()
     selected = table.copy()
     if "selected_for_report" in selected.columns:
         marker = selected["selected_for_report"]
@@ -1471,51 +1710,92 @@ def plot_local_attributions(
         )
         y0 = 0.04 + (n_panels - 1 - panel_no) * panel_h
         role = str(sub.get("selection_role", pd.Series([""])).iloc[0]).strip()
+        split_key = (
+            sub["split_key"].astype(str)
+            if "split_key" in sub.columns
+            else pd.Series(["out_of_fold"] * len(sub), index=sub.index)
+        )
+        n_explanations = max(1, int(split_key.nunique()))
         if str(task).lower() == "classification":
             class_label = str(sub.get("class_label", pd.Series([""])).iloc[0])
-            heading = (
-                f"Representative sample · {class_label}"
-                if role.startswith("representative")
-                else "Requested sample"
-            )
-            prediction = pd.to_numeric(
-                sub.get("prediction", np.nan), errors="coerce"
-            ).mean()
             true_label = str(
                 sub.get("true_class_label", pd.Series([class_label])).iloc[0]
             )
-            predicted_label = str(
-                sub.get("predicted_class_label", pd.Series([""])).iloc[0]
+            predicted_values = sub.get(
+                "predicted_class_label", pd.Series([""] * len(sub), index=sub.index)
+            ).astype(str)
+            predicted_nonempty = predicted_values[predicted_values.str.len().gt(0)]
+            predicted_label = (
+                str(predicted_nonempty.mode().iloc[0])
+                if not predicted_nonempty.empty
+                else ""
+            )
+            prediction_values = pd.to_numeric(
+                sub.get("prediction", np.nan), errors="coerce"
+            )
+            pred_frame = pd.DataFrame(
+                {"split_key": split_key, "prediction": prediction_values}
+            ).dropna(subset=["prediction"])
+            pred_by_split = (
+                pred_frame.groupby("split_key", sort=False)["prediction"].mean()
+                if not pred_frame.empty
+                else pd.Series(dtype=float)
+            )
+            prediction_mean = (
+                float(pred_by_split.mean()) if not pred_by_split.empty else float("nan")
+            )
+            prediction_sd = (
+                float(pred_by_split.std(ddof=1)) if len(pred_by_split) > 1 else 0.0
+            )
+            correct_frame = pd.DataFrame(
+                {
+                    "split_key": split_key,
+                    "predicted": predicted_values,
+                }
+            ).drop_duplicates("split_key", keep="first")
+            correct_rate = (
+                float(correct_frame["predicted"].eq(true_label).mean()) * 100.0
+                if not correct_frame.empty
+                else float("nan")
+            )
+            class_display = _class_display_label(class_label)
+            true_display = _class_display_label(true_label)
+            predicted_display = _class_display_label(predicted_label)
+            heading = (
+                f"Observed: {true_display}   Predicted: {predicted_display}   "
+                f"Mean P({class_display}) = {prediction_mean:.3f} ± {prediction_sd:.3f}"
             )
             detail = (
-                f"{sample_id} · observed {true_label} · predicted {predicted_label} · "
-                f"OOF P({class_label}) {prediction:.3f}"
+                f"Out-of-fold explanations: n = {n_explanations}   "
+                f"Correct out-of-fold predictions: {correct_rate:.0f}%"
             )
-            shap_label = f"SHAP contribution to P({class_label})"
+            shap_label = f"SHAP contribution to P({class_display})"
         else:
-            role_labels = {
-                "representative_prediction_q25": "Lower-range prediction",
-                "representative_prediction_q50": "Central prediction",
-                "representative_prediction_q75": "Upper-range prediction",
-            }
-            role_heading = role_labels.get(
-                role,
-                "Requested sample"
-                if role.startswith("requested")
-                else role.replace("_", " ").strip().title(),
-            )
-            heading = (
-                f"Representative sample · {role_heading}"
-                if role.startswith("representative")
-                else role_heading
-            )
-            prediction = pd.to_numeric(
+            prediction_values = pd.to_numeric(
                 sub.get("prediction", np.nan), errors="coerce"
-            ).mean()
+            )
+            pred_frame = pd.DataFrame(
+                {"split_key": split_key, "prediction": prediction_values}
+            ).dropna(subset=["prediction"])
+            pred_by_split = (
+                pred_frame.groupby("split_key", sort=False)["prediction"].mean()
+                if not pred_frame.empty
+                else pd.Series(dtype=float)
+            )
+            prediction_mean = (
+                float(pred_by_split.mean()) if not pred_by_split.empty else float("nan")
+            )
+            prediction_sd = (
+                float(pred_by_split.std(ddof=1)) if len(pred_by_split) > 1 else 0.0
+            )
             observed = pd.to_numeric(
                 sub.get("observed_response", np.nan), errors="coerce"
             ).mean()
-            detail = f"{sample_id} · observed {observed:.3f} · OOF prediction {prediction:.3f}"
+            heading = (
+                f"Observed: {observed:.3f}   Mean prediction = "
+                f"{prediction_mean:.3f} ± {prediction_sd:.3f}"
+            )
+            detail = f"Out-of-fold explanations: n = {n_explanations}"
             shap_label = "SHAP contribution to predicted response"
         fig.text(
             0.035,
@@ -1535,30 +1815,66 @@ def plot_local_attributions(
             va="center",
             fontsize=5.4,
             color=MID,
+            weight="normal",
         )
+        has_context = not context.empty
         if len(methods) == 2:
-            axes = {
-                "labels": fig.add_axes(
-                    [0.035, y0 + 0.10 * panel_h, 0.305, panel_h * 0.61]
-                ),
-                "shap": fig.add_axes(
-                    [0.355, y0 + 0.10 * panel_h, 0.180, panel_h * 0.61]
-                ),
-                "lime": fig.add_axes(
-                    [0.555, y0 + 0.10 * panel_h, 0.180, panel_h * 0.61]
-                ),
-                "consensus": fig.add_axes(
-                    [0.755, y0 + 0.10 * panel_h, 0.210, panel_h * 0.61]
-                ),
-            }
+            if has_context:
+                axes = {
+                    "labels": fig.add_axes(
+                        [0.035, y0 + 0.10 * panel_h, 0.270, panel_h * 0.61]
+                    ),
+                    "context": fig.add_axes(
+                        [0.320, y0 + 0.10 * panel_h, 0.115, panel_h * 0.61]
+                    ),
+                    "shap": fig.add_axes(
+                        [0.455, y0 + 0.10 * panel_h, 0.150, panel_h * 0.61]
+                    ),
+                    "lime": fig.add_axes(
+                        [0.625, y0 + 0.10 * panel_h, 0.150, panel_h * 0.61]
+                    ),
+                    "consensus": fig.add_axes(
+                        [0.795, y0 + 0.10 * panel_h, 0.170, panel_h * 0.61]
+                    ),
+                }
+            else:
+                axes = {
+                    "labels": fig.add_axes(
+                        [0.035, y0 + 0.10 * panel_h, 0.305, panel_h * 0.61]
+                    ),
+                    "shap": fig.add_axes(
+                        [0.355, y0 + 0.10 * panel_h, 0.180, panel_h * 0.61]
+                    ),
+                    "lime": fig.add_axes(
+                        [0.555, y0 + 0.10 * panel_h, 0.180, panel_h * 0.61]
+                    ),
+                    "consensus": fig.add_axes(
+                        [0.755, y0 + 0.10 * panel_h, 0.210, panel_h * 0.61]
+                    ),
+                }
         else:
             method = methods[0]
-            axes = {
-                "labels": fig.add_axes(
-                    [0.055, y0 + 0.10 * panel_h, 0.39, panel_h * 0.61]
-                ),
-                method: fig.add_axes([0.47, y0 + 0.10 * panel_h, 0.47, panel_h * 0.61]),
-            }
+            if has_context:
+                axes = {
+                    "labels": fig.add_axes(
+                        [0.055, y0 + 0.10 * panel_h, 0.300, panel_h * 0.61]
+                    ),
+                    "context": fig.add_axes(
+                        [0.375, y0 + 0.10 * panel_h, 0.145, panel_h * 0.61]
+                    ),
+                    method: fig.add_axes(
+                        [0.55, y0 + 0.10 * panel_h, 0.39, panel_h * 0.61]
+                    ),
+                }
+            else:
+                axes = {
+                    "labels": fig.add_axes(
+                        [0.055, y0 + 0.10 * panel_h, 0.39, panel_h * 0.61]
+                    ),
+                    method: fig.add_axes(
+                        [0.47, y0 + 0.10 * panel_h, 0.47, panel_h * 0.61]
+                    ),
+                }
         n_rows = len(merged)
         y = np.arange(n_rows)
         for ax in axes.values():
@@ -1571,17 +1887,49 @@ def plot_local_attributions(
                 ax.axhline(yi, color=TRACK, lw=0.25, zorder=0)
         axes["labels"].set_xlim(0, 1)
         axes["labels"].set_xticks([])
-        for i, feature in enumerate(merged["feature"].astype(str).tolist()):
+        display_features = merged["feature"].astype(str).tolist()
+        for i, feature in enumerate(display_features):
             axes["labels"].text(
                 0.01,
                 i,
-                _plain_taxon_label(feature, 46),
+                _net_italic(_plain_taxon_label(feature, 46)),
                 ha="left",
                 va="center",
                 fontsize=5.0,
                 color=INK,
                 path_effects=[mpe.withStroke(linewidth=1.0, foreground="white")],
             )
+        if "context" in axes:
+            panel_context = context[
+                context["feature"].astype(str).isin(display_features)
+            ].copy()
+            _draw_cohort_context(
+                axes["context"],
+                panel_context,
+                display_features,
+                sample_id,
+                task,
+            )
+            if panel_no == 0 and not panel_context.empty:
+                position = axes["context"].get_position()
+                _context_legend(
+                    fig,
+                    panel_context,
+                    sample_id,
+                    task,
+                    (0.805, y0 + panel_h * 0.91),
+                )
+        explained_class_index = None
+        if str(task).lower() == "classification" and "class_index" in sub.columns:
+            class_values = pd.to_numeric(sub["class_index"], errors="coerce").dropna()
+            if not class_values.empty:
+                explained_class_index = int(class_values.iloc[0])
+        positive_color, negative_color = _local_direction_colors(
+            context,
+            task,
+            class_label if str(task).lower() == "classification" else "",
+            explained_class_index,
+        )
         for method in methods:
             ax = axes[method]
             values = (
@@ -1593,10 +1941,12 @@ def plot_local_attributions(
                 .to_numpy(dtype=float)
             )
             vmax = max(float(np.nanmax(np.abs(values))) if len(values) else 1.0, 1e-12)
-            colors = [ACC if value >= 0 else CLASS_CTRL for value in values]
+            colors = [
+                positive_color if value >= 0 else negative_color for value in values
+            ]
             ax.barh(y, values, height=0.54, color=colors, edgecolor="none", zorder=2)
             ax.axvline(0.0, color="#000000", lw=0.5, zorder=3)
-            ax.set_xlim(-1.22 * vmax, 1.22 * vmax)
+            ax.set_xlim(-2.05 * vmax, 2.05 * vmax)
             if method == "shap":
                 xlabel = shap_label
                 title = "SHAP"
@@ -1610,10 +1960,17 @@ def plot_local_attributions(
             ax.spines["bottom"].set_color("#000000")
             ax.spines["bottom"].set_linewidth(0.4)
             for yi, value in enumerate(values):
-                x = value + (0.025 * vmax if value >= 0 else -0.025 * vmax)
+                x = value + (0.060 * vmax if value >= 0 else -0.060 * vmax)
                 ha = "left" if value >= 0 else "right"
                 ax.text(
-                    x, yi, f"{value:+.3f}", ha=ha, va="center", fontsize=5.0, color=INK
+                    x,
+                    yi,
+                    f"{value:+.3f}",
+                    ha=ha,
+                    va="center",
+                    fontsize=5.0,
+                    color=INK,
+                    clip_on=True,
                 )
         if len(methods) == 2:
             ax = axes["consensus"]
@@ -1622,10 +1979,12 @@ def plot_local_attributions(
                 .fillna(0.0)
                 .to_numpy(dtype=float)
             )
-            colors = [ACC if value >= 0 else CLASS_CTRL for value in consensus]
+            colors = [
+                positive_color if value >= 0 else negative_color for value in consensus
+            ]
             ax.barh(y, consensus, height=0.54, color=colors, edgecolor="none", zorder=2)
             ax.axvline(0.0, color="#000000", lw=0.5, zorder=3)
-            ax.set_xlim(-1.05, 1.05)
+            ax.set_xlim(-2.80, 2.80)
             ax.set_xticks([-1.0, 0.0, 1.0])
             ax.set_xlabel(
                 "Signed within-method rank support", fontsize=5.0, color=INK, labelpad=2
@@ -1638,10 +1997,19 @@ def plot_local_attributions(
             for yi, row in merged.iterrows():
                 value = float(row["consensus"])
                 support_count = int(row["support_count"])
-                x = value + (0.035 if value >= 0 else -0.035)
+                x = value + (0.065 if value >= 0 else -0.065)
                 ha = "left" if value >= 0 else "right"
                 label = f"{value:+.3f} · {support_count}/2"
-                ax.text(x, yi, label, ha=ha, va="center", fontsize=5.0, color=INK)
+                ax.text(
+                    x,
+                    yi,
+                    label,
+                    ha=ha,
+                    va="center",
+                    fontsize=5.0,
+                    color=INK,
+                    clip_on=True,
+                )
     save_all(fig, out_stem)
     plt.close(fig)
     return out_stem.with_suffix(".svg")

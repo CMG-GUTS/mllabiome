@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -52,6 +53,42 @@ class Dataset:
         return self.class_labels[int(self.positive_class)]
 
 
+def _hash_text(hasher: Any, value: Any) -> None:
+    payload = str(value).encode("utf-8")
+    hasher.update(len(payload).to_bytes(8, "big"))
+    hasher.update(payload)
+
+
+def _hash_text_sequence(hasher: Any, values: Sequence[Any]) -> None:
+    hasher.update(len(values).to_bytes(8, "big"))
+    for value in values:
+        _hash_text(hasher, value)
+
+
+def _hash_array(hasher: Any, values: np.ndarray, dtype: str) -> None:
+    array = np.ascontiguousarray(np.asarray(values, dtype=np.dtype(dtype)))
+    hasher.update(len(array.shape).to_bytes(4, "big"))
+    for size in array.shape:
+        hasher.update(int(size).to_bytes(8, "big"))
+    hasher.update(array.tobytes(order="C"))
+
+
+def dataset_fingerprint(dataset: Dataset) -> str:
+    hasher = hashlib.sha256()
+    _hash_text(hasher, dataset.task)
+    _hash_text(hasher, dataset.target_name)
+    _hash_text_sequence(hasher, dataset.sample_ids)
+    _hash_text_sequence(hasher, dataset.feature_names_by_level.get("all", ()))
+    _hash_text_sequence(hasher, dataset.class_labels)
+    _hash_text(hasher, dataset.positive_class)
+    if dataset.task == "classification":
+        _hash_array(hasher, dataset.y, "<i8")
+    else:
+        _hash_array(hasher, dataset.y, "<f8")
+    _hash_array(hasher, dataset.X_by_level["all"], "<f4")
+    return hasher.hexdigest()
+
+
 def _single_target_name(spec: Data) -> str:
     if not isinstance(spec.target_col, str):
         raise ValueError(
@@ -93,25 +130,25 @@ def _encode_regression(values: Sequence[Any]) -> np.ndarray:
 def load_dataset(spec: Data, levels_needed: Iterable[str] | None = None) -> Dataset:
     levels_needed = tuple(dict.fromkeys(levels_needed or TAXONOMIC_LEVELS))
     _single_target_name(spec)
-    fmt = spec.format
+    fmt = str(spec.format).strip().casefold().replace("-", "_")
     abundance_path = Path(spec.abundance_path)
     metadata_path = Path(spec.metadata_path) if spec.metadata_path is not None else None
     if fmt == "auto":
         fmt = (
-            "metaphlan_tsv"
+            "mllab"
             if abundance_path.suffix.lower() in {".tsv", ".txt"} and metadata_path
             else "wide_csv"
         )
     if fmt in {"csv", "wide_csv"}:
         return _load_csv_dataset(spec, levels_needed)
-    if fmt in {"matrix_tsv", "metaphlan_tsv", "profile_tsv"}:
+    if fmt in {"mllab", "matrix_tsv", "metaphlan", "metaphlan_tsv", "profile_tsv"}:
         if metadata_path is None:
             raise ValueError(
                 "Data.metadata_path is required for matrix-style TSV input."
             )
         return _load_matrix_tsv_dataset(spec, levels_needed)
     raise ValueError(
-        f"Unsupported data format {fmt!r}. Supported formats are 'auto', 'wide_csv', and 'metaphlan_tsv'."
+        f"Unsupported data format {fmt!r}. Supported formats are 'auto', 'wide_csv', and 'mllab'."
     )
 
 

@@ -11,6 +11,8 @@ COL_W_1 = 89 * MM
 COL_W_1_5 = 120 * MM
 COL_W_2 = 183 * MM
 MAX_FIG_H = 170 * MM
+NATURE_TEXT_PT = 6.5
+NATURE_PANEL_LABEL_PT = 8.0
 
 INK = "#0f172a"
 MID = "#64748b"
@@ -105,12 +107,12 @@ REPRESENTATION_RC.update(
         "axes.labelcolor": "#000000",
         "xtick.color": "#000000",
         "ytick.color": "#000000",
-        "font.size": 7.0,
-        "axes.titlesize": 7.0,
-        "axes.labelsize": 7.0,
-        "xtick.labelsize": 7.0,
-        "ytick.labelsize": 7.0,
-        "legend.fontsize": 7.0,
+        "font.size": NATURE_TEXT_PT,
+        "axes.titlesize": NATURE_TEXT_PT,
+        "axes.labelsize": NATURE_TEXT_PT,
+        "xtick.labelsize": NATURE_TEXT_PT,
+        "ytick.labelsize": NATURE_TEXT_PT,
+        "legend.fontsize": NATURE_TEXT_PT,
     }
 )
 

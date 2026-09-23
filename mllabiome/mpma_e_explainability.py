@@ -17,7 +17,7 @@ from .ensemble_aggregation import (
     effective_aggregation_weights,
 )
 from .final_models import build_final_models
-from .resolutions import materialize_mpdr
+from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
 from .utils import dump_json_standard
 from .storage import read_table, write_table, table_exists
 
@@ -60,7 +60,9 @@ def _prepare_member_specs(
     for _, row in member_rows.iterrows():
         config_id = str(row["config_id"])
         levels = _core._row_levels(row) or ("all",)
-        X_base, feature_names = materialize_mpdr(dataset, levels)
+        X_base, feature_names, feature_blocks = materialize_mpdr_with_blocks(
+            dataset, levels
+        )
         specs.append(
             {
                 "config_id": config_id,
@@ -68,6 +70,7 @@ def _prepare_member_specs(
                 "levels": levels,
                 "X_base": np.asarray(X_base, dtype=float),
                 "feature_names": list(feature_names),
+                "feature_blocks": feature_blocks,
                 "transformation_key": str(row["count_transformation"]),
                 "learner_key": str(row["learner"]),
                 "final_member": final_by_id[config_id],
@@ -141,13 +144,14 @@ def _fit_oof_members_fold_task(
         X_train_raw, X_test_raw, mask = _lodo_feature_pair(
             spec["X_base"], train_idx, test_idx, str(sweep.evaluation.protocol)
         )
+        feature_blocks = mask_feature_blocks(spec["feature_blocks"], mask)
         names = [
             name
             for name, keep in zip(spec["feature_names"], np.asarray(mask, dtype=bool))
             if bool(keep)
         ]
         ct = _core._configured_count_transformation_factory(
-            sweep, spec["transformation_key"]
+            sweep, spec["transformation_key"], feature_blocks
         )()
         X_train, X_test = ct.apply_pair(X_train_raw, X_test_raw)
         coordinate_metadata = ct.coordinate_metadata(names)

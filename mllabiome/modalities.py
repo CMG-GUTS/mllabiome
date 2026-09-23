@@ -177,11 +177,11 @@ def load_modalities(
     loaded: dict[str, tuple[list[str], np.ndarray, list[str], str]] = {}
     for modality in items:
         fmt = str(modality.format).strip().casefold().replace("-", "_")
-        if fmt in {"metaphlan", "metaphlan_tsv", "profile_tsv", "matrix_tsv"}:
+        if fmt in {"mllab", "metaphlan", "metaphlan_tsv", "profile_tsv", "matrix_tsv"}:
             ids, X, features = _read_feature_matrix_modality(
                 modality, samples, metadata_ids
             )
-            canonical_fmt = "matrix_tsv" if fmt == "matrix_tsv" else "metaphlan_tsv"
+            canonical_fmt = "matrix_tsv" if fmt == "matrix_tsv" else "mllab"
         elif fmt in {"table", "tabular", "csv", "tsv", "matrix"}:
             ids, X, features = _read_table_modality(modality, samples)
             canonical_fmt = "table"

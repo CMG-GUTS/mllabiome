@@ -20,14 +20,14 @@ from .compute import ResourceTracker, machine_profile
 from .console import path_table, progress, stage, success, summary_table
 from .integrations import Integration, IntegrationModel, integration_modality_sets
 from .metrics import _estimator_call, compute_metrics, compute_regression_metrics
-from .resolutions import materialize_mpdr
+from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
 from .runtime import (
     configure_estimator_threads,
     iter_parallel_tasks,
     resolve_execution_plan,
     thread_environment,
 )
-from .transformations import _count_transformation_spec
+from .transformations import _count_transformation_specs_for_blocks
 from .utils import dump_json_standard
 from .modalities import ModalityDataset, load_modalities
 
@@ -106,24 +106,47 @@ def _representation_specs(
 
 
 def _transformation_specs(
-    modality: str, transformations: Mapping[str, Sequence[Any]] | None
+    modality: str,
+    transformations: Mapping[str, Sequence[Any]] | None,
+    feature_blocks: Any = None,
 ) -> tuple[tuple[str, Any], ...]:
     items = (
         ("identity",)
         if not transformations or modality not in transformations
         else tuple(transformations[modality])
     )
-    return tuple((str(_count_transformation_spec(item)[0]), item) for item in items)
+    out: list[tuple[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        specs = _count_transformation_specs_for_blocks((item,), feature_blocks)
+        if not specs:
+            continue
+        name, spec = specs[0]
+        if name in seen:
+            continue
+        seen.add(name)
+        effective_item = (
+            spec if spec is not None and not isinstance(item, tuple) else item
+        )
+        out.append((str(name), effective_item))
+    return tuple(out)
 
 
 def _modality_paths(
-    modality_names: Sequence[str], representations, transformations
+    modality_names: Sequence[str],
+    representations,
+    transformations,
+    feature_blocks_by_path: Mapping[Any, Any] | None = None,
 ) -> dict[str, tuple[ModalityPath, ...]]:
     result = {}
+    block_map = {} if feature_blocks_by_path is None else dict(feature_blocks_by_path)
     for modality in modality_names:
         paths = []
         for rep_name, selector in _representation_specs(modality, representations):
-            for tr_name, tr_item in _transformation_specs(modality, transformations):
+            key = (modality, rep_name, selector)
+            for tr_name, tr_item in _transformation_specs(
+                modality, transformations, block_map.get(key)
+            ):
                 paths.append(
                     ModalityPath(modality, rep_name, selector, tr_name, tr_item)
                 )
@@ -138,8 +161,11 @@ def build_modality_candidates(
     integrations: Sequence[Integration],
     learners: Sequence[Any],
     learner_name_fn,
+    feature_blocks_by_path: Mapping[Any, Any] | None = None,
 ) -> tuple[list[CandidateSpec], pd.DataFrame]:
-    paths = _modality_paths(modality_names, representations, transformations)
+    paths = _modality_paths(
+        modality_names, representations, transformations, feature_blocks_by_path
+    )
     learner_names = [learner_name_fn(item) for item in learners]
     specs: list[CandidateSpec] = []
     for integration in integrations:
@@ -196,7 +222,7 @@ def build_modality_candidates(
 
 def _materialize_modality_representation(
     dataset: ModalityDataset, path: ModalityPath
-) -> tuple[np.ndarray, list[str]]:
+) -> tuple[np.ndarray, list[str], Any]:
     ds = dataset.as_dataset(path.modality)
     selector = tuple(path.selector)
     taxonomy_tokens = {
@@ -214,8 +240,8 @@ def _materialize_modality_representation(
         "strain",
     }
     if all(token in taxonomy_tokens for token in selector):
-        X, names = materialize_mpdr(ds, selector)
-        return np.asarray(X, dtype=np.float32), list(names)
+        X, names, feature_blocks = materialize_mpdr_with_blocks(ds, selector)
+        return np.asarray(X, dtype=np.float32), list(names), feature_blocks
     all_names = list(ds.feature_names_by_level["all"])
     index = {name: i for i, name in enumerate(all_names)}
     missing = [name for name in selector if name not in index]
@@ -224,9 +250,30 @@ def _materialize_modality_representation(
             f"Representation {path.representation!r} for Modality {path.modality!r} references unknown features: {missing[:8]!r}."
         )
     columns = np.asarray([index[name] for name in selector], dtype=int)
-    return np.asarray(ds.X_by_level["all"][:, columns], dtype=np.float32), [
-        all_names[i] for i in columns
-    ]
+    selected_names = [all_names[i] for i in columns]
+    feature_blocks = (("all", tuple(range(len(selected_names)))),)
+    return (
+        np.asarray(ds.X_by_level["all"][:, columns], dtype=np.float32),
+        selected_names,
+        feature_blocks,
+    )
+
+
+def _representation_cache(dataset: ModalityDataset, representations):
+    matrices = {}
+    names = {}
+    feature_blocks_by_path = {}
+    for modality in dataset.modalities:
+        for rep_name, selector in _representation_specs(modality, representations):
+            path = ModalityPath(modality, rep_name, selector, "identity", "identity")
+            key = (modality, rep_name, selector)
+            X, feature_names, feature_blocks = _materialize_modality_representation(
+                dataset, path
+            )
+            matrices[key] = X
+            names[key] = (feature_names, feature_blocks)
+            feature_blocks_by_path[key] = feature_blocks
+    return matrices, names, feature_blocks_by_path
 
 
 def _prepare_candidate_pair_details(
@@ -246,15 +293,20 @@ def _prepare_candidate_pair_details(
     coordinate_metadata = {}
     for path in spec.modality_paths:
         X = matrices[(path.modality, path.representation, path.selector)]
-        feature_names = names[(path.modality, path.representation, path.selector)]
+        feature_names, feature_blocks = names[
+            (path.modality, path.representation, path.selector)
+        ]
         Xtr_raw, Xte_raw, mask = lodo_feature_pair(X, train_idx, test_idx, protocol)
         kept_names = [
             name
             for name, keep in zip(feature_names, np.asarray(mask, dtype=bool))
             if bool(keep)
         ]
+        local_blocks = mask_feature_blocks(feature_blocks, mask)
         _, factory = transformation_factory_builder(
-            path.transformation_item, random_state=random_state
+            path.transformation_item,
+            random_state=random_state,
+            feature_blocks=local_blocks,
         )
         fitted = factory()
         Xtr, Xte = fitted.apply_pair(Xtr_raw, Xte_raw)
@@ -1055,6 +1107,9 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
     _prepare_dirs(root)
     learners = [_learner_factory(item, task=dataset.task) for item in sweep.learners]
     integrations = tuple(sweep.integrations or (Integration("unimodal"),))
+    matrices, names, feature_blocks_by_path = _representation_cache(
+        dataset, sweep.representations
+    )
     specs, configs = build_modality_candidates(
         tuple(dataset.modalities),
         sweep.representations,
@@ -1062,6 +1117,7 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         integrations,
         sweep.learners,
         _learner_name,
+        feature_blocks_by_path=feature_blocks_by_path,
     )
     _write_config_table(root, configs)
     if sweep.evaluation.redo:
@@ -1089,15 +1145,6 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         },
         root / "manifest.json",
     )
-    matrices = {}
-    names = {}
-    for spec in specs:
-        for path in spec.modality_paths:
-            key = (path.modality, path.representation, path.selector)
-            if key not in matrices:
-                X, feature_names = _materialize_modality_representation(dataset, path)
-                matrices[key] = X
-                names[key] = feature_names
     groups = (
         None
         if sweep.samples.group_col is None
@@ -1399,11 +1446,14 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
 
 def candidate_from_row(
     sweep, row, dataset: ModalityDataset | None = None
-) -> tuple[ModalityDataset, CandidateSpec, dict[Any, np.ndarray], dict[Any, list[str]]]:
+) -> tuple[ModalityDataset, CandidateSpec, dict[Any, np.ndarray], dict[Any, Any]]:
     from .configs_sweep import _learner_name
 
     dataset = (
         load_modalities(sweep.samples, sweep.modalities) if dataset is None else dataset
+    )
+    matrices, names, feature_blocks_by_path = _representation_cache(
+        dataset, sweep.representations
     )
     specs, _ = build_modality_candidates(
         tuple(dataset.modalities),
@@ -1412,6 +1462,7 @@ def candidate_from_row(
         tuple(sweep.integrations or (Integration("unimodal"),)),
         sweep.learners,
         _learner_name,
+        feature_blocks_by_path=feature_blocks_by_path,
     )
     config_id = str(row["config_id"])
     matches = [spec for spec in specs if spec.config_id == config_id]
@@ -1420,14 +1471,6 @@ def candidate_from_row(
             f"Config {config_id!r} cannot be reconstructed uniquely from the configured modality search space."
         )
     spec = matches[0]
-    matrices = {}
-    names = {}
-    for path in spec.modality_paths:
-        key = (path.modality, path.representation, path.selector)
-        if key not in matrices:
-            X, feature_names = _materialize_modality_representation(dataset, path)
-            matrices[key] = X
-            names[key] = feature_names
     return dataset, spec, matrices, names
 
 

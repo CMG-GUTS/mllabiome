@@ -25,6 +25,7 @@ from .console import (
     summary_table,
 )
 from .data import load_dataset
+from .explainability_context import build_local_relative_abundance_context
 from .explainability import (
     _AleModelWrapper,
     _ale_1d_effect_summary,
@@ -47,7 +48,7 @@ from .explainability_methods import (
 from .learners import _learner_factory
 from .metrics import _estimator_call, compute_regression_metrics, metric_is_loss
 from .regression_ensemble import aggregate_regression_predictions
-from .resolutions import materialize_mpdr
+from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
 from .runtime import configure_estimator_threads
 from .transformations import _count_transformation_factory
 from .explainability_visuals import (
@@ -116,9 +117,15 @@ def _row_levels(row: pd.Series) -> tuple[str, ...]:
     return (resolution,) if resolution else ("all",)
 
 
-def _factories(sweep: Sweep) -> tuple[dict[str, Any], dict[str, Any]]:
+def _factories(
+    sweep: Sweep, feature_blocks: Any = None
+) -> tuple[dict[str, Any], dict[str, Any]]:
     transforms = dict(
-        _count_transformation_factory(x, random_state=sweep.explainability.random_state)
+        _count_transformation_factory(
+            x,
+            random_state=sweep.explainability.random_state,
+            feature_blocks=feature_blocks,
+        )
         for x in sweep.count_transformations
     )
     learners = dict(_learner_factory(x, task="regression") for x in sweep.learners)
@@ -229,7 +236,7 @@ def _fit_individual_folds(
         return dataset, folds
     levels = _row_levels(row)
     dataset = load_dataset(sweep.data, levels)
-    X_base, base_names = materialize_mpdr(dataset, levels)
+    X_base, base_names, feature_blocks = materialize_mpdr_with_blocks(dataset, levels)
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
     splits, _ = _resolved_evaluation_splits(
         sweep.root(),
@@ -238,13 +245,9 @@ def _fit_individual_folds(
         groups,
         group_col=sweep.data.group_col,
     )
-    transforms, learners = _factories(sweep)
+    _, learners = _factories(sweep)
     transform_key = str(row["count_transformation"])
     learner_key = str(row["learner"])
-    if transform_key not in transforms:
-        raise ValueError(
-            f"Configured transformation {transform_key!r} is unavailable for explainability."
-        )
     if learner_key not in learners:
         raise ValueError(
             f"Configured regression learner {learner_key!r} is unavailable for explainability."
@@ -257,6 +260,12 @@ def _fit_individual_folds(
             X_base, train_idx, test_idx, sweep.evaluation.protocol
         )
         names = [str(name) for name, keep in zip(base_names, mask) if bool(keep)]
+        fold_blocks = mask_feature_blocks(feature_blocks, mask)
+        transforms, _ = _factories(sweep, fold_blocks)
+        if transform_key not in transforms:
+            raise ValueError(
+                f"Configured transformation {transform_key!r} is unavailable for explainability."
+            )
         transform = transforms[transform_key]()
         X_train, X_test = transform.apply_pair(X_train0, X_test0)
         coordinate_metadata = _coordinate_metadata_rows(transform, names)
@@ -319,12 +328,14 @@ def _fit_ensemble_folds(
         groups,
         group_col=sweep.data.group_col,
     )
-    transforms, learners = _factories(sweep)
-    materialized: list[tuple[pd.Series, np.ndarray, list[str]]] = []
+    _, learners = _factories(sweep)
+    materialized: list[tuple[pd.Series, np.ndarray, list[str], Any]] = []
     for row in member_rows:
         levels = _row_levels(row)
-        X_base, names = materialize_mpdr(dataset, levels)
-        materialized.append((row, np.asarray(X_base), [str(x) for x in names]))
+        X_base, names, feature_blocks = materialize_mpdr_with_blocks(dataset, levels)
+        materialized.append(
+            (row, np.asarray(X_base), [str(x) for x in names], feature_blocks)
+        )
     aggregation = str(unit.get("aggregation_strategy", "mean_prediction"))
     raw_weights = unit.get("weights")
     weights = None
@@ -345,13 +356,15 @@ def _fit_ensemble_folds(
         coordinate_metadata: list[dict[str, Any]] = []
         fitted: list[dict[str, Any]] = []
         start = 0
-        for row, X_base, names in materialized:
+        for row, X_base, names, feature_blocks in materialized:
             X_train0, X_test0, mask = _lodo_feature_pair(
                 X_base, train_idx, test_idx, sweep.evaluation.protocol
             )
             kept_names = [name for name, keep in zip(names, mask) if bool(keep)]
             transform_key = str(row["count_transformation"])
             learner_key = str(row["learner"])
+            fold_blocks = mask_feature_blocks(feature_blocks, mask)
+            transforms, _ = _factories(sweep, fold_blocks)
             transform = transforms[transform_key]()
             X_train_member, X_test_member = transform.apply_pair(X_train0, X_test0)
             transformed_names = transform.get_feature_names_out(kept_names)
@@ -1453,10 +1466,19 @@ def _explain_target(
             if local_frames
             else pd.DataFrame()
         )
+        context_table = pd.DataFrame()
         if local_enabled:
             local_path = target_dir / "local_explanations.parquet"
             write_table(local_path, local_table)
             outputs["local_explanations"] = local_path
+            if not local_table.empty:
+                context_table = build_local_relative_abundance_context(
+                    dataset, local_table["feature"].astype(str).tolist()
+                )
+                if not context_table.empty:
+                    context_path = target_dir / "local_cohort_context.parquet"
+                    write_table(context_path, context_table)
+                    outputs["local_cohort_context"] = context_path
         phase.phase("write ALE and interaction tables")
         if curves:
             curve_path = target_dir / "ale_curves.parquet"
@@ -1489,6 +1511,7 @@ def _explain_target(
                 target_dir / "figures" / "local_explanations",
                 task="regression",
                 top_n=int(sweep.explainability.local.displayed_features),
+                cohort_context=context_table,
             )
             if local_figure is not None:
                 outputs["local_explanations_figure"] = local_figure
