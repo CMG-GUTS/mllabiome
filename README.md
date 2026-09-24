@@ -1,5 +1,7 @@
 <img src="https://raw.githubusercontent.com/CMG-GUTS/mllabiome/main/assets/favicon.svg" width="80" height="80" alt="mllabiome icon">
 
+<b>E</b>valuate, <b>e</b>nsemble, <b>e</b>xplain machine learning for microbiota data analysis.
+
 Install is recommended with `uv`:
 
 ```bash
@@ -38,22 +40,6 @@ mllabiome examples/ibs_lodo_configs_sweep.py --stage evaluate
 
 ![ALE report preview](https://raw.githubusercontent.com/CMG-GUTS/mllabiome/main/assets/report-preview-ale.png)
 
-
-## Features already included
-
-The framework automatically supports:
-* Leakage-aware nested model selection
-* Fold-isolated preprocessing
-* Outer-fold performance evaluation
-* Leave-one-dataset-out validation
-* Compositional microbiome transformations
-* Taxonomic-resolution selection
-* Multi-model benchmarking
-* Ensemble learning
-* Out-of-fold model explainability
-* Cross-fold feature stability analysis
-* Multimodal late integration
-* Reproducible configuration-driven workflows
 
 
 ## License
