@@ -7,6 +7,7 @@ import logging
 import math
 import shutil
 from contextlib import contextmanager
+from dataclasses import replace
 from multiprocessing import Manager
 from pathlib import Path
 from queue import Empty
@@ -23,6 +24,7 @@ from .configs_sweep import (
     Sweep,
     _effective_local_explanations_mode,
     _groups_from_metadata,
+    _lodo_feature_pair,
     _resolved_evaluation_splits,
     _source_tree_sha256,
     _strata_from_metadata,
@@ -50,7 +52,7 @@ from .explainability_visuals import (
 from .explainability_visuals import plot_local_attributions
 from .learners import _learner_factory, fit_classifier
 from .metrics import _predict_proba_aligned
-from .resolutions import materialize_mpdr_with_blocks
+from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
 from .runtime import (
     configure_estimator_threads,
     iter_parallel_tasks,
@@ -88,6 +90,7 @@ class ExplainabilityDependencyError(RuntimeError):
 
 
 _EXPLAINABILITY_METHODS = {"shap", "lime", "ale", "permutation", "interactions"}
+_EXPLAINABILITY_PIPELINE_SCHEMA = "oof-coordinate-reconstruction-v2"
 
 
 def _normalise_explainability_method_specs(methods: Sequence[Any]) -> tuple[Any, ...]:
@@ -236,7 +239,7 @@ def _configured_count_transformation_factory(
     factories = dict(
         _count_transformation_factory(
             x,
-            random_state=sweep.explainability.random_state,
+            random_state=sweep.evaluation.random_state,
             feature_blocks=feature_blocks,
         )
         for x in sweep.count_transformations
@@ -486,7 +489,9 @@ def _parallel_progress_results(
 
 def _projection_required(geometry: Any) -> bool:
     text = str(geometry).casefold()
-    return any(token in text for token in ("simplex", "sphere", "clr", "rank", "binary"))
+    return any(
+        token in text for token in ("simplex", "sphere", "clr", "rank", "binary")
+    )
 
 
 def _project_input(X: np.ndarray, input_projector: Any | None) -> np.ndarray:
@@ -588,8 +593,11 @@ def _permutation_feature_importance(
                     "within_fold_importance_sd": np.nanstd(arr, axis=1, ddof=1)
                     if n_repeats > 1
                     else np.zeros(n_features, dtype=float),
-                    "scoring": f"increase_in_one_vs_rest_{scoring_name}" + ("_geometry_projected" if input_projector is not None else ""),
-                    "perturbation_projection": "fitted_model_input_geometry" if input_projector is not None else "none",
+                    "scoring": f"increase_in_one_vs_rest_{scoring_name}"
+                    + ("_geometry_projected" if input_projector is not None else ""),
+                    "perturbation_projection": "fitted_model_input_geometry"
+                    if input_projector is not None
+                    else "none",
                 }
             )
         )
@@ -810,8 +818,13 @@ def _ale_feature_importance(
                         "feature": fname,
                         "importance_mean": strength,
                         "within_fold_importance_sd": effect_sd,
-                        "scoring": "rms_distribution_weighted_class_probability_ale" + ("_geometry_projected" if input_projector is not None else ""),
-                        "perturbation_projection": "fitted_model_input_geometry" if input_projector is not None else "none",
+                        "scoring": "rms_distribution_weighted_class_probability_ale"
+                        + (
+                            "_geometry_projected" if input_projector is not None else ""
+                        ),
+                        "perturbation_projection": "fitted_model_input_geometry"
+                        if input_projector is not None
+                        else "none",
                     }
                 )
                 if grid is not None and len(grid) == len(vals):
@@ -1006,7 +1019,9 @@ def _ale_interactions(
                     "n_bins": int(n_bins),
                     "correction_applied": bool(correction_applied),
                     "correction_error": correction_error,
-                    "perturbation_projection": "fitted_model_input_geometry" if input_projector is not None else "none",
+                    "perturbation_projection": "fitted_model_input_geometry"
+                    if input_projector is not None
+                    else "none",
                 }
             )
         finally:
@@ -2032,13 +2047,17 @@ def _explainability_cache_complete(
         meta = json.loads(meta_path.read_text())
     except Exception:
         return False
+    if str(meta.get("pipeline_schema", "")) != _EXPLAINABILITY_PIPELINE_SCHEMA:
+        return False
     if str(
         meta.get("explainability_config_signature", "")
     ) != _explainability_config_signature(explainability):
         return False
     if expected_config_id is not None:
         config = meta.get("config")
-        if not isinstance(config, dict) or str(config.get("config_id", "")) != str(expected_config_id):
+        if not isinstance(config, dict) or str(config.get("config_id", "")) != str(
+            expected_config_id
+        ):
             return False
     specs = _normalise_explainability_method_specs(explainability.methods)
     global_methods = {method_name(spec) for spec in specs if method_has_global(spec)}
@@ -2088,6 +2107,10 @@ def _existing_explainability_outputs(target_dir: Path) -> dict[str, Path]:
         "local_cohort_context": target_dir / "local_cohort_context.parquet",
         "local_explanations_figure": target_dir / "figures" / "local_explanations.svg",
         "perturbation_policy": target_dir / "perturbation_policy.json",
+        "coordinate_metadata": target_dir / "coordinate_metadata.parquet",
+        "coordinate_metadata_by_outer_fold": target_dir
+        / "coordinate_metadata_by_outer_fold.parquet",
+        "prediction_reproduction": target_dir / "prediction_reproduction.parquet",
     }
     for key, path in candidates.items():
         if path.exists():
@@ -2695,6 +2718,9 @@ def _fit_oof_single_fold_task(
     y: np.ndarray,
     groups: np.ndarray | None,
     class_count: int,
+    protocol: str,
+    feature_names: Sequence[str],
+    expected_feature_mask: np.ndarray,
     ct_factory: Callable[[], Any],
     learner_factory: Callable[[], BaseEstimator],
     threads_per_worker: int,
@@ -2703,8 +2729,29 @@ def _fit_oof_single_fold_task(
     test_idx = np.asarray(split["test_idx"], dtype=int)
     if len(test_idx) == 0 or len(np.unique(y[train_idx])) < 2:
         return int(split_no), None
+    X_train_raw, X_test_raw, feature_mask = _lodo_feature_pair(
+        X_base, train_idx, test_idx, protocol
+    )
+    expected_feature_mask = np.asarray(expected_feature_mask, dtype=bool)
+    if not np.array_equal(np.asarray(feature_mask, dtype=bool), expected_feature_mask):
+        raise ExplainabilityConfigurationError(
+            f"LODO feature mask changed while reconstructing outer split {split['split_key']!r}."
+        )
+    kept_feature_names = [
+        str(name)
+        for name, keep in zip(feature_names, expected_feature_mask)
+        if bool(keep)
+    ]
     ct = ct_factory()
-    X_train, X_test = ct.apply_pair(X_base[train_idx], X_base[test_idx])
+    X_train, X_test = ct.apply_pair(X_train_raw, X_test_raw)
+    coordinate_metadata = list(ct.coordinate_metadata(kept_feature_names))
+    transformed_feature_names = [str(item.name) for item in coordinate_metadata]
+    if X_train.shape[1] != len(transformed_feature_names) or X_test.shape[1] != len(
+        transformed_feature_names
+    ):
+        raise ExplainabilityConfigurationError(
+            f"Transformation metadata does not match the reconstructed outer split {split['split_key']!r}."
+        )
     clf = configure_estimator_threads(learner_factory(), threads_per_worker)
     fit_classifier(
         clf, X_train, y[train_idx], None if groups is None else groups[train_idx]
@@ -2724,14 +2771,203 @@ def _fit_oof_single_fold_task(
         "split_key": str(split["split_key"]),
         "train_idx": train_idx,
         "test_idx": test_idx,
-        "X_train": X_train,
-        "X_test": X_test,
+        "feature_mask": expected_feature_mask,
+        "input_feature_names": kept_feature_names,
+        "feature_names": transformed_feature_names,
+        "coordinate_metadata": coordinate_metadata,
+        "X_train": np.asarray(X_train, dtype=float),
+        "X_test": np.asarray(X_test, dtype=float),
         "y_test": y[test_idx],
         "estimator": clf,
-        "proba": proba,
+        "proba": np.asarray(proba, dtype=float),
         "input_projector": projector,
         "perturbation_geometry": geometry,
     }
+
+
+def _coordinate_semantic_key(item: Any) -> tuple[Any, ...]:
+    coefficients = np.asarray(item.coefficients, dtype=float)
+    norm = float(np.linalg.norm(coefficients))
+    if norm > 0.0:
+        coefficients = coefficients / norm
+    return (
+        str(item.coordinate_type),
+        "" if item.anchor_feature is None else str(item.anchor_feature),
+        tuple(str(x) for x in item.components),
+        tuple(float(x) for x in np.round(coefficients, 12)),
+        bool(item.exact_feature_identity),
+    )
+
+
+def _coordinate_semantic_digest(key: tuple[Any, ...]) -> str:
+    payload = json.dumps(key, sort_keys=False, separators=(",", ":"))
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:10]
+
+
+def _align_oof_single_coordinates(
+    folds: Sequence[dict[str, Any]], n_samples: int
+) -> tuple[np.ndarray, list[str], list[Any], list[dict[str, Any]]]:
+    name_keys: dict[str, set[tuple[Any, ...]]] = {}
+    fold_pairs: list[list[tuple[Any, tuple[Any, ...]]]] = []
+    for fold in folds:
+        metadata = list(fold.get("coordinate_metadata", []))
+        if len(metadata) != int(np.asarray(fold["X_train"]).shape[1]) or len(
+            metadata
+        ) != int(np.asarray(fold["X_test"]).shape[1]):
+            raise ExplainabilityConfigurationError(
+                f"Outer split {fold.get('split_key', '')!r} has coordinate metadata inconsistent with its fitted matrices."
+            )
+        pairs: list[tuple[Any, tuple[Any, ...]]] = []
+        for item in metadata:
+            key = _coordinate_semantic_key(item)
+            base = str(item.name)
+            name_keys.setdefault(base, set()).add(key)
+            pairs.append((item, key))
+        fold_pairs.append(pairs)
+    global_names: list[str] = []
+    global_metadata: list[Any] = []
+    metadata_rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for fold, pairs in zip(folds, fold_pairs):
+        labels: list[str] = []
+        renamed_metadata: list[Any] = []
+        for item, key in pairs:
+            base = str(item.name)
+            label = (
+                base
+                if len(name_keys.get(base, {key})) == 1
+                else f"{base}__{_coordinate_semantic_digest(key)}"
+            )
+            if label in labels:
+                raise ExplainabilityConfigurationError(
+                    f"Outer split {fold.get('split_key', '')!r} produced duplicate semantic coordinate {label!r}."
+                )
+            labels.append(label)
+            renamed = replace(item, name=label)
+            renamed_metadata.append(renamed)
+            metadata_rows.append(
+                {
+                    "split_key": str(fold.get("split_key", "")),
+                    "coordinate": label,
+                    "fitted_coordinate": base,
+                    "coordinate_type": str(item.coordinate_type),
+                    "anchor_feature": ""
+                    if item.anchor_feature is None
+                    else str(item.anchor_feature),
+                    "exact_feature_identity": bool(item.exact_feature_identity),
+                    "components": json.dumps(
+                        list(item.components), separators=(",", ":")
+                    ),
+                    "coefficients": json.dumps(
+                        [float(x) for x in item.coefficients], separators=(",", ":")
+                    ),
+                    "semantic_digest": _coordinate_semantic_digest(key),
+                }
+            )
+            if label not in seen:
+                seen.add(label)
+                global_names.append(label)
+                global_metadata.append(renamed)
+        fold["feature_names"] = labels
+        fold["coordinate_metadata"] = renamed_metadata
+    reference_sum = np.zeros((int(n_samples), len(global_names)), dtype=float)
+    reference_count = np.zeros((int(n_samples), len(global_names)), dtype=np.int64)
+    global_index = {name: i for i, name in enumerate(global_names)}
+    for fold in folds:
+        test_idx = np.asarray(fold["test_idx"], dtype=int)
+        X_test = np.asarray(fold["X_test"], dtype=float)
+        labels = list(fold["feature_names"])
+        for local_index, label in enumerate(labels):
+            global_index_value = global_index[str(label)]
+            values = X_test[:, local_index]
+            finite = np.isfinite(values)
+            if np.any(finite):
+                rows = test_idx[finite]
+                reference_sum[rows, global_index_value] += values[finite]
+                reference_count[rows, global_index_value] += 1
+    reference = np.full(reference_sum.shape, np.nan, dtype=float)
+    valid = reference_count > 0
+    reference[valid] = reference_sum[valid] / reference_count[valid]
+    return reference, global_names, global_metadata, metadata_rows
+
+
+def _assert_oof_prediction_reproduction(
+    root: Path, row: pd.Series, dataset: Any, folds: Sequence[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    path = root / "predictions" / "outer_predictions.parquet"
+    if not table_exists(path):
+        raise ExplainabilityConfigurationError(
+            "Stored outer predictions are required to verify explainability refits."
+        )
+    stored = read_table(path).copy()
+    if "outer_split_key" not in stored.columns and "split_key" in stored.columns:
+        stored["outer_split_key"] = stored["split_key"]
+    required = {"outer_split_key", "sample_id", "config_id"}
+    if not required.issubset(stored.columns):
+        raise ExplainabilityConfigurationError(
+            "Stored outer predictions do not contain the identifiers required for refit verification."
+        )
+    config_id = str(row["config_id"])
+    proba_columns = [f"proba_{label}" for label in dataset.class_labels]
+    if any(column not in stored.columns for column in proba_columns):
+        raise ExplainabilityConfigurationError(
+            "Stored outer predictions do not contain all class-probability columns required for refit verification."
+        )
+    stored["outer_split_key"] = stored["outer_split_key"].astype(str)
+    stored["sample_id"] = stored["sample_id"].astype(str)
+    stored["config_id"] = stored["config_id"].astype(str)
+    records: list[dict[str, Any]] = []
+    for fold in folds:
+        split_key = str(fold["split_key"])
+        sample_ids = [
+            str(dataset.sample_ids[int(i)])
+            for i in np.asarray(fold["test_idx"], dtype=int)
+        ]
+        sub = stored[
+            stored["outer_split_key"].eq(split_key) & stored["config_id"].eq(config_id)
+        ].copy()
+        if sub.empty or sub["sample_id"].duplicated().any():
+            raise ExplainabilityConfigurationError(
+                f"Stored outer predictions cannot uniquely verify config {config_id!r} on split {split_key!r}."
+            )
+        sub = sub.set_index("sample_id").reindex(sample_ids)
+        if sub[proba_columns].isna().any().any():
+            raise ExplainabilityConfigurationError(
+                f"Stored outer predictions are incomplete for config {config_id!r} on split {split_key!r}."
+            )
+        expected = sub[proba_columns].to_numpy(dtype=float)
+        observed = np.asarray(fold["proba"], dtype=float)
+        if expected.shape != observed.shape:
+            raise ExplainabilityConfigurationError(
+                f"Explainability refit probability shape does not match stored evaluation output on split {split_key!r}."
+            )
+        error = float(np.max(np.abs(expected - observed))) if expected.size else 0.0
+        if not np.allclose(expected, observed, rtol=1e-7, atol=1e-9):
+            raise ExplainabilityConfigurationError(
+                f"Explainability refit does not reproduce evaluated outer probabilities for config {config_id!r} on split {split_key!r}; max_abs_error={error:.3e}."
+            )
+        fold["prediction_reproduction_max_abs_error"] = error
+        records.append(
+            {
+                "split_key": split_key,
+                "config_id": config_id,
+                "max_abs_probability_error": error,
+                "rtol": 1e-7,
+                "atol": 1e-9,
+                "verified": 1,
+            }
+        )
+    return records
+
+
+def _fold_feature_names(fold: dict[str, Any], fallback: Sequence[str]) -> list[str]:
+    names = [str(x) for x in fold.get("feature_names", fallback)]
+    width = int(np.asarray(fold["X_test"]).shape[1])
+    if len(names) != width:
+        raise ExplainabilityConfigurationError(
+            f"Outer split {fold.get('split_key', '')!r} has {width} model coordinates but {len(names)} coordinate labels."
+        )
+    return names
 
 
 def _fit_oof_single_for_explainability(
@@ -2747,33 +2983,48 @@ def _fit_oof_single_for_explainability(
     X_base, feature_names, feature_blocks = materialize_mpdr_with_blocks(
         dataset, levels
     )
+    X_base = np.asarray(X_base)
+    feature_names = [str(x) for x in feature_names]
     splits = _explainability_outer_splits(sweep, dataset)
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
     transformation_key = str(row["count_transformation"])
     learner_key = str(row["learner"])
-    ct_factory = _configured_count_transformation_factory(
-        sweep, transformation_key, feature_blocks
-    )
     learner_factory = _configured_learner_factory(sweep, learner_key)
     execution = _xai_execution_plan(sweep, len(splits))
-    tasks = [
-        (
-            _fit_oof_single_fold_task,
-            (
-                split_no,
-                split,
-                X_base,
-                dataset.y,
-                groups,
-                len(dataset.class_labels),
-                ct_factory,
-                learner_factory,
-                int(execution.threads_per_worker),
-            ),
-            {},
+    tasks = []
+    for split_no, split in enumerate(splits, start=1):
+        train_idx = np.asarray(split["train_idx"], dtype=int)
+        test_idx = np.asarray(split["test_idx"], dtype=int)
+        if len(test_idx) == 0 or len(np.unique(dataset.y[train_idx])) < 2:
+            feature_mask = np.ones(X_base.shape[1], dtype=bool)
+        else:
+            _, _, feature_mask = _lodo_feature_pair(
+                X_base, train_idx, test_idx, str(sweep.evaluation.protocol)
+            )
+        fold_blocks = mask_feature_blocks(feature_blocks, feature_mask)
+        ct_factory = _configured_count_transformation_factory(
+            sweep, transformation_key, fold_blocks
         )
-        for split_no, split in enumerate(splits, start=1)
-    ]
+        tasks.append(
+            (
+                _fit_oof_single_fold_task,
+                (
+                    split_no,
+                    split,
+                    X_base,
+                    dataset.y,
+                    groups,
+                    len(dataset.class_labels),
+                    str(sweep.evaluation.protocol),
+                    feature_names,
+                    np.asarray(feature_mask, dtype=bool),
+                    ct_factory,
+                    learner_factory,
+                    int(execution.threads_per_worker),
+                ),
+                {},
+            )
+        )
     folds_by_no: dict[int, dict[str, Any]] = {}
     with progress() as prog:
         task = prog.add_task(
@@ -2789,27 +3040,23 @@ def _fit_oof_single_for_explainability(
         raise ExplainabilityConfigurationError(
             "No outer fold could be fitted for out-of-fold explainability."
         )
-    ct_reference = ct_factory()
-    X_reference, _ = ct_reference.apply_pair(X_base, X_base)
-    coordinate_metadata = ct_reference.coordinate_metadata(list(feature_names))
-    transformed_feature_names = [str(item.name) for item in coordinate_metadata]
-    if X_reference.shape[1] != len(transformed_feature_names):
-        raise ExplainabilityConfigurationError(
-            f"Transformation {transformation_key!r} produced feature metadata inconsistent with its transformed matrix."
-        )
-    for fold in folds:
-        if fold["X_train"].shape[1] != len(transformed_feature_names) or fold[
-            "X_test"
-        ].shape[1] != len(transformed_feature_names):
-            raise ExplainabilityConfigurationError(
-                f"Transformation {transformation_key!r} produced inconsistent feature coordinates across outer folds."
-            )
+    reproduction = _assert_oof_prediction_reproduction(
+        sweep.root(), row, dataset, folds
+    )
+    X_reference, transformed_feature_names, coordinate_metadata, coordinate_rows = (
+        _align_oof_single_coordinates(folds, len(dataset.sample_ids))
+    )
+    geometries = {
+        str(fold.get("perturbation_geometry", "unverified_custom")) for fold in folds
+    }
     return {
         "dataset": dataset,
-        "X_base": np.asarray(X_reference, dtype=float),
+        "X_base": X_reference,
         "feature_names": transformed_feature_names,
         "coordinate_metadata": coordinate_metadata,
-        "perturbation_geometry": ct_reference.perturbation_geometry() if hasattr(ct_reference, "perturbation_geometry") else "unverified_custom",
+        "coordinate_metadata_by_fold": coordinate_rows,
+        "prediction_reproduction": reproduction,
+        "perturbation_geometry": sorted(geometries),
         "folds": folds,
         "execution": execution,
     }
@@ -3097,6 +3344,7 @@ def _compute_local_method_rows(
         test_idx = np.asarray(fold["test_idx"], dtype=int)
         if len(test_idx) == 0:
             continue
+        fold_feature_names = _fold_feature_names(fold, feature_names)
         estimator = configure_estimator_threads(
             fold["estimator"], int(threads_per_worker)
         )
@@ -3106,7 +3354,7 @@ def _compute_local_method_rows(
                 estimator,
                 fold["X_train"],
                 fold["X_test"],
-                feature_names,
+                fold_feature_names,
                 dataset.class_labels,
                 random_state=int(random_state) + fold_no * 997,
                 spec=spec,
@@ -3119,7 +3367,7 @@ def _compute_local_method_rows(
                 estimator,
                 fold["X_train"],
                 fold["X_test"],
-                feature_names,
+                fold_feature_names,
                 dataset.class_labels,
                 class_indices,
                 random_state=int(random_state) + fold_no * 997,
@@ -3164,12 +3412,13 @@ def _compact_local_explanations(
         if int(row["class_index"]) != true_class:
             continue
         values = np.asarray(row["values"], dtype=float).reshape(-1)
+        row_feature_names = [str(x) for x in row.get("feature_names", feature_names)]
         feature_values = np.asarray(
             row.get("feature_values", np.full(len(values), np.nan)), dtype=float
         ).reshape(-1)
-        if len(values) != len(feature_names):
+        if len(values) != len(row_feature_names):
             raise ExplainabilityConfigurationError(
-                f"Local {method.upper()} attribution width {len(values)} does not match {len(feature_names)} feature names."
+                f"Local {method.upper()} attribution width {len(values)} does not match {len(row_feature_names)} feature names."
             )
         is_selected = sample_index in selected
         if is_selected:
@@ -3200,7 +3449,7 @@ def _compact_local_explanations(
                     "class_index": true_class,
                     "class_label": str(dataset.class_labels[true_class]),
                     "prediction": float(row.get("p_class", np.nan)),
-                    "feature": str(feature_names[j]),
+                    "feature": str(row_feature_names[j]),
                     "feature_value": float(feature_values[j])
                     if j < len(feature_values)
                     else np.nan,
@@ -3353,7 +3602,11 @@ def _aggregate_oof_interactions(
         ),
         perturbation_projection=(
             "perturbation_projection",
-            lambda x: "fitted_model_input_geometry" if any(str(v) == "fitted_model_input_geometry" for v in x) else "none",
+            lambda x: (
+                "fitted_model_input_geometry"
+                if any(str(v) == "fitted_model_input_geometry" for v in x)
+                else "none"
+            ),
         ),
     )
     out["method"] = method
@@ -3380,6 +3633,7 @@ def _shap_fold_parallel_task(
     progress_queue: Any | None = None,
 ) -> tuple[int, pd.DataFrame, list[dict[str, Any]], int, str]:
     estimator = configure_estimator_threads(fold["estimator"], threads_per_worker)
+    feature_names = _fold_feature_names(fold, feature_names)
     test_idx = np.asarray(fold["test_idx"], dtype=int)
     force_rows = list(range(len(test_idx))) if collect_local else []
     callback = (
@@ -3412,7 +3666,11 @@ def _shap_fold_parallel_task(
     fold_frame["fold_key"] = str(fold.get("split_key", ""))
     fold_frame["fold_no"] = int(fold_no)
     fold_frame["shap_backend"] = str(backend)
-    fold_frame["perturbation_projection"] = "fitted_model_input_geometry" if fold.get("input_projector") is not None else "none"
+    fold_frame["perturbation_projection"] = (
+        "fitted_model_input_geometry"
+        if fold.get("input_projector") is not None
+        else "none"
+    )
     rows = (
         _local_value_rows_for_fold(
             fold,
@@ -3488,6 +3746,7 @@ def _local_value_rows_for_fold(
                     "class_index": int(class_index),
                     "class_label": str(class_labels[int(class_index)]),
                     "p_class": p_class,
+                    "feature_names": _fold_feature_names(fold, ()),
                     "feature_values": X_test[int(local_test_row)].copy(),
                     "values": np.asarray(local_values, dtype=float).copy(),
                 }
@@ -3511,6 +3770,7 @@ def _lime_fold_parallel_task(
     progress_queue: Any | None = None,
 ) -> tuple[int, pd.DataFrame, list[dict[str, Any]]]:
     estimator = configure_estimator_threads(fold["estimator"], threads_per_worker)
+    feature_names = _fold_feature_names(fold, feature_names)
     test_idx = np.asarray(fold["test_idx"], dtype=int)
     force_rows = list(range(len(test_idx))) if collect_local else []
     callback = (
@@ -3541,7 +3801,11 @@ def _lime_fold_parallel_task(
     )
     frame["fold_key"] = str(fold.get("split_key", ""))
     frame["fold_no"] = int(fold_no)
-    frame["perturbation_projection"] = "fitted_model_input_geometry" if fold.get("input_projector") is not None else "none"
+    frame["perturbation_projection"] = (
+        "fitted_model_input_geometry"
+        if fold.get("input_projector") is not None
+        else "none"
+    )
     rows = (
         _local_value_rows_for_fold(
             fold,
@@ -3571,6 +3835,7 @@ def _permutation_fold_parallel_task(
     progress_queue: Any | None = None,
 ) -> tuple[int, pd.DataFrame]:
     estimator = configure_estimator_threads(fold["estimator"], threads_per_worker)
+    feature_names = _fold_feature_names(fold, feature_names)
     callback = (
         _queued_progress_callback(progress_queue, int(fold_no))
         if progress_queue is not None
@@ -3604,6 +3869,7 @@ def _ale_fold_parallel_task(
     progress_queue: Any | None = None,
 ) -> tuple[int, pd.DataFrame, pd.DataFrame | None, pd.DataFrame | None]:
     estimator = configure_estimator_threads(fold["estimator"], threads_per_worker)
+    feature_names = _fold_feature_names(fold, feature_names)
     callback = (
         _queued_progress_callback(progress_queue, int(fold_no))
         if progress_queue is not None
@@ -3734,7 +4000,9 @@ def _explain_one(
     if (
         allow_member_cache
         and target_dir.exists()
-        and _explainability_cache_complete(target_dir, sweep.explainability, config_id_for_cache)
+        and _explainability_cache_complete(
+            target_dir, sweep.explainability, config_id_for_cache
+        )
     ):
         info(f"Reusing existing explainability for {target_label}")
         return _existing_explainability_outputs(target_dir)
@@ -3743,7 +4011,9 @@ def _explain_one(
         and allow_member_cache
         and cache_dir is not None
         and cache_dir.exists()
-        and _explainability_cache_complete(cache_dir, sweep.explainability, config_id_for_cache)
+        and _explainability_cache_complete(
+            cache_dir, sweep.explainability, config_id_for_cache
+        )
     ):
         if target_dir != cache_dir:
             _copy_explainability_cache(cache_dir, target_dir)
@@ -3753,6 +4023,8 @@ def _explain_one(
         return _existing_explainability_outputs(target_dir)
 
     coordinate_metadata: list[Any] = []
+    coordinate_metadata_by_fold: list[dict[str, Any]] = []
+    prediction_reproduction: list[dict[str, Any]] = []
     if ensemble_explain:
         info("Preparing selected MPMA-E outer-fold units for OOF explanation")
         dataset, X_base, feature_names, oof_folds, row = _mpma_e_reference_and_folds(
@@ -3765,7 +4037,14 @@ def _explain_one(
         X_base = oof_bundle["X_base"]
         feature_names = oof_bundle["feature_names"]
         coordinate_metadata = list(oof_bundle.get("coordinate_metadata", []))
+        coordinate_metadata_by_fold = list(
+            oof_bundle.get("coordinate_metadata_by_fold", [])
+        )
+        prediction_reproduction = list(oof_bundle.get("prediction_reproduction", []))
         oof_folds = oof_bundle["folds"]
+    for fold in oof_folds:
+        if "feature_names" not in fold:
+            fold["feature_names"] = list(feature_names)
 
     geometries = sorted(
         {
@@ -3778,12 +4057,18 @@ def _explain_one(
             )
         }
     )
-    projection_applied = any(fold.get("input_projector") is not None for fold in oof_folds)
+    projection_applied = any(
+        fold.get("input_projector") is not None for fold in oof_folds
+    )
     perturbation_policy = {
         "geometry": geometries,
         "projection_applied": bool(projection_applied),
         "projection_scope": "generated perturbations are projected onto the fitted model-input geometry before prediction when a supported constraint is known",
-        "methods": [name for name in global_methods if name in {"shap", "lime", "ale", "permutation", "interactions"}],
+        "methods": [
+            name
+            for name in global_methods
+            if name in {"shap", "lime", "ale", "permutation", "interactions"}
+        ],
         "interpretation": "predictive model-coordinate attribution under geometry-preserving perturbations; not a causal or isolated biological effect",
         "tree_shap_policy": "disabled for constrained projected inputs because TreeSHAP cannot apply the projection operator to masked samples",
     }
@@ -3816,6 +4101,8 @@ def _explain_one(
     figures_dir = target_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
     coordinate_metadata_path: Path | None = None
+    coordinate_metadata_by_fold_path: Path | None = None
+    prediction_reproduction_path: Path | None = None
     if coordinate_metadata:
         coordinate_frame = pd.DataFrame(
             [
@@ -3838,6 +4125,17 @@ def _explain_one(
         )
         coordinate_metadata_path = target_dir / "coordinate_metadata.parquet"
         write_table(coordinate_metadata_path, coordinate_frame)
+    if coordinate_metadata_by_fold:
+        coordinate_metadata_by_fold_path = (
+            target_dir / "coordinate_metadata_by_outer_fold.parquet"
+        )
+        write_table(
+            coordinate_metadata_by_fold_path,
+            pd.DataFrame(coordinate_metadata_by_fold),
+        )
+    if prediction_reproduction:
+        prediction_reproduction_path = target_dir / "prediction_reproduction.parquet"
+        write_table(prediction_reproduction_path, pd.DataFrame(prediction_reproduction))
 
     source_signature = _explainability_source_signature(
         target_slug, row, oof_folds, feature_names, dataset.class_labels
@@ -3964,6 +4262,7 @@ def _explain_one(
             with progress() as prog:
                 for fold_no, fold in enumerate(oof_folds, start=1):
                     test_idx = np.asarray(fold["test_idx"], dtype=int)
+                    fold_feature_names = _fold_feature_names(fold, feature_names)
                     expected_rows = max(
                         1,
                         len(test_idx)
@@ -3972,7 +4271,7 @@ def _explain_one(
                     )
                     prefix = (
                         f"SHAP fold {fold_no}/{len(oof_folds)} · "
-                        f"{expected_rows} samples · {len(feature_names)} features · {len(class_indices)} classes"
+                        f"{expected_rows} samples · {len(fold_feature_names)} features · {len(class_indices)} classes"
                     )
                     task = prog.add_task(f"{prefix} · preparing", total=expected_rows)
                     vals, rows_ex, backend = _shap_values_for_data(
@@ -3981,7 +4280,7 @@ def _explain_one(
                         ),
                         fold["X_train"],
                         fold["X_test"],
-                        feature_names,
+                        fold_feature_names,
                         dataset.class_labels,
                         random_state=sweep.explainability.random_state + fold_no * 997,
                         spec=spec,
@@ -3995,7 +4294,7 @@ def _explain_one(
                     fold_frame = _value_frame_for_fold(
                         "shap",
                         vals,
-                        feature_names,
+                        fold_feature_names,
                         class_indices,
                         dataset.class_labels,
                         "mean_abs_probability_shap_within_outer_fold",
@@ -4004,7 +4303,11 @@ def _explain_one(
                     fold_frame["fold_key"] = str(fold.get("split_key", ""))
                     fold_frame["fold_no"] = int(fold_no)
                     fold_frame["shap_backend"] = str(backend)
-                    fold_frame["perturbation_projection"] = "fitted_model_input_geometry" if fold.get("input_projector") is not None else "none"
+                    fold_frame["perturbation_projection"] = (
+                        "fitted_model_input_geometry"
+                        if fold.get("input_projector") is not None
+                        else "none"
+                    )
                     shap_fold_frames.append(fold_frame)
                     if shap_local_enabled:
                         shap_oof_rows.extend(
@@ -4139,7 +4442,8 @@ def _explain_one(
             prog = progress()
             prog.start()
             for fold_no, fold in enumerate(oof_folds, start=1):
-                prefix = f"LIME fold {fold_no}/{len(oof_folds)} · {len(feature_names)} features · {len(class_indices)} classes"
+                fold_feature_names = _fold_feature_names(fold, feature_names)
+                prefix = f"LIME fold {fold_no}/{len(oof_folds)} · {len(fold_feature_names)} features · {len(class_indices)} classes"
                 task = prog.add_task(f"{prefix} · preparing", total=1)
                 force_rows = (
                     list(range(len(np.asarray(fold["test_idx"], dtype=int))))
@@ -4157,7 +4461,7 @@ def _explain_one(
                     ),
                     fold["X_train"],
                     fold["X_test"],
-                    feature_names,
+                    fold_feature_names,
                     dataset.class_labels,
                     local_class_indices,
                     random_state=sweep.explainability.random_state + fold_no * 997,
@@ -4169,14 +4473,18 @@ def _explain_one(
                 fold_frame = _value_frame_for_fold(
                     "lime",
                     coeffs,
-                    feature_names,
+                    fold_feature_names,
                     class_indices,
                     dataset.class_labels,
                     "mean_abs_lime_coefficient_within_outer_fold",
                 )
                 fold_frame["fold_key"] = str(fold.get("split_key", ""))
                 fold_frame["fold_no"] = int(fold_no)
-                fold_frame["perturbation_projection"] = "fitted_model_input_geometry" if fold.get("input_projector") is not None else "none"
+                fold_frame["perturbation_projection"] = (
+                    "fitted_model_input_geometry"
+                    if fold.get("input_projector") is not None
+                    else "none"
+                )
                 lime_fold_frames.append(fold_frame)
                 if lime_local_enabled:
                     lime_oof_rows.extend(
@@ -4289,7 +4597,8 @@ def _explain_one(
             prog = progress()
             prog.start()
             for fold_no, fold in enumerate(oof_folds, start=1):
-                prefix = f"Permutation fold {fold_no}/{len(oof_folds)} · {len(feature_names)} features · {len(class_indices)} classes"
+                fold_feature_names = _fold_feature_names(fold, feature_names)
+                prefix = f"Permutation fold {fold_no}/{len(oof_folds)} · {len(fold_feature_names)} features · {len(class_indices)} classes"
                 task = prog.add_task(f"{prefix} · preparing", total=1)
                 frame = _permutation_feature_importance(
                     configure_estimator_threads(
@@ -4297,7 +4606,7 @@ def _explain_one(
                     ),
                     fold["X_test"],
                     fold["y_test"],
-                    feature_names,
+                    fold_feature_names,
                     dataset.class_labels,
                     class_indices,
                     spec=spec,
@@ -4397,14 +4706,15 @@ def _explain_one(
             prog = progress()
             prog.start()
             for fold_no, fold in enumerate(oof_folds, start=1):
-                prefix = f"ALE fold {fold_no}/{len(oof_folds)} · {len(feature_names)} features · {len(class_indices)} classes"
+                fold_feature_names = _fold_feature_names(fold, feature_names)
+                prefix = f"ALE fold {fold_no}/{len(oof_folds)} · {len(fold_feature_names)} features · {len(class_indices)} classes"
                 task = prog.add_task(f"{prefix} · preparing", total=1)
                 frame = _ale_feature_importance(
                     configure_estimator_threads(
                         fold["estimator"], int(execution.threads_per_worker)
                     ),
                     fold["X_test"],
-                    feature_names,
+                    fold_feature_names,
                     dataset.class_labels,
                     class_indices,
                     spec=spec,
@@ -4666,13 +4976,14 @@ def _explain_one(
                 "feature"
             )["importance_mean"]
             for fold_no, fold in enumerate(oof_folds, start=1):
+                fold_feature_names = _fold_feature_names(fold, feature_names)
                 prefix = f"Interactions · {dataset.class_labels[int(class_index)]} · fold {fold_no}/{len(oof_folds)}"
                 task = prog.add_task(f"{prefix} · preparing", total=1)
                 try:
                     tables = _ale_interactions(
                         fold["estimator"],
                         fold["X_test"],
-                        feature_names,
+                        fold_feature_names,
                         dataset.class_labels,
                         int(class_index),
                         spec=spec,
@@ -4789,6 +5100,7 @@ def _explain_one(
 
     dump_json_standard(
         {
+            "pipeline_schema": _EXPLAINABILITY_PIPELINE_SCHEMA,
             "target": target_slug,
             "target_label": target_label,
             "config": row.to_dict(),
@@ -4869,6 +5181,10 @@ def _explain_one(
     }
     if coordinate_metadata_path is not None:
         outputs["coordinate_metadata"] = coordinate_metadata_path
+    if coordinate_metadata_by_fold_path is not None:
+        outputs["coordinate_metadata_by_outer_fold"] = coordinate_metadata_by_fold_path
+    if prediction_reproduction_path is not None:
+        outputs["prediction_reproduction"] = prediction_reproduction_path
     outputs.update(class_figure_paths)
     outputs.update(method_outputs)
     outputs.update(interaction_outputs)

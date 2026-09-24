@@ -152,7 +152,9 @@ def _read_table_modality(
             f"Modality {modality.name!r} contains duplicate sample IDs: {duplicates[:5]!r}."
         )
     reserved = {id_col, *(str(c) for c in modality.metadata_cols)}
-    missing_metadata = sorted(c for c in reserved if c != id_col and c not in frame.columns)
+    missing_metadata = sorted(
+        c for c in reserved if c != id_col and c not in frame.columns
+    )
     if missing_metadata:
         raise ValueError(
             f"Modality {modality.name!r} is missing declared metadata columns: {missing_metadata!r}."
@@ -172,7 +174,9 @@ def _read_table_modality(
                 f"Modality {modality.name!r} is missing declared feature columns: {missing[:8]!r}."
             )
     elif prefixes is not None:
-        requested_prefixes = (prefixes,) if isinstance(prefixes, str) else tuple(prefixes)
+        requested_prefixes = (
+            (prefixes,) if isinstance(prefixes, str) else tuple(prefixes)
+        )
         normalized = tuple(str(prefix) for prefix in requested_prefixes if str(prefix))
         if not normalized:
             raise ValueError(
@@ -181,7 +185,8 @@ def _read_table_modality(
         feature_cols = [
             str(c)
             for c in frame.columns
-            if str(c) not in reserved and any(str(c).startswith(prefix) for prefix in normalized)
+            if str(c) not in reserved
+            and any(str(c).startswith(prefix) for prefix in normalized)
         ]
     elif modality.allow_implicit_numeric_features:
         feature_cols = [str(c) for c in frame.columns if str(c) not in reserved]
@@ -195,7 +200,9 @@ def _read_table_modality(
             f"Modality {modality.name!r} feature selection overlaps reserved metadata columns: {overlap!r}."
         )
     if not feature_cols:
-        raise ValueError(f"Modality {modality.name!r} contains no selected feature columns.")
+        raise ValueError(
+            f"Modality {modality.name!r} contains no selected feature columns."
+        )
     numeric = frame[feature_cols].apply(pd.to_numeric, errors="coerce")
     if numeric.isna().any().any():
         bad = [str(c) for c in numeric.columns[numeric.isna().any()].tolist()]
@@ -327,10 +334,13 @@ def load_modalities(
         modality_matrices,
     )
 
+
 def modality_fingerprints(dataset: ModalityDataset) -> dict[str, str]:
     return {
         str(name): dataset_fingerprint(matrix.dataset)
-        for name, matrix in sorted(dataset.modalities.items(), key=lambda item: str(item[0]))
+        for name, matrix in sorted(
+            dataset.modalities.items(), key=lambda item: str(item[0])
+        )
     }
 
 
@@ -353,6 +363,7 @@ def modality_dataset_fingerprint(dataset: ModalityDataset) -> str:
             hasher.update(payload)
     return hasher.hexdigest()
 
+
 def source_file_sha256(path: Path | str) -> str:
     hasher = hashlib.sha256()
     with Path(path).open("rb") as handle:
@@ -371,4 +382,3 @@ def modality_source_fingerprints(
             for modality in modalities
         },
     }
-

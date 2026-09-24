@@ -31,30 +31,31 @@ DATA = mll.Data(
 
 RESOLUTIONS = (
     # ("phylum", ("phylum",)),
-    ("class", ("class",)),
-    ("order", ("order",)),
-    # ("family", ("family",)),
-    ("genus", ("genus",)),
-    # ("domain-phylum", ("domain", "phylum")),
-    # ("domain-class", ("domain", "phylum", "class")),
-    # ("domain-order", ("domain", "phylum", "class", "order")),
-    # ("domain-family", ("domain", "phylum", "class", "order", "family")),
-    # ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
-    # ("phylum-class", ("phylum", "class")),
-    # ("phylum-order", ("phylum", "class", "order")),
-    # ("phylum-family", ("phylum", "class", "order", "family")),
-    # ("phylum-genus", ("phylum", "class", "order", "family", "genus")),
-    ("class-order", ("class", "order")),
-    # ("class-family", ("class", "order", "family")),
-    # ("class-genus", ("class", "order", "family", "genus")),
-    # ("order-family", ("order", "family")),
-    # ("order-genus", ("order", "family", "genus")),
-    ("family-genus", ("family", "genus")),
+    # ("class", ("class",)),
+    # ("order", ("order",)),
+    # # ("family", ("family",)),
+    # ("genus", ("genus",)),
+    # # ("domain-phylum", ("domain", "phylum")),
+    # # ("domain-class", ("domain", "phylum", "class")),
+    # # ("domain-order", ("domain", "phylum", "class", "order")),
+    # # ("domain-family", ("domain", "phylum", "class", "order", "family")),
+    # # ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
+    # # ("phylum-class", ("phylum", "class")),
+    # # ("phylum-order", ("phylum", "class", "order")),
+    # # ("phylum-family", ("phylum", "class", "order", "family")),
+    # # ("phylum-genus", ("phylum", "class", "order", "family", "genus")),
+    # ("class-order", ("class", "order")),
+    # # ("class-family", ("class", "order", "family")),
+    # # ("class-genus", ("class", "order", "family", "genus")),
+    # # ("order-family", ("order", "family")),
+    # # ("order-genus", ("order", "family", "genus")),
+    # ("family-genus", ("family", "genus")),
+    ("raw", ("raw",)),
 )
 
 COUNT_TRANSFORMATIONS = (
-    mll.Transformation("presence_absence"),
-    # mll.Transformation("identity"),
+    # mll.Transformation("presence_absence"),
+    mll.Transformation("identity"),
     # mll.Transformation("arcsine_sqrt", composition_scope="rank-wise"),
     # mll.Transformation("arcsine_sqrt", composition_scope="joint"),
     # # mll.Transformation("yeo_johnson", composition_scope="rank-wise"),
@@ -63,7 +64,7 @@ COUNT_TRANSFORMATIONS = (
     # mll.Transformation("hellinger", composition_scope="joint"),
     # # mll.Transformation("relative_abundance", composition_scope="rank-wise"),
     # # mll.Transformation("relative_abundance", composition_scope="joint"),
-    mll.Transformation("clr", composition_scope="rank-wise"),
+    # mll.Transformation("clr", composition_scope="rank-wise"),
     # mll.Transformation("clr", composition_scope="joint"),
     # mll.Transformation("log10", composition_scope="rank-wise"),
     # mll.Transformation("log10", composition_scope="joint"),
@@ -80,6 +81,11 @@ MODELS = (
             random_state=42,
         ),
     ),
+    # (
+    #     "SIAMCAT",
+    #     mll.SIAMCATClassifier(
+    #     ),
+    # ),
     # (
     #     "LDA_eigen_shrinkage_auto",
     #     LinearDiscriminantAnalysis(
@@ -214,7 +220,7 @@ ENSEMBLE = mll.Ensemble(
 )
 
 EXPLAINABILITY = mll.Explainability(
-    targets=("mpma_b",),# "mpma_e"),
+    targets=("mpma_b",),  # "mpma_e"),
     profile="screening",
     methods=(
         mll.Permutation(),

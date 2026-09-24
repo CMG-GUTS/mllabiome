@@ -223,7 +223,12 @@ def build_modality_candidates(
     paths = _modality_paths(
         modality_names, representations, transformations, feature_blocks_by_path
     )
-    from .configs_sweep import _learner_fingerprint, _learner_payload, _scientific_digest, _scientific_value
+    from .configs_sweep import (
+        _learner_fingerprint,
+        _learner_payload,
+        _scientific_digest,
+        _scientific_value,
+    )
 
     learner_specs = [
         (learner_name_fn(item), _learner_fingerprint(item), _learner_payload(item))
@@ -303,7 +308,9 @@ def build_modality_candidates(
                 "learner_display": spec.learner,
                 "learner_fingerprint": spec.learner_fingerprint,
                 "learner_class": learner_payload["class"],
-                "learner_params": json.dumps(learner_payload["params"], sort_keys=True, separators=(",", ":")),
+                "learner_params": json.dumps(
+                    learner_payload["params"], sort_keys=True, separators=(",", ":")
+                ),
                 "active": 1,
                 "candidate_family": spec.family,
                 "modalities": ",".join(spec.modalities),
@@ -489,7 +496,11 @@ class _ModalityInputProjector:
     def geometry(self) -> str:
         parts = []
         for modality, model in self.transformation_models.items():
-            value = model.perturbation_geometry() if hasattr(model, "perturbation_geometry") else "unverified_custom"
+            value = (
+                model.perturbation_geometry()
+                if hasattr(model, "perturbation_geometry")
+                else "unverified_custom"
+            )
             parts.append(f"{modality}:{value}")
         return "multimodal[" + ",".join(parts) + "]"
 
@@ -510,7 +521,9 @@ class _ModalityInputProjector:
             model = self.transformation_models.get(modality)
             if model is None or not hasattr(model, "project_model_input"):
                 continue
-            arr[:, slc] = np.asarray(model.project_model_input(arr[:, slc]), dtype=float)
+            arr[:, slc] = np.asarray(
+                model.project_model_input(arr[:, slc]), dtype=float
+            )
         return arr
 
 
@@ -1300,10 +1313,18 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
             },
             "group_col": sweep.samples.group_col,
             "effective_group_col": effective_group_col,
-            "group_assignments": None if effective_groups is None else _scientific_digest(np.asarray(effective_groups, dtype=object).astype(str).tolist()),
+            "group_assignments": None
+            if effective_groups is None
+            else _scientific_digest(
+                np.asarray(effective_groups, dtype=object).astype(str).tolist()
+            ),
             "subject_id_policy": "auto_group_repeated_subjects",
             "stratify_col": _scientific_value(sweep.samples.stratify_col),
-            "strata_assignments": None if fingerprint_strata is None else _scientific_digest(np.asarray(fingerprint_strata, dtype=object).astype(str).tolist()),
+            "strata_assignments": None
+            if fingerprint_strata is None
+            else _scientific_digest(
+                np.asarray(fingerprint_strata, dtype=object).astype(str).tolist()
+            ),
             "gate": _scientific_value(sweep.gate),
         }
     )
@@ -1329,7 +1350,9 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         "source_file_sha256": source_hashes,
         "evaluation_fingerprint": evaluation_fingerprint,
         "evaluation_fingerprint_algorithm": "sha256-scientific-multimodal-evaluation-v2",
-        "experiment_fingerprint": _experiment_fingerprint(sweep, evaluation_fingerprint),
+        "experiment_fingerprint": _experiment_fingerprint(
+            sweep, evaluation_fingerprint
+        ),
         "experiment_fingerprint_algorithm": "sha256-scientific-experiment-v1",
         "modalities": {
             name: {

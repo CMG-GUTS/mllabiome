@@ -158,7 +158,11 @@ def _fit_oof_members_fold_task(
         coordinate_metadata = ct.coordinate_metadata(names)
         transformed_names = [str(item.name) for item in coordinate_metadata]
         perturbation_geometry = ct.perturbation_geometry()
-        input_projector = ct.project_model_input if _core._projection_required(perturbation_geometry) else None
+        input_projector = (
+            ct.project_model_input
+            if _core._projection_required(perturbation_geometry)
+            else None
+        )
         if (
             len(transformed_names) != X_train.shape[1]
             or X_train.shape[1] != X_test.shape[1]
@@ -334,11 +338,15 @@ def _shap_member_values(
     classes = np.arange(len(class_labels), dtype=int)
     raw_model_fn = _core._explain_predict_proba(member["estimator"], classes)
     input_projector = member.get("input_projector")
-    model_fn = lambda values: raw_model_fn(_core._project_input(values, input_projector))
+    model_fn = lambda values: raw_model_fn(
+        _core._project_input(values, input_projector)
+    )
     requested_algorithm = str(spec.algorithm).strip().lower()
     explanation = None
     if requested_algorithm == "tree" and input_projector is not None:
-        raise _core.ExplainabilityConfigurationError("TreeSHAP cannot preserve constrained compositional geometry for this MPMA-E member; use algorithm='auto' or 'permutation'.")
+        raise _core.ExplainabilityConfigurationError(
+            "TreeSHAP cannot preserve constrained compositional geometry for this MPMA-E member; use algorithm='auto' or 'permutation'."
+        )
     if requested_algorithm in {"auto", "tree"} and input_projector is None:
         try:
             explainer = shap.TreeExplainer(
@@ -1193,7 +1201,9 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
             for member in fold.get("members", [])
             for value in (
                 member.get("perturbation_geometry", ())
-                if isinstance(member.get("perturbation_geometry", ()), (list, tuple, set))
+                if isinstance(
+                    member.get("perturbation_geometry", ()), (list, tuple, set)
+                )
                 else (member.get("perturbation_geometry", "unverified"),)
             )
         }

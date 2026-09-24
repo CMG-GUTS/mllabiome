@@ -608,7 +608,9 @@ class _BuiltinTransformer:
     def project_transformed(self, X: np.ndarray) -> np.ndarray:
         arr = np.asarray(X, dtype=np.float64)
         if arr.ndim != 2:
-            raise ValueError("Model-input projection requires a two-dimensional matrix.")
+            raise ValueError(
+                "Model-input projection requires a two-dimensional matrix."
+            )
         name = self.name
         if name in {
             "identity",
@@ -620,7 +622,9 @@ class _BuiltinTransformer:
             "additive_log_ratio_training_reference_multiplicative_replacement",
             "isometric_log_ratio_egozcue_multiplicative_replacement",
         }:
-            return _finite_output(arr, expected_shape=arr.shape, context="model-input projection")
+            return _finite_output(
+                arr, expected_shape=arr.shape, context="model-input projection"
+            )
 
         def close(values: np.ndarray) -> np.ndarray:
             values = np.maximum(np.asarray(values, dtype=np.float64), 0.0)
@@ -658,7 +662,9 @@ class _BuiltinTransformer:
         elif name == "log10_relative_abundance_half_min_pseudocount":
             if self.pseudocount_ is None:
                 raise RuntimeError("Transformation has not been fitted.")
-            abundance = np.maximum(np.power(10.0, np.clip(arr, -300.0, 300.0)) - self.pseudocount_, 0.0)
+            abundance = np.maximum(
+                np.power(10.0, np.clip(arr, -300.0, 300.0)) - self.pseudocount_, 0.0
+            )
             rel = close(abundance)
             out = np.log10(rel + self.pseudocount_)
         elif name == "robust_scaled_relative_abundance":
@@ -696,7 +702,9 @@ class _BuiltinTransformer:
                 out = np.apply_along_axis(rankdata, 1, arr) / (arr.shape[1] + 1.0)
         else:
             out = arr
-        return _finite_output(out, expected_shape=arr.shape, context="model-input projection")
+        return _finite_output(
+            out, expected_shape=arr.shape, context="model-input projection"
+        )
 
     def get_feature_names_out(
         self, input_features: list[str] | tuple[str, ...] | np.ndarray | None = None
@@ -752,7 +760,10 @@ class _BuiltinTransformer:
                 coefficients = np.full(dimension, -1.0 / dimension, dtype=float)
                 coefficients[index] += 1.0
                 coordinate_type = "clr_logcontrast"
-                if self.name == "standardized_centered_log_ratio_multiplicative_replacement":
+                if (
+                    self.name
+                    == "standardized_centered_log_ratio_multiplicative_replacement"
+                ):
                     if self.scaler_ is None:
                         raise RuntimeError("Transformation has not been fitted.")
                     scale = float(np.asarray(self.scaler_.scale_, dtype=float)[index])
@@ -1027,12 +1038,16 @@ class CountTransformation:
 
     def perturbation_geometry(self) -> str:
         if self._impl is None:
-            raise RuntimeError(f"Count transformation {self.name!r} has not been fitted.")
+            raise RuntimeError(
+                f"Count transformation {self.name!r} has not been fitted."
+            )
         return self._impl.perturbation_geometry()
 
     def project_model_input(self, X: np.ndarray) -> np.ndarray:
         if self._impl is None:
-            raise RuntimeError(f"Count transformation {self.name!r} has not been fitted.")
+            raise RuntimeError(
+                f"Count transformation {self.name!r} has not been fitted."
+            )
         return self._impl.project_transformed(X)
 
     def apply_pair(
@@ -1402,11 +1417,17 @@ class CountTransformationAdapter:
         if self.block_objects_ is not None:
             geometries = []
             for block_name, _, obj in self.block_objects_:
-                geometry = obj.perturbation_geometry() if hasattr(obj, "perturbation_geometry") else "unverified_custom"
+                geometry = (
+                    obj.perturbation_geometry()
+                    if hasattr(obj, "perturbation_geometry")
+                    else "unverified_custom"
+                )
                 geometries.append(f"{block_name}:{geometry}")
             return "rank-wise[" + ",".join(geometries) + "]"
         if self.obj is None:
-            raise RuntimeError(f"Count transformation {self.identity!r} has not been fitted.")
+            raise RuntimeError(
+                f"Count transformation {self.identity!r} has not been fitted."
+            )
         if hasattr(self.obj, "perturbation_geometry"):
             return str(self.obj.perturbation_geometry())
         return "unverified_custom"
@@ -1414,9 +1435,13 @@ class CountTransformationAdapter:
     def project_model_input(self, X: np.ndarray) -> np.ndarray:
         arr = np.asarray(X, dtype=np.float64)
         if arr.ndim != 2:
-            raise ValueError("Model-input projection requires a two-dimensional matrix.")
+            raise ValueError(
+                "Model-input projection requires a two-dimensional matrix."
+            )
         if self.n_features_out_ is None or arr.shape[1] != int(self.n_features_out_):
-            raise ValueError("Model-input projection width differs from the fitted transformation output width.")
+            raise ValueError(
+                "Model-input projection width differs from the fitted transformation output width."
+            )
         if self.block_objects_ is not None:
             pieces = []
             start = 0
@@ -1430,18 +1455,24 @@ class CountTransformationAdapter:
                 pieces.append(np.asarray(block, dtype=np.float64))
                 start += width
             if start != arr.shape[1]:
-                raise ValueError("Rank-wise model-input projection did not consume all transformed coordinates.")
+                raise ValueError(
+                    "Rank-wise model-input projection did not consume all transformed coordinates."
+                )
             out = np.concatenate(pieces, axis=1) if pieces else arr
         else:
             if self.obj is None:
-                raise RuntimeError(f"Count transformation {self.identity!r} has not been fitted.")
+                raise RuntimeError(
+                    f"Count transformation {self.identity!r} has not been fitted."
+                )
             if hasattr(self.obj, "project_model_input"):
                 out = self.obj.project_model_input(arr)
             elif hasattr(self.obj, "project_transformed"):
                 out = self.obj.project_transformed(arr)
             else:
                 out = arr
-        return _finite_output(out, expected_shape=arr.shape, context="model-input projection")
+        return _finite_output(
+            out, expected_shape=arr.shape, context="model-input projection"
+        )
 
     def apply_pair(
         self, X_tr: np.ndarray, X_te: np.ndarray

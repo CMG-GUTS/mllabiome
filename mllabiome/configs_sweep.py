@@ -585,11 +585,17 @@ def _scientific_value(value: Any) -> Any:
             "params": _scientific_value(value.get_params(deep=True)),
         }
     if isinstance(value, Mapping):
-        return {str(k): _scientific_value(v) for k, v in sorted(value.items(), key=lambda x: str(x[0]))}
+        return {
+            str(k): _scientific_value(v)
+            for k, v in sorted(value.items(), key=lambda x: str(x[0]))
+        }
     if isinstance(value, (list, tuple)):
         return [_scientific_value(v) for v in value]
     if isinstance(value, set):
-        return sorted((_scientific_value(v) for v in value), key=lambda x: json.dumps(x, sort_keys=True, default=str))
+        return sorted(
+            (_scientific_value(v) for v in value),
+            key=lambda x: json.dumps(x, sort_keys=True, default=str),
+        )
     if isinstance(value, np.ndarray):
         return _scientific_value(value.tolist())
     if isinstance(value, (np.integer,)):
@@ -645,16 +651,26 @@ def _scientific_value(value: Any) -> Any:
             "class": f"{type(value).__module__}.{type(value).__qualname__}",
             "state": _scientific_value(state),
         }
-    return {"class": f"{type(value).__module__}.{type(value).__qualname__}", "repr": str(value)}
+    return {
+        "class": f"{type(value).__module__}.{type(value).__qualname__}",
+        "repr": str(value),
+    }
 
 
 def _scientific_digest(payload: Any) -> str:
-    canonical = json.dumps(_scientific_value(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    canonical = json.dumps(
+        _scientific_value(payload),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _transformation_fingerprint(identity: str, spec: Any) -> str:
-    return _scientific_digest({"identity": str(identity), "spec": _scientific_value(spec)})
+    return _scientific_digest(
+        {"identity": str(identity), "spec": _scientific_value(spec)}
+    )
 
 
 def _resolution_fingerprint(
@@ -673,7 +689,11 @@ def _resolution_fingerprint(
 
 
 def _learner_payload(item: Any) -> dict[str, Any]:
-    if not isinstance(item, tuple) or len(item) != 2 or not isinstance(item[1], BaseEstimator):
+    if (
+        not isinstance(item, tuple)
+        or len(item) != 2
+        or not isinstance(item[1], BaseEstimator)
+    ):
         raise TypeError("Learners must be explicit (name, estimator) pairs.")
     name, estimator = item
     return {
@@ -762,9 +782,7 @@ def _evaluation_cache_payload(sweep: Sweep, dataset: Dataset) -> dict[str, Any]:
         ),
         "subject_id_policy": "auto_group_repeated_subjects",
         "stratify_col": (
-            None
-            if sweep.data is None
-            else _scientific_value(sweep.data.stratify_col)
+            None if sweep.data is None else _scientific_value(sweep.data.stratify_col)
         ),
         "strata_assignments": (
             None
@@ -922,10 +940,9 @@ def _validate_incremental_experiment_identity(
 
     stored_context = _incremental_context_payload_from_manifest(payload)
     current_context = _incremental_context_payload_from_sweep(sweep)
-    if (
-        stored_context is None
-        or _scientific_digest(stored_context) != _scientific_digest(current_context)
-    ):
+    if stored_context is None or _scientific_digest(
+        stored_context
+    ) != _scientific_digest(current_context):
         raise ValueError(
             "Existing experiment results use different evaluation, grouping/stratification, "
             "or qualification-gate settings. Rerun with --redo or use a new experiment directory."
@@ -984,16 +1001,30 @@ def build_sweep_configs(
             if taxonomic_block_count > 1
             else "unresolved"
         )
-        resolution_fingerprint = _resolution_fingerprint(res_name, levels, feature_blocks)
+        resolution_fingerprint = _resolution_fingerprint(
+            res_name, levels, feature_blocks
+        )
         transformation_specs = _count_transformation_specs_for_blocks(
             count_transformations, feature_blocks
         )
         for ct_name, ct_spec in transformation_specs:
             transformation_fingerprint = _transformation_fingerprint(ct_name, ct_spec)
-            for lname, learner_display, learner_fingerprint, learner_payload in learner_specs:
+            for (
+                lname,
+                learner_display,
+                learner_fingerprint,
+                learner_payload,
+            ) in learner_specs:
                 rows.append(
                     {
-                        "config_id": _config_id(ct_name, res_name, lname, learner_fingerprint, transformation_fingerprint, resolution_fingerprint),
+                        "config_id": _config_id(
+                            ct_name,
+                            res_name,
+                            lname,
+                            learner_fingerprint,
+                            transformation_fingerprint,
+                            resolution_fingerprint,
+                        ),
                         "mpdr_id": _mpdr_id(ct_name, res_name),
                         "transformation_fingerprint": transformation_fingerprint,
                         "resolution_fingerprint": resolution_fingerprint,
@@ -1007,7 +1038,11 @@ def build_sweep_configs(
                         "learner_display": learner_display,
                         "learner_fingerprint": learner_fingerprint,
                         "learner_class": learner_payload["class"],
-                        "learner_params": json.dumps(learner_payload["params"], sort_keys=True, separators=(",", ":")),
+                        "learner_params": json.dumps(
+                            learner_payload["params"],
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
                         "active": 1,
                     }
                 )
@@ -1702,8 +1737,14 @@ def _subject_safe_groups(
     if groups is not None:
         group_values = np.asarray(groups, dtype=object)
         if len(group_values) != len(subject_ids):
-            raise ValueError("Configured CV groups must align one-to-one with model rows.")
-        mapping = pd.DataFrame({"subject": subject_ids, "group": group_values}).groupby("subject", sort=False)["group"].nunique(dropna=False)
+            raise ValueError(
+                "Configured CV groups must align one-to-one with model rows."
+            )
+        mapping = (
+            pd.DataFrame({"subject": subject_ids, "group": group_values})
+            .groupby("subject", sort=False)["group"]
+            .nunique(dropna=False)
+        )
         if bool((mapping > 1).any()):
             bad = mapping[mapping > 1].index.astype(str).tolist()[:5]
             raise ValueError(
@@ -1780,10 +1821,14 @@ def _resolved_evaluation_splits(
             raise ValueError(
                 f"CV split {split['split_key']!r} leaks subject(s) across outer train/test partitions: {sorted(overlap)[:5]!r}."
             )
-        for inner_no, (inner_train, inner_val) in enumerate(inner.get(str(split["split_key"]), [])):
+        for inner_no, (inner_train, inner_val) in enumerate(
+            inner.get(str(split["split_key"]), [])
+        ):
             inner_train_idx = train_idx[np.asarray(inner_train, dtype=int)]
             inner_val_idx = train_idx[np.asarray(inner_val, dtype=int)]
-            inner_overlap = set(subjects[inner_train_idx].tolist()) & set(subjects[inner_val_idx].tolist())
+            inner_overlap = set(subjects[inner_train_idx].tolist()) & set(
+                subjects[inner_val_idx].tolist()
+            )
             if inner_overlap:
                 raise ValueError(
                     f"CV split {split['split_key']!r} inner fold {inner_no} leaks subject(s) across train/validation partitions: {sorted(inner_overlap)[:5]!r}."
@@ -2185,10 +2230,14 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
         ]
         for res_name, lvls in resolutions:
             X_base, feature_blocks = mpdr_cache[res_name]
-            resolution_fingerprint = _resolution_fingerprint(res_name, lvls, feature_blocks)
+            resolution_fingerprint = _resolution_fingerprint(
+                res_name, lvls, feature_blocks
+            )
             for ct_name, ct_spec in transformation_specs_by_resolution[res_name]:
                 ct_item = (ct_name, ct_spec) if ct_spec is not None else ct_name
-                transformation_fingerprint = _transformation_fingerprint(str(ct_name), ct_spec)
+                transformation_fingerprint = _transformation_fingerprint(
+                    str(ct_name), ct_spec
+                )
                 for learner_name, learner_factory in learners:
                     cid = _config_id(
                         str(ct_name),
@@ -2595,10 +2644,14 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
         ]
         for res_name, levels in resolutions:
             X_base, feature_blocks = mpdr_cache[res_name]
-            resolution_fingerprint = _resolution_fingerprint(res_name, levels, feature_blocks)
+            resolution_fingerprint = _resolution_fingerprint(
+                res_name, levels, feature_blocks
+            )
             for ct_name, ct_spec in transformation_specs_by_resolution[res_name]:
                 ct_item = (ct_name, ct_spec) if ct_spec is not None else ct_name
-                transformation_fingerprint = _transformation_fingerprint(str(ct_name), ct_spec)
+                transformation_fingerprint = _transformation_fingerprint(
+                    str(ct_name), ct_spec
+                )
                 for learner_name, learner_factory in learner_factories:
                     cid = _config_id(
                         str(ct_name),
@@ -3162,15 +3215,21 @@ def _write_manifest(
         "dataset_fingerprint": dataset_fingerprint(dataset),
         "dataset_fingerprint_algorithm": "sha256-model-input-v2",
         "evaluation_fingerprint": evaluation_fingerprint,
-        "evaluation_fingerprint_algorithm": "sha256-scientific-evaluation-v4" if evaluation_fingerprint else None,
+        "evaluation_fingerprint_algorithm": "sha256-scientific-evaluation-v4"
+        if evaluation_fingerprint
+        else None,
         "evaluation_cache_fingerprint": evaluation_cache_fingerprint,
         "evaluation_cache_fingerprint_algorithm": (
             "sha256-evaluation-cache-context-v1"
             if evaluation_cache_fingerprint
             else None
         ),
-        "experiment_fingerprint": _experiment_fingerprint(sweep, evaluation_fingerprint) if evaluation_fingerprint else None,
-        "experiment_fingerprint_algorithm": "sha256-scientific-experiment-v1" if evaluation_fingerprint else None,
+        "experiment_fingerprint": _experiment_fingerprint(sweep, evaluation_fingerprint)
+        if evaluation_fingerprint
+        else None,
+        "experiment_fingerprint_algorithm": "sha256-scientific-experiment-v1"
+        if evaluation_fingerprint
+        else None,
         "cv_splits": "tables/cv_splits.parquet",
         "transformations": [label.key for label in TRANSFORMATION_LABELS],
         "mpdr_semantics": _MPDR_SEMANTICS,

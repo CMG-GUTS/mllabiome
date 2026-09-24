@@ -78,8 +78,6 @@ _REGRESSION_METRICS = {
 }
 
 
-
-
 class _RegressionBlockProjector:
     def __init__(self, blocks: Sequence[tuple[slice, Any]]):
         self.blocks = list(blocks)
@@ -87,11 +85,15 @@ class _RegressionBlockProjector:
     def __call__(self, X: np.ndarray) -> np.ndarray:
         arr = np.asarray(X, dtype=float).copy()
         for slc, transform in self.blocks:
-            arr[:, slc] = np.asarray(transform.project_model_input(arr[:, slc]), dtype=float)
+            arr[:, slc] = np.asarray(
+                transform.project_model_input(arr[:, slc]), dtype=float
+            )
         return arr
 
     def geometry(self) -> tuple[str, ...]:
-        return tuple(str(transform.perturbation_geometry()) for _, transform in self.blocks)
+        return tuple(
+            str(transform.perturbation_geometry()) for _, transform in self.blocks
+        )
 
     def requires_projection(self) -> bool:
         return any(_projection_required(value) for value in self.geometry())
@@ -296,7 +298,9 @@ def _fit_individual_folds(
             _estimator_call(model, "predict", X_test), dtype=float
         ).reshape(-1)
         geometry = transform.perturbation_geometry()
-        projector = transform.project_model_input if _projection_required(geometry) else None
+        projector = (
+            transform.project_model_input if _projection_required(geometry) else None
+        )
         folds.append(
             {
                 "split_key": str(split["split_key"]),
@@ -597,7 +601,10 @@ def _permutation_importance(
     y_eval = y[indices]
     projector = fold.get("input_projector")
     baseline_pred = np.asarray(
-        _estimator_call(fold["estimator"], "predict", _project_input(X_eval, projector)), dtype=float
+        _estimator_call(
+            fold["estimator"], "predict", _project_input(X_eval, projector)
+        ),
+        dtype=float,
     ).reshape(-1)
     baseline = compute_regression_metrics(y_eval, baseline_pred)[metric]
     rng = np.random.default_rng(seed)
@@ -608,7 +615,10 @@ def _permutation_importance(
             permuted = X_eval.copy()
             permuted[:, j] = permuted[rng.permutation(len(permuted)), j]
             pred = np.asarray(
-                _estimator_call(fold["estimator"], "predict", _project_input(permuted, projector)), dtype=float
+                _estimator_call(
+                    fold["estimator"], "predict", _project_input(permuted, projector)
+                ),
+                dtype=float,
             ).reshape(-1)
             score = compute_regression_metrics(y_eval, pred)[metric]
             values.append(
@@ -623,8 +633,15 @@ def _permutation_importance(
                 "within_fold_importance_sd": float(np.std(values, ddof=1))
                 if len(values) > 1
                 else 0.0,
-                "scoring": (f"increase_in_{metric}" if metric_is_loss(metric) else f"decrease_in_{metric}") + ("_geometry_projected" if projector is not None else ""),
-                "perturbation_projection": "fitted_model_input_geometry" if projector is not None else "none",
+                "scoring": (
+                    f"increase_in_{metric}"
+                    if metric_is_loss(metric)
+                    else f"decrease_in_{metric}"
+                )
+                + ("_geometry_projected" if projector is not None else ""),
+                "perturbation_projection": "fitted_model_input_geometry"
+                if projector is not None
+                else "none",
             }
         )
         if progress_callback is not None:
@@ -667,9 +684,13 @@ def _shap_importance(
     values = None
     backend = "permutation"
     if requested == "tree" and projector is not None:
-        raise ValueError("Tree SHAP cannot preserve constrained compositional geometry; use algorithm='auto' or 'permutation'.")
-    if requested in {"auto", "tree"} and projector is None and not isinstance(
-        model, _FittedRegressionEnsemble
+        raise ValueError(
+            "Tree SHAP cannot preserve constrained compositional geometry; use algorithm='auto' or 'permutation'."
+        )
+    if (
+        requested in {"auto", "tree"}
+        and projector is None
+        and not isinstance(model, _FittedRegressionEnsemble)
     ):
         try:
             explainer = shap.TreeExplainer(
@@ -702,7 +723,11 @@ def _shap_importance(
         )
         explainer = shap.Explainer(
             lambda x: np.asarray(
-                _estimator_call(model, "predict", _project_input(np.asarray(x, dtype=float), projector)),
+                _estimator_call(
+                    model,
+                    "predict",
+                    _project_input(np.asarray(x, dtype=float), projector),
+                ),
                 dtype=float,
             ),
             masker,
@@ -802,7 +827,11 @@ def _lime_importance(
         exp = explainer.explain_instance(
             X_test[int(index)],
             lambda x: np.asarray(
-                _estimator_call(model, "predict", _project_input(np.asarray(x, dtype=float), projector)),
+                _estimator_call(
+                    model,
+                    "predict",
+                    _project_input(np.asarray(x, dtype=float), projector),
+                ),
                 dtype=float,
             ),
             **call_kwargs,
@@ -831,8 +860,11 @@ def _lime_importance(
                 "within_fold_importance_sd": float(np.std(np.abs(arr[:, j]), ddof=1))
                 if len(arr) > 1
                 else 0.0,
-                "scoring": "mean_abs_regression_lime_coefficient" + ("_geometry_projected" if projector is not None else ""),
-                "perturbation_projection": "fitted_model_input_geometry" if projector is not None else "none",
+                "scoring": "mean_abs_regression_lime_coefficient"
+                + ("_geometry_projected" if projector is not None else ""),
+                "perturbation_projection": "fitted_model_input_geometry"
+                if projector is not None
+                else "none",
             }
             for j, name in enumerate(names)
         ]
@@ -862,7 +894,11 @@ def _ale_importance(
     projector = fold.get("input_projector")
     wrapper = _AleModelWrapper(
         lambda x: np.asarray(
-            _estimator_call(fold["estimator"], "predict", _project_input(np.asarray(x, dtype=float), projector)),
+            _estimator_call(
+                fold["estimator"],
+                "predict",
+                _project_input(np.asarray(x, dtype=float), projector),
+            ),
             dtype=float,
         )
     )
@@ -909,8 +945,11 @@ def _ale_importance(
                 "importance_mean": strength,
                 "signed_importance_mean": signed_mean,
                 "within_fold_importance_sd": effect_sd,
-                "scoring": "rms_distribution_weighted_regression_ale" + ("_geometry_projected" if projector is not None else ""),
-                "perturbation_projection": "fitted_model_input_geometry" if projector is not None else "none",
+                "scoring": "rms_distribution_weighted_regression_ale"
+                + ("_geometry_projected" if projector is not None else ""),
+                "perturbation_projection": "fitted_model_input_geometry"
+                if projector is not None
+                else "none",
             }
         )
         if grid is not None and len(grid) == len(vals):
@@ -966,7 +1005,11 @@ def _interaction_importance(
     projector = fold.get("input_projector")
     wrapper = _AleModelWrapper(
         lambda x: np.asarray(
-            _estimator_call(fold["estimator"], "predict", _project_input(np.asarray(x, dtype=float), projector)),
+            _estimator_call(
+                fold["estimator"],
+                "predict",
+                _project_input(np.asarray(x, dtype=float), projector),
+            ),
             dtype=float,
         )
     )
@@ -1002,8 +1045,11 @@ def _interaction_importance(
                 "feature_1": f1,
                 "feature_2": f2,
                 "interaction_strength": float(np.sqrt(np.mean(centred**2))),
-                "scoring": "rms_centered_regression_2d_ale" + ("_geometry_projected" if projector is not None else ""),
-                "perturbation_projection": "fitted_model_input_geometry" if projector is not None else "none",
+                "scoring": "rms_centered_regression_2d_ale"
+                + ("_geometry_projected" if projector is not None else ""),
+                "perturbation_projection": "fitted_model_input_geometry"
+                if projector is not None
+                else "none",
             }
         )
         if progress_callback is not None:
