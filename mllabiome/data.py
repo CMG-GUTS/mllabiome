@@ -22,7 +22,11 @@ class Data:
     target_tasks: Mapping[str, str] | None = None
     group_col: str | None = None
     stratify_col: str | tuple[str, ...] | None = None
+    subject_id_col: str | None = None
     metadata_cols: tuple[str, ...] = ()
+    feature_cols: str | tuple[str, ...] | None = None
+    feature_prefixes: str | tuple[str, ...] | None = None
+    allow_implicit_numeric_features: bool = False
     label_map: Mapping[Any, int] | None = None
     class_labels: tuple[str, ...] | None = None
     positive_class: int | str = 1
@@ -36,6 +40,7 @@ class Dataset:
     feature_names_by_level: dict[str, list[str]]
     y: np.ndarray
     sample_ids: list[str]
+    subject_ids: list[str]
     metadata: pd.DataFrame
     class_labels: list[str]
     positive_class: int | None
@@ -78,6 +83,7 @@ def dataset_fingerprint(dataset: Dataset) -> str:
     _hash_text(hasher, dataset.task)
     _hash_text(hasher, dataset.target_name)
     _hash_text_sequence(hasher, dataset.sample_ids)
+    _hash_text_sequence(hasher, dataset.subject_ids)
     _hash_text_sequence(hasher, dataset.feature_names_by_level.get("all", ()))
     _hash_text_sequence(hasher, dataset.class_labels)
     _hash_text(hasher, dataset.positive_class)
@@ -388,6 +394,119 @@ def _encode_y(
     return y, ordered_labels, positive_index
 
 
+def _reserved_wide_csv_columns(spec: Data, target_col: str) -> set[str]:
+    reserved = {spec.sample_id_col, target_col, *(spec.metadata_cols or ())}
+    if spec.subject_id_col:
+        reserved.add(spec.subject_id_col)
+    if spec.group_col:
+        reserved.add(spec.group_col)
+    if spec.stratify_col:
+        if isinstance(spec.stratify_col, str):
+            reserved.add(spec.stratify_col)
+        else:
+            reserved.update(str(c) for c in spec.stratify_col)
+    return {str(value) for value in reserved}
+
+
+def _wide_csv_feature_columns(
+    spec: Data, df: pd.DataFrame, target_col: str
+) -> list[str]:
+    reserved = _reserved_wide_csv_columns(spec, target_col)
+    if isinstance(spec.feature_cols, str):
+        explicit = [spec.feature_cols]
+    else:
+        explicit = (
+            None if spec.feature_cols is None else [str(c) for c in spec.feature_cols]
+        )
+    prefixes_raw = spec.feature_prefixes
+    if isinstance(prefixes_raw, str):
+        prefixes = (prefixes_raw,)
+    else:
+        prefixes = tuple(str(value) for value in (prefixes_raw or ()))
+    if explicit is not None and prefixes:
+        raise ValueError(
+            "Use either Data.feature_cols or Data.feature_prefixes, not both."
+        )
+    if explicit is not None:
+        if not explicit:
+            raise ValueError("Data.feature_cols cannot be empty.")
+        duplicates = sorted({c for c in explicit if explicit.count(c) > 1})
+        if duplicates:
+            raise ValueError(
+                f"Data.feature_cols contains duplicate columns: {duplicates[:5]!r}."
+            )
+        missing = [c for c in explicit if c not in df.columns]
+        if missing:
+            raise ValueError(
+                f"Configured abundance columns are missing: {missing[:10]!r}."
+            )
+        forbidden = [c for c in explicit if c in reserved]
+        if forbidden:
+            raise ValueError(
+                "Configured abundance columns overlap reserved metadata/target columns: "
+                f"{forbidden[:10]!r}."
+            )
+        selected = explicit
+    elif prefixes:
+        if any(not prefix for prefix in prefixes):
+            raise ValueError("Data.feature_prefixes cannot contain empty prefixes.")
+        selected = [
+            str(c)
+            for c in df.columns
+            if str(c) not in reserved
+            and any(str(c).startswith(prefix) for prefix in prefixes)
+        ]
+        if not selected:
+            raise ValueError(
+                f"No abundance columns match Data.feature_prefixes={prefixes!r}."
+            )
+    elif bool(spec.allow_implicit_numeric_features):
+        selected = [
+            str(c)
+            for c in df.columns
+            if str(c) not in reserved and pd.api.types.is_numeric_dtype(df[c])
+        ]
+    else:
+        candidates = [
+            str(c)
+            for c in df.columns
+            if str(c) not in reserved and pd.api.types.is_numeric_dtype(df[c])
+        ]
+        preview = candidates[:10]
+        raise ValueError(
+            "Wide CSV abundance columns must be selected explicitly with Data.feature_cols or Data.feature_prefixes. "
+            f"Implicit numeric-column inference is disabled to prevent covariate leakage. Numeric candidates: {preview!r}. "
+            "Set allow_implicit_numeric_features=True only for a verified feature-only table."
+        )
+    if not selected:
+        raise ValueError("No abundance columns were selected.")
+    converted = df[selected].apply(pd.to_numeric, errors="coerce")
+    invalid = converted.isna() & df[selected].notna()
+    if bool(invalid.any().any()):
+        bad_columns = invalid.columns[invalid.any(axis=0)].astype(str).tolist()
+        raise ValueError(
+            f"Selected abundance columns contain non-numeric values: {bad_columns[:10]!r}."
+        )
+    return selected
+
+
+def _subject_ids(
+    spec: Data, frame: pd.DataFrame, sample_ids: Sequence[str]
+) -> list[str]:
+    if not spec.subject_id_col:
+        return [str(value) for value in sample_ids]
+    if spec.subject_id_col not in frame.columns:
+        raise ValueError(
+            f"subject_id_col={spec.subject_id_col!r} was not found in metadata."
+        )
+    values = frame[spec.subject_id_col]
+    if values.isna().any():
+        raise ValueError(
+            f"subject_id_col={spec.subject_id_col!r} contains missing values."
+        )
+    return values.astype(str).tolist()
+
+
 def _load_csv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
     abundance_path = Path(spec.abundance_path)
     df = pd.read_csv(abundance_path)
@@ -405,9 +524,16 @@ def _load_csv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
     if target_col not in df.columns:
         raise ValueError(f"Target column {target_col!r} not found.")
     if spec.sample_id_col in df.columns:
-        sample_ids = df[spec.sample_id_col].astype(str).tolist()
+        sample_series = df[spec.sample_id_col].astype(str)
+        if sample_series.duplicated().any():
+            duplicates = sample_series[sample_series.duplicated()].tolist()
+            raise ValueError(
+                f"Wide CSV contains duplicate sample IDs: {duplicates[:5]!r}."
+            )
+        sample_ids = sample_series.tolist()
     else:
         sample_ids = [str(i) for i in range(len(df))]
+    subject_ids = _subject_ids(spec, df, sample_ids)
     task = _normalise_task(spec.task)
     if task == "regression":
         y = _encode_regression(df[target_col].tolist())
@@ -420,30 +546,19 @@ def _load_csv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
             spec.class_labels,
             spec.positive_class,
         )
-    reserved = {spec.sample_id_col, target_col, *(spec.metadata_cols or ())}
-    if spec.group_col:
-        reserved.add(spec.group_col)
-    if spec.stratify_col:
-        if isinstance(spec.stratify_col, str):
-            reserved.add(spec.stratify_col)
-        else:
-            reserved.update(str(c) for c in spec.stratify_col)
-    numeric_cols = [
-        c
-        for c in df.columns
-        if c not in reserved and pd.api.types.is_numeric_dtype(df[c])
-    ]
-    if not numeric_cols:
-        raise ValueError(
-            "No numeric abundance columns found after excluding metadata columns."
-        )
-    feature_names = [str(c) for c in numeric_cols]
-    X_all = df[numeric_cols].to_numpy(dtype=np.float32)
+    feature_columns = _wide_csv_feature_columns(spec, df, target_col)
+    feature_names = [str(c) for c in feature_columns]
+    X_all = (
+        df[feature_columns]
+        .apply(pd.to_numeric, errors="coerce")
+        .to_numpy(dtype=np.float32)
+    )
     return _dataset_from_feature_matrix(
         X_all,
         feature_names,
         y,
         sample_ids,
+        subject_ids,
         df,
         class_labels,
         positive_class,
@@ -567,11 +682,13 @@ def _load_matrix_tsv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Data
         )
     X = bio[selected_sample_ids].T.to_numpy(dtype=np.float32)
     feature_names = bio.index.tolist()
+    subject_ids = _subject_ids(spec, meta, selected_sample_ids)
     return _dataset_from_feature_matrix(
         X,
         feature_names,
         y,
         selected_sample_ids,
+        subject_ids,
         meta,
         class_labels,
         positive_class,
@@ -586,6 +703,7 @@ def _dataset_from_feature_matrix(
     feature_names: list[str],
     y: np.ndarray,
     sample_ids: list[str],
+    subject_ids: list[str],
     meta: pd.DataFrame,
     class_labels: list[str],
     positive_class: int | None,
@@ -600,6 +718,8 @@ def _dataset_from_feature_matrix(
         raise ValueError(
             "Abundance matrix row count does not match the number of sample IDs."
         )
+    if len(subject_ids) != len(sample_ids):
+        raise ValueError("Subject ID length does not match the number of sample IDs.")
     if X_all.shape[1] != len(feature_names):
         raise ValueError(
             "Abundance matrix column count does not match the number of feature names."
@@ -632,6 +752,7 @@ def _dataset_from_feature_matrix(
         feature_names_by_level=names_by_level,
         y=np.asarray(y, dtype=int if task == "classification" else float),
         sample_ids=sample_ids,
+        subject_ids=[str(value) for value in subject_ids],
         metadata=meta,
         class_labels=class_labels,
         positive_class=positive_class,

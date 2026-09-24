@@ -1,10 +1,9 @@
 [build-system]
 requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
-
 [project]
 name = "mllabiome"
-version = "0.1.0rc69"
+dynamic = ["version"]
 description = "Machine learning, ensemble learning, explainable AI for microbiota data"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -45,7 +44,6 @@ dependencies = [
   "psutil>=7.2.2",
   "ruff>=0.16.7",
 ]
-
 [project.urls]
 Homepage = "https://github.com/CMG-GUTS/mllabiome"
 Repository = "https://github.com/CMG-GUTS/mllabiome"
@@ -60,6 +58,9 @@ dev = [
 [project.scripts]
 mllabiome = "mllabiome.cli:main"
 
+[tool.setuptools.dynamic]
+version = {attr = "mllabiome._version.__version__"}
+
 [tool.setuptools.packages.find]
 include = ["mllabiome*"]
 
@@ -70,6 +71,5 @@ testpaths = ["tests"]
 dev = [
     "pytest>=9.0.3",
 ]
-
 [tool.setuptools.package-data]
 mllabiome = ["py.typed", "_r/*.R"]

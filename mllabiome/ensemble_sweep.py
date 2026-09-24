@@ -10,7 +10,7 @@ from .compute import ResourceTracker
 from .ensemble_progress import EnsembleSearchProgress
 from .configs_sweep import Ensemble, Sweep, sweep_task
 from .console import path_table, stage, success, summary_table
-from .data import load_dataset
+from .data import _wide_csv_feature_columns, load_dataset
 from .ensemble_aggregation import (
     SUPPORTED_AGGREGATIONS,
     aggregate_member_predictions,
@@ -1439,21 +1439,13 @@ def _raw_input_matrix_for_figure(sweep: Sweep) -> tuple[np.ndarray, list[str]]:
             df = df.merge(
                 meta, on=spec.sample_id_col, how="inner", suffixes=("", "__meta")
             )
-        reserved = {spec.sample_id_col, spec.target_col, *(spec.metadata_cols or ())}
-        if spec.group_col:
-            reserved.add(spec.group_col)
-        numeric_cols = [
-            c
-            for c in df.columns
-            if c not in reserved and pd.api.types.is_numeric_dtype(df[c])
-        ]
-        if not numeric_cols:
-            raise ValueError(
-                "No numeric abundance columns found after excluding metadata columns."
-            )
+        target_col = str(spec.target_col)
+        feature_columns = _wide_csv_feature_columns(spec, df, target_col)
         return (
-            df[numeric_cols].to_numpy(dtype=np.float32),
-            [str(c) for c in numeric_cols],
+            df[feature_columns]
+            .apply(pd.to_numeric, errors="coerce")
+            .to_numpy(dtype=np.float32),
+            [str(c) for c in feature_columns],
         )
     dataset = load_dataset(sweep.data, TAXONOMIC_LEVELS)
     if "all" in dataset.X_by_level:

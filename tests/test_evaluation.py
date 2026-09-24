@@ -4,6 +4,7 @@ from collections import Counter
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.dummy import DummyClassifier
 
 import mllabiome.configs_sweep as cs
 from mllabiome.configs_sweep import Evaluation, QualificationGate, Sweep, evaluate
@@ -74,6 +75,7 @@ def _dataset(n=12, y=None, outer_feature_shift=None):
         feature_names_by_level={"genus": names, "all": names},
         y=y,
         sample_ids=[f"s{i}" for i in range(n)],
+        subject_ids=[f"s{i}" for i in range(n)],
         metadata=pd.DataFrame({"sample_id": [f"s{i}" for i in range(n)]}),
         class_labels=["control", "case"],
         positive_class=1,
@@ -87,12 +89,18 @@ def _sweep(
     learners=("constant",),
     transformations=("identity",),
 ):
+    learner_specs = tuple(
+        item
+        if isinstance(item, tuple)
+        else (str(item), DummyClassifier(strategy="prior"))
+        for item in learners
+    )
     return Sweep(
         data=Data(abundance_path="unused"),
         experiment_dir=root,
         resolutions=(("genus", ("genus",)),),
         count_transformations=transformations,
-        learners=learners,
+        learners=learner_specs,
         evaluation=evaluation
         or Evaluation(
             protocol="nested_cv",
@@ -110,10 +118,9 @@ def _sweep(
 
 def _patch_runtime(monkeypatch, dataset, learner_factories, fit_log=None):
     monkeypatch.setattr(cs, "load_dataset", lambda *args, **kwargs: dataset)
-    monkeypatch.setattr(cs, "_learner_name", lambda item: str(item))
 
     def learner_factory(item):
-        name = str(item)
+        name = str(item[0]) if isinstance(item, tuple) else str(item)
         factory = learner_factories[name]
         return name, factory
 
@@ -335,7 +342,7 @@ def test_evaluate_output_accounting_is_exact_and_predictions_align_to_samples(
     )
     assert set(tables["outer"]["count_transformation"]) == {
         "identity",
-        "relative_abundance",
+        "relative_abundance@rank-wise",
     }
     assert "transformation_abbreviation" not in tables["outer"].columns
     assert "transformation_abbreviation" not in tables["inner"].columns
@@ -387,7 +394,7 @@ def test_evaluate_passes_only_inner_training_to_inner_transform_and_only_outer_t
     calls = []
     seeds = []
 
-    def transformation_factory(item, *, random_state):
+    def transformation_factory(item, *, random_state, feature_blocks=None):
         seeds.append(int(random_state))
         name = str(item[0]) if isinstance(item, tuple) else str(item)
         return name, lambda: AuditTransformer(calls)

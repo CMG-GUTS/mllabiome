@@ -135,7 +135,9 @@ def test_mpma_b_oof_refits_exclude_every_test_sample(monkeypatch):
 
     monkeypatch.setattr(core, "load_dataset", lambda data, levels: dataset)
     monkeypatch.setattr(
-        core, "materialize_mpdr", lambda dataset, levels: (X, ["id", "x"])
+        core,
+        "materialize_mpdr_with_blocks",
+        lambda dataset, levels: (X, ["id", "x"], (("all", (0, 1)),)),
     )
     monkeypatch.setattr(
         core, "_explainability_outer_splits", lambda sweep, dataset: _splits()
@@ -143,7 +145,7 @@ def test_mpma_b_oof_refits_exclude_every_test_sample(monkeypatch):
     monkeypatch.setattr(
         core,
         "_configured_count_transformation_factory",
-        lambda sweep, key: IdentityTransformation,
+        lambda sweep, key, feature_blocks=None: IdentityTransformation,
     )
     monkeypatch.setattr(
         core,
@@ -256,7 +258,9 @@ def test_mpma_e_oof_refits_use_final_members_and_exclude_test_samples(
 
     monkeypatch.setattr(mpmae_xai, "load_dataset", lambda data, levels: dataset)
     monkeypatch.setattr(
-        mpmae_xai, "materialize_mpdr", lambda dataset, levels: (X, ["id", "x"])
+        mpmae_xai,
+        "materialize_mpdr_with_blocks",
+        lambda dataset, levels: (X, ["id", "x"], (("all", (0, 1)),)),
     )
     monkeypatch.setattr(
         mpmae_xai._core,
@@ -275,7 +279,7 @@ def test_mpma_e_oof_refits_use_final_members_and_exclude_test_samples(
     monkeypatch.setattr(
         mpmae_xai._core,
         "_configured_count_transformation_factory",
-        lambda sweep, key: IdentityTransformation,
+        lambda sweep, key, feature_blocks=None: IdentityTransformation,
     )
     monkeypatch.setattr(
         mpmae_xai._core,

@@ -533,6 +533,14 @@ def _prepare_oof_frame(frame: pd.DataFrame, protocol: str) -> pd.DataFrame:
         return pd.DataFrame()
     out = out.copy()
     out["sample_id"] = out["sample_id"].astype(str)
+    if "subject_id" in out.columns:
+        if out["subject_id"].isna().any():
+            raise ValueError(
+                "Held-out strategy predictions contain missing subject_id values."
+            )
+        out["_subject_id"] = out["subject_id"].astype(str)
+    else:
+        out["_subject_id"] = out["sample_id"]
     out["outer_split_key"] = out["outer_split_key"].astype(str)
     out["y_true"] = pd.to_numeric(out["y_true"], errors="coerce")
     for column in pcols:
@@ -571,6 +579,11 @@ def _prepare_oof_frame(frame: pd.DataFrame, protocol: str) -> pd.DataFrame:
         out["_cluster"] = out["outer_split_key"].astype(str)
         out["_repeat"] = "r0"
         duplicate_keys = ["_cluster", "sample_id"]
+        subject_cohorts = out.groupby("_subject_id", sort=False)["_cluster"].nunique()
+        if bool((subject_cohorts > 1).any()):
+            raise ValueError(
+                "A subject_id occurs in more than one held-out LODO cohort."
+            )
     else:
         out["_repeat"] = out["outer_split_key"].map(_repeat_id)
         out["_cluster"] = out["_repeat"]
@@ -933,11 +946,15 @@ def _point_oof_estimands(
     return {"mean_repeat_pooled_oof": _mean_metric_dicts(repeat_metrics)}
 
 
-def _resample_rows(group: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
+def _resample_subjects(group: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
     if group.empty:
         return group.copy()
-    indices = rng.integers(0, len(group), size=len(group))
-    return group.iloc[indices].reset_index(drop=True)
+    subjects = [
+        subject_group.reset_index(drop=True)
+        for _, subject_group in group.groupby("_subject_id", sort=True)
+    ]
+    chosen = rng.integers(0, len(subjects), size=len(subjects))
+    return pd.concat([subjects[int(index)] for index in chosen], ignore_index=True)
 
 
 def _bootstrap_oof_estimands(
@@ -970,7 +987,7 @@ def _bootstrap_oof_estimands(
         for bootstrap_index in range(int(n_bootstrap)):
             chosen = rng.integers(0, len(groups), size=len(groups))
             sampled_groups = [
-                _resample_rows(groups[int(index)], rng) for index in chosen
+                _resample_subjects(groups[int(index)], rng) for index in chosen
             ]
             pooled_metrics = _oof_metrics(
                 pd.concat(sampled_groups, ignore_index=True), probability_valid
@@ -986,14 +1003,11 @@ def _bootstrap_oof_estimands(
                     macro_metrics.get(metric, np.nan)
                 )
         return storage
-    groups = [
-        group.reset_index(drop=True) for _, group in frame.groupby("_repeat", sort=True)
-    ]
     for bootstrap_index in range(int(n_bootstrap)):
-        chosen = rng.integers(0, len(groups), size=len(groups))
+        sampled = _resample_subjects(frame, rng)
         metrics = [
-            _oof_metrics(_resample_rows(groups[int(index)], rng), probability_valid)
-            for index in chosen
+            _oof_metrics(group, probability_valid)
+            for _, group in sampled.groupby("_repeat", sort=True)
         ]
         averaged = _mean_metric_dicts(metrics)
         for metric in OOF_METRIC_ORDER:
@@ -1089,6 +1103,9 @@ def _oof_design(frame: pd.DataFrame, protocol: str) -> dict[str, int]:
         "n_unique_samples": int(frame["sample_id"].nunique())
         if "sample_id" in frame.columns
         else 0,
+        "n_unique_subjects": int(frame["_subject_id"].nunique())
+        if "_subject_id" in frame.columns
+        else 0,
         "n_outer_units": int(frame["outer_split_key"].nunique())
         if "outer_split_key" in frame.columns
         else 0,
@@ -1161,6 +1178,17 @@ def _matched_frames(
     return left_match, right_match, coverage
 
 
+def _subject_cluster_indices(
+    frame: pd.DataFrame, rng: np.random.Generator
+) -> np.ndarray:
+    groups = [
+        group.index.to_numpy(dtype=int)
+        for _, group in frame.groupby("_subject_id", sort=True)
+    ]
+    chosen = rng.integers(0, len(groups), size=len(groups))
+    return np.concatenate([groups[int(index)] for index in chosen])
+
+
 def _paired_resample_indices(
     frame: pd.DataFrame,
     protocol: str,
@@ -1168,20 +1196,10 @@ def _paired_resample_indices(
 ) -> list[np.ndarray]:
     protocol_key = str(protocol).lower()
     if protocol_key in _LODO_PROTOCOLS:
-        groups = [
-            group.index.to_numpy(dtype=int)
-            for _, group in frame.groupby("_cluster", sort=True)
-        ]
-    else:
-        groups = [
-            group.index.to_numpy(dtype=int)
-            for _, group in frame.groupby("_repeat", sort=True)
-        ]
-    chosen = rng.integers(0, len(groups), size=len(groups))
-    return [
-        indices[rng.integers(0, len(indices), size=len(indices))]
-        for indices in (groups[int(index)] for index in chosen)
-    ]
+        groups = [group for _, group in frame.groupby("_cluster", sort=True)]
+        chosen = rng.integers(0, len(groups), size=len(groups))
+        return [_subject_cluster_indices(groups[int(index)], rng) for index in chosen]
+    return [_subject_cluster_indices(frame, rng)]
 
 
 def _paired_point_estimands(
@@ -1278,17 +1296,16 @@ def _paired_bootstrap_advantages(
                 "cohort_macro_equal_weight": (left_macro, right_macro),
             }
         else:
+            index = sampled_indices[0]
+            left_sample = left.iloc[index].reset_index(drop=True)
+            right_sample = right.iloc[index].reset_index(drop=True)
             left_metrics = [
-                _oof_metrics(
-                    left.iloc[index].reset_index(drop=True), probability_valid_a
-                )
-                for index in sampled_indices
+                _oof_metrics(group, probability_valid_a)
+                for _, group in left_sample.groupby("_repeat", sort=True)
             ]
             right_metrics = [
-                _oof_metrics(
-                    right.iloc[index].reset_index(drop=True), probability_valid_b
-                )
-                for index in sampled_indices
+                _oof_metrics(group, probability_valid_b)
+                for _, group in right_sample.groupby("_repeat", sort=True)
             ]
             pairs = {
                 "mean_repeat_pooled_oof": (
@@ -1698,7 +1715,7 @@ def run_report_statistics(
     write_table(oof_coverage_path, advanced["coverage"])
     write_table(oof_pairwise_coverage_path, advanced["pairwise_coverage"])
     oof_manifest = {
-        "schema_version": 5,
+        "schema_version": 6,
         "protocol": str(protocol),
         "strategies": list(frames),
         "n_classes": int(advanced["n_classes"]),
@@ -1714,10 +1731,11 @@ def run_report_statistics(
         "observed_oof_design": advanced["observed_oof_design"],
         "probability_semantics": advanced["probability_semantics"],
         "bootstrap": (
-            "two-stage cohort-and-subject bootstrap"
+            "two-stage cohort-and-subject cluster bootstrap"
             if str(protocol).lower() in _LODO_PROTOCOLS
-            else "subject-cluster and repeat bootstrap"
+            else "subject-cluster bootstrap preserving all repeat-specific predictions per sampled subject"
         ),
+        "subject_identifier": "subject_id when available, otherwise sample_id",
         "paired_contrasts": "matched held-out observations with shared bootstrap draws",
         "metric_direction": {
             metric: ("lower" if metric_is_loss(metric) else "higher")

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
+import os
+import platform
+import subprocess
+import sys
 import json
 import sqlite3
 import time
@@ -21,6 +26,7 @@ from sklearn.model_selection import (
 )
 from threadpoolctl import threadpool_limits
 
+from ._version import __version__
 from .data import Data, Dataset, dataset_fingerprint, load_dataset
 from .integrations import Integration
 from .modalities import Samples, Modality
@@ -665,6 +671,7 @@ def _prediction_rows_values(
     cid: str,
     idx: np.ndarray,
     sample_ids: Sequence[str],
+    subject_ids: Sequence[str],
     y: np.ndarray,
     class_labels: Sequence[str],
     pred: np.ndarray,
@@ -680,6 +687,7 @@ def _prediction_rows_values(
             "split_key": key,
             "outer_split_key": outer_split_key,
             "sample_id": str(sample_ids[i]),
+            "subject_id": str(subject_ids[i]),
             "sample_index": i,
             "config_id": cid,
             "y_true": int(y[i]),
@@ -701,6 +709,7 @@ def _evaluate_mpma_split_task(
     classes: np.ndarray,
     class_labels: Sequence[str],
     sample_ids: Sequence[str],
+    subject_ids: Sequence[str],
     train_idx: np.ndarray,
     test_idx: np.ndarray,
     inner_splits: Sequence[tuple[np.ndarray, np.ndarray]],
@@ -782,6 +791,7 @@ def _evaluate_mpma_split_task(
                         cid,
                         va_idx,
                         sample_ids,
+                        subject_ids,
                         y,
                         class_labels,
                         pred,
@@ -861,6 +871,7 @@ def _evaluate_mpma_split_task(
                         cid,
                         test_idx,
                         sample_ids,
+                        subject_ids,
                         y,
                         class_labels,
                         pred,
@@ -1383,6 +1394,7 @@ def _regression_prediction_rows(
     cid: str,
     idx: np.ndarray,
     sample_ids: Sequence[str],
+    subject_ids: Sequence[str],
     y: np.ndarray,
     pred: np.ndarray,
     stage_name: str,
@@ -1398,6 +1410,7 @@ def _regression_prediction_rows(
                 "split_key": key,
                 "outer_split_key": outer_split_key,
                 "sample_id": str(sample_ids[i]),
+                "subject_id": str(subject_ids[i]),
                 "sample_index": i,
                 "config_id": cid,
                 "y_true": float(y[i]),
@@ -1414,6 +1427,7 @@ def _evaluate_regression_split_task(
     feature_blocks: Any,
     y: np.ndarray,
     sample_ids: Sequence[str],
+    subject_ids: Sequence[str],
     target_name: str,
     train_idx: np.ndarray,
     test_idx: np.ndarray,
@@ -1495,6 +1509,7 @@ def _evaluate_regression_split_task(
                         cid,
                         va_idx,
                         sample_ids,
+                        subject_ids,
                         y,
                         pred,
                         "inner",
@@ -1570,6 +1585,7 @@ def _evaluate_regression_split_task(
                         cid,
                         test_idx,
                         sample_ids,
+                        subject_ids,
                         y,
                         pred,
                         "outer",
@@ -1753,6 +1769,7 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
                         feature_blocks,
                         dataset.y,
                         tuple(dataset.sample_ids),
+                        tuple(dataset.subject_ids),
                         dataset.target_name,
                         train_idx,
                         test_idx,
@@ -2139,6 +2156,7 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
                         dataset.classes,
                         tuple(dataset.class_labels),
                         tuple(dataset.sample_ids),
+                        tuple(dataset.subject_ids),
                         train_idx,
                         test_idx,
                         tuple(inner_splits),
@@ -2542,6 +2560,110 @@ def _validate_dataset_identity(root: Path, dataset: Dataset) -> None:
         )
 
 
+_PROVENANCE_DISTRIBUTIONS = (
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "matplotlib",
+    "polars",
+    "pyarrow",
+    "xgboost",
+    "lightgbm",
+    "catboost",
+    "shap",
+    "lime",
+    "PyALE",
+    "networkx",
+    "scikit-bio",
+    "rich",
+    "flaml",
+    "tqdm",
+    "psutil",
+    "joblib",
+    "threadpoolctl",
+    "ruff",
+)
+
+
+def _installed_distribution_version(name: str) -> str | None:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _source_tree_sha256() -> str:
+    package_root = Path(__file__).resolve().parent
+    files = sorted(
+        path
+        for path in package_root.rglob("*")
+        if path.is_file() and (path.suffix in {".py", ".R"} or path.name == "py.typed")
+    )
+    hasher = hashlib.sha256()
+    for path in files:
+        relative = path.relative_to(package_root).as_posix().encode("utf-8")
+        payload = path.read_bytes()
+        hasher.update(len(relative).to_bytes(8, "big"))
+        hasher.update(relative)
+        hasher.update(len(payload).to_bytes(8, "big"))
+        hasher.update(payload)
+    return hasher.hexdigest()
+
+
+def _git_source_state() -> dict[str, Any]:
+    repository = Path(__file__).resolve().parents[1]
+    commit = None
+    dirty = None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        commit = result.stdout.strip() or None
+        status = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "status",
+                "--porcelain",
+                "--untracked-files=no",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        dirty = bool(status.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        commit = os.environ.get("MLLABIOME_GIT_COMMIT") or os.environ.get("GIT_COMMIT")
+    return {"git_commit": commit, "git_dirty": dirty}
+
+
+def _software_provenance() -> dict[str, Any]:
+    distribution_version = _installed_distribution_version("mllabiome")
+    return {
+        "mllabiome_source_version": __version__,
+        "mllabiome_distribution_version": distribution_version,
+        "version_consistent": distribution_version in {None, __version__},
+        "source_tree_sha256": _source_tree_sha256(),
+        "source_tree_fingerprint_algorithm": "sha256-package-source-v1",
+        **_git_source_state(),
+        "python_version": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "python_executable": sys.executable,
+        "platform": platform.platform(),
+        "dependencies": {
+            name: _installed_distribution_version(name)
+            for name in _PROVENANCE_DISTRIBUTIONS
+        },
+    }
+
+
 def _write_manifest(root: Path, sweep: Sweep, dataset: Dataset) -> None:
     safe_sweep = asdict(sweep)
     for section in ["data"]:
@@ -2551,6 +2673,8 @@ def _write_manifest(root: Path, sweep: Sweep, dataset: Dataset) -> None:
     safe_sweep["experiment_dir"] = str(safe_sweep["experiment_dir"])
     manifest = {
         "package": "mllabiome",
+        "package_version": __version__,
+        "software_provenance": _software_provenance(),
         "terminology": {
             "MPDR": "Microbiome Profile Data Representation = taxonomic resolution + count transformation",
             "MPMA": "Microbiome Profile Modelling Algorithm = MPDR + learner",
@@ -2561,7 +2685,7 @@ def _write_manifest(root: Path, sweep: Sweep, dataset: Dataset) -> None:
         "class_labels": dataset.class_labels,
         "n_samples": len(dataset.y),
         "dataset_fingerprint": dataset_fingerprint(dataset),
-        "dataset_fingerprint_algorithm": "sha256-model-input-v1",
+        "dataset_fingerprint_algorithm": "sha256-model-input-v2",
         "cv_splits": "tables/cv_splits.parquet",
         "transformations": [label.key for label in TRANSFORMATION_LABELS],
         "mpdr_semantics": _MPDR_SEMANTICS,

@@ -173,13 +173,13 @@ def test_taxonomic_rank_detects_deepest_lineage(feature, expected):
         ("kingdom", "domain", ("domain",)),
         (
             "kingdom-genus",
-            "domain-genus",
+            "domain→genus",
             ("domain", "phylum", "class", "order", "family", "genus"),
         ),
         ("kingdom+genus", "domain+genus", ("domain", "genus")),
         ("kingdom,genus", "domain+genus", ("domain", "genus")),
-        ("phylum-family", "phylum-family", ("phylum", "class", "order", "family")),
-        ("family-phylum", "family-phylum", ("phylum", "class", "order", "family")),
+        ("phylum-family", "phylum→family", ("phylum", "class", "order", "family")),
+        ("family-phylum", "family→phylum", ("phylum", "class", "order", "family")),
         ("phylum+genus", "phylum+genus", ("phylum", "genus")),
         ("genus+phylum", "genus+phylum", ("genus", "phylum")),
         ("phylum,genus", "phylum+genus", ("phylum", "genus")),
@@ -244,6 +244,7 @@ def test_domain_and_kingdom_resolution_inputs_materialize_the_same_features():
         },
         y=np.array([0, 1]),
         sample_ids=["s1", "s2"],
+        subject_ids=["s1", "s2"],
         metadata=pd.DataFrame({"sample_id": ["s1", "s2"]}),
         class_labels=["control", "case"],
         positive_class=1,
@@ -259,7 +260,7 @@ def test_structured_kingdom_aliases_canonicalize_to_domain():
     assert _parse_resolution(
         ("kingdom-genus", ("kingdom", "phylum", "class", "order", "family", "genus"))
     ) == (
-        "domain-genus",
+        "domain→genus",
         ("domain", "phylum", "class", "order", "family", "genus"),
     )
     assert _parse_resolution(
@@ -457,6 +458,7 @@ def test_species_only_input_does_not_silently_create_genus_abundances():
         names,
         np.array([0, 1]),
         ["s1", "s2"],
+        ["s1", "s2"],
         pd.DataFrame({"sample_id": ["s1", "s2"]}),
         ["control", "case"],
         positive_class=1,
@@ -475,6 +477,7 @@ def test_unranked_features_are_available_only_as_raw():
         X,
         ["feature_a", "feature_b"],
         np.array([0, 1]),
+        ["s1", "s2"],
         ["s1", "s2"],
         pd.DataFrame({"sample_id": ["s1", "s2"]}),
         ["control", "case"],
@@ -496,6 +499,7 @@ def test_partially_missing_multirank_resolution_is_rejected():
         feature_names_by_level={"family": ["f1"], "all": ["f1"]},
         y=np.array([0, 1]),
         sample_ids=["s1", "s2"],
+        subject_ids=["s1", "s2"],
         metadata=pd.DataFrame({"sample_id": ["s1", "s2"]}),
         class_labels=["control", "case"],
         positive_class=1,

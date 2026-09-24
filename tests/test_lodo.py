@@ -3,6 +3,7 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.dummy import DummyClassifier
 
 import mllabiome.configs_sweep as cs
 from mllabiome.configs_sweep import (
@@ -346,6 +347,7 @@ def _feature_dataset():
         feature_names_by_level={"genus": names, "all": names},
         y=y,
         sample_ids=metadata["sample_id"].tolist(),
+        subject_ids=metadata["sample_id"].tolist(),
         metadata=metadata,
         class_labels=["control", "case"],
         positive_class=1,
@@ -406,14 +408,18 @@ def test_evaluate_lodo_applies_fold_local_feature_vocabulary_before_transformati
     dataset = _feature_dataset()
     calls = []
     monkeypatch.setattr(cs, "load_dataset", lambda *args, **kwargs: dataset)
-    monkeypatch.setattr(cs, "_learner_name", lambda item: str(item))
     monkeypatch.setattr(
-        cs, "_learner_factory", lambda item: (str(item), lambda: _ConstantEstimator())
+        cs,
+        "_learner_factory",
+        lambda item: (str(item[0]), lambda: _ConstantEstimator()),
     )
     monkeypatch.setattr(
         cs,
         "_count_transformation_factory",
-        lambda item, random_state: ("identity", lambda: _AuditTransformer(calls)),
+        lambda item, random_state, feature_blocks=None: (
+            "identity",
+            lambda: _AuditTransformer(calls),
+        ),
     )
     monkeypatch.setattr(cs, "_write_rankings_and_figures", lambda *args, **kwargs: None)
     monkeypatch.setattr(
@@ -428,7 +434,7 @@ def test_evaluate_lodo_applies_fold_local_feature_vocabulary_before_transformati
         experiment_dir=tmp_path / "lodo",
         resolutions=(("genus", ("genus",)),),
         count_transformations=("identity",),
-        learners=("constant",),
+        learners=(("constant", DummyClassifier(strategy="prior")),),
         evaluation=Evaluation(
             protocol="lodo",
             inner_folds=3,

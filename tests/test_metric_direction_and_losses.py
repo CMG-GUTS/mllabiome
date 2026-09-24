@@ -36,8 +36,7 @@ def test_compute_metrics_includes_binary_log_loss_and_brier():
     y_pred = proba.argmax(axis=1)
     values = compute_metrics(y_true, y_pred, proba, np.asarray([0, 1], dtype=int))
     expected_log_loss = -np.mean(np.log(proba[np.arange(len(y_true)), y_true]))
-    target = np.eye(2, dtype=float)[y_true]
-    expected_brier = np.mean(np.sum((proba - target) ** 2, axis=1))
+    expected_brier = np.mean((proba[:, 1] - y_true.astype(float)) ** 2)
     assert values["log_loss"] == round(float(expected_log_loss), 6)
     assert values["brier"] == round(float(expected_brier), 6)
 

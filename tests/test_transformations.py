@@ -6,6 +6,7 @@ from skbio.stats.composition import closure as skbio_closure
 from skbio.stats.composition import clr as skbio_clr
 from skbio.stats.composition import ilr as skbio_ilr
 from skbio.stats.composition import multi_replace as skbio_multi_replace
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import (
     PowerTransformer,
     QuantileTransformer,
@@ -31,7 +32,7 @@ EXPECTED_TRANSFORMATIONS = {
     "arcsine_sqrt",
     "log10_relative_abundance_half_min_pseudocount",
     "centered_log_ratio_multiplicative_replacement",
-    "additive_log_ratio_first_reference_multiplicative_replacement",
+    "additive_log_ratio_training_reference_multiplicative_replacement",
     "isometric_log_ratio_egozcue_multiplicative_replacement",
     "standardize",
     "robust_scale",
@@ -47,7 +48,7 @@ EXPECTED_TRANSFORMATIONS = {
 }
 
 LOG_RATIO_COORDINATE_TRANSFORMATIONS = {
-    "additive_log_ratio_first_reference_multiplicative_replacement",
+    "additive_log_ratio_training_reference_multiplicative_replacement",
     "isometric_log_ratio_egozcue_multiplicative_replacement",
 }
 
@@ -118,6 +119,7 @@ def _resolution_dataset():
         },
         y=np.array([0, 1, 0]),
         sample_ids=["s1", "s2", "s3"],
+        subject_ids=["s1", "s2", "s3"],
         metadata=None,
         class_labels=["control", "case"],
         positive_class=1,
@@ -182,7 +184,7 @@ def test_canonical_aliases():
     assert Transformation("clr").name == "centered_log_ratio_multiplicative_replacement"
     assert (
         Transformation("alr").name
-        == "additive_log_ratio_first_reference_multiplicative_replacement"
+        == "additive_log_ratio_training_reference_multiplicative_replacement"
     )
     assert (
         Transformation("ilr").name
@@ -284,28 +286,31 @@ def test_clr_single_sample_preserves_2d_shape_and_matches_scikit_bio():
     np.testing.assert_allclose(out, expected, rtol=1e-06, atol=1e-06)
 
 
-def test_alr_matches_scikit_bio_first_reference_and_coordinate_metadata():
+def test_alr_matches_scikit_bio_training_reference_and_coordinate_metadata():
     X = _train_matrix()
     features = ["a", "b", "c", "d"]
     transform = CountTransformation("alr").fit(X)
+    assert transform._impl is not None
+    ref_idx = int(transform._impl.alr_reference_index_)
     out = transform.apply(X)
-    expected = np.asarray(skbio_alr(_positive_composition(X), ref_idx=0), dtype=float)
+    expected = np.asarray(
+        skbio_alr(_positive_composition(X), ref_idx=ref_idx), dtype=float
+    )
     np.testing.assert_allclose(out, expected, rtol=1e-06, atol=1e-06)
     assert out.shape == (X.shape[0], X.shape[1] - 1)
-    assert transform.get_feature_names_out(features) == [
-        "ALR[b/a]",
-        "ALR[c/a]",
-        "ALR[d/a]",
+    reference = features[ref_idx]
+    numerator_features = [
+        feature for index, feature in enumerate(features) if index != ref_idx
     ]
+    expected_names = [f"ALR[{feature}/{reference}]" for feature in numerator_features]
+    assert transform.get_feature_names_out(features) == expected_names
     metadata = transform.coordinate_metadata(features)
-    assert [item.name for item in metadata] == ["ALR[b/a]", "ALR[c/a]", "ALR[d/a]"]
+    assert [item.name for item in metadata] == expected_names
     assert all(item.coordinate_type == "alr_logcontrast" for item in metadata)
     assert all(item.anchor_feature is None for item in metadata)
     assert all(not item.exact_feature_identity for item in metadata)
     assert [item.components for item in metadata] == [
-        ("b", "a"),
-        ("c", "a"),
-        ("d", "a"),
+        (feature, reference) for feature in numerator_features
     ]
     assert all(item.coefficients == (1.0, -1.0) for item in metadata)
 
@@ -626,7 +631,7 @@ def test_compositional_log_transforms_reject_all_zero_samples():
     X = np.array([[1.0, 2.0, 3.0], [0.0, 0.0, 0.0]], dtype=float)
     for name in (
         "centered_log_ratio_multiplicative_replacement",
-        "additive_log_ratio_first_reference_multiplicative_replacement",
+        "additive_log_ratio_training_reference_multiplicative_replacement",
         "isometric_log_ratio_egozcue_multiplicative_replacement",
         "standardized_centered_log_ratio_multiplicative_replacement",
         "log10_relative_abundance_half_min_pseudocount",
@@ -656,7 +661,9 @@ def test_single_canonical_name_in_outputs():
     table = transformation_space_table()
     assert list(table.columns) == ["count_transformation", "category"]
     configs = build_sweep_configs(
-        [("genus", ("genus",))], [Transformation("none")], ["RF_1000_msl5"]
+        [("genus", ("genus",))],
+        [Transformation("none")],
+        [("RF_1000_msl5", RandomForestClassifier(n_estimators=10, random_state=0))],
     )
-    assert configs.loc[0, "count_transformation"] == "relative_abundance"
+    assert configs.loc[0, "count_transformation"] == "relative_abundance@rank-wise"
     assert "transformation_abbreviation" not in configs.columns

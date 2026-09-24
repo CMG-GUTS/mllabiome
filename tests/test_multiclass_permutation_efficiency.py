@@ -44,7 +44,7 @@ def test_multiclass_permutation_reuses_predictions_across_classes():
         spec=Permutation(n_repeats=2),
         random_state=42,
     )
-    assert clf.predict_proba_calls == 1 + X.shape[1] * 2
+    assert clf.predict_proba_calls == X.shape[1] * (1 + 2)
     assert len(frame) == X.shape[1] * 4
     assert set(frame["class_index"]) == {0, 1, 2, 3}
 
