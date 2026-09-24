@@ -703,19 +703,24 @@ def _config_id(
     ).hexdigest()[:12]
 
 
-def _evaluation_fingerprint(sweep: Sweep, dataset: Dataset, configs: pd.DataFrame) -> str:
+def _evaluation_cache_payload(sweep: Sweep, dataset: Dataset) -> dict[str, Any]:
     plan = sweep.evaluation
-    configured_groups = _groups_from_metadata(dataset.metadata, None if sweep.data is None else sweep.data.group_col)
+    configured_groups = _groups_from_metadata(
+        dataset.metadata, None if sweep.data is None else sweep.data.group_col
+    )
     effective_groups, effective_group_col = _subject_safe_groups(
-        plan, dataset, configured_groups, None if sweep.data is None else sweep.data.group_col
+        plan,
+        dataset,
+        configured_groups,
+        None if sweep.data is None else sweep.data.group_col,
     )
     strata = _strata_from_metadata(
         dataset.metadata,
         dataset.y,
         None if sweep.data is None else sweep.data.stratify_col,
     )
-    payload = {
-        "schema": "evaluation-fingerprint-v3",
+    return {
+        "schema": "evaluation-cache-fingerprint-v1",
         "source_tree_sha256": _source_tree_sha256(),
         "package_version": __version__,
         "python_version": platform.python_version(),
@@ -738,7 +743,6 @@ def _evaluation_fingerprint(sweep: Sweep, dataset: Dataset, configs: pd.DataFram
         "dataset_fingerprint": dataset_fingerprint(dataset),
         "task": str(dataset.task),
         "target": str(dataset.target_name),
-        "config_ids": sorted(configs["config_id"].astype(str).tolist()),
         "evaluation": {
             "protocol": str(plan.protocol),
             "outer_folds": int(plan.outer_folds),
@@ -749,11 +753,41 @@ def _evaluation_fingerprint(sweep: Sweep, dataset: Dataset, configs: pd.DataFram
         },
         "group_col": None if sweep.data is None else sweep.data.group_col,
         "effective_group_col": effective_group_col,
-        "group_assignments": None if effective_groups is None else _scientific_digest(np.asarray(effective_groups, dtype=object).astype(str).tolist()),
+        "group_assignments": (
+            None
+            if effective_groups is None
+            else _scientific_digest(
+                np.asarray(effective_groups, dtype=object).astype(str).tolist()
+            )
+        ),
         "subject_id_policy": "auto_group_repeated_subjects",
-        "stratify_col": None if sweep.data is None else _scientific_value(sweep.data.stratify_col),
-        "strata_assignments": None if strata is None else _scientific_digest(np.asarray(strata, dtype=object).astype(str).tolist()),
+        "stratify_col": (
+            None
+            if sweep.data is None
+            else _scientific_value(sweep.data.stratify_col)
+        ),
+        "strata_assignments": (
+            None
+            if strata is None
+            else _scientific_digest(
+                np.asarray(strata, dtype=object).astype(str).tolist()
+            )
+        ),
         "gate": _scientific_value(sweep.gate),
+    }
+
+
+def _evaluation_cache_fingerprint(sweep: Sweep, dataset: Dataset) -> str:
+    return _scientific_digest(_evaluation_cache_payload(sweep, dataset))
+
+
+def _evaluation_fingerprint(
+    sweep: Sweep, dataset: Dataset, configs: pd.DataFrame
+) -> str:
+    payload = {
+        "schema": "evaluation-fingerprint-v4",
+        "cache_fingerprint": _evaluation_cache_fingerprint(sweep, dataset),
+        "config_ids": sorted(configs["config_id"].astype(str).tolist()),
     }
     return _scientific_digest(payload)
 
@@ -800,6 +834,106 @@ def _validate_experiment_identity(
     if str(stored) != str(evaluation_fingerprint):
         raise ValueError(
             "Existing experiment results do not match the current scientific evaluation fingerprint. Rerun with --redo or use a new experiment directory."
+        )
+
+
+def _incremental_context_payload_from_sweep(sweep: Sweep) -> dict[str, Any]:
+    plan = sweep.evaluation
+    data = sweep.data
+    return {
+        "evaluation": {
+            "protocol": str(plan.protocol),
+            "outer_folds": int(plan.outer_folds),
+            "inner_folds": int(plan.inner_folds),
+            "repeats": int(plan.repeats),
+            "random_state": int(plan.random_state),
+            "optimize_metric": _scientific_value(plan.optimize_metric),
+        },
+        "group_col": None if data is None else data.group_col,
+        "stratify_col": (
+            None if data is None else _scientific_value(data.stratify_col)
+        ),
+        "gate": _scientific_value(asdict(sweep.gate)),
+    }
+
+
+def _incremental_context_payload_from_manifest(
+    payload: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    sweep_payload = payload.get("sweep")
+    if not isinstance(sweep_payload, Mapping):
+        return None
+    evaluation = sweep_payload.get("evaluation")
+    data = sweep_payload.get("data")
+    gate = sweep_payload.get("gate")
+    if not isinstance(evaluation, Mapping) or not isinstance(data, Mapping):
+        return None
+    required = (
+        "protocol",
+        "outer_folds",
+        "inner_folds",
+        "repeats",
+        "random_state",
+        "optimize_metric",
+    )
+    if any(key not in evaluation for key in required):
+        return None
+    return {
+        "evaluation": {key: evaluation.get(key) for key in required},
+        "group_col": data.get("group_col"),
+        "stratify_col": data.get("stratify_col"),
+        "gate": gate,
+    }
+
+
+def _validate_incremental_experiment_identity(
+    root: Path,
+    sweep: Sweep,
+    evaluation_cache_fingerprint: str,
+    *,
+    redo: bool,
+) -> None:
+    path = root / "manifest.json"
+    if not path.exists() or bool(redo):
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Existing experiment manifest cannot be read.") from exc
+
+    stored_cache = payload.get("evaluation_cache_fingerprint")
+    if stored_cache is not None:
+        if str(stored_cache) != str(evaluation_cache_fingerprint):
+            raise ValueError(
+                "Existing experiment results do not match the current evaluation cache context. "
+                "The dataset, evaluation plan, grouping/stratification, gate, runtime, or package code changed. "
+                "Rerun with --redo or use a new experiment directory."
+            )
+        return
+
+    stored_legacy = payload.get("evaluation_fingerprint")
+    if stored_legacy is None:
+        if _has_evaluation_artifacts(root):
+            raise ValueError(
+                "Existing evaluation artifacts predate scientific cache fingerprinting. "
+                "Rerun with --redo or use a new experiment directory before reusing results."
+            )
+        return
+
+    stored_context = _incremental_context_payload_from_manifest(payload)
+    current_context = _incremental_context_payload_from_sweep(sweep)
+    if (
+        stored_context is None
+        or _scientific_digest(stored_context) != _scientific_digest(current_context)
+    ):
+        raise ValueError(
+            "Existing experiment results use different evaluation, grouping/stratification, "
+            "or qualification-gate settings. Rerun with --redo or use a new experiment directory."
+        )
+    if _has_evaluation_artifacts(root):
+        info(
+            "Migrating legacy evaluation cache metadata: completed MPMA/split pairs will be reused; "
+            "new config IDs will be evaluated incrementally."
         )
 
 
@@ -1987,9 +2121,13 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
         sweep.learners,
         resolution_feature_blocks=feature_blocks_by_resolution,
     )
+    evaluation_cache_fingerprint = _evaluation_cache_fingerprint(sweep, dataset)
     evaluation_fingerprint = _evaluation_fingerprint(sweep, dataset, configs)
-    _validate_experiment_identity(
-        root, evaluation_fingerprint, redo=bool(sweep.evaluation.redo)
+    _validate_incremental_experiment_identity(
+        root,
+        sweep,
+        evaluation_cache_fingerprint,
+        redo=bool(sweep.evaluation.redo),
     )
     if sweep.evaluation.redo:
         _clear_evaluation_checkpoints(root)
@@ -2003,7 +2141,11 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
         group_col=sweep.data.group_col,
     )
     _write_manifest(
-        root, sweep, dataset, evaluation_fingerprint=evaluation_fingerprint
+        root,
+        sweep,
+        dataset,
+        evaluation_fingerprint=evaluation_fingerprint,
+        evaluation_cache_fingerprint=evaluation_cache_fingerprint,
     )
     current_config_ids = set(configs["config_id"].astype(str))
     current_outer_keys = {str(split["split_key"]) for split in outer_splits}
@@ -2377,9 +2519,13 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
         sweep.learners,
         resolution_feature_blocks=feature_blocks_by_resolution,
     )
+    evaluation_cache_fingerprint = _evaluation_cache_fingerprint(sweep, dataset)
     evaluation_fingerprint = _evaluation_fingerprint(sweep, dataset, configs)
-    _validate_experiment_identity(
-        root, evaluation_fingerprint, redo=bool(sweep.evaluation.redo)
+    _validate_incremental_experiment_identity(
+        root,
+        sweep,
+        evaluation_cache_fingerprint,
+        redo=bool(sweep.evaluation.redo),
     )
     if sweep.evaluation.redo:
         _clear_evaluation_checkpoints(root)
@@ -2397,7 +2543,11 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
         sweep.data.group_col,
     )
     _write_manifest(
-        root, sweep, dataset, evaluation_fingerprint=evaluation_fingerprint
+        root,
+        sweep,
+        dataset,
+        evaluation_fingerprint=evaluation_fingerprint,
+        evaluation_cache_fingerprint=evaluation_cache_fingerprint,
     )
     current_config_ids = set(configs["config_id"].astype(str))
     current_outer_keys = {str(s["split_key"]) for s in outer_splits}
@@ -2988,6 +3138,7 @@ def _write_manifest(
     dataset: Dataset,
     *,
     evaluation_fingerprint: str | None = None,
+    evaluation_cache_fingerprint: str | None = None,
 ) -> None:
     safe_sweep = asdict(sweep)
     for section in ["data"]:
@@ -3011,7 +3162,13 @@ def _write_manifest(
         "dataset_fingerprint": dataset_fingerprint(dataset),
         "dataset_fingerprint_algorithm": "sha256-model-input-v2",
         "evaluation_fingerprint": evaluation_fingerprint,
-        "evaluation_fingerprint_algorithm": "sha256-scientific-evaluation-v1" if evaluation_fingerprint else None,
+        "evaluation_fingerprint_algorithm": "sha256-scientific-evaluation-v4" if evaluation_fingerprint else None,
+        "evaluation_cache_fingerprint": evaluation_cache_fingerprint,
+        "evaluation_cache_fingerprint_algorithm": (
+            "sha256-evaluation-cache-context-v1"
+            if evaluation_cache_fingerprint
+            else None
+        ),
         "experiment_fingerprint": _experiment_fingerprint(sweep, evaluation_fingerprint) if evaluation_fingerprint else None,
         "experiment_fingerprint_algorithm": "sha256-scientific-experiment-v1" if evaluation_fingerprint else None,
         "cv_splits": "tables/cv_splits.parquet",
