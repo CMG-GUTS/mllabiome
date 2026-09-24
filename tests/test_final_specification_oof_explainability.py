@@ -33,6 +33,9 @@ class IdentityTransformation:
             for feature in input_features
         ]
 
+    def perturbation_geometry(self):
+        return "unconstrained"
+
 
 class RecordingEstimator:
     def __init__(self):
@@ -127,7 +130,7 @@ def test_final_mpma_b_specification_is_the_explanation_target(tmp_path, monkeypa
     assert seen["target_override"] == "final_b"
 
 
-def test_mpma_b_oof_refits_exclude_every_test_sample(monkeypatch):
+def test_mpma_b_oof_refits_exclude_every_test_sample(tmp_path, monkeypatch):
     dataset = _dataset()
     X = np.column_stack(
         [np.arange(len(dataset.y), dtype=float), np.linspace(0.0, 1.0, len(dataset.y))]
@@ -155,12 +158,29 @@ def test_mpma_b_oof_refits_exclude_every_test_sample(monkeypatch):
 
     row = pd.Series(
         {
+            "config_id": "cfg",
             "levels": "all",
             "count_transformation": "identity",
             "learner": "dummy",
         }
     )
-    bundle = core._fit_oof_single_for_explainability(_sweep(Path(".")), row)
+    predictions = []
+    for split in _splits():
+        for sample_idx in np.asarray(split["test_idx"], dtype=int):
+            predictions.append(
+                {
+                    "outer_split_key": str(split["split_key"]),
+                    "sample_id": str(dataset.sample_ids[sample_idx]),
+                    "config_id": "cfg",
+                    "proba_A": 0.5,
+                    "proba_B": 0.5,
+                }
+            )
+    write_table(
+        tmp_path / "predictions" / "outer_predictions.parquet",
+        pd.DataFrame(predictions),
+    )
+    bundle = core._fit_oof_single_for_explainability(_sweep(tmp_path), row)
     held_out = []
     for fold in bundle["folds"]:
         train = set(np.asarray(fold["train_idx"], dtype=int).tolist())
