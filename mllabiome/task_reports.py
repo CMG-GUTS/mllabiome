@@ -792,7 +792,7 @@ def _regression_explainability_blocks(
             parts.append("<h4>ALE</h4>")
 
             parts.append(
-                "<p>Accumulated local effects summarize how the fitted regression prediction changes over the observed feature range. Thin pale lines show the outer-fold ALE curves. The thick blue line is their pointwise median and the shaded band is the interquartile range. The dashed horizontal line marks zero centered ALE effect, so values above or below it indicate predictions higher or lower than the centered reference in target units. ALE describes model behavior and should not be interpreted as a causal effect.</p>"
+                "<p>Accumulated local effects summarize how the fitted regression prediction changes over the observed feature range. Thin pale lines show the outer-fold ALE curves. When multiple displayed outer-fold curves have a shared feature-value range, the thick blue line shows their pointwise median only over that common-support range and the shaded band shows the corresponding interquartile range across folds. Individual fold curves may extend beyond the common-support range. If no shared range exists, no cross-fold median or interquartile band is drawn. If only one ALE curve is available, it is shown without an interquartile band. The dashed horizontal line marks zero centered ALE effect, so values above or below it indicate predictions higher or lower than the centered reference in target units. ALE describes model behavior and should not be interpreted as a causal effect.</p>"
             )
 
             curve_figure = _report._fig(

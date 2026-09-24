@@ -1449,52 +1449,37 @@ def _plot_ale_curves(
                     zorder=4,
                     solid_capstyle="round",
                 )
-                ax.fill_between(x, 0, y, color=ACC_L, alpha=0.42, zorder=3, linewidth=0)
             elif len(fold_curves) > 1:
                 lower = max(float(np.min(x)) for x, _ in fold_curves)
                 upper = min(float(np.max(x)) for x, _ in fold_curves)
-                if not np.isfinite(lower) or not np.isfinite(upper) or lower >= upper:
-                    lower = min(float(np.min(x)) for x, _ in fold_curves)
-                    upper = max(float(np.max(x)) for x, _ in fold_curves)
                 if np.isfinite(lower) and np.isfinite(upper) and lower < upper:
                     grid_size = max(
                         32, min(128, max(len(x) for x, _ in fold_curves) * 4)
                     )
                     x_common = np.linspace(lower, upper, grid_size)
-                    stack = np.full((len(fold_curves), grid_size), np.nan, dtype=float)
+                    stack = np.empty((len(fold_curves), grid_size), dtype=float)
                     for fold_index, (x_fold, y_fold) in enumerate(fold_curves):
-                        supported = (x_common >= float(np.min(x_fold))) & (
-                            x_common <= float(np.max(x_fold))
-                        )
-                        if np.any(supported):
-                            stack[fold_index, supported] = np.interp(
-                                x_common[supported], x_fold, y_fold
-                            )
-                    required = min(2, len(fold_curves))
-                    supported_columns = np.sum(np.isfinite(stack), axis=0) >= required
-                    if np.any(supported_columns):
-                        x_plot = x_common[supported_columns]
-                        values = stack[:, supported_columns]
-                        median = np.nanmedian(values, axis=0)
-                        q25 = np.nanquantile(values, 0.25, axis=0)
-                        q75 = np.nanquantile(values, 0.75, axis=0)
-                        ax.fill_between(
-                            x_plot,
-                            q25,
-                            q75,
-                            color=ACC_L,
-                            alpha=0.52,
-                            zorder=3,
-                            linewidth=0,
-                        )
-                        ax.plot(
-                            x_plot,
-                            median,
-                            color=ACC_D,
-                            lw=1.0,
-                            zorder=4,
-                            solid_capstyle="round",
-                        )
+                        stack[fold_index] = np.interp(x_common, x_fold, y_fold)
+                    median = np.median(stack, axis=0)
+                    q25 = np.quantile(stack, 0.25, axis=0)
+                    q75 = np.quantile(stack, 0.75, axis=0)
+                    ax.fill_between(
+                        x_common,
+                        q25,
+                        q75,
+                        color=ACC_L,
+                        alpha=0.52,
+                        zorder=3,
+                        linewidth=0,
+                    )
+                    ax.plot(
+                        x_common,
+                        median,
+                        color=ACC_D,
+                        lw=1.0,
+                        zorder=4,
+                        solid_capstyle="round",
+                    )
         ax.text(
             0.0,
             1.055,

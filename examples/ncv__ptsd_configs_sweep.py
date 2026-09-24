@@ -87,50 +87,50 @@ MODELS = (
             shrinkage="auto",
         ),
     ),
-    (
-        "MLP_32_relu_lbfgs",
-        Pipeline(
-            steps=(
-                (
-                    "scaler",
-                    StandardScaler(),
-                ),
-                (
-                    "mlp",
-                    MLPClassifier(
-                        hidden_layer_sizes=(32,),
-                        activation="relu",
-                        solver="lbfgs",
-                        alpha=1e-3,
-                        max_iter=2000,
-                        random_state=42,
-                    ),
-                ),
-            ),
-        ),
-    ),
-    (
-        "LightGBM_100_lr0.1_msl20_md20_sub0.8_col0.8",
-        LGBMClassifier(
-            objective="binary",
-            boosting_type="gbdt",
-            n_estimators=100,
-            learning_rate=0.1,
-            num_leaves=31,
-            max_depth=20,
-            min_child_samples=20,
-            subsample=0.8,
-            subsample_freq=1,
-            colsample_bytree=0.8,
-            reg_alpha=0.0,
-            reg_lambda=0.0,
-            random_state=42,
-            n_jobs=1,
-            deterministic=True,
-            force_col_wise=True,
-            verbose=-1,
-        ),
-    ),
+    # (
+    #     "MLP_32_relu_lbfgs",
+    #     Pipeline(
+    #         steps=(
+    #             (
+    #                 "scaler",
+    #                 StandardScaler(),
+    #             ),
+    #             (
+    #                 "mlp",
+    #                 MLPClassifier(
+    #                     hidden_layer_sizes=(32,),
+    #                     activation="relu",
+    #                     solver="lbfgs",
+    #                     alpha=1e-3,
+    #                     max_iter=2000,
+    #                     random_state=42,
+    #                 ),
+    #             ),
+    #         ),
+    #     ),
+    # ),
+    # (
+    #     "LightGBM_100_lr0.1_msl20_md20_sub0.8_col0.8",
+    #     LGBMClassifier(
+    #         objective="binary",
+    #         boosting_type="gbdt",
+    #         n_estimators=100,
+    #         learning_rate=0.1,
+    #         num_leaves=31,
+    #         max_depth=20,
+    #         min_child_samples=20,
+    #         subsample=0.8,
+    #         subsample_freq=1,
+    #         colsample_bytree=0.8,
+    #         reg_alpha=0.0,
+    #         reg_lambda=0.0,
+    #         random_state=42,
+    #         n_jobs=1,
+    #         deterministic=True,
+    #         force_col_wise=True,
+    #         verbose=-1,
+    #     ),
+    # ),
     # (
     #     "XGB_250_lr0.1_msl3_g0.1_col0.5_sub0.5",
     #     XGBClassifier(
@@ -195,7 +195,7 @@ GATE = mll.QualificationGate(
 )
 
 ENSEMBLE = mll.Ensemble(
-    max_sizes=(10,),
+    max_sizes=(3,),
     selection_strategies=(
         "top_k",
         "best_per_resolution",
