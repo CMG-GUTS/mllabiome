@@ -131,6 +131,10 @@ class Evaluation:
     memory_fraction: float = 0.80
     min_worker_memory_gib: float = 1.0
     resource_sample_interval_s: float = 0.10
+    diagnostic_thresholds: tuple[float, ...] = ()
+    decision_curve_min_threshold: float = 0.01
+    decision_curve_max_threshold: float = 0.99
+    decision_curve_points: int = 99
     redo: bool = False
 
 

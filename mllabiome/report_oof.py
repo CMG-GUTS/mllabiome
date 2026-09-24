@@ -22,8 +22,6 @@ _PERCENT_METRICS = {
     "PR_AUC_weighted",
     "AP",
     "AP_macro",
-    "MCC",
-    "nMCC",
     "Accuracy",
     "BalAcc",
     "F1",
@@ -31,6 +29,10 @@ _PERCENT_METRICS = {
     "F1_macro",
     "Precision",
     "Recall",
+    "Sensitivity",
+    "Specificity",
+    "PPV",
+    "NPV",
 }
 _PRIMARY_METRIC_ORDER = (
     "AUC",
@@ -72,6 +74,10 @@ _CONTRAST_METRIC_ORDER = (
     "F1_macro",
     "Precision",
     "Recall",
+    "Sensitivity",
+    "Specificity",
+    "PPV",
+    "NPV",
     "BalAcc",
     "Accuracy",
     "Brier",
@@ -82,6 +88,23 @@ _CALIBRATION_METRIC_ORDER = (
     "CalibrationInTheLarge",
     "CalibrationIntercept",
     "CalibrationSlope",
+)
+_OPERATING_DIAGNOSTIC_METRIC_ORDER = (
+    "Sensitivity",
+    "Specificity",
+    "PPV",
+    "NPV",
+    "MCC",
+    "nMCC",
+)
+_DIAGNOSTIC_METRIC_ORDER = (
+    "Sensitivity",
+    "Specificity",
+    "PPV",
+    "NPV",
+    "Accuracy",
+    "MCC",
+    "nMCC",
 )
 _METRIC_LABELS = {
     "AUC": "ROC-AUC",
@@ -101,6 +124,10 @@ _METRIC_LABELS = {
     "F1_macro": "F1 macro",
     "Precision": "Precision",
     "Recall": "Recall",
+    "Sensitivity": "Sensitivity",
+    "Specificity": "Specificity",
+    "PPV": "PPV",
+    "NPV": "NPV",
     "Brier": "Brier score",
     "Brier_multiclass": "Multiclass Brier score",
     "LogLoss": "Log loss",
@@ -283,6 +310,14 @@ def _performance_display(performance: pd.DataFrame) -> pd.DataFrame:
     return _wide_metric_table(performance, _PRIMARY_METRIC_ORDER, bold_best=True)
 
 
+def _diagnostic_operating_display(
+    performance: pd.DataFrame, n_classes: int | None
+) -> pd.DataFrame:
+    if n_classes is None or int(n_classes) != 2:
+        return pd.DataFrame()
+    return _wide_metric_table(performance, _OPERATING_DIAGNOSTIC_METRIC_ORDER)
+
+
 def _multiclass_display(
     performance: pd.DataFrame, n_classes: int | None
 ) -> pd.DataFrame:
@@ -323,6 +358,463 @@ def _calibration_display(performance: pd.DataFrame) -> pd.DataFrame:
         if column in calibration.columns:
             calibration.loc[unstable, column] = np.nan
     return _wide_metric_table(calibration, _CALIBRATION_METRIC_ORDER)
+
+
+def _threshold_metrics_display(threshold_metrics: pd.DataFrame) -> pd.DataFrame:
+    required = {
+        "Strategy",
+        "estimand",
+        "threshold",
+        "positive_class_label",
+        "metric",
+        "estimate",
+        "ci_low",
+        "ci_high",
+    }
+    if threshold_metrics.empty or not required.issubset(threshold_metrics.columns):
+        return pd.DataFrame()
+    estimands = threshold_metrics["estimand"].dropna().astype(str).unique().tolist()
+    show_estimand = len(estimands) > 1
+    rows: list[dict[str, Any]] = []
+    grouping = ["Strategy", "estimand", "threshold", "positive_class_label"]
+    for keys, group in threshold_metrics.groupby(grouping, sort=False):
+        strategy, estimand, threshold, positive_class = keys
+        row: dict[str, Any] = {
+            "Strategy": str(strategy),
+            "Threshold": f"{float(threshold):.3f}",
+            "Positive class": str(positive_class),
+        }
+        if show_estimand:
+            row["Estimand"] = _ESTIMAND_LABELS.get(str(estimand), str(estimand))
+        for metric in _DIAGNOSTIC_METRIC_ORDER:
+            sub = group[group["metric"].astype(str).eq(metric)]
+            if sub.empty:
+                continue
+            row[_METRIC_LABELS.get(metric, metric)] = _format_ci_cell(
+                sub.iloc[0], metric
+            )
+        rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    order = ["Strategy", "Estimand", "Threshold", "Positive class"]
+    order.extend(
+        _METRIC_LABELS.get(metric, metric) for metric in _DIAGNOSTIC_METRIC_ORDER
+    )
+    return out[[column for column in order if column in out.columns]]
+
+
+def _confusion_display(confusion: pd.DataFrame) -> pd.DataFrame:
+    required = {
+        "Strategy",
+        "estimand",
+        "threshold_type",
+        "threshold",
+        "actual_class_label",
+        "predicted_class_label",
+        "count_estimate",
+        "row_fraction",
+        "n_averaged_units",
+    }
+    if confusion.empty or not required.issubset(confusion.columns):
+        return pd.DataFrame()
+    estimands = confusion["estimand"].dropna().astype(str).unique().tolist()
+    show_estimand = len(estimands) > 1
+    predicted_labels = list(
+        dict.fromkeys(confusion["predicted_class_label"].astype(str).tolist())
+    )
+    rows: list[dict[str, Any]] = []
+    grouping = [
+        "Strategy",
+        "estimand",
+        "threshold_type",
+        "threshold",
+        "actual_class_label",
+    ]
+    frame = confusion.copy()
+    frame["threshold_key"] = pd.to_numeric(frame["threshold"], errors="coerce").fillna(
+        -1.0
+    )
+    grouping = [
+        "Strategy",
+        "estimand",
+        "threshold_type",
+        "threshold_key",
+        "actual_class_label",
+    ]
+    for keys, group in frame.groupby(grouping, sort=False):
+        strategy, estimand, threshold_type, threshold_key, actual_class = keys
+        operating_point = (
+            "Model prediction"
+            if str(threshold_type) == "model_prediction"
+            else f"Probability ≥ {float(threshold_key):.3f}"
+        )
+        row: dict[str, Any] = {
+            "Strategy": str(strategy),
+            "Operating point": operating_point,
+            "Actual class": str(actual_class),
+        }
+        if show_estimand:
+            row["Estimand"] = _ESTIMAND_LABELS.get(str(estimand), str(estimand))
+        for predicted_label in predicted_labels:
+            sub = group[group["predicted_class_label"].astype(str).eq(predicted_label)]
+            if sub.empty:
+                row[f"Predicted {predicted_label}"] = "NA"
+                continue
+            item = sub.iloc[0]
+            fraction = _safe_float(item.get("row_fraction"))
+            count = _safe_float(item.get("count_estimate"))
+            try:
+                n_units = int(item.get("n_averaged_units", 1))
+            except (TypeError, ValueError):
+                n_units = 1
+            if not np.isfinite(fraction):
+                text = "NA"
+            elif np.isfinite(count) and n_units <= 1:
+                text = f"{100.0 * fraction:.1f}% ({count:.0f})"
+            elif np.isfinite(count):
+                text = f"{100.0 * fraction:.1f}% (mean {count:.1f})"
+            else:
+                text = f"{100.0 * fraction:.1f}%"
+            row[f"Predicted {predicted_label}"] = text
+        rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    order = ["Strategy", "Estimand", "Operating point", "Actual class"]
+    order.extend(f"Predicted {label}" for label in predicted_labels)
+    return out[[column for column in order if column in out.columns]]
+
+
+def _decision_curve_display(
+    decision_curve: pd.DataFrame, manifest: dict[str, Any]
+) -> pd.DataFrame:
+    required = {
+        "Strategy",
+        "estimand",
+        "threshold",
+        "positive_class_label",
+        "net_benefit",
+        "ci_low",
+        "ci_high",
+        "treat_all_net_benefit",
+        "treat_none_net_benefit",
+        "prevalence",
+    }
+    if decision_curve.empty or not required.issubset(decision_curve.columns):
+        return pd.DataFrame()
+    configured = manifest.get("diagnostic_thresholds", [])
+    if not isinstance(configured, list) or not configured:
+        return pd.DataFrame()
+    thresholds = np.asarray(
+        [float(value) for value in configured if np.isfinite(_safe_float(value))],
+        dtype=float,
+    )
+    if len(thresholds) == 0:
+        return pd.DataFrame()
+    values = pd.to_numeric(decision_curve["threshold"], errors="coerce").to_numpy(
+        dtype=float
+    )
+    mask = np.zeros(len(decision_curve), dtype=bool)
+    for threshold in thresholds:
+        mask |= np.isclose(values, threshold, atol=1e-12, rtol=1e-12)
+    frame = decision_curve.loc[mask].copy()
+    if frame.empty:
+        return pd.DataFrame()
+    estimands = frame["estimand"].dropna().astype(str).unique().tolist()
+    show_estimand = len(estimands) > 1
+    rows: list[dict[str, Any]] = []
+    for _, item in frame.iterrows():
+        estimate = _safe_float(item.get("net_benefit"))
+        low = _safe_float(item.get("ci_low"))
+        high = _safe_float(item.get("ci_high"))
+        net = "NA"
+        if np.isfinite(estimate):
+            net = f"{estimate:.4f}"
+            if np.isfinite(low) and np.isfinite(high):
+                net += f" [{low:.4f}, {high:.4f}]"
+        row: dict[str, Any] = {
+            "Strategy": str(item.get("Strategy", "")),
+            "Threshold": f"{_safe_float(item.get('threshold')):.3f}",
+            "Positive class": str(item.get("positive_class_label", "")),
+            "Net benefit (95% CI)": net,
+            "Treat all": f"{_safe_float(item.get('treat_all_net_benefit')):.4f}",
+            "Treat none": f"{_safe_float(item.get('treat_none_net_benefit')):.4f}",
+            "Prevalence": f"{100.0 * _safe_float(item.get('prevalence')):.1f}%",
+        }
+        if show_estimand:
+            estimand = str(item.get("estimand", ""))
+            row["Estimand"] = _ESTIMAND_LABELS.get(estimand, estimand)
+        rows.append(row)
+    out = pd.DataFrame(rows)
+    order = [
+        "Strategy",
+        "Estimand",
+        "Threshold",
+        "Positive class",
+        "Net benefit (95% CI)",
+        "Treat all",
+        "Treat none",
+        "Prevalence",
+    ]
+    return out[[column for column in order if column in out.columns]]
+
+
+def _decision_curve_figure_html(
+    decision_curve: pd.DataFrame,
+    manifest: dict[str, Any],
+    report_dir: Path,
+) -> str:
+    required = {
+        "Strategy",
+        "estimand",
+        "threshold",
+        "net_benefit",
+        "ci_low",
+        "ci_high",
+        "treat_all_net_benefit",
+        "treat_none_net_benefit",
+    }
+    if decision_curve.empty or not required.issubset(decision_curve.columns):
+        return ""
+    frame = decision_curve.copy()
+    for column in (
+        "threshold",
+        "net_benefit",
+        "ci_low",
+        "ci_high",
+        "treat_all_net_benefit",
+        "treat_none_net_benefit",
+    ):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame[np.isfinite(frame["threshold"])].copy()
+    if frame.empty:
+        return ""
+    configured = manifest.get("diagnostic_thresholds", [])
+    thresholds = []
+    if isinstance(configured, list):
+        thresholds = sorted(
+            {
+                float(value)
+                for value in configured
+                if np.isfinite(_safe_float(value)) and 0.0 < float(value) < 1.0
+            }
+        )
+    import matplotlib as mpl
+    import matplotlib.pyplot as plt
+
+    from . import style as _style
+
+    strategy_palette = {
+        "MPMA-E": _style.C_NAVY,
+        "MPMA-B": _style.C_MID,
+    }
+    fallback_palette = (
+        _style.C_DARK,
+        _style.C_BRIGHT,
+        _style.C_SKY,
+        _style.C_TEAL,
+        _style.C_HILITE,
+    )
+    blocks: list[str] = []
+    estimands = frame["estimand"].dropna().astype(str).drop_duplicates().tolist()
+    if not estimands:
+        estimands = [""]
+        frame["estimand"] = ""
+    for index, estimand in enumerate(estimands, start=1):
+        sub = frame[frame["estimand"].astype(str).eq(str(estimand))].copy()
+        if sub.empty:
+            continue
+        strategies = sub["Strategy"].astype(str).drop_duplicates().tolist()
+        fallback_index = 0
+        colors: dict[str, str] = {}
+        for strategy in strategies:
+            if strategy in strategy_palette:
+                colors[strategy] = strategy_palette[strategy]
+            else:
+                colors[strategy] = fallback_palette[
+                    fallback_index % len(fallback_palette)
+                ]
+                fallback_index += 1
+        with mpl.rc_context(_style.RC):
+            fig, ax = plt.subplots(figsize=(_style.COL_W_2, 92 * _style.MM))
+            strategy_lines: dict[str, Any] = {}
+            model_scale: list[np.ndarray] = []
+            for strategy in strategies:
+                group = sub[sub["Strategy"].astype(str).eq(strategy)].sort_values(
+                    "threshold"
+                )
+                x = group["threshold"].to_numpy(dtype=float)
+                y = group["net_benefit"].to_numpy(dtype=float)
+                low = group["ci_low"].to_numpy(dtype=float)
+                high = group["ci_high"].to_numpy(dtype=float)
+                valid = np.isfinite(x) & np.isfinite(y)
+                if not np.any(valid):
+                    continue
+                color = colors[strategy]
+                line = ax.plot(
+                    x[valid],
+                    y[valid],
+                    linewidth=1.0,
+                    color=color,
+                    label=strategy,
+                )[0]
+                strategy_lines[strategy] = line
+                band = np.isfinite(x) & np.isfinite(low) & np.isfinite(high)
+                if np.any(band):
+                    ax.fill_between(
+                        x[band],
+                        low[band],
+                        high[band],
+                        color=color,
+                        alpha=0.14,
+                        linewidth=0.0,
+                    )
+                    model_scale.extend([low[band], high[band]])
+                model_scale.append(y[valid])
+            reference_groups: list[tuple[str, np.ndarray, np.ndarray]] = []
+            reference_upper: list[float] = []
+            for strategy in strategies:
+                group = sub[sub["Strategy"].astype(str).eq(strategy)].sort_values(
+                    "threshold"
+                )
+                x = group["threshold"].to_numpy(dtype=float)
+                y = group["treat_all_net_benefit"].to_numpy(dtype=float)
+                valid = np.isfinite(x) & np.isfinite(y)
+                if np.any(valid):
+                    values = y[valid]
+                    reference_groups.append((strategy, x[valid], values))
+                    reference_upper.append(float(np.max(values)))
+            shared_reference = False
+            if reference_groups:
+                base_x = reference_groups[0][1]
+                base_y = reference_groups[0][2]
+                shared_reference = all(
+                    len(x) == len(base_x)
+                    and np.allclose(x, base_x, atol=1e-12, rtol=1e-12, equal_nan=True)
+                    and np.allclose(y, base_y, atol=1e-10, rtol=1e-10, equal_nan=True)
+                    for _, x, y in reference_groups[1:]
+                )
+                if shared_reference:
+                    ax.plot(
+                        base_x,
+                        base_y,
+                        linestyle="--",
+                        linewidth=0.9,
+                        color=_style.MID,
+                        label="Treat all",
+                    )
+                else:
+                    for strategy, x, y in reference_groups:
+                        ax.plot(
+                            x,
+                            y,
+                            linestyle="--",
+                            linewidth=0.8,
+                            color=colors.get(strategy, _style.MID),
+                            alpha=0.75,
+                            label=f"Treat all ({strategy})",
+                        )
+            ax.axhline(
+                0.0,
+                color=_style.INK,
+                linewidth=0.9,
+                linestyle=":",
+                label="Treat none",
+            )
+            for threshold_index, threshold in enumerate(thresholds):
+                ax.axvline(
+                    threshold,
+                    color=_style.DIM,
+                    linewidth=0.65,
+                    linestyle=(0, (2, 2)),
+                    alpha=0.9,
+                    label="Pre-specified threshold" if threshold_index == 0 else None,
+                )
+            finite_chunks = [
+                values[np.isfinite(values)]
+                for values in model_scale
+                if np.any(np.isfinite(values))
+            ]
+            finite_scale = (
+                np.concatenate(finite_chunks)
+                if finite_chunks
+                else np.asarray([], dtype=float)
+            )
+            if finite_scale.size:
+                lower = min(0.0, float(np.min(finite_scale)))
+                upper = max(
+                    0.0,
+                    float(np.max(finite_scale)),
+                    max(reference_upper) if reference_upper else 0.0,
+                )
+                span = max(upper - lower, 0.05)
+                ax.set_ylim(lower - 0.08 * span, upper + 0.10 * span)
+            xmin = float(np.nanmin(sub["threshold"].to_numpy(dtype=float)))
+            xmax = float(np.nanmax(sub["threshold"].to_numpy(dtype=float)))
+            xspan = max(xmax - xmin, 1e-6)
+            xleft = max(0.0, xmin - 0.02 * xspan)
+            xright = min(1.0, xmax + 0.02 * xspan)
+            if xmin <= 0.02:
+                xleft = 0.0
+            if xmax >= 0.98:
+                xright = 1.0
+            ax.set_xlim(xleft, xright)
+            ymin, _ = ax.get_ylim()
+            clipped_reference = False
+            for strategy, x, y in reference_groups:
+                below = y < ymin
+                if not np.any(below):
+                    continue
+                crossing = np.flatnonzero((y[:-1] >= ymin) & (y[1:] < ymin))
+                if crossing.size:
+                    i = int(crossing[0])
+                    dy = y[i + 1] - y[i]
+                    if np.isfinite(dy) and abs(dy) > 1e-15:
+                        fraction = (ymin - y[i]) / dy
+                        marker_x = x[i] + fraction * (x[i + 1] - x[i])
+                    else:
+                        marker_x = x[i + 1]
+                else:
+                    marker_x = x[int(np.flatnonzero(below)[0])]
+                marker_color = (
+                    _style.MID if shared_reference else colors.get(strategy, _style.MID)
+                )
+                ax.scatter(
+                    [marker_x],
+                    [ymin],
+                    marker="v",
+                    s=14,
+                    facecolor=marker_color,
+                    edgecolor="none",
+                    clip_on=False,
+                    zorder=7,
+                )
+                clipped_reference = True
+            ax.set_xlabel("Threshold probability")
+            ax.set_ylabel("Net benefit")
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.legend(loc="best", ncol=2 if len(strategy_lines) > 1 else 1)
+            fig.tight_layout(pad=0.7)
+            target = report_dir / "figures" / f"decision_curve__{index}.svg"
+            _style.save_svg(fig, target)
+            plt.close(fig)
+        estimand_label = _ESTIMAND_LABELS.get(str(estimand), str(estimand))
+        caption = (
+            "Decision-curve analysis with 95% bootstrap confidence intervals, "
+            "treat-all and treat-none references"
+        )
+        if estimand_label:
+            caption += f" ({estimand_label})"
+        caption += ". The y-axis is scaled to the model net-benefit estimates and confidence intervals"
+        if clipped_reference:
+            caption += "; a downward triangle marks where a treat-all reference continues below the displayed y-range"
+        caption += "."
+        block = _report_module._fig(target, report_dir, caption)
+        if block:
+            blocks.append(block)
+    return "\n".join(blocks)
 
 
 def _html_table(df: pd.DataFrame, *, raw_html_cols: set[str] | None = None) -> str:
@@ -412,7 +904,7 @@ def _probability_semantics_html(manifest: dict[str, Any]) -> str:
     if not excluded:
         return ""
     return (
-        "<p>Brier score, log loss, and calibration summaries are shown for "
+        "<p>Brier score, log loss, calibration, configured probability-threshold diagnostics, and decision-curve analysis are shown only for "
         "probability-valued predictions. Probability-based summaries are not shown for "
         + ", ".join(excluded)
         + ".</p>"
@@ -540,13 +1032,65 @@ def _design_display(manifest: dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _classification_metric_note() -> str:
+def _classification_metric_note(manifest: dict[str, Any], n_classes: int | None) -> str:
     return (
         "<p>ROC-AUC measures how well predicted scores rank classes across decision thresholds. "
         "PR-AUC is trapezoidal area under the empirical precision-recall curve, while average precision (AP) is the recall-increment-weighted precision summary. "
         "MCC is reported on its conventional [-1, 1] scale, while nMCC rescales MCC to [0, 1]. "
         "F1w is support-weighted F1. Precision and recall are macro-averaged across classes. "
         "Balanced accuracy is the mean class-specific recall, whereas accuracy is the overall fraction of correct predictions. Higher values are better for all metrics in this table.</p>"
+    )
+
+
+def _diagnostic_operating_note(manifest: dict[str, Any]) -> str:
+    positive = (
+        str(manifest.get("positive_class_label", "positive")).strip() or "positive"
+    )
+    return (
+        f"<p>Sensitivity, specificity, PPV, and NPV use {html.escape(positive)} as the positive class at the model's ordinary held-out prediction operating point. "
+        "PPV and NPV depend on outcome prevalence and therefore describe the observed evaluation population rather than transport unchanged to populations with different prevalence. "
+        "MCC is shown on [-1, 1] and nMCC on [0, 1]. Confidence intervals use the same protocol-aware subject/cohort bootstrap as the other pooled out-of-fold estimates.</p>"
+    )
+
+
+def _diagnostic_threshold_note(manifest: dict[str, Any]) -> str:
+    positive = (
+        str(manifest.get("positive_class_label", "positive")).strip() or "positive"
+    )
+    return (
+        f"<p>Configured probability thresholds are applied to held-out out-of-fold probabilities for the {html.escape(positive)} class only after model fitting and selection. "
+        "They do not alter training, hyperparameter selection, or the ordinary model-prediction operating point. "
+        "Sensitivity, specificity, PPV, NPV, accuracy, MCC, and nMCC are recomputed at each configured threshold with protocol-aware 95% bootstrap confidence intervals. "
+        "PPV and NPV are prevalence-dependent. PPV or NPV is reported as NA when its denominator is zero in the corresponding estimate or bootstrap replicate.</p>"
+    )
+
+
+def _confusion_note() -> str:
+    return (
+        "<p>Confusion matrices are row-normalized by the observed class. Values in parentheses are raw counts for a single pooled estimand and mean counts when the estimand averages repeats or held-out cohorts. "
+        "Probability-threshold matrices are shown only for explicitly configured binary diagnostic thresholds.</p>"
+    )
+
+
+def _decision_curve_note(manifest: dict[str, Any]) -> str:
+    settings = manifest.get("decision_curve", {})
+    if not isinstance(settings, dict):
+        settings = {}
+    low = _safe_float(settings.get("minimum_threshold"))
+    high = _safe_float(settings.get("maximum_threshold"))
+    points = settings.get("points", "")
+    range_text = ""
+    if np.isfinite(low) and np.isfinite(high):
+        range_text = f" from {low:.3f} to {high:.3f}"
+    try:
+        point_text = f" at {int(points):,} threshold probabilities"
+    except (TypeError, ValueError):
+        point_text = ""
+    return (
+        "<p>Decision-curve analysis evaluates net benefit as TP/N − FP/N × p<sub>t</sub>/(1−p<sub>t</sub>), where p<sub>t</sub> is the threshold probability. "
+        f"The curve is evaluated{html.escape(range_text)}{html.escape(point_text)} and compared with treat-all and treat-none reference strategies. "
+        "Net-benefit confidence intervals use the same protocol-aware cluster bootstrap. Interpretation should be restricted to threshold probabilities that are clinically plausible because the threshold encodes the relative consequence of false-positive and false-negative decisions. "
+        "The full decision curve is displayed below and provided in the downloadable decision-curve table. Pre-specified diagnostic thresholds, when configured, are marked on the figure and summarized in the compact table.</p>"
     )
 
 
@@ -593,6 +1137,12 @@ def _links_html(tables_dir: Path) -> str:
         ("strategy_oof_performance.parquet", "Long-form out-of-fold estimates"),
         ("strategy_oof_calibration.parquet", "Reliability-curve data"),
         ("strategy_oof_pairwise_contrasts.parquet", "Paired out-of-fold contrasts"),
+        (
+            "strategy_oof_threshold_metrics.parquet",
+            "Configured-threshold diagnostic metrics",
+        ),
+        ("strategy_oof_confusion_matrices.parquet", "Confusion matrices"),
+        ("strategy_oof_decision_curve.parquet", "Decision-curve net benefit"),
         ("strategy_oof_statistics_manifest.json", "Out-of-fold methods manifest"),
         ("strategy_oof_coverage.parquet", "Out-of-fold coverage"),
         ("strategy_oof_pairwise_coverage.parquet", "Paired out-of-fold coverage"),
@@ -758,6 +1308,11 @@ def oof_section_html(
     tables_dir = report_dir / "tables"
     performance = _read_table(tables_dir / "strategy_oof_performance.parquet")
     calibration_curve = _read_table(tables_dir / "strategy_oof_calibration.parquet")
+    threshold_metrics = _read_table(
+        tables_dir / "strategy_oof_threshold_metrics.parquet"
+    )
+    confusion = _read_table(tables_dir / "strategy_oof_confusion_matrices.parquet")
+    decision_curve = _read_table(tables_dir / "strategy_oof_decision_curve.parquet")
     contrasts = _read_table(tables_dir / "strategy_oof_pairwise_contrasts.parquet")
     manifest = _read_json(tables_dir / "strategy_oof_statistics_manifest.json")
     if n_classes is None:
@@ -770,9 +1325,16 @@ def oof_section_html(
     if performance.empty:
         return ""
     primary_table = _performance_display(performance)
+    diagnostic_operating_table = _diagnostic_operating_display(performance, n_classes)
     multiclass_table = _multiclass_display(performance, n_classes)
     probability_table = _probability_display(performance, n_classes)
     calibration_table = _calibration_display(performance)
+    threshold_table = _threshold_metrics_display(threshold_metrics)
+    confusion_table = _confusion_display(confusion)
+    decision_curve_table = _decision_curve_display(decision_curve, manifest)
+    decision_curve_figure = _decision_curve_figure_html(
+        decision_curve, manifest, report_dir
+    )
     contrast_table = _contrast_display(contrasts, n_classes)
     design_table = _design_display(manifest)
     level = max(1, min(5, int(heading_level)))
@@ -797,11 +1359,19 @@ def oof_section_html(
         parts.extend(
             [
                 f'<{subheading} id="{prefix}oof-primary-performance">Performance</{subheading}>',
-                _classification_metric_note(),
+                _classification_metric_note(manifest, n_classes),
                 _html_table(
                     primary_table,
                     raw_html_cols=set(primary_table.columns) - {"Strategy", "Estimand"},
                 ),
+            ]
+        )
+    if not diagnostic_operating_table.empty:
+        parts.extend(
+            [
+                f'<{subheading} id="{prefix}oof-diagnostic-operating">Binary diagnostic operating point</{subheading}>',
+                _diagnostic_operating_note(manifest),
+                _html_table(diagnostic_operating_table),
             ]
         )
     if not multiclass_table.empty:
@@ -844,6 +1414,37 @@ def oof_section_html(
                 "<code>strategy_oof_calibration.parquet</code>.</p>",
             ]
         )
+    if not confusion_table.empty:
+        parts.extend(
+            [
+                f'<{subheading} id="{prefix}oof-confusion">Confusion matrices</{subheading}>',
+                _confusion_note(),
+                _html_table(confusion_table),
+            ]
+        )
+    if not threshold_table.empty:
+        parts.extend(
+            [
+                f'<{subheading} id="{prefix}oof-diagnostic-thresholds">Configured diagnostic thresholds</{subheading}>',
+                _diagnostic_threshold_note(manifest),
+                _html_table(threshold_table),
+            ]
+        )
+    if not decision_curve.empty:
+        parts.extend(
+            [
+                f'<{subheading} id="{prefix}oof-decision-curve">Decision-curve analysis</{subheading}>',
+                _decision_curve_note(manifest),
+            ]
+        )
+        if decision_curve_figure:
+            parts.append(decision_curve_figure)
+        if not decision_curve_table.empty:
+            parts.append(_html_table(decision_curve_table))
+        else:
+            parts.append(
+                "<p>No diagnostic probability thresholds were configured, so no compact threshold-specific net-benefit table is shown. The complete numerical curve remains available in <code>strategy_oof_decision_curve.parquet</code>.</p>"
+            )
     if include_downloads:
         parts.append(_links_html(tables_dir))
     parts.append(_SECTION_END)
@@ -948,7 +1549,12 @@ def _terminal_oof_summary(report_dir: Path) -> None:
         "ROC-AUC",
         "PR-AUC",
         "Average precision",
+        "MCC",
         "nMCC",
+        "Sensitivity",
+        "Specificity",
+        "PPV",
+        "NPV",
         "Brier score",
         "Log loss",
     ]
@@ -1040,6 +1646,12 @@ def write_report(sweep: Any) -> dict[str, Path]:
         "strategy_oof_calibration": tables_dir / "strategy_oof_calibration.parquet",
         "strategy_oof_pairwise_contrasts": tables_dir
         / "strategy_oof_pairwise_contrasts.parquet",
+        "strategy_oof_threshold_metrics": tables_dir
+        / "strategy_oof_threshold_metrics.parquet",
+        "strategy_oof_confusion_matrices": tables_dir
+        / "strategy_oof_confusion_matrices.parquet",
+        "strategy_oof_decision_curve": tables_dir
+        / "strategy_oof_decision_curve.parquet",
         "strategy_oof_statistics_manifest": tables_dir
         / "strategy_oof_statistics_manifest.json",
         "strategy_oof_coverage": tables_dir / "strategy_oof_coverage.parquet",

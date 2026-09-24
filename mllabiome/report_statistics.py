@@ -18,6 +18,15 @@ from .storage import read_table, resolve_table_path, table_exists, write_table
 from .utils import dump_json_standard
 
 DISPLAY_METRICS = ("AUC", "PR_AUC", "AP", "MCC", "nMCC", "F1w", "Precision", "Recall")
+DIAGNOSTIC_METRICS = (
+    "Sensitivity",
+    "Specificity",
+    "PPV",
+    "NPV",
+    "Accuracy",
+    "MCC",
+    "nMCC",
+)
 OOF_METRIC_ORDER = (
     "AUC",
     "AUC_macro",
@@ -33,6 +42,10 @@ OOF_METRIC_ORDER = (
     "F1_macro",
     "Precision",
     "Recall",
+    "Sensitivity",
+    "Specificity",
+    "PPV",
+    "NPV",
     "BalAcc",
     "Accuracy",
     "Brier",
@@ -57,6 +70,10 @@ _OOF_CONTRAST_METRICS = (
     "F1_macro",
     "Precision",
     "Recall",
+    "Sensitivity",
+    "Specificity",
+    "PPV",
+    "NPV",
     "BalAcc",
     "Accuracy",
     "Brier",
@@ -77,6 +94,10 @@ METRIC_LABELS = {
     "F1w": "F1w",
     "Precision": "Precision",
     "Recall": "Recall",
+    "Sensitivity": "Sensitivity",
+    "Specificity": "Specificity",
+    "PPV": "PPV",
+    "NPV": "NPV",
     "log_loss": "Log loss",
     "brier": "Brier score",
 }
@@ -815,6 +836,10 @@ def _fast_classification_metrics(
         "F1_macro": float("nan"),
         "Precision": float("nan"),
         "Recall": float("nan"),
+        "Sensitivity": float("nan"),
+        "Specificity": float("nan"),
+        "PPV": float("nan"),
+        "NPV": float("nan"),
         "BalAcc": float("nan"),
         "Accuracy": float("nan"),
     }
@@ -864,6 +889,14 @@ def _fast_classification_metrics(
     out["MCC"] = float(mcc)
     out["nMCC"] = float((mcc + 1.0) / 2.0)
     if n_classes == 2:
+        tn = float(matrix[0, 0])
+        fp = float(matrix[0, 1])
+        fn = float(matrix[1, 0])
+        tp = float(matrix[1, 1])
+        out["Sensitivity"] = tp / (tp + fn) if tp + fn > 0 else float("nan")
+        out["Specificity"] = tn / (tn + fp) if tn + fp > 0 else float("nan")
+        out["PPV"] = tp / (tp + fp) if tp + fp > 0 else float("nan")
+        out["NPV"] = tn / (tn + fn) if tn + fn > 0 else float("nan")
         roc_auc, pr_auc, ap = _binary_auc_pr_auc_ap((y == 1).astype(int), values[:, 1])
         out["AUC"] = roc_auc
         out["PR_AUC"] = pr_auc
@@ -1091,6 +1124,669 @@ def _reliability_rows(
                     "observed_frequency": float(np.mean(target[mask])),
                     "bin_lower": float(edges[bin_index]),
                     "bin_upper": float(edges[bin_index + 1]),
+                }
+            )
+    return rows
+
+
+def _validated_diagnostic_thresholds(values: Any) -> tuple[float, ...]:
+    if values is None:
+        return ()
+    try:
+        raw = tuple(values)
+    except TypeError as exc:
+        raise TypeError(
+            "diagnostic_thresholds must be an iterable of probabilities."
+        ) from exc
+    thresholds: list[float] = []
+    for value in raw:
+        try:
+            threshold = float(value)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                "diagnostic_thresholds must contain numeric probabilities."
+            ) from exc
+        if not np.isfinite(threshold) or not 0.0 < threshold < 1.0:
+            raise ValueError(
+                "diagnostic_thresholds must contain finite probabilities strictly between 0 and 1."
+            )
+        if not any(abs(threshold - existing) <= 1e-12 for existing in thresholds):
+            thresholds.append(threshold)
+    return tuple(sorted(thresholds))
+
+
+def _decision_curve_grid(
+    minimum: float,
+    maximum: float,
+    points: int,
+) -> np.ndarray:
+    low = float(minimum)
+    high = float(maximum)
+    count = int(points)
+    if not np.isfinite(low) or not np.isfinite(high):
+        raise ValueError("Decision-curve threshold bounds must be finite.")
+    if not 0.0 < low < high < 1.0:
+        raise ValueError(
+            "Decision-curve thresholds must satisfy 0 < minimum < maximum < 1."
+        )
+    if count < 2:
+        raise ValueError("decision_curve_points must be at least 2.")
+    return np.linspace(low, high, count, dtype=float)
+
+
+def _binary_threshold_counts(
+    frame: pd.DataFrame,
+    thresholds: np.ndarray,
+) -> dict[str, np.ndarray]:
+    pcols = _probability_columns(frame)
+    if len(pcols) != 2:
+        raise ValueError(
+            "Binary diagnostic thresholds require exactly two probability columns."
+        )
+    y = frame["y_true"].astype(int).to_numpy()
+    score = frame[pcols[1]].to_numpy(dtype=float)
+    thresholds = np.asarray(thresholds, dtype=float)
+    positive_scores = np.sort(score[y == 1])
+    negative_scores = np.sort(score[y == 0])
+    tp = len(positive_scores) - np.searchsorted(
+        positive_scores, thresholds, side="left"
+    )
+    fp = len(negative_scores) - np.searchsorted(
+        negative_scores, thresholds, side="left"
+    )
+    fn = len(positive_scores) - tp
+    tn = len(negative_scores) - fp
+    return {
+        "TN": tn.astype(float),
+        "FP": fp.astype(float),
+        "FN": fn.astype(float),
+        "TP": tp.astype(float),
+    }
+
+
+def _safe_ratio_array(numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
+    numerator = np.asarray(numerator, dtype=float)
+    denominator = np.asarray(denominator, dtype=float)
+    return np.divide(
+        numerator,
+        denominator,
+        out=np.full_like(numerator, np.nan, dtype=float),
+        where=denominator > 0.0,
+    )
+
+
+def _diagnostic_values_from_counts(
+    counts: dict[str, np.ndarray],
+) -> dict[str, np.ndarray]:
+    tn = counts["TN"]
+    fp = counts["FP"]
+    fn = counts["FN"]
+    tp = counts["TP"]
+    total = tn + fp + fn + tp
+    numerator = tp * tn - fp * fn
+    denominator = np.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    mcc = np.divide(
+        numerator,
+        denominator,
+        out=np.zeros_like(numerator, dtype=float),
+        where=denominator > 0.0,
+    )
+    mcc = np.where(total > 0.0, mcc, np.nan)
+    return {
+        "Sensitivity": _safe_ratio_array(tp, tp + fn),
+        "Specificity": _safe_ratio_array(tn, tn + fp),
+        "PPV": _safe_ratio_array(tp, tp + fp),
+        "NPV": _safe_ratio_array(tn, tn + fn),
+        "Accuracy": _safe_ratio_array(tp + tn, total),
+        "MCC": mcc,
+        "nMCC": (mcc + 1.0) / 2.0,
+    }
+
+
+def _threshold_diagnostic_values(
+    frame: pd.DataFrame,
+    thresholds: np.ndarray,
+) -> dict[str, np.ndarray]:
+    return _diagnostic_values_from_counts(_binary_threshold_counts(frame, thresholds))
+
+
+def _nanmean_vectors(values: list[np.ndarray], size: int) -> np.ndarray:
+    if not values:
+        return np.full(int(size), np.nan, dtype=float)
+    stacked = np.vstack(values).astype(float)
+    valid = np.isfinite(stacked)
+    count = valid.sum(axis=0)
+    total = np.where(valid, stacked, 0.0).sum(axis=0)
+    return np.divide(
+        total,
+        count,
+        out=np.full(int(size), np.nan, dtype=float),
+        where=count > 0,
+    )
+
+
+def _mean_diagnostic_vectors(
+    values: list[dict[str, np.ndarray]],
+    size: int,
+) -> dict[str, np.ndarray]:
+    return {
+        metric: _nanmean_vectors([value[metric] for value in values], size)
+        for metric in DIAGNOSTIC_METRICS
+    }
+
+
+def _threshold_point_estimands(
+    frame: pd.DataFrame,
+    protocol: str,
+    thresholds: np.ndarray,
+) -> dict[str, dict[str, np.ndarray]]:
+    protocol_key = str(protocol).lower()
+    if protocol_key in _LODO_PROTOCOLS:
+        cohort_values = [
+            _threshold_diagnostic_values(group, thresholds)
+            for _, group in frame.groupby("_cluster", sort=True)
+        ]
+        return {
+            "pooled_sample_weighted": _threshold_diagnostic_values(frame, thresholds),
+            "cohort_macro_equal_weight": _mean_diagnostic_vectors(
+                cohort_values, len(thresholds)
+            ),
+        }
+    repeat_values = [
+        _threshold_diagnostic_values(group, thresholds)
+        for _, group in frame.groupby("_repeat", sort=True)
+    ]
+    return {
+        "mean_repeat_pooled_oof": _mean_diagnostic_vectors(
+            repeat_values, len(thresholds)
+        )
+    }
+
+
+def _bootstrap_threshold_estimands(
+    frame: pd.DataFrame,
+    protocol: str,
+    thresholds: np.ndarray,
+    n_bootstrap: int,
+    rng: np.random.Generator,
+) -> dict[str, dict[str, np.ndarray]]:
+    protocol_key = str(protocol).lower()
+    names = (
+        ("pooled_sample_weighted", "cohort_macro_equal_weight")
+        if protocol_key in _LODO_PROTOCOLS
+        else ("mean_repeat_pooled_oof",)
+    )
+    storage = {
+        name: {
+            metric: np.full((int(n_bootstrap), len(thresholds)), np.nan, dtype=float)
+            for metric in DIAGNOSTIC_METRICS
+        }
+        for name in names
+    }
+    if frame.empty or int(n_bootstrap) <= 0:
+        return storage
+    if protocol_key in _LODO_PROTOCOLS:
+        groups = [
+            group.reset_index(drop=True)
+            for _, group in frame.groupby("_cluster", sort=True)
+        ]
+        for bootstrap_index in range(int(n_bootstrap)):
+            chosen = rng.integers(0, len(groups), size=len(groups))
+            sampled_groups = [
+                _resample_subjects(groups[int(index)], rng) for index in chosen
+            ]
+            pooled = _threshold_diagnostic_values(
+                pd.concat(sampled_groups, ignore_index=True), thresholds
+            )
+            macro = _mean_diagnostic_vectors(
+                [
+                    _threshold_diagnostic_values(group, thresholds)
+                    for group in sampled_groups
+                ],
+                len(thresholds),
+            )
+            for metric in DIAGNOSTIC_METRICS:
+                storage["pooled_sample_weighted"][metric][bootstrap_index] = pooled[
+                    metric
+                ]
+                storage["cohort_macro_equal_weight"][metric][bootstrap_index] = macro[
+                    metric
+                ]
+        return storage
+    for bootstrap_index in range(int(n_bootstrap)):
+        sampled = _resample_subjects(frame, rng)
+        values = [
+            _threshold_diagnostic_values(group, thresholds)
+            for _, group in sampled.groupby("_repeat", sort=True)
+        ]
+        averaged = _mean_diagnostic_vectors(values, len(thresholds))
+        for metric in DIAGNOSTIC_METRICS:
+            storage["mean_repeat_pooled_oof"][metric][bootstrap_index] = averaged[
+                metric
+            ]
+    return storage
+
+
+def _threshold_metric_rows(
+    strategy: str,
+    frame: pd.DataFrame,
+    protocol: str,
+    thresholds: tuple[float, ...],
+    n_bootstrap: int,
+    random_state: int,
+    positive_class_label: str,
+) -> list[dict[str, Any]]:
+    if not thresholds:
+        return []
+    threshold_array = np.asarray(thresholds, dtype=float)
+    point = _threshold_point_estimands(frame, protocol, threshold_array)
+    boot = _bootstrap_threshold_estimands(
+        frame,
+        protocol,
+        threshold_array,
+        n_bootstrap,
+        np.random.default_rng(
+            _stable_seed(random_state, "diagnostic_threshold", strategy)
+        ),
+    )
+    rows: list[dict[str, Any]] = []
+    for estimand, values in point.items():
+        for threshold_index, threshold in enumerate(threshold_array):
+            for metric in DIAGNOSTIC_METRICS:
+                estimate = float(values[metric][threshold_index])
+                if not np.isfinite(estimate):
+                    continue
+                samples = boot[estimand][metric][:, threshold_index]
+                samples = samples[np.isfinite(samples)]
+                low = high = np.nan
+                if len(samples):
+                    low, high = np.quantile(samples, [0.025, 0.975])
+                rows.append(
+                    {
+                        "Strategy": strategy,
+                        "estimand": estimand,
+                        "threshold": float(threshold),
+                        "positive_class_index": 1,
+                        "positive_class_label": positive_class_label,
+                        "metric": metric,
+                        "estimate": estimate,
+                        "ci_low": float(low) if np.isfinite(low) else np.nan,
+                        "ci_high": float(high) if np.isfinite(high) else np.nan,
+                        "n_bootstrap_valid": int(len(samples)),
+                        "n_rows": int(len(frame)),
+                    }
+                )
+    return rows
+
+
+def _binary_confusion(
+    frame: pd.DataFrame,
+    threshold: float | None,
+) -> np.ndarray:
+    y = frame["y_true"].astype(int).to_numpy()
+    if threshold is None:
+        pred = frame["y_pred"].astype(int).to_numpy()
+    else:
+        pcols = _probability_columns(frame)
+        pred = (frame[pcols[1]].to_numpy(dtype=float) >= float(threshold)).astype(int)
+    return np.bincount(y * 2 + pred, minlength=4).reshape(2, 2).astype(float)
+
+
+def _confusion_components(matrices: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    if not matrices:
+        return np.empty((0, 0), dtype=float), np.empty((0, 0), dtype=float)
+    mean_count = np.mean(np.stack(matrices, axis=0), axis=0)
+    fractions = []
+    for matrix in matrices:
+        row_total = matrix.sum(axis=1, keepdims=True)
+        fractions.append(
+            np.divide(
+                matrix,
+                row_total,
+                out=np.full_like(matrix, np.nan, dtype=float),
+                where=row_total > 0.0,
+            )
+        )
+    stacked = np.stack(fractions, axis=0)
+    valid = np.isfinite(stacked)
+    count = valid.sum(axis=0)
+    total = np.where(valid, stacked, 0.0).sum(axis=0)
+    mean_fraction = np.divide(
+        total,
+        count,
+        out=np.full_like(mean_count, np.nan, dtype=float),
+        where=count > 0,
+    )
+    return mean_count, mean_fraction
+
+
+def _confusion_estimands(
+    frame: pd.DataFrame,
+    protocol: str,
+    threshold: float | None,
+) -> dict[str, tuple[np.ndarray, np.ndarray, int]]:
+    protocol_key = str(protocol).lower()
+    if protocol_key in _LODO_PROTOCOLS:
+        pooled = _binary_confusion(frame, threshold)
+        pooled_total = pooled.sum(axis=1, keepdims=True)
+        pooled_fraction = np.divide(
+            pooled,
+            pooled_total,
+            out=np.full_like(pooled, np.nan, dtype=float),
+            where=pooled_total > 0.0,
+        )
+        cohorts = [
+            _binary_confusion(group, threshold)
+            for _, group in frame.groupby("_cluster", sort=True)
+        ]
+        macro_count, macro_fraction = _confusion_components(cohorts)
+        return {
+            "pooled_sample_weighted": (pooled, pooled_fraction, 1),
+            "cohort_macro_equal_weight": (
+                macro_count,
+                macro_fraction,
+                len(cohorts),
+            ),
+        }
+    repeats = [
+        _binary_confusion(group, threshold)
+        for _, group in frame.groupby("_repeat", sort=True)
+    ]
+    mean_count, mean_fraction = _confusion_components(repeats)
+    return {"mean_repeat_pooled_oof": (mean_count, mean_fraction, len(repeats))}
+
+
+def _confusion_rows(
+    strategy: str,
+    frame: pd.DataFrame,
+    protocol: str,
+    thresholds: tuple[float, ...],
+    class_labels: tuple[str, str],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    specifications: list[tuple[str, float | None]] = [
+        ("probability_threshold", value) for value in thresholds
+    ]
+    for threshold_type, threshold in specifications:
+        estimands = _confusion_estimands(frame, protocol, threshold)
+        for estimand, (counts, fractions, n_units) in estimands.items():
+            for actual in range(2):
+                for predicted in range(2):
+                    rows.append(
+                        {
+                            "Strategy": strategy,
+                            "estimand": estimand,
+                            "threshold_type": threshold_type,
+                            "threshold": np.nan
+                            if threshold is None
+                            else float(threshold),
+                            "positive_class_index": 1,
+                            "positive_class_label": class_labels[1],
+                            "actual_class_index": actual,
+                            "actual_class_label": class_labels[actual],
+                            "predicted_class_index": predicted,
+                            "predicted_class_label": class_labels[predicted],
+                            "count_estimate": float(counts[actual, predicted]),
+                            "row_fraction": float(fractions[actual, predicted]),
+                            "n_averaged_units": int(n_units),
+                        }
+                    )
+    return rows
+
+
+def _operating_confusion_matrix(
+    frame: pd.DataFrame,
+    n_classes: int,
+) -> np.ndarray:
+    y = frame["y_true"].astype(int).to_numpy()
+    pred = frame["y_pred"].astype(int).to_numpy()
+    return (
+        np.bincount(
+            y * int(n_classes) + pred,
+            minlength=int(n_classes) * int(n_classes),
+        )
+        .reshape(int(n_classes), int(n_classes))
+        .astype(float)
+    )
+
+
+def _operating_confusion_estimands(
+    frame: pd.DataFrame,
+    protocol: str,
+    n_classes: int,
+) -> dict[str, tuple[np.ndarray, np.ndarray, int]]:
+    protocol_key = str(protocol).lower()
+    if protocol_key in _LODO_PROTOCOLS:
+        pooled = _operating_confusion_matrix(frame, n_classes)
+        pooled_total = pooled.sum(axis=1, keepdims=True)
+        pooled_fraction = np.divide(
+            pooled,
+            pooled_total,
+            out=np.full_like(pooled, np.nan, dtype=float),
+            where=pooled_total > 0.0,
+        )
+        cohorts = [
+            _operating_confusion_matrix(group, n_classes)
+            for _, group in frame.groupby("_cluster", sort=True)
+        ]
+        macro_count, macro_fraction = _confusion_components(cohorts)
+        return {
+            "pooled_sample_weighted": (pooled, pooled_fraction, 1),
+            "cohort_macro_equal_weight": (
+                macro_count,
+                macro_fraction,
+                len(cohorts),
+            ),
+        }
+    repeats = [
+        _operating_confusion_matrix(group, n_classes)
+        for _, group in frame.groupby("_repeat", sort=True)
+    ]
+    mean_count, mean_fraction = _confusion_components(repeats)
+    return {"mean_repeat_pooled_oof": (mean_count, mean_fraction, len(repeats))}
+
+
+def _operating_confusion_rows(
+    strategy: str,
+    frame: pd.DataFrame,
+    protocol: str,
+    class_labels: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    n_classes = len(class_labels)
+    estimands = _operating_confusion_estimands(frame, protocol, n_classes)
+    for estimand, (counts, fractions, n_units) in estimands.items():
+        for actual in range(n_classes):
+            for predicted in range(n_classes):
+                rows.append(
+                    {
+                        "Strategy": strategy,
+                        "estimand": estimand,
+                        "threshold_type": "model_prediction",
+                        "threshold": np.nan,
+                        "positive_class_index": 1 if n_classes == 2 else np.nan,
+                        "positive_class_label": class_labels[1]
+                        if n_classes == 2
+                        else "",
+                        "actual_class_index": actual,
+                        "actual_class_label": class_labels[actual],
+                        "predicted_class_index": predicted,
+                        "predicted_class_label": class_labels[predicted],
+                        "count_estimate": float(counts[actual, predicted]),
+                        "row_fraction": float(fractions[actual, predicted]),
+                        "n_averaged_units": int(n_units),
+                    }
+                )
+    return rows
+
+
+def _decision_curve_values(
+    frame: pd.DataFrame,
+    thresholds: np.ndarray,
+) -> dict[str, np.ndarray]:
+    counts = _binary_threshold_counts(frame, thresholds)
+    tn = counts["TN"]
+    fp = counts["FP"]
+    fn = counts["FN"]
+    tp = counts["TP"]
+    total = tn + fp + fn + tp
+    prevalence = _safe_ratio_array(tp + fn, total)
+    odds = thresholds / (1.0 - thresholds)
+    net_benefit = _safe_ratio_array(tp, total) - _safe_ratio_array(fp, total) * odds
+    treat_all = prevalence - (1.0 - prevalence) * odds
+    standardized = np.divide(
+        net_benefit,
+        prevalence,
+        out=np.full_like(net_benefit, np.nan, dtype=float),
+        where=prevalence > 0.0,
+    )
+    return {
+        "net_benefit": net_benefit,
+        "treat_all_net_benefit": treat_all,
+        "treat_none_net_benefit": np.zeros_like(net_benefit),
+        "standardized_net_benefit": standardized,
+        "prevalence": prevalence,
+    }
+
+
+def _mean_decision_vectors(
+    values: list[dict[str, np.ndarray]],
+    size: int,
+) -> dict[str, np.ndarray]:
+    names = (
+        "net_benefit",
+        "treat_all_net_benefit",
+        "treat_none_net_benefit",
+        "standardized_net_benefit",
+        "prevalence",
+    )
+    return {
+        name: _nanmean_vectors([value[name] for value in values], size)
+        for name in names
+    }
+
+
+def _decision_curve_point_estimands(
+    frame: pd.DataFrame,
+    protocol: str,
+    thresholds: np.ndarray,
+) -> dict[str, dict[str, np.ndarray]]:
+    protocol_key = str(protocol).lower()
+    if protocol_key in _LODO_PROTOCOLS:
+        cohort_values = [
+            _decision_curve_values(group, thresholds)
+            for _, group in frame.groupby("_cluster", sort=True)
+        ]
+        return {
+            "pooled_sample_weighted": _decision_curve_values(frame, thresholds),
+            "cohort_macro_equal_weight": _mean_decision_vectors(
+                cohort_values, len(thresholds)
+            ),
+        }
+    repeat_values = [
+        _decision_curve_values(group, thresholds)
+        for _, group in frame.groupby("_repeat", sort=True)
+    ]
+    return {
+        "mean_repeat_pooled_oof": _mean_decision_vectors(repeat_values, len(thresholds))
+    }
+
+
+def _bootstrap_decision_curve(
+    frame: pd.DataFrame,
+    protocol: str,
+    thresholds: np.ndarray,
+    n_bootstrap: int,
+    rng: np.random.Generator,
+) -> dict[str, np.ndarray]:
+    protocol_key = str(protocol).lower()
+    names = (
+        ("pooled_sample_weighted", "cohort_macro_equal_weight")
+        if protocol_key in _LODO_PROTOCOLS
+        else ("mean_repeat_pooled_oof",)
+    )
+    storage = {
+        name: np.full((int(n_bootstrap), len(thresholds)), np.nan, dtype=float)
+        for name in names
+    }
+    if frame.empty or int(n_bootstrap) <= 0:
+        return storage
+    if protocol_key in _LODO_PROTOCOLS:
+        groups = [
+            group.reset_index(drop=True)
+            for _, group in frame.groupby("_cluster", sort=True)
+        ]
+        for bootstrap_index in range(int(n_bootstrap)):
+            chosen = rng.integers(0, len(groups), size=len(groups))
+            sampled_groups = [
+                _resample_subjects(groups[int(index)], rng) for index in chosen
+            ]
+            pooled = _decision_curve_values(
+                pd.concat(sampled_groups, ignore_index=True), thresholds
+            )
+            macro = _mean_decision_vectors(
+                [_decision_curve_values(group, thresholds) for group in sampled_groups],
+                len(thresholds),
+            )
+            storage["pooled_sample_weighted"][bootstrap_index] = pooled["net_benefit"]
+            storage["cohort_macro_equal_weight"][bootstrap_index] = macro["net_benefit"]
+        return storage
+    for bootstrap_index in range(int(n_bootstrap)):
+        sampled = _resample_subjects(frame, rng)
+        values = [
+            _decision_curve_values(group, thresholds)
+            for _, group in sampled.groupby("_repeat", sort=True)
+        ]
+        averaged = _mean_decision_vectors(values, len(thresholds))
+        storage["mean_repeat_pooled_oof"][bootstrap_index] = averaged["net_benefit"]
+    return storage
+
+
+def _decision_curve_rows(
+    strategy: str,
+    frame: pd.DataFrame,
+    protocol: str,
+    thresholds: np.ndarray,
+    n_bootstrap: int,
+    random_state: int,
+    positive_class_label: str,
+) -> list[dict[str, Any]]:
+    point = _decision_curve_point_estimands(frame, protocol, thresholds)
+    boot = _bootstrap_decision_curve(
+        frame,
+        protocol,
+        thresholds,
+        n_bootstrap,
+        np.random.default_rng(_stable_seed(random_state, "decision_curve", strategy)),
+    )
+    rows: list[dict[str, Any]] = []
+    for estimand, values in point.items():
+        for threshold_index, threshold in enumerate(thresholds):
+            samples = boot[estimand][:, threshold_index]
+            samples = samples[np.isfinite(samples)]
+            low = high = np.nan
+            if len(samples):
+                low, high = np.quantile(samples, [0.025, 0.975])
+            rows.append(
+                {
+                    "Strategy": strategy,
+                    "estimand": estimand,
+                    "threshold": float(threshold),
+                    "positive_class_index": 1,
+                    "positive_class_label": positive_class_label,
+                    "net_benefit": float(values["net_benefit"][threshold_index]),
+                    "ci_low": float(low) if np.isfinite(low) else np.nan,
+                    "ci_high": float(high) if np.isfinite(high) else np.nan,
+                    "treat_all_net_benefit": float(
+                        values["treat_all_net_benefit"][threshold_index]
+                    ),
+                    "treat_none_net_benefit": 0.0,
+                    "standardized_net_benefit": float(
+                        values["standardized_net_benefit"][threshold_index]
+                    ),
+                    "prevalence": float(values["prevalence"][threshold_index]),
+                    "n_bootstrap_valid": int(len(samples)),
+                    "n_rows": int(len(frame)),
                 }
             )
     return rows
@@ -1401,22 +2097,36 @@ def _run_oof_statistics(
     n_bootstrap: int,
     random_state: int,
     calibration_bins: int,
+    diagnostic_thresholds: tuple[float, ...],
+    decision_curve_thresholds: np.ndarray,
 ) -> dict[str, Any]:
     prepared: dict[str, pd.DataFrame] = {}
     semantics: dict[str, dict[str, Any]] = {}
     design: dict[str, dict[str, int]] = {}
     performance_rows: list[dict[str, Any]] = []
     calibration_rows: list[dict[str, Any]] = []
+    threshold_rows: list[dict[str, Any]] = []
+    confusion_rows: list[dict[str, Any]] = []
+    decision_curve_rows: list[dict[str, Any]] = []
     coverage_rows: list[dict[str, Any]] = []
+    class_labels: tuple[str, ...] = ()
     n_classes = 0
     for strategy, frame in frames.items():
         current = _prepare_oof_frame(frame, protocol)
         if current.empty:
             continue
+        current_pcols = _probability_columns(current)
+        current_labels = tuple(column[len("proba_") :] for column in current_pcols)
+        if class_labels and current_labels != class_labels:
+            raise ValueError(
+                "Displayed strategies do not share the same probability-column class order."
+            )
+        class_labels = current_labels
+        current_n_classes = len(current_pcols)
         prepared[strategy] = current
         semantics[strategy] = _probability_semantics(current)
         design[strategy] = _oof_design(current, protocol)
-        n_classes = max(n_classes, len(_probability_columns(current)))
+        n_classes = max(n_classes, current_n_classes)
         probability_valid = bool(semantics[strategy].get("valid", False))
         performance_rows.extend(
             _performance_rows(
@@ -1436,6 +2146,41 @@ def _run_oof_statistics(
                 calibration_bins,
             )
         )
+        confusion_rows.extend(
+            _operating_confusion_rows(strategy, current, protocol, current_labels)
+        )
+        if current_n_classes == 2 and probability_valid:
+            threshold_rows.extend(
+                _threshold_metric_rows(
+                    strategy,
+                    current,
+                    protocol,
+                    diagnostic_thresholds,
+                    n_bootstrap,
+                    random_state,
+                    current_labels[1],
+                )
+            )
+            confusion_rows.extend(
+                _confusion_rows(
+                    strategy,
+                    current,
+                    protocol,
+                    diagnostic_thresholds,
+                    (current_labels[0], current_labels[1]),
+                )
+            )
+            decision_curve_rows.extend(
+                _decision_curve_rows(
+                    strategy,
+                    current,
+                    protocol,
+                    decision_curve_thresholds,
+                    n_bootstrap,
+                    random_state,
+                    current_labels[1],
+                )
+            )
         coverage_rows.append(_coverage_row(strategy, current, protocol))
     contrasts, pairwise_coverage = _paired_contrast_rows(
         prepared,
@@ -1444,16 +2189,19 @@ def _run_oof_statistics(
         n_bootstrap,
         random_state,
     )
-    performance = pd.DataFrame(performance_rows)
     return {
-        "performance": performance,
+        "performance": pd.DataFrame(performance_rows),
         "calibration": pd.DataFrame(calibration_rows),
+        "threshold_metrics": pd.DataFrame(threshold_rows),
+        "confusion_matrices": pd.DataFrame(confusion_rows),
+        "decision_curve": pd.DataFrame(decision_curve_rows),
         "contrasts": contrasts,
         "coverage": pd.DataFrame(coverage_rows),
         "pairwise_coverage": pairwise_coverage,
         "probability_semantics": semantics,
         "observed_oof_design": design,
         "n_classes": int(n_classes),
+        "class_labels": list(class_labels),
     }
 
 
@@ -1510,6 +2258,8 @@ def _statistics_fingerprint(
     random_state: int,
     selection_metric: str,
     calibration_bins: int,
+    diagnostic_thresholds: tuple[float, ...],
+    decision_curve_thresholds: np.ndarray,
 ) -> str:
     relevant_rows = []
     for row in strategy_rows:
@@ -1546,8 +2296,12 @@ def _statistics_fingerprint(
         "display_metrics": list(DISPLAY_METRICS),
         "oof_metrics": list(OOF_METRIC_ORDER),
         "calibration_bins": int(calibration_bins),
+        "diagnostic_thresholds": list(diagnostic_thresholds),
+        "decision_curve_thresholds": [
+            float(value) for value in decision_curve_thresholds
+        ],
         "files": [_file_signature(path) for path in paths],
-        "schema_version": 8,
+        "schema_version": 9,
     }
     text = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -1571,6 +2325,9 @@ def _cached_result(
     oof_manifest_path = tables / "strategy_oof_statistics_manifest.json"
     oof_coverage_path = tables / "strategy_oof_coverage.parquet"
     oof_pairwise_coverage_path = tables / "strategy_oof_pairwise_coverage.parquet"
+    oof_threshold_metrics_path = tables / "strategy_oof_threshold_metrics.parquet"
+    oof_confusion_matrices_path = tables / "strategy_oof_confusion_matrices.parquet"
+    oof_decision_curve_path = tables / "strategy_oof_decision_curve.parquet"
     required = (
         unit_path,
         summary_path,
@@ -1581,6 +2338,9 @@ def _cached_result(
         oof_manifest_path,
         oof_coverage_path,
         oof_pairwise_coverage_path,
+        oof_threshold_metrics_path,
+        oof_confusion_matrices_path,
+        oof_decision_curve_path,
     )
     if any(not table_exists(path) for path in required):
         return None
@@ -1591,12 +2351,18 @@ def _cached_result(
         "oof_performance": _read_table(oof_performance_path),
         "oof_calibration": _read_table(oof_calibration_path),
         "oof_contrasts": _read_table(oof_contrasts_path),
+        "oof_threshold_metrics": _read_table(oof_threshold_metrics_path),
+        "oof_confusion_matrices": _read_table(oof_confusion_matrices_path),
+        "oof_decision_curve": _read_table(oof_decision_curve_path),
         "unit_metrics_path": unit_path,
         "summary_path": summary_path,
         "pairwise_path": pairwise_path,
         "oof_performance_path": oof_performance_path,
         "oof_calibration_path": oof_calibration_path,
         "oof_contrasts_path": oof_contrasts_path,
+        "oof_threshold_metrics_path": oof_threshold_metrics_path,
+        "oof_confusion_matrices_path": oof_confusion_matrices_path,
+        "oof_decision_curve_path": oof_decision_curve_path,
         "oof_manifest_path": oof_manifest_path,
         "oof_coverage_path": oof_coverage_path,
         "oof_pairwise_coverage_path": oof_pairwise_coverage_path,
@@ -1615,8 +2381,27 @@ def run_report_statistics(
     *,
     selection_metric: str | None = None,
     calibration_bins: int = 10,
+    diagnostic_thresholds: Any = (),
+    decision_curve_min_threshold: float = 0.01,
+    decision_curve_max_threshold: float = 0.99,
+    decision_curve_points: int = 99,
 ) -> dict[str, Any]:
     root = Path(root)
+    diagnostic_thresholds = _validated_diagnostic_thresholds(diagnostic_thresholds)
+    decision_curve_thresholds = _decision_curve_grid(
+        decision_curve_min_threshold,
+        decision_curve_max_threshold,
+        decision_curve_points,
+    )
+    if diagnostic_thresholds:
+        decision_curve_thresholds = np.unique(
+            np.concatenate(
+                [
+                    decision_curve_thresholds,
+                    np.asarray(diagnostic_thresholds, dtype=float),
+                ]
+            )
+        )
     resolved_selection = _selection_metric_from_run(
         root, strategy_rows, selection_metric
     )
@@ -1628,6 +2413,8 @@ def run_report_statistics(
         random_state,
         resolved_selection,
         calibration_bins,
+        diagnostic_thresholds,
+        decision_curve_thresholds,
     )
     cached = _cached_result(root, fingerprint)
     if cached is not None:
@@ -1702,6 +2489,8 @@ def run_report_statistics(
         int(n_bootstrap),
         int(random_state),
         int(calibration_bins),
+        diagnostic_thresholds,
+        decision_curve_thresholds,
     )
     oof_performance_path = tables / "strategy_oof_performance.parquet"
     oof_calibration_path = tables / "strategy_oof_calibration.parquet"
@@ -1709,19 +2498,40 @@ def run_report_statistics(
     oof_manifest_path = tables / "strategy_oof_statistics_manifest.json"
     oof_coverage_path = tables / "strategy_oof_coverage.parquet"
     oof_pairwise_coverage_path = tables / "strategy_oof_pairwise_coverage.parquet"
+    oof_threshold_metrics_path = tables / "strategy_oof_threshold_metrics.parquet"
+    oof_confusion_matrices_path = tables / "strategy_oof_confusion_matrices.parquet"
+    oof_decision_curve_path = tables / "strategy_oof_decision_curve.parquet"
     write_table(oof_performance_path, advanced["performance"])
     write_table(oof_calibration_path, advanced["calibration"])
     write_table(oof_contrasts_path, advanced["contrasts"])
     write_table(oof_coverage_path, advanced["coverage"])
     write_table(oof_pairwise_coverage_path, advanced["pairwise_coverage"])
+    write_table(oof_threshold_metrics_path, advanced["threshold_metrics"])
+    write_table(oof_confusion_matrices_path, advanced["confusion_matrices"])
+    write_table(oof_decision_curve_path, advanced["decision_curve"])
     oof_manifest = {
-        "schema_version": 6,
+        "schema_version": 7,
         "protocol": str(protocol),
         "strategies": list(frames),
         "n_classes": int(advanced["n_classes"]),
+        "class_labels": advanced["class_labels"],
+        "positive_class_index": 1 if int(advanced["n_classes"]) == 2 else None,
+        "positive_class_label": (
+            advanced["class_labels"][1]
+            if int(advanced["n_classes"]) == 2 and len(advanced["class_labels"]) == 2
+            else None
+        ),
         "n_bootstrap": int(n_bootstrap),
         "confidence_level": 0.95,
         "calibration_bins": int(calibration_bins),
+        "diagnostic_thresholds": list(diagnostic_thresholds),
+        "decision_curve": {
+            "minimum_threshold": float(decision_curve_thresholds[0]),
+            "maximum_threshold": float(decision_curve_thresholds[-1]),
+            "points": int(len(decision_curve_thresholds)),
+            "net_benefit": "TP/N - FP/N * threshold/(1-threshold)",
+            "reference_strategies": ["treat_none", "treat_all"],
+        },
         "metric_order": list(OOF_METRIC_ORDER),
         "estimands": (
             ["pooled_sample_weighted", "cohort_macro_equal_weight"]
@@ -1745,7 +2555,7 @@ def run_report_statistics(
     }
     dump_json_standard(oof_manifest, oof_manifest_path)
     manifest = {
-        "schema_version": 6,
+        "schema_version": 7,
         "fingerprint": fingerprint,
         "protocol": str(protocol),
         "strategies": list(frames),
@@ -1760,6 +2570,10 @@ def run_report_statistics(
         "multiple_testing": "Holm adjustment across all displayed strategy-pair and metric hypotheses",
         "scope": "displayed report strategies only",
         "selection_metric": selected_metric,
+        "diagnostic_thresholds": list(diagnostic_thresholds),
+        "decision_curve_min_threshold": float(decision_curve_thresholds[0]),
+        "decision_curve_max_threshold": float(decision_curve_thresholds[-1]),
+        "decision_curve_points": int(len(decision_curve_thresholds)),
         "cache": "statistics are reused when source artefacts and statistical settings are unchanged",
     }
     dump_json_standard(manifest, manifest_path)
@@ -1773,9 +2587,15 @@ def run_report_statistics(
         "oof_performance": advanced["performance"],
         "oof_calibration": advanced["calibration"],
         "oof_contrasts": advanced["contrasts"],
+        "oof_threshold_metrics": advanced["threshold_metrics"],
+        "oof_confusion_matrices": advanced["confusion_matrices"],
+        "oof_decision_curve": advanced["decision_curve"],
         "oof_performance_path": oof_performance_path,
         "oof_calibration_path": oof_calibration_path,
         "oof_contrasts_path": oof_contrasts_path,
+        "oof_threshold_metrics_path": oof_threshold_metrics_path,
+        "oof_confusion_matrices_path": oof_confusion_matrices_path,
+        "oof_decision_curve_path": oof_decision_curve_path,
         "oof_manifest_path": oof_manifest_path,
         "oof_coverage_path": oof_coverage_path,
         "oof_pairwise_coverage_path": oof_pairwise_coverage_path,

@@ -47,7 +47,13 @@ def _fit_lodo_transformation(X, names, transformation):
     ct = CountTransformation(transformation, random_state=19)
     transformed_train, transformed_test = ct.apply_pair(X_train, X_test)
     metadata = ct.coordinate_metadata(kept)
-    return ct, transformed_train, transformed_test, np.asarray(mask, dtype=bool), metadata
+    return (
+        ct,
+        transformed_train,
+        transformed_test,
+        np.asarray(mask, dtype=bool),
+        metadata,
+    )
 
 
 def _coordinate_signature(metadata):
@@ -275,12 +281,12 @@ def test_heldout_only_feature_cannot_change_inner_hyperparameter_candidate_selec
         check_dtype=False,
     )
     pd.testing.assert_frame_equal(
-        clean_inner_predictions.sort_values(["config_id", "split_key", "sample_id"]).reset_index(
-            drop=True
-        ),
-        adv_inner_predictions.sort_values(["config_id", "split_key", "sample_id"]).reset_index(
-            drop=True
-        ),
+        clean_inner_predictions.sort_values(
+            ["config_id", "split_key", "sample_id"]
+        ).reset_index(drop=True),
+        adv_inner_predictions.sort_values(
+            ["config_id", "split_key", "sample_id"]
+        ).reset_index(drop=True),
         check_dtype=False,
     )
     clean_selection = select_mpma_b_by_outer_fold(clean_inner, configs, "nMCC")
@@ -288,8 +294,12 @@ def test_heldout_only_feature_cannot_change_inner_hyperparameter_candidate_selec
     pd.testing.assert_frame_equal(clean_selection, adv_selection, check_dtype=False)
     assert clean_selection.iloc[0]["config_id"] == "hp_signal"
     pd.testing.assert_frame_equal(
-        clean_outer_predictions.sort_values(["config_id", "sample_id"]).reset_index(drop=True),
-        adv_outer_predictions.sort_values(["config_id", "sample_id"]).reset_index(drop=True),
+        clean_outer_predictions.sort_values(["config_id", "sample_id"]).reset_index(
+            drop=True
+        ),
+        adv_outer_predictions.sort_values(["config_id", "sample_id"]).reset_index(
+            drop=True
+        ),
         check_dtype=False,
     )
 
@@ -316,7 +326,9 @@ def test_heldout_only_feature_cannot_change_ensemble_selection_even_if_outer_pre
     for config_id in ("hp_signal", "hp_inverted"):
         mask = adversarial_outer["config_id"].astype(str).eq(config_id)
         order = adversarial_outer.loc[mask, "sample_index"].to_numpy(dtype=int)
-        local = np.asarray([heldout_signal[int(index - TEST_IDX[0])] for index in order])
+        local = np.asarray(
+            [heldout_signal[int(index - TEST_IDX[0])] for index in order]
+        )
         if config_id == "hp_inverted":
             local = 1 - local
         p1 = np.where(local == 1, 0.999, 0.001)
@@ -386,9 +398,9 @@ def test_heldout_only_feature_cannot_enter_oof_xai_coordinates(transformation):
     assert not bool(adv_fold["feature_mask"][-1])
     assert adv_fold["input_feature_names"] == FEATURE_NAMES
     assert base_fold["feature_names"] == adv_fold["feature_names"]
-    assert _coordinate_signature(base_fold["coordinate_metadata"]) == _coordinate_signature(
-        adv_fold["coordinate_metadata"]
-    )
+    assert _coordinate_signature(
+        base_fold["coordinate_metadata"]
+    ) == _coordinate_signature(adv_fold["coordinate_metadata"])
     assert all(
         "g__heldout_only" not in item.components
         for item in adv_fold["coordinate_metadata"]

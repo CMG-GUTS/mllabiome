@@ -77,8 +77,8 @@ def _annotate_support_matrix(axis: plt.Axes, matrix: np.ndarray) -> None:
 def _draw_mean_support(axis: plt.Axes, values: np.ndarray) -> None:
     vals = np.asarray(values, dtype=float)
     axis.set_xlim(0.0, 1.0)
-    axis.set_xticks([0.0, 1.0])
-    axis.set_xticklabels(["0", "1"], fontsize=4.6, color="#000000")
+    axis.set_xticks([0.0, 0.5, 1.0])
+    axis.set_xticklabels(["0", "0.5", "1"], fontsize=4.6, color="#000000")
     axis.tick_params(axis="x", length=1.6, width=0.35, pad=1, colors="#000000")
     axis.spines["bottom"].set_visible(True)
     axis.spines["bottom"].set_color("#000000")
@@ -89,7 +89,32 @@ def _draw_mean_support(axis: plt.Axes, values: np.ndarray) -> None:
         )
         if np.isfinite(value):
             v = float(np.clip(value, 0.0, 1.0))
-            axis.plot([v, v], [yi - 0.20, yi + 0.20], color=ACC, lw=0.9, zorder=3)
+            axis.barh(
+                yi,
+                v,
+                height=0.48,
+                left=0.0,
+                color=SUPPORT_CMAP(v),
+                edgecolor="none",
+                zorder=2,
+            )
+
+
+def _draw_support_scale(
+    fig: plt.Figure, panel: Sequence[float], x0: float, x1: float
+) -> None:
+    axis = fig.add_axes(_bbox(panel, x0, -0.010, x1 - x0, 0.010), zorder=5)
+    cb = mpl.colorbar.ColorbarBase(
+        axis,
+        cmap=SUPPORT_CMAP,
+        norm=mcolors.Normalize(vmin=0.0, vmax=1.0),
+        orientation="horizontal",
+    )
+    cb.set_ticks([0.0, 0.25, 0.5, 0.75, 1.0])
+    cb.set_ticklabels(["0", "0.25", "0.50", "0.75", "1"])
+    cb.ax.tick_params(labelsize=4.5, length=1.4, width=0.35, pad=1, colors="#000000")
+    cb.outline.set_linewidth(0.35)
+    cb.outline.set_edgecolor(DIM)
 
 
 RC = {
@@ -423,7 +448,7 @@ def plot_feature_support(
     fig_w = (136.0 * MM) if solo_method else COL_W_2
     fig = plt.figure(figsize=(fig_w, fig_h_mm * MM))
     fig.patch.set_facecolor(BG)
-    panel = [0.035, 0.035, 0.930, 0.930]
+    panel = [0.035, 0.050, 0.930, 0.915]
 
     if solo_method:
         ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.035, 0.455, 0.820), zorder=5)
@@ -492,13 +517,14 @@ def plot_feature_support(
         except Exception:
             v = np.nan
         shifts.append(v)
-    shift_clip = np.clip(
-        np.nan_to_num(np.asarray(shifts, dtype=float), nan=0.0), -2.0, 2.0
-    )
-    ax_dir.set_xlim(-2.75, 2.75)
+    shift_values = np.asarray(shifts, dtype=float)
+    ax_dir.set_xlim(-1.05, 1.05)
     ax_dir.axvline(0, color="#000000", lw=0.38, zorder=1, alpha=0.75)
-    for i, v in enumerate(shift_clip):
-        col = CLASS_CASE if v >= 0 else CLASS_CTRL
+    for i, raw_value in enumerate(shift_values):
+        if not np.isfinite(raw_value):
+            continue
+        v = float(np.clip(raw_value, -1.0, 1.0))
+        col = CLASS_CASE if raw_value >= 0 else CLASS_CTRL
         ax_dir.plot(
             [0, v],
             [i, i],
@@ -506,12 +532,14 @@ def plot_feature_support(
             lw=1.0,
             solid_capstyle="round",
             alpha=0.86,
-            clip_on=False,
+            clip_on=True,
         )
+        marker = ">" if raw_value > 1.0 else "<" if raw_value < -1.0 else "o"
+        size = 13 if marker != "o" else 9
         ax_dir.scatter(
-            [v], [i], s=9, color=col, edgecolors="none", zorder=3, clip_on=False
+            [v], [i], s=size, marker=marker, color=col, edgecolors="none", zorder=3
         )
-    ax_dir.set_xticks([-2.0, 0.0, 2.0])
+    ax_dir.set_xticks([-1.0, 0.0, 1.0])
     ax_dir.set_xticklabels(["Control", "0", "Case"], fontsize=5.0, color="#000000")
     for lab in ax_dir.get_xticklabels():
         lab.set_clip_on(False)
@@ -544,7 +572,6 @@ def plot_feature_support(
                 axis.axvline(x, color="white", lw=0.45)
             for yline in np.arange(-0.5, n + 0.5, 1):
                 axis.axhline(yline, color="white", lw=0.35)
-            _annotate_support_matrix(axis, matrix)
         if ax_mean is not None:
             with np.errstate(invalid="ignore"):
                 mean_support = np.nanmean(support_matrix, axis=1)
@@ -559,10 +586,12 @@ def plot_feature_support(
     _bracket(fig, panel, bracket_dir[0], bracket_dir[1], 0.900, "Class shift")
     _bracket(fig, panel, bracket_hm[0], bracket_hm[1], 0.900, "Top-k support")
     if ax_mean is not None:
-        _bracket(fig, panel, bracket_mean[0], bracket_mean[1], 0.900, "Mean")
+        _bracket(fig, panel, bracket_mean[0], bracket_mean[1], 0.900, "Mean support")
     _bracket(
         fig, panel, bracket_stab[0], bracket_stab[1], 0.900, "Fold top-k frequency"
     )
+    if method_cols:
+        _draw_support_scale(fig, panel, bracket_hm[0], bracket_stab[1])
     save_all(fig, out_stem)
     plt.close(fig)
     return True
@@ -625,7 +654,7 @@ def plot_regression_feature_support(
     fig_w = (136.0 * MM) if solo_method else COL_W_2
     fig = plt.figure(figsize=(fig_w, fig_h_mm * MM))
     fig.patch.set_facecolor(BG)
-    panel = [0.035, 0.035, 0.930, 0.930]
+    panel = [0.035, 0.050, 0.930, 0.915]
     if solo_method:
         ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.035, 0.570, 0.820), zorder=5)
         ax_hm = fig.add_axes(_bbox(panel, 0.665, 0.035, 0.125, 0.820), zorder=5)
@@ -713,10 +742,11 @@ def plot_regression_feature_support(
     _bracket(fig, panel, bracket_lab[0], bracket_lab[1], 0.900, "Ranked feature")
     _bracket(fig, panel, bracket_hm[0], bracket_hm[1], 0.900, "Top-k support")
     if ax_mean is not None:
-        _bracket(fig, panel, bracket_mean[0], bracket_mean[1], 0.900, "Mean")
+        _bracket(fig, panel, bracket_mean[0], bracket_mean[1], 0.900, "Mean support")
     _bracket(
         fig, panel, bracket_stab[0], bracket_stab[1], 0.900, "Fold top-k frequency"
     )
+    _draw_support_scale(fig, panel, bracket_hm[0], bracket_stab[1])
     save_all(fig, out_stem)
     plt.close(fig)
     return True
@@ -750,10 +780,7 @@ def _net_node_color(standardized_shift: float):
 
 def _net_node_radius(strength_norm: float, is_hub: bool = False) -> float:
     norm = float(np.clip(strength_norm, 0.0, 1.0))
-    r = 0.08 + norm * 0.12
-    if is_hub:
-        r = max(r * 1.6, 0.20)
-    return float(r)
+    return float(0.07 + norm * 0.13)
 
 
 def _net_bezier(p1, p2, curv: float = 0.10):
@@ -949,7 +976,7 @@ def _net_compute_kamada_kawai_layout(G):
 
 
 def _net_edge_linewidth(norm_strength: float) -> float:
-    return 0.9 + float(norm_strength) * 4.2
+    return 0.35 + float(np.clip(norm_strength, 0.0, 1.0)) * 0.65
 
 
 def _draw_network(
@@ -966,7 +993,7 @@ def _draw_network(
         pos, hub, hub_deg = _net_compute_kamada_kawai_layout(G)
     else:
         pos, hub, hub_deg = _net_compute_layout(G, seed=42)
-    pos = {node: np.asarray(value, dtype=float) * 0.78 for node, value in pos.items()}
+    pos = {node: np.asarray(value, dtype=float) * 0.90 for node, value in pos.items()}
     strengths = [G[u][v]["weight"] for u, v in G.edges()]
     s_min, s_max = float(min(strengths)), float(max(strengths))
 
@@ -980,14 +1007,14 @@ def _draw_network(
     for idx, (u, v, edge) in enumerate(edge_list):
         p1, p2 = pos[u], pos[v]
         norm = _ns(edge["weight"])
-        curvature = 0.10 * (1 if idx % 2 == 0 else -1)
+        curvature = 0.075 * (1 if idx % 2 == 0 else -1)
         xe, ye, _, _ = _net_bezier(p1, p2, curv=curvature)
         ax.plot(
             xe,
             ye,
-            color=NET_EDGE_CMAP(0.12 + norm * 0.88),
-            linewidth=_net_edge_linewidth(norm),
-            alpha=0.80,
+            color=NET_EDGE_CMAP(0.10 + norm * 0.90),
+            linewidth=0.45 + norm * 1.55,
+            alpha=0.88,
             zorder=1,
             solid_capstyle="round",
         )
@@ -995,8 +1022,7 @@ def _draw_network(
     radii: dict[Any, float] = {}
     for node in G.nodes():
         data = G.nodes[node]
-        is_hub = bool(node == hub and hub_deg >= 4)
-        radius = _net_node_radius(data.get("strength_norm", 0.0), is_hub=is_hub)
+        radius = _net_node_radius(data.get("strength_norm", 0.0))
         radii[node] = radius
         x, y = pos[node]
         ax.add_patch(
@@ -1005,237 +1031,168 @@ def _draw_network(
                 radius,
                 facecolor=_net_node_color(data.get("standardized_shift", 0.0)),
                 edgecolor=INK,
-                linewidth=0.8,
+                linewidth=0.78,
                 zorder=3,
-                alpha=0.96,
+                alpha=0.98,
             )
         )
 
-    nodes = list(G.nodes())
-    left = [node for node in nodes if float(pos[node][0]) < 0.0]
-    right = [node for node in nodes if float(pos[node][0]) >= 0.0]
-    while abs(len(left) - len(right)) > 2:
-        source = left if len(left) > len(right) else right
-        target = right if source is left else left
-        move = min(source, key=lambda node: abs(float(pos[node][0])))
-        source.remove(move)
-        target.append(move)
-
-    def _draw_side(side_nodes: list[Any], side: str) -> None:
-        if not side_nodes:
-            return
-        ordered = sorted(side_nodes, key=lambda node: float(pos[node][1]), reverse=True)
-        count = len(ordered)
-        center = float(np.median([float(pos[node][1]) for node in ordered]))
-        half_span = min(3.15, 0.39 * max(count - 1, 0))
-        center_limit = max(0.0, 3.40 - half_span)
-        center = float(np.clip(center, -center_limit, center_limit))
-        slots = np.linspace(center + half_span, center - half_span, count)
+    text_x_left = -6.10
+    text_x_right = 6.10
+    line_end_left = -5.88
+    line_end_right = 5.88
+    for node in G.nodes():
+        x, y = map(float, pos[node])
+        side = "left" if x < 0.0 else "right"
         sign = -1.0 if side == "left" else 1.0
-        text_x = sign * 4.10
-        line_end = sign * 4.06
-        elbow_x = sign * 3.52
-        horizontal_alignment = "right" if side == "left" else "left"
-        for node, slot_y in zip(ordered, slots):
-            x, y = map(float, pos[node])
-            vector = np.array([elbow_x - x, float(slot_y) - y], dtype=float)
-            length = float(np.linalg.norm(vector))
-            if length <= 1e-12:
-                vector = np.array([sign, 0.0], dtype=float)
-                length = 1.0
-            anchor = np.array([x, y], dtype=float) + vector / length * (
-                radii[node] + 0.05
-            )
-            ax.plot(
-                [anchor[0], elbow_x, line_end],
-                [anchor[1], float(slot_y), float(slot_y)],
-                color=INK,
-                linewidth=0.42,
-                alpha=0.58,
-                linestyle=(0, (1.5, 2.2)),
-                solid_capstyle="round",
-                zorder=4,
-            )
-            label = _net_italic(str(G.nodes[node]["label"]))
-            is_hub = bool(node == hub and hub_deg >= 4)
-            ax.text(
-                text_x,
-                float(slot_y),
-                label,
-                ha=horizontal_alignment,
-                va="center",
-                fontsize=6.2 if not is_hub else 6.5,
-                color=INK,
-                fontweight="bold" if is_hub else "normal",
-                zorder=6,
-            )
+        anchor_x = x + sign * (radii[node] + 0.045)
+        line_end = line_end_left if side == "left" else line_end_right
+        text_x = text_x_left if side == "left" else text_x_right
+        ha = "right" if side == "left" else "left"
+        ax.plot(
+            [anchor_x, line_end],
+            [y, y],
+            color=MID,
+            linewidth=0.42,
+            alpha=0.78,
+            linestyle=(0, (1.6, 2.2)),
+            solid_capstyle="round",
+            zorder=4,
+        )
+        label = _net_italic(str(G.nodes[node]["label"]))
+        is_hub = bool(node == hub and hub_deg >= 4)
+        ax.text(
+            text_x,
+            y,
+            label,
+            ha=ha,
+            va="center",
+            fontsize=6.7 if not is_hub else 7.1,
+            color=INK,
+            fontweight="bold" if is_hub else "normal",
+            path_effects=[mpe.withStroke(linewidth=1.6, foreground="white")],
+            zorder=6,
+        )
 
-    _draw_side(left, "left")
-    _draw_side(right, "right")
-    ax.set_xlim(-7.15, 7.15)
-    ax.set_ylim(-5.0, 5.0)
+    ax.set_xlim(-6.65, 6.65)
+    ax.set_ylim(-4.25, 4.25)
     return float(s_min), float(s_max)
 
 
-def _legend_size_colour_net(
-    ax: plt.Axes, ctrl_text="Control", case_text="Case"
+def _legend_horizontal_gradient(
+    ax: plt.Axes,
+    x0: float,
+    x1: float,
+    y0: float,
+    y1: float,
+    left_label: str,
+    right_label: str,
 ) -> None:
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-    lo_r, hi_r = np.log10(0.05), np.log10(60.0)
-    gxs = [0.32, 0.50, 0.68, 0.86]
-    gys = [0.75, 0.61, 0.47, 0.33]
-    abs_vals = [0.1, 1.0, 5.0, 15.0]
-    abs_lbl = ["0.1%", "1%", "5%", "15%"]
-    ax_width_pt = max(
-        ax.get_position().width * ax.figure.get_size_inches()[0] * 72.0, 1e-6
-    )
-    pts_per_data = ax_width_pt / 10.0
-
-    def _grid_s(ab):
-        mean = max(float(ab), 0.05)
-        norm = np.clip((np.log10(mean) - lo_r) / (hi_r - lo_r), 0, 1)
-        r_data = 0.08 + norm * 0.12
-        r_pt = r_data * pts_per_data
-        return np.pi * (r_pt**2)
-
-    for cx, al in zip(gxs, abs_lbl):
-        ax.text(cx, 0.82, al, ha="center", va="center", fontsize=6.4, color="black")
-    for ry, t in zip(gys, [0.0, 1 / 3, 2 / 3, 1.0]):
+    n = 160
+    xs = np.linspace(x0, x1, n + 1)
+    ts = np.linspace(0.0, 1.0, n + 1)
+    for i in range(n):
+        t = (ts[i] + ts[i + 1]) / 2
         col = _interp_col_net(t, CLASS_CTRL, NET_NEUT, CLASS_CASE)
-        for cx, ab in zip(gxs, abs_vals):
-            ax.scatter(
-                [cx],
-                [ry],
-                s=_grid_s(ab),
-                facecolor=col,
-                edgecolors=INK,
-                linewidths=0.28,
-                zorder=3,
-                clip_on=False,
-            )
-
-    sx0, sx1 = 0.08, 0.13
-    sxc = (sx0 + sx1) / 2
-    sy0, sy1 = gys[-1], gys[0]
-    n_s = 80
-    sy = np.linspace(sy0, sy1, n_s + 1)
-    st = np.linspace(1.0, 0.0, n_s + 1)
-    for i in range(n_s):
-        t = (st[i] + st[i + 1]) / 2
-        c = _interp_col_net(t, CLASS_CTRL, NET_NEUT, CLASS_CASE)
         ax.fill(
-            [sx0, sx1, sx1, sx0],
-            [sy[i], sy[i], sy[i + 1], sy[i + 1]],
-            color=c,
+            [xs[i], xs[i + 1], xs[i + 1], xs[i]],
+            [y0, y0, y1, y1],
+            color=col,
             linewidth=0,
             zorder=2,
         )
-    ext = 0.05
-    ax.annotate(
-        "",
-        xy=(sxc, sy1 + ext),
-        xytext=(sxc, sy1),
-        arrowprops=dict(arrowstyle="-|>", color="black", lw=0.5, mutation_scale=4.5),
-    )
-    ax.annotate(
-        "",
-        xy=(sxc, sy0 - ext),
-        xytext=(sxc, sy0),
-        arrowprops=dict(arrowstyle="-|>", color="black", lw=0.5, mutation_scale=4.5),
+    ax.text(x0, y1 + 0.10, left_label, ha="left", va="bottom", fontsize=6.0, color=MID)
+    ax.text(
+        x1, y1 + 0.10, right_label, ha="right", va="bottom", fontsize=6.0, color=MID
     )
     ax.text(
-        sxc,
-        sy1 + ext + 0.01,
-        f"Relatively more abundant in {ctrl_text}",
-        ha="center",
-        va="bottom",
-        fontsize=5.9,
-        color="black",
-        rotation=90,
-        clip_on=False,
-    )
-    ax.text(
-        sxc,
-        sy0 - ext - 0.01,
-        f"Relatively more abundant in {case_text}",
+        (x0 + x1) / 2,
+        y0 - 0.14,
+        "Standardized class shift",
         ha="center",
         va="top",
-        fontsize=5.9,
-        color="black",
-        rotation=90,
-        clip_on=False,
+        fontsize=6.1,
+        color=MID,
     )
-    ax.annotate(
-        "",
-        xy=(gxs[-1] + 0.06, 0.20),
-        xytext=(gxs[0] - 0.06, 0.20),
-        arrowprops=dict(arrowstyle="-|>", color="black", lw=0.5, mutation_scale=4.5),
-    )
+
+
+def _legend_horizontal_sizes(ax: plt.Axes, x0: float, x1: float) -> None:
+    xs = np.linspace(x0, x1, 4)
+    values = [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0]
+    labels = ["0", "0.33", "0.67", "1"]
+    for x, value, label in zip(xs, values, labels):
+        radius = _net_node_radius(value)
+        size = 18.0 + 108.0 * ((radius - 0.07) / 0.13) ** 1.35
+        ax.scatter(
+            [x],
+            [0.54],
+            s=size,
+            facecolor=NET_NEUT,
+            edgecolors=INK,
+            linewidths=0.48,
+            clip_on=False,
+            zorder=3,
+        )
+        ax.text(x, 0.82, label, ha="center", va="bottom", fontsize=6.0, color=MID)
     ax.text(
-        (gxs[0] + gxs[-1]) / 2,
-        0.11,
-        "Mean relative abundance",
+        (x0 + x1) / 2,
+        0.17,
+        "Normalized interaction connectivity",
         ha="center",
-        va="center",
-        fontsize=6.4,
-        color="black",
+        va="top",
+        fontsize=6.1,
+        color=MID,
     )
 
 
-def _legend_edge_net(ax: plt.Axes, s_min: float, s_max: float) -> None:
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-    fy0, fy1 = 0.18, 0.82
-    n_f = 180
-    fy = np.linspace(fy0, fy1, n_f + 1)
-    ts = np.linspace(0, 1, n_f + 1)
-    ax_width_pt = max(
-        ax.get_position().width * ax.figure.get_size_inches()[0] * 72.0, 1e-6
-    )
-
-    def _half_width_axes(t):
-        return 0.5 * _net_edge_linewidth(float(t)) / ax_width_pt
-
-    xc = 0.42
-    hw = np.array([_half_width_axes(t) for t in ts])
-    for i in range(n_f):
+def _legend_horizontal_edge(
+    ax: plt.Axes, x0: float, x1: float, s_min: float, s_max: float
+) -> None:
+    n = 180
+    xs = np.linspace(x0, x1, n + 1)
+    ts = np.linspace(0.0, 1.0, n + 1)
+    half = 0.016 + ts * 0.060
+    yc = 0.54
+    for i in range(n):
         t = (ts[i] + ts[i + 1]) / 2
-        col = NET_EDGE_CMAP(0.12 + t * 0.88)
-        xs = [xc - hw[i], xc + hw[i], xc + hw[i + 1], xc - hw[i + 1]]
-        ys = [fy[i], fy[i], fy[i + 1], fy[i + 1]]
-        ax.fill(xs, ys, color=col, linewidth=0, zorder=2)
+        col = NET_EDGE_CMAP(0.10 + t * 0.90)
+        ax.fill(
+            [xs[i], xs[i + 1], xs[i + 1], xs[i]],
+            [yc - half[i], yc - half[i + 1], yc + half[i + 1], yc + half[i]],
+            color=col,
+            linewidth=0,
+            zorder=2,
+        )
+    ax.text(x0, 0.82, f"{s_min:.5g}", ha="left", va="bottom", fontsize=6.0, color=MID)
+    ax.text(x1, 0.82, f"{s_max:.5g}", ha="right", va="bottom", fontsize=6.0, color=MID)
     ax.text(
-        xc,
-        fy1 + 0.040,
-        f"{s_max:.3f}",
-        ha="center",
-        va="bottom",
-        fontsize=6.5,
-        color="black",
-    )
-    ax.text(
-        xc,
-        fy0 - 0.040,
-        f"{s_min:.3f}",
-        ha="center",
-        va="top",
-        fontsize=6.5,
-        color="black",
-    )
-    ax.text(
-        0.66,
-        (fy0 + fy1) / 2,
+        (x0 + x1) / 2,
+        0.17,
         "Interaction strength",
         ha="center",
-        va="center",
-        fontsize=6.6,
-        color="black",
-        rotation=90,
-        clip_on=False,
+        va="top",
+        fontsize=6.1,
+        color=MID,
     )
+
+
+def _legend_interaction_bottom(
+    ax: plt.Axes,
+    s_min: float,
+    s_max: float,
+    class_labels: Sequence[str] | None = None,
+) -> None:
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
+    ax.axis("off")
+    labels = [str(x) for x in (class_labels or ())]
+    if len(labels) >= 2:
+        _legend_horizontal_gradient(ax, 0.045, 0.265, 0.46, 0.66, labels[0], labels[1])
+        _legend_horizontal_sizes(ax, 0.345, 0.585)
+        _legend_horizontal_edge(ax, 0.690, 0.955, s_min, s_max)
+    else:
+        _legend_horizontal_sizes(ax, 0.175, 0.445)
+        _legend_horizontal_edge(ax, 0.575, 0.885, s_min, s_max)
 
 
 def plot_interaction_network(
@@ -1248,29 +1205,17 @@ def plot_interaction_network(
 ) -> bool:
     apply_style()
     labels = [str(x) for x in (class_labels or ())]
-    regression_mode = len(labels) < 2
-    fig = plt.figure(figsize=(COL_W_2, 125 * MM))
+    fig = plt.figure(figsize=(COL_W_2, 112 * MM))
     fig.patch.set_facecolor(BG)
-    if regression_mode:
-        ax_net = fig.add_axes([0.02, 0.06, 0.79, 0.88], zorder=4)
-        ax_leg1 = fig.add_axes([0.82, 0.53, 0.15, 0.37], zorder=12)
-        ax_leg2 = fig.add_axes([0.82, 0.24, 0.14, 0.34], zorder=12)
-    else:
-        ax_net = fig.add_axes([0.02, 0.06, 0.69, 0.88], zorder=4)
-        ax_leg1 = fig.add_axes([0.73, 0.53, 0.25, 0.37], zorder=12)
-        ax_leg2 = fig.add_axes([0.75, 0.17, 0.20, 0.28], zorder=12)
+    ax_net = fig.add_axes([0.025, 0.225, 0.950, 0.745], zorder=4)
+    ax_leg = fig.add_axes([0.035, 0.025, 0.930, 0.155], zorder=12)
     try:
         s_min, s_max = _draw_network(ax_net, tab, stats, top_k, layout=layout)
-        if regression_mode:
-            ax_leg1.axis("off")
-        else:
-            _legend_size_colour_net(ax_leg1, ctrl_text=labels[0], case_text=labels[1])
-        _legend_edge_net(ax_leg2, s_min, s_max)
+        _legend_interaction_bottom(ax_leg, s_min, s_max, labels)
     except Exception as exc:
         ax_net.clear()
         _soft_missing(ax_net, f"Interaction network unavailable\n{exc}")
-        ax_leg1.axis("off")
-        ax_leg2.axis("off")
+        ax_leg.axis("off")
     save_all(fig, out_stem)
     plt.close(fig)
     return True

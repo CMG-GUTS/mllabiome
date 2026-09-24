@@ -199,6 +199,45 @@ def _matthews_corrcoef(
     return numerator / denominator
 
 
+def _binary_diagnostic_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    classes: np.ndarray,
+    positive_class: int | None = None,
+) -> dict[str, float]:
+    classes = np.asarray(classes, dtype=int)
+    if len(classes) != 2:
+        return {
+            "Sensitivity": float("nan"),
+            "Specificity": float("nan"),
+            "PPV": float("nan"),
+            "NPV": float("nan"),
+        }
+    positive = int(classes[-1] if positive_class is None else positive_class)
+    matches = np.flatnonzero(classes == positive)
+    if len(matches) != 1:
+        raise ValueError(
+            f"positive_class={positive!r} is not in classes {classes.tolist()!r}."
+        )
+    negative = int(classes[0] if int(classes[1]) == positive else classes[1])
+    truth = np.asarray(y_true, dtype=int)
+    pred = np.asarray(y_pred, dtype=int)
+    tp = int(np.sum((truth == positive) & (pred == positive)))
+    fn = int(np.sum((truth == positive) & (pred == negative)))
+    tn = int(np.sum((truth == negative) & (pred == negative)))
+    fp = int(np.sum((truth == negative) & (pred == positive)))
+
+    def ratio(numerator: int, denominator: int) -> float:
+        return float(numerator / denominator) if denominator > 0 else float("nan")
+
+    return {
+        "Sensitivity": ratio(tp, tp + fn),
+        "Specificity": ratio(tn, tn + fp),
+        "PPV": ratio(tp, tp + fp),
+        "NPV": ratio(tn, tn + fn),
+    }
+
+
 def _score_matrix(y_score: np.ndarray, n_rows: int, n_classes: int) -> np.ndarray:
     score = np.asarray(y_score, dtype=float)
     if score.ndim == 1:
@@ -248,6 +287,7 @@ def compute_metrics(
     out["Recall"] = float(
         recall_score(y_true, y_pred, average="macro", zero_division=0)
     )
+    out.update(_binary_diagnostic_metrics(y_true, y_pred, classes, positive_class))
     mcc = _matthews_corrcoef(y_true, y_pred, classes)
     out["MCC"] = float(mcc) if np.isfinite(mcc) else float("nan")
     out["nMCC"] = float((mcc + 1.0) / 2.0) if np.isfinite(mcc) else float("nan")

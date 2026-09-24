@@ -2463,11 +2463,23 @@ def _explainability_report_blocks(
             )
 
             if consensus_fig:
-                parts.append("<h6>Cross-method support and fold top-k frequency</h6>")
+                support_methods = [x for x in methods if x != "interactions"]
 
-                parts.append(
-                    f"<p>Top-k support is a within-method rank score for each {html.escape(unit_singular)}. Rank 1 scores 1, rank k scores 1/k, and ranks below k score 0. Mean support is the arithmetic mean of the available method-specific top-k support scores. Fold top-k frequency is the fraction of estimable outer folds in which that {html.escape(unit_singular)} ranks within the method-specific top k. These are scale-free 0 to 1 summaries. Method-specific effect magnitudes are not compared across methods.</p>"
-                )
+                if len(support_methods) <= 1:
+                    parts.append("<h6>Top-k support and fold top-k frequency</h6>")
+
+                    parts.append(
+                        f"<p>Top-k support is a within-method rank score for each {html.escape(unit_singular)}. Rank 1 scores 1, rank k scores 1/k, and ranks below k score 0. Fold top-k frequency is the fraction of estimable outer folds in which that {html.escape(unit_singular)} ranks within the method-specific top k. Both quantities are scale-free from 0 to 1.</p>"
+                    )
+
+                else:
+                    parts.append(
+                        "<h6>Cross-method support and fold top-k frequency</h6>"
+                    )
+
+                    parts.append(
+                        f"<p>Top-k support is a within-method rank score for each {html.escape(unit_singular)}. Rank 1 scores 1, rank k scores 1/k, and ranks below k score 0. Mean support is the arithmetic mean of the available method-specific top-k support scores. Fold top-k frequency is the fraction of estimable outer folds in which that {html.escape(unit_singular)} ranks within the method-specific top k. These are scale-free 0 to 1 summaries. Method-specific effect magnitudes are not compared across methods.</p>"
+                    )
 
                 parts.append(consensus_fig)
 
@@ -3235,6 +3247,18 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
             n_bootstrap=2000,
             random_state=sweep.evaluation.random_state,
             selection_metric=str(sweep.evaluation.optimize_metric),
+            diagnostic_thresholds=getattr(
+                sweep.evaluation, "diagnostic_thresholds", ()
+            ),
+            decision_curve_min_threshold=getattr(
+                sweep.evaluation, "decision_curve_min_threshold", 0.01
+            ),
+            decision_curve_max_threshold=getattr(
+                sweep.evaluation, "decision_curve_max_threshold", 0.99
+            ),
+            decision_curve_points=getattr(
+                sweep.evaluation, "decision_curve_points", 99
+            ),
         )
 
         strategy_html = _strategy_performance_display(

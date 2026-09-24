@@ -32,8 +32,8 @@ DATA = mll.Data(
 RESOLUTIONS = (
     # ("phylum", ("phylum",)),
     # ("class", ("class",)),
-    # ("order", ("order",)),
-    # # ("family", ("family",)),
+    ("order", ("order",)),
+    ("family", ("family",)),
     # ("genus", ("genus",)),
     # # ("domain-phylum", ("domain", "phylum")),
     # # ("domain-class", ("domain", "phylum", "class")),
@@ -46,7 +46,7 @@ RESOLUTIONS = (
     # # ("phylum-genus", ("phylum", "class", "order", "family", "genus")),
     # ("class-order", ("class", "order")),
     # # ("class-family", ("class", "order", "family")),
-    # # ("class-genus", ("class", "order", "family", "genus")),
+    # ("class-genus", ("class", "order", "family", "genus")),
     # # ("order-family", ("order", "family")),
     # # ("order-genus", ("order", "family", "genus")),
     # ("family-genus", ("family", "genus")),
@@ -54,7 +54,7 @@ RESOLUTIONS = (
 )
 
 COUNT_TRANSFORMATIONS = (
-    # mll.Transformation("presence_absence"),
+    mll.Transformation("presence_absence"),
     mll.Transformation("identity"),
     # mll.Transformation("arcsine_sqrt", composition_scope="rank-wise"),
     # mll.Transformation("arcsine_sqrt", composition_scope="joint"),
@@ -220,7 +220,7 @@ ENSEMBLE = mll.Ensemble(
 )
 
 EXPLAINABILITY = mll.Explainability(
-    targets=("mpma_b",),  # "mpma_e"),
+    targets=("mpma_b", "mpma_e"),
     profile="screening",
     methods=(
         mll.Permutation(),

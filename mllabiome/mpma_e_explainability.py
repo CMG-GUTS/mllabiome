@@ -1144,6 +1144,69 @@ def _run_hierarchical_shap(
     return outputs
 
 
+def _write_mpma_e_report_tables(
+    sweep: Any, bundle: dict[str, Any], out_dir: Path
+) -> dict[str, Path]:
+    importance_path = out_dir / "feature_importance.parquet"
+    if not table_exists(importance_path):
+        return {}
+    importance = read_table(importance_path)
+    if importance.empty or "feature" not in importance.columns:
+        return {}
+    importance = _core._collapse_duplicate_feature_importance(importance)
+    importance["method"] = "shap"
+    write_table(importance_path, importance)
+    outputs = _core._write_method_outputs(
+        importance,
+        target_dir=out_dir,
+        figures_dir=out_dir / "figures",
+        X_base=np.asarray(bundle["dataset"].X_by_level["all"], dtype=float),
+        y=np.asarray(bundle["dataset"].y),
+        feature_names=list(bundle["dataset"].feature_names_by_level["all"]),
+        class_labels=list(bundle["dataset"].class_labels),
+        top_k=int(sweep.explainability.top_k),
+    )
+    top_path = out_dir / "top_features_shap.parquet"
+    top = read_table(top_path) if table_exists(top_path) else pd.DataFrame()
+    overall_top_path = out_dir / "top_features.parquet"
+    write_table(overall_top_path, top)
+    outputs["top_features"] = overall_top_path
+    stability_path = out_dir / "feature_stability_shap.parquet"
+    if table_exists(stability_path):
+        stability = read_table(stability_path)
+        stability["method"] = "shap"
+        overall_stability_path = out_dir / "feature_stability.parquet"
+        write_table(overall_stability_path, stability)
+        outputs["stability"] = overall_stability_path
+    stats_frames: list[pd.DataFrame] = []
+    if not top.empty and "class_index" in top.columns:
+        for class_index, class_top in top.groupby("class_index", sort=True):
+            c = int(class_index)
+            label = (
+                str(bundle["dataset"].class_labels[c])
+                if 0 <= c < len(bundle["dataset"].class_labels)
+                else f"class_{c}"
+            )
+            stats = _core._feature_distribution_stats(
+                class_top["feature"].astype(str).tolist(),
+                list(bundle["dataset"].feature_names_by_level["all"]),
+                np.asarray(bundle["dataset"].X_by_level["all"], dtype=float),
+                np.asarray(bundle["dataset"].y),
+                list(bundle["dataset"].class_labels),
+            )
+            if not stats.empty:
+                stats.insert(0, "class_label", label)
+                stats.insert(0, "class_index", c)
+                stats_frames.append(stats)
+    stats_all = (
+        pd.concat(stats_frames, ignore_index=True) if stats_frames else pd.DataFrame()
+    )
+    stats_path = out_dir / "feature_distribution_stats.parquet"
+    write_table(stats_path, stats_all)
+    outputs["feature_distribution_stats"] = stats_path
+    return outputs
+
+
 def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str, Path]:
     root = Path(sweep.root())
     models = build_final_models(root)
@@ -1190,6 +1253,7 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
 
     if "shap" in global_methods:
         outputs.update(_run_hierarchical_shap(sweep, bundle, mpma_e, out_dir))
+        outputs.update(_write_mpma_e_report_tables(sweep, bundle, out_dir))
 
     linear_exact = (
         str(mpma_e["aggregation_strategy"]) in LINEAR_PROBABILITY_AGGREGATIONS
@@ -1247,8 +1311,10 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
         "perturbation_geometry": perturbation_geometries,
         "geometry_projection_applied": bool(projection_applied),
         "perturbation_interpretation": perturbation_policy["interpretation"],
-        "methods": list(methods),
+        "methods": ["shap"] if "shap" in global_methods else [],
+        "member_native_methods": list(methods),
         "method_parameters": [_core.method_to_dict(x) for x in method_specs],
+        "top_k": int(sweep.explainability.top_k),
         "explainability_config": _core._explainability_config_payload(
             sweep.explainability
         ),
