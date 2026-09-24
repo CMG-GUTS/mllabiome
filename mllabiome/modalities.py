@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -11,6 +12,7 @@ from .data import (
     Dataset,
     _dataset_from_feature_matrix,
     _encode_regression,
+    dataset_fingerprint,
     _encode_y,
     _normalise_task,
     _read_feature_by_sample_tsv,
@@ -42,6 +44,10 @@ class Modality:
     format: str = "table"
     primary: bool = False
     sample_id_col: str | None = None
+    metadata_cols: tuple[str, ...] = ()
+    feature_cols: str | tuple[str, ...] | None = None
+    feature_prefixes: str | tuple[str, ...] | None = None
+    allow_implicit_numeric_features: bool = False
 
 
 @dataclass
@@ -145,9 +151,51 @@ def _read_table_modality(
         raise ValueError(
             f"Modality {modality.name!r} contains duplicate sample IDs: {duplicates[:5]!r}."
         )
-    feature_cols = [str(c) for c in frame.columns if str(c) != id_col]
+    reserved = {id_col, *(str(c) for c in modality.metadata_cols)}
+    missing_metadata = sorted(c for c in reserved if c != id_col and c not in frame.columns)
+    if missing_metadata:
+        raise ValueError(
+            f"Modality {modality.name!r} is missing declared metadata columns: {missing_metadata!r}."
+        )
+    explicit = modality.feature_cols
+    prefixes = modality.feature_prefixes
+    if explicit is not None and prefixes is not None:
+        raise ValueError(
+            f"Modality {modality.name!r} must use feature_cols or feature_prefixes, not both."
+        )
+    if explicit is not None:
+        requested = (explicit,) if isinstance(explicit, str) else tuple(explicit)
+        feature_cols = [str(c) for c in requested]
+        missing = [c for c in feature_cols if c not in frame.columns]
+        if missing:
+            raise ValueError(
+                f"Modality {modality.name!r} is missing declared feature columns: {missing[:8]!r}."
+            )
+    elif prefixes is not None:
+        requested_prefixes = (prefixes,) if isinstance(prefixes, str) else tuple(prefixes)
+        normalized = tuple(str(prefix) for prefix in requested_prefixes if str(prefix))
+        if not normalized:
+            raise ValueError(
+                f"Modality {modality.name!r} feature_prefixes must not be empty."
+            )
+        feature_cols = [
+            str(c)
+            for c in frame.columns
+            if str(c) not in reserved and any(str(c).startswith(prefix) for prefix in normalized)
+        ]
+    elif modality.allow_implicit_numeric_features:
+        feature_cols = [str(c) for c in frame.columns if str(c) not in reserved]
+    else:
+        raise ValueError(
+            f"Tabular Modality {modality.name!r} requires explicit feature_cols or feature_prefixes. Set allow_implicit_numeric_features=True only for a verified feature-only table."
+        )
+    overlap = sorted(set(feature_cols) & reserved)
+    if overlap:
+        raise ValueError(
+            f"Modality {modality.name!r} feature selection overlaps reserved metadata columns: {overlap!r}."
+        )
     if not feature_cols:
-        raise ValueError(f"Modality {modality.name!r} contains no feature columns.")
+        raise ValueError(f"Modality {modality.name!r} contains no selected feature columns.")
     numeric = frame[feature_cols].apply(pd.to_numeric, errors="coerce")
     if numeric.isna().any().any():
         bad = [str(c) for c in numeric.columns[numeric.isna().any()].tolist()]
@@ -278,3 +326,49 @@ def load_modalities(
         str(primary.name),
         modality_matrices,
     )
+
+def modality_fingerprints(dataset: ModalityDataset) -> dict[str, str]:
+    return {
+        str(name): dataset_fingerprint(matrix.dataset)
+        for name, matrix in sorted(dataset.modalities.items(), key=lambda item: str(item[0]))
+    }
+
+
+def modality_dataset_fingerprint(dataset: ModalityDataset) -> str:
+    hasher = hashlib.sha256()
+    hasher.update(b"modality-dataset-v1")
+    for value in (dataset.task, dataset.target_name, dataset.primary_modality):
+        payload = str(value).encode("utf-8")
+        hasher.update(len(payload).to_bytes(8, "big"))
+        hasher.update(payload)
+    for sample_id, subject_id in zip(dataset.sample_ids, dataset.subject_ids):
+        for value in (sample_id, subject_id):
+            payload = str(value).encode("utf-8")
+            hasher.update(len(payload).to_bytes(8, "big"))
+            hasher.update(payload)
+    for name, fingerprint in modality_fingerprints(dataset).items():
+        for value in (name, fingerprint):
+            payload = str(value).encode("utf-8")
+            hasher.update(len(payload).to_bytes(8, "big"))
+            hasher.update(payload)
+    return hasher.hexdigest()
+
+def source_file_sha256(path: Path | str) -> str:
+    hasher = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def modality_source_fingerprints(
+    samples: Samples, modalities: Sequence[Modality]
+) -> dict[str, Any]:
+    return {
+        "samples": source_file_sha256(samples.path),
+        "modalities": {
+            str(modality.name): source_file_sha256(modality.path)
+            for modality in modalities
+        },
+    }
+

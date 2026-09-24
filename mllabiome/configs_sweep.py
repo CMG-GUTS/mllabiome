@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import marshal
 import os
 import platform
 import sqlite3
@@ -577,10 +578,229 @@ def _mpdr_id(count_transformation: str, resolution: str) -> str:
     ).hexdigest()[:12]
 
 
-def _config_id(count_transformation: str, resolution: str, learner_name: str) -> str:
-    return hashlib.sha1(
-        f"{_MPDR_SEMANTICS}__{count_transformation}__{resolution}__{learner_name}".encode()
+def _scientific_value(value: Any) -> Any:
+    if isinstance(value, BaseEstimator):
+        return {
+            "class": f"{type(value).__module__}.{type(value).__qualname__}",
+            "params": _scientific_value(value.get_params(deep=True)),
+        }
+    if isinstance(value, Mapping):
+        return {str(k): _scientific_value(v) for k, v in sorted(value.items(), key=lambda x: str(x[0]))}
+    if isinstance(value, (list, tuple)):
+        return [_scientific_value(v) for v in value]
+    if isinstance(value, set):
+        return sorted((_scientific_value(v) for v in value), key=lambda x: json.dumps(x, sort_keys=True, default=str))
+    if isinstance(value, np.ndarray):
+        return _scientific_value(value.tolist())
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        value = float(value)
+    if isinstance(value, float):
+        return value if np.isfinite(value) else str(value)
+    if isinstance(value, Path):
+        return str(value)
+    if hasattr(value, "__dataclass_fields__"):
+        return {
+            "class": f"{type(value).__module__}.{type(value).__qualname__}",
+            "state": _scientific_value(asdict(value)),
+        }
+    slots = getattr(type(value), "__slots__", None)
+    if slots:
+        slot_names = (slots,) if isinstance(slots, str) else tuple(slots)
+        state = {
+            str(name): _scientific_value(getattr(value, name))
+            for name in slot_names
+            if hasattr(value, name)
+        }
+        return {
+            "class": f"{type(value).__module__}.{type(value).__qualname__}",
+            "state": state,
+        }
+    if callable(value):
+        name = f"{getattr(value, '__module__', '')}.{getattr(value, '__qualname__', getattr(value, '__name__', type(value).__qualname__))}"
+        code = getattr(value, "__code__", None)
+        if code is None:
+            return {"callable": name}
+        closure = getattr(value, "__closure__", None)
+        closure_values = []
+        if closure is not None:
+            for cell in closure:
+                try:
+                    closure_values.append(_scientific_value(cell.cell_contents))
+                except ValueError:
+                    closure_values.append("<empty>")
+        return {
+            "callable": name,
+            "code_sha256": hashlib.sha256(marshal.dumps(code)).hexdigest(),
+            "defaults": _scientific_value(getattr(value, "__defaults__", None)),
+            "kwdefaults": _scientific_value(getattr(value, "__kwdefaults__", None)),
+            "closure": closure_values,
+        }
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    state = getattr(value, "__dict__", None)
+    if isinstance(state, dict):
+        return {
+            "class": f"{type(value).__module__}.{type(value).__qualname__}",
+            "state": _scientific_value(state),
+        }
+    return {"class": f"{type(value).__module__}.{type(value).__qualname__}", "repr": str(value)}
+
+
+def _scientific_digest(payload: Any) -> str:
+    canonical = json.dumps(_scientific_value(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _transformation_fingerprint(identity: str, spec: Any) -> str:
+    return _scientific_digest({"identity": str(identity), "spec": _scientific_value(spec)})
+
+
+def _resolution_fingerprint(
+    resolution: str, levels: Sequence[str], feature_blocks: Any
+) -> str:
+    blocks = []
+    for name, indices in feature_blocks or ():
+        blocks.append((str(name), tuple(int(index) for index in indices)))
+    return _scientific_digest(
+        {
+            "resolution": str(resolution),
+            "levels": tuple(str(level) for level in levels),
+            "feature_blocks": blocks,
+        }
+    )
+
+
+def _learner_payload(item: Any) -> dict[str, Any]:
+    if not isinstance(item, tuple) or len(item) != 2 or not isinstance(item[1], BaseEstimator):
+        raise TypeError("Learners must be explicit (name, estimator) pairs.")
+    name, estimator = item
+    return {
+        "name": str(name),
+        "class": f"{type(estimator).__module__}.{type(estimator).__qualname__}",
+        "params": _scientific_value(estimator.get_params(deep=True)),
+    }
+
+
+def _learner_fingerprint(item: Any) -> str:
+    return _scientific_digest(_learner_payload(item))
+
+
+def _config_id(
+    count_transformation: str,
+    resolution: str,
+    learner_name: str,
+    learner_fingerprint: str | None = None,
+    transformation_fingerprint: str | None = None,
+    resolution_fingerprint: str | None = None,
+) -> str:
+    learner_identity = str(learner_fingerprint or learner_name)
+    transformation_identity = str(transformation_fingerprint or count_transformation)
+    resolution_identity = str(resolution_fingerprint or resolution)
+    return hashlib.sha256(
+        f"{_MPDR_SEMANTICS}__{count_transformation}__{resolution}__{resolution_identity}__{transformation_identity}__{learner_name}__{learner_identity}".encode()
     ).hexdigest()[:12]
+
+
+def _evaluation_fingerprint(sweep: Sweep, dataset: Dataset, configs: pd.DataFrame) -> str:
+    plan = sweep.evaluation
+    configured_groups = _groups_from_metadata(dataset.metadata, None if sweep.data is None else sweep.data.group_col)
+    effective_groups, effective_group_col = _subject_safe_groups(
+        plan, dataset, configured_groups, None if sweep.data is None else sweep.data.group_col
+    )
+    strata = _strata_from_metadata(
+        dataset.metadata,
+        dataset.y,
+        None if sweep.data is None else sweep.data.stratify_col,
+    )
+    payload = {
+        "schema": "evaluation-fingerprint-v3",
+        "source_tree_sha256": _source_tree_sha256(),
+        "package_version": __version__,
+        "python_version": platform.python_version(),
+        "model_runtime_dependencies": {
+            name: _installed_distribution_version(name)
+            for name in (
+                "numpy",
+                "pandas",
+                "scipy",
+                "scikit-learn",
+                "scikit-bio",
+                "xgboost",
+                "lightgbm",
+                "catboost",
+                "flaml",
+                "joblib",
+                "threadpoolctl",
+            )
+        },
+        "dataset_fingerprint": dataset_fingerprint(dataset),
+        "task": str(dataset.task),
+        "target": str(dataset.target_name),
+        "config_ids": sorted(configs["config_id"].astype(str).tolist()),
+        "evaluation": {
+            "protocol": str(plan.protocol),
+            "outer_folds": int(plan.outer_folds),
+            "inner_folds": int(plan.inner_folds),
+            "repeats": int(plan.repeats),
+            "random_state": int(plan.random_state),
+            "optimize_metric": _scientific_value(plan.optimize_metric),
+        },
+        "group_col": None if sweep.data is None else sweep.data.group_col,
+        "effective_group_col": effective_group_col,
+        "group_assignments": None if effective_groups is None else _scientific_digest(np.asarray(effective_groups, dtype=object).astype(str).tolist()),
+        "subject_id_policy": "auto_group_repeated_subjects",
+        "stratify_col": None if sweep.data is None else _scientific_value(sweep.data.stratify_col),
+        "strata_assignments": None if strata is None else _scientific_digest(np.asarray(strata, dtype=object).astype(str).tolist()),
+        "gate": _scientific_value(sweep.gate),
+    }
+    return _scientific_digest(payload)
+
+
+def _experiment_fingerprint(sweep: Sweep, evaluation_fingerprint: str) -> str:
+    payload = {
+        "schema": "experiment-fingerprint-v2",
+        "evaluation_fingerprint": str(evaluation_fingerprint),
+        "ensemble": _scientific_value(sweep.ensemble),
+        "explainability": _scientific_value(sweep.explainability),
+        "integrations": _scientific_value(sweep.integrations),
+        "representations": _scientific_value(sweep.representations),
+        "transformations": _scientific_value(sweep.transformations),
+    }
+    return _scientific_digest(payload)
+
+
+def _has_evaluation_artifacts(root: Path) -> bool:
+    paths = (
+        root / "results" / "outer_results.parquet",
+        root / "predictions" / "outer_predictions.parquet",
+        root / "checkpoints",
+    )
+    return any(path.exists() for path in paths)
+
+
+def _validate_experiment_identity(
+    root: Path, evaluation_fingerprint: str, *, redo: bool
+) -> None:
+    path = root / "manifest.json"
+    if not path.exists() or bool(redo):
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Existing experiment manifest cannot be read.") from exc
+    stored = payload.get("evaluation_fingerprint")
+    if stored is None:
+        if _has_evaluation_artifacts(root):
+            raise ValueError(
+                "Existing evaluation artifacts predate scientific cache fingerprinting. Rerun with --redo or use a new experiment directory before reusing results."
+            )
+        return
+    if str(stored) != str(evaluation_fingerprint):
+        raise ValueError(
+            "Existing experiment results do not match the current scientific evaluation fingerprint. Rerun with --redo or use a new experiment directory."
+        )
 
 
 def build_sweep_configs(
@@ -590,7 +810,15 @@ def build_sweep_configs(
     resolution_feature_blocks: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
-    learner_specs = [(_learner_name(x), learner_display_label(x)) for x in learners]
+    learner_specs = [
+        (
+            _learner_name(x),
+            learner_display_label(x),
+            _learner_fingerprint(x),
+            _learner_payload(x),
+        )
+        for x in learners
+    ]
     block_map = (
         {} if resolution_feature_blocks is None else dict(resolution_feature_blocks)
     )
@@ -622,15 +850,19 @@ def build_sweep_configs(
             if taxonomic_block_count > 1
             else "unresolved"
         )
+        resolution_fingerprint = _resolution_fingerprint(res_name, levels, feature_blocks)
         transformation_specs = _count_transformation_specs_for_blocks(
             count_transformations, feature_blocks
         )
-        for ct_name, _ in transformation_specs:
-            for lname, learner_display in learner_specs:
+        for ct_name, ct_spec in transformation_specs:
+            transformation_fingerprint = _transformation_fingerprint(ct_name, ct_spec)
+            for lname, learner_display, learner_fingerprint, learner_payload in learner_specs:
                 rows.append(
                     {
-                        "config_id": _config_id(ct_name, res_name, lname),
+                        "config_id": _config_id(ct_name, res_name, lname, learner_fingerprint, transformation_fingerprint, resolution_fingerprint),
                         "mpdr_id": _mpdr_id(ct_name, res_name),
+                        "transformation_fingerprint": transformation_fingerprint,
+                        "resolution_fingerprint": resolution_fingerprint,
                         "count_transformation": ct_name,
                         "resolution": res_name,
                         "levels": ",".join(levels),
@@ -639,6 +871,9 @@ def build_sweep_configs(
                         "representation_scope": representation_scope,
                         "learner": lname,
                         "learner_display": learner_display,
+                        "learner_fingerprint": learner_fingerprint,
+                        "learner_class": learner_payload["class"],
+                        "learner_params": json.dumps(learner_payload["params"], sort_keys=True, separators=(",", ":")),
                         "active": 1,
                     }
                 )
@@ -1319,6 +1554,35 @@ def _regression_inner_splits(
     return [(train, val) for train, val in iterator]
 
 
+def _subject_safe_groups(
+    plan: Evaluation,
+    dataset: Any,
+    groups: np.ndarray | None,
+    group_col: str | None,
+) -> tuple[np.ndarray | None, str | None]:
+    subject_ids = np.asarray([str(x) for x in dataset.subject_ids], dtype=object)
+    if len(subject_ids) != len(dataset.y):
+        raise ValueError("subject_ids must align one-to-one with model rows.")
+    repeated = len(set(subject_ids.tolist())) < len(subject_ids)
+    protocol = str(plan.protocol).strip().lower()
+    if groups is not None:
+        group_values = np.asarray(groups, dtype=object)
+        if len(group_values) != len(subject_ids):
+            raise ValueError("Configured CV groups must align one-to-one with model rows.")
+        mapping = pd.DataFrame({"subject": subject_ids, "group": group_values}).groupby("subject", sort=False)["group"].nunique(dropna=False)
+        if bool((mapping > 1).any()):
+            bad = mapping[mapping > 1].index.astype(str).tolist()[:5]
+            raise ValueError(
+                f"Repeated subjects map to multiple CV groups, which can leak a subject across train/test partitions: {bad!r}. Use a grouping column that is constant within subject."
+            )
+        return group_values, group_col
+    if protocol in {"lodo", "leave_one_dataset_out"}:
+        return None, group_col
+    if repeated:
+        return subject_ids, "__subject_id__"
+    return None, group_col
+
+
 def _resolved_evaluation_splits(
     root: Path,
     plan: Evaluation,
@@ -1329,6 +1593,7 @@ def _resolved_evaluation_splits(
     group_col: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[tuple[np.ndarray, np.ndarray]]]]:
     task = str(dataset.task).lower()
+    groups, group_col = _subject_safe_groups(plan, dataset, groups, group_col)
 
     def create():
         if task == "regression":
@@ -1372,6 +1637,23 @@ def _resolved_evaluation_splits(
         stratify_col=stratify_col,
         create=create,
     )
+    subjects = np.asarray([str(x) for x in dataset.subject_ids], dtype=object)
+    for split in outer:
+        train_idx = np.asarray(split["train_idx"], dtype=int)
+        test_idx = np.asarray(split["test_idx"], dtype=int)
+        overlap = set(subjects[train_idx].tolist()) & set(subjects[test_idx].tolist())
+        if overlap:
+            raise ValueError(
+                f"CV split {split['split_key']!r} leaks subject(s) across outer train/test partitions: {sorted(overlap)[:5]!r}."
+            )
+        for inner_no, (inner_train, inner_val) in enumerate(inner.get(str(split["split_key"]), [])):
+            inner_train_idx = train_idx[np.asarray(inner_train, dtype=int)]
+            inner_val_idx = train_idx[np.asarray(inner_val, dtype=int)]
+            inner_overlap = set(subjects[inner_train_idx].tolist()) & set(subjects[inner_val_idx].tolist())
+            if inner_overlap:
+                raise ValueError(
+                    f"CV split {split['split_key']!r} inner fold {inner_no} leaks subject(s) across train/validation partitions: {sorted(inner_overlap)[:5]!r}."
+                )
     return outer, inner
 
 
@@ -1683,6 +1965,9 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
     dataset = load_dataset(sweep.data, levels or ("all",))
     _validate_dataset_identity(root, dataset)
     learners = [_learner_factory(item, task="regression") for item in sweep.learners]
+    learner_fingerprints = {
+        _learner_name(item): _learner_fingerprint(item) for item in sweep.learners
+    }
     mpdr_cache = {}
     for name, lvls in resolutions:
         matrix, _, blocks = materialize_mpdr_with_blocks(dataset, lvls)
@@ -1702,9 +1987,13 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
         sweep.learners,
         resolution_feature_blocks=feature_blocks_by_resolution,
     )
-    _write_config_table(root, configs)
+    evaluation_fingerprint = _evaluation_fingerprint(sweep, dataset, configs)
+    _validate_experiment_identity(
+        root, evaluation_fingerprint, redo=bool(sweep.evaluation.redo)
+    )
     if sweep.evaluation.redo:
         _clear_evaluation_checkpoints(root)
+    _write_config_table(root, configs)
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
     outer_splits, inner_splits_by_outer = _resolved_evaluation_splits(
         root,
@@ -1713,7 +2002,9 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
         groups,
         group_col=sweep.data.group_col,
     )
-    _write_manifest(root, sweep, dataset)
+    _write_manifest(
+        root, sweep, dataset, evaluation_fingerprint=evaluation_fingerprint
+    )
     current_config_ids = set(configs["config_id"].astype(str))
     current_outer_keys = {str(split["split_key"]) for split in outer_splits}
     existing = _load_existing_evaluation(
@@ -1752,10 +2043,19 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
         ]
         for res_name, lvls in resolutions:
             X_base, feature_blocks = mpdr_cache[res_name]
+            resolution_fingerprint = _resolution_fingerprint(res_name, lvls, feature_blocks)
             for ct_name, ct_spec in transformation_specs_by_resolution[res_name]:
                 ct_item = (ct_name, ct_spec) if ct_spec is not None else ct_name
+                transformation_fingerprint = _transformation_fingerprint(str(ct_name), ct_spec)
                 for learner_name, learner_factory in learners:
-                    cid = _config_id(str(ct_name), res_name, learner_name)
+                    cid = _config_id(
+                        str(ct_name),
+                        res_name,
+                        learner_name,
+                        learner_fingerprints[learner_name],
+                        transformation_fingerprint,
+                        resolution_fingerprint,
+                    )
                     missing_inner = {
                         key for key in inner_keys if (key, cid) not in inner_done
                     }
@@ -2055,6 +2355,9 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
     dataset = load_dataset(sweep.data, all_levels or ("all",))
     _validate_dataset_identity(root, dataset)
     learner_factories = [_learner_factory(x) for x in sweep.learners]
+    learner_fingerprints = {
+        _learner_name(item): _learner_fingerprint(item) for item in sweep.learners
+    }
     mpdr_cache = {}
     for res_name, levels in resolutions:
         matrix, _, blocks = materialize_mpdr_with_blocks(dataset, levels)
@@ -2074,9 +2377,13 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
         sweep.learners,
         resolution_feature_blocks=feature_blocks_by_resolution,
     )
-    _write_config_table(root, configs)
+    evaluation_fingerprint = _evaluation_fingerprint(sweep, dataset, configs)
+    _validate_experiment_identity(
+        root, evaluation_fingerprint, redo=bool(sweep.evaluation.redo)
+    )
     if sweep.evaluation.redo:
         _clear_evaluation_checkpoints(root)
+    _write_config_table(root, configs)
     y = dataset.y
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
     strata = _strata_from_metadata(dataset.metadata, y, sweep.data.stratify_col)
@@ -2089,7 +2396,9 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
         sweep.data.stratify_col,
         sweep.data.group_col,
     )
-    _write_manifest(root, sweep, dataset)
+    _write_manifest(
+        root, sweep, dataset, evaluation_fingerprint=evaluation_fingerprint
+    )
     current_config_ids = set(configs["config_id"].astype(str))
     current_outer_keys = {str(s["split_key"]) for s in outer_splits}
     existing = _load_existing_evaluation(
@@ -2136,10 +2445,19 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
         ]
         for res_name, levels in resolutions:
             X_base, feature_blocks = mpdr_cache[res_name]
+            resolution_fingerprint = _resolution_fingerprint(res_name, levels, feature_blocks)
             for ct_name, ct_spec in transformation_specs_by_resolution[res_name]:
                 ct_item = (ct_name, ct_spec) if ct_spec is not None else ct_name
+                transformation_fingerprint = _transformation_fingerprint(str(ct_name), ct_spec)
                 for learner_name, learner_factory in learner_factories:
-                    cid = _config_id(str(ct_name), res_name, learner_name)
+                    cid = _config_id(
+                        str(ct_name),
+                        res_name,
+                        learner_name,
+                        learner_fingerprints[learner_name],
+                        transformation_fingerprint,
+                        resolution_fingerprint,
+                    )
                     missing_inner = {
                         key for key in inner_keys if (key, cid) not in inner_done
                     }
@@ -2664,7 +2982,13 @@ def _software_provenance() -> dict[str, Any]:
     }
 
 
-def _write_manifest(root: Path, sweep: Sweep, dataset: Dataset) -> None:
+def _write_manifest(
+    root: Path,
+    sweep: Sweep,
+    dataset: Dataset,
+    *,
+    evaluation_fingerprint: str | None = None,
+) -> None:
     safe_sweep = asdict(sweep)
     for section in ["data"]:
         for k, v in list(safe_sweep[section].items()):
@@ -2686,6 +3010,10 @@ def _write_manifest(root: Path, sweep: Sweep, dataset: Dataset) -> None:
         "n_samples": len(dataset.y),
         "dataset_fingerprint": dataset_fingerprint(dataset),
         "dataset_fingerprint_algorithm": "sha256-model-input-v2",
+        "evaluation_fingerprint": evaluation_fingerprint,
+        "evaluation_fingerprint_algorithm": "sha256-scientific-evaluation-v1" if evaluation_fingerprint else None,
+        "experiment_fingerprint": _experiment_fingerprint(sweep, evaluation_fingerprint) if evaluation_fingerprint else None,
+        "experiment_fingerprint_algorithm": "sha256-scientific-experiment-v1" if evaluation_fingerprint else None,
         "cv_splits": "tables/cv_splits.parquet",
         "transformations": [label.key for label in TRANSFORMATION_LABELS],
         "mpdr_semantics": _MPDR_SEMANTICS,
@@ -2705,6 +3033,11 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
         "taxonomic_block_count": "INTEGER",
         "representation_scope": "TEXT",
         "learner_display": "TEXT",
+        "transformation_fingerprint": "TEXT",
+        "resolution_fingerprint": "TEXT",
+        "learner_fingerprint": "TEXT",
+        "learner_class": "TEXT",
+        "learner_params": "TEXT",
     }
     try:
         conn.execute("PRAGMA journal_mode=WAL")
@@ -2739,19 +3072,21 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
         for name, sql_type in extra_columns.items():
             if name not in columns:
                 conn.execute(f"ALTER TABLE configs ADD COLUMN {name} {sql_type}")
-        conn.execute("UPDATE configs SET active=1")
+        conn.execute("UPDATE configs SET active=0")
         for r in configs.to_dict(orient="records"):
             conn.execute(
                 """INSERT INTO configs
-                   (config_id, mpdr_id, count_transformation, resolution, levels, learner, active, candidate_family, modalities, integration, integration_n_components, taxonomic_blocks, taxonomic_block_count, representation_scope, learner_display)
-                   VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                   (config_id, mpdr_id, count_transformation, resolution, levels, learner, active, candidate_family, modalities, integration, integration_n_components, taxonomic_blocks, taxonomic_block_count, representation_scope, learner_display, transformation_fingerprint, resolution_fingerprint, learner_fingerprint, learner_class, learner_params)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(config_id) DO UPDATE SET
                      mpdr_id=excluded.mpdr_id, count_transformation=excluded.count_transformation,
                      resolution=excluded.resolution, levels=excluded.levels, learner=excluded.learner,
                      active=1, candidate_family=excluded.candidate_family, modalities=excluded.modalities,
                      integration=excluded.integration, integration_n_components=excluded.integration_n_components,
                      taxonomic_blocks=excluded.taxonomic_blocks, taxonomic_block_count=excluded.taxonomic_block_count,
-                     representation_scope=excluded.representation_scope, learner_display=excluded.learner_display""",
+                     representation_scope=excluded.representation_scope, learner_display=excluded.learner_display,
+                     transformation_fingerprint=excluded.transformation_fingerprint, resolution_fingerprint=excluded.resolution_fingerprint, learner_fingerprint=excluded.learner_fingerprint, learner_class=excluded.learner_class,
+                     learner_params=excluded.learner_params""",
                 (
                     str(r.get("config_id")),
                     str(r.get("mpdr_id", "")),
@@ -2781,6 +3116,21 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
                     None
                     if pd.isna(r.get("learner_display"))
                     else str(r.get("learner_display")),
+                    None
+                    if pd.isna(r.get("transformation_fingerprint"))
+                    else str(r.get("transformation_fingerprint")),
+                    None
+                    if pd.isna(r.get("resolution_fingerprint"))
+                    else str(r.get("resolution_fingerprint")),
+                    None
+                    if pd.isna(r.get("learner_fingerprint"))
+                    else str(r.get("learner_fingerprint")),
+                    None
+                    if pd.isna(r.get("learner_class"))
+                    else str(r.get("learner_class")),
+                    None
+                    if pd.isna(r.get("learner_params"))
+                    else str(r.get("learner_params")),
                 ),
             )
         conn.commit()

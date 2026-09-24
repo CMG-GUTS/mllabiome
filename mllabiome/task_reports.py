@@ -12,12 +12,11 @@ from . import report as _report
 from .configs_sweep import Sweep, _normalise_sweep_task, _target_task, target_sweeps
 from .console import info, path_table, phase_progress, stage, success
 from .final_models import build_final_models
-from .metrics import metric_is_loss
+from .metrics import compute_regression_metrics, metric_is_loss
 from .regression_explainability import _write_regression_explainability_figures
 from .report_compute import compute_display, run_compute_accounting
 from .report_oof import _mpma_b_composition, oof_section_html, write_report
 from .report_statistics import (
-    _bootstrap_unit_mean,
     _corrected_resampled_t_test,
     _exact_sign_flip_test,
     _paired_bootstrap_difference,
@@ -129,54 +128,260 @@ def _regression_strategy_frames(root: Path) -> dict[str, pd.DataFrame]:
     return out
 
 
+
+
+def _regression_prediction_frames(root: Path) -> dict[str, pd.DataFrame]:
+    paths = {
+        "MPMA-B": root / "predictions" / "mpma_b_outer_predictions.parquet",
+        "MPMA-E": root / "ensembling" / "ensemble_predictions.parquet",
+    }
+    out: dict[str, pd.DataFrame] = {}
+    for strategy, path in paths.items():
+        frame = _read_table(path)
+        if not frame.empty:
+            out[strategy] = frame
+    return out
+
+
+def _regression_repeat_id(value: Any) -> str:
+    text = str(value)
+    if text.startswith("r") and "_o" in text:
+        return text.split("_o", 1)[0]
+    return "r0"
+
+
+def _prepare_regression_oof(frame: pd.DataFrame, protocol: str) -> pd.DataFrame:
+    out = frame.copy()
+    if "outer_split_key" not in out.columns and "split_key" in out.columns:
+        out["outer_split_key"] = out["split_key"]
+    required = {"outer_split_key", "sample_id", "y_true", "y_pred"}
+    if out.empty or not required.issubset(out.columns):
+        return pd.DataFrame()
+    out["outer_split_key"] = out["outer_split_key"].astype(str)
+    out["sample_id"] = out["sample_id"].astype(str)
+    if "subject_id" in out.columns:
+        if out["subject_id"].isna().any():
+            raise ValueError("Held-out regression predictions contain missing subject_id values.")
+        out["_subject_id"] = out["subject_id"].astype(str)
+    else:
+        out["_subject_id"] = out["sample_id"]
+    out["y_true"] = pd.to_numeric(out["y_true"], errors="coerce")
+    out["y_pred"] = pd.to_numeric(out["y_pred"], errors="coerce")
+    valid = np.isfinite(out["y_true"].to_numpy(dtype=float)) & np.isfinite(out["y_pred"].to_numpy(dtype=float))
+    out = out.loc[valid].copy()
+    key = str(protocol).strip().lower()
+    if key in {"lodo", "leave_one_dataset_out"}:
+        out["_cluster"] = out["outer_split_key"]
+        out["_repeat"] = "r0"
+        subject_cohorts = out.groupby("_subject_id", sort=False)["_cluster"].nunique()
+        if bool((subject_cohorts > 1).any()):
+            raise ValueError("A subject_id occurs in more than one held-out regression LODO cohort.")
+        duplicate_keys = ["_cluster", "sample_id"]
+    else:
+        out["_repeat"] = out["outer_split_key"].map(_regression_repeat_id)
+        out["_cluster"] = out["_repeat"]
+        duplicate_keys = ["_repeat", "sample_id"]
+    if out.duplicated(duplicate_keys).any():
+        raise ValueError("Held-out regression predictions contain duplicate inference rows.")
+    return out.reset_index(drop=True)
+
+
+def _regression_mean_metrics(values: list[dict[str, float]]) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for metric in REGRESSION_METRIC_COLUMNS:
+        arr = np.asarray([row.get(metric, np.nan) for row in values], dtype=float)
+        arr = arr[np.isfinite(arr)]
+        result[metric] = float(np.mean(arr)) if len(arr) else float("nan")
+    return result
+
+
+def _regression_oof_metrics(frame: pd.DataFrame) -> dict[str, float]:
+    if frame.empty:
+        return {metric: float("nan") for metric in REGRESSION_METRIC_COLUMNS}
+    return compute_regression_metrics(
+        frame["y_true"].to_numpy(dtype=float), frame["y_pred"].to_numpy(dtype=float)
+    )
+
+
+def _regression_point_estimands(frame: pd.DataFrame, protocol: str) -> dict[str, dict[str, float]]:
+    key = str(protocol).strip().lower()
+    if key in {"lodo", "leave_one_dataset_out"}:
+        cohort_metrics = [
+            _regression_oof_metrics(group)
+            for _, group in frame.groupby("_cluster", sort=True)
+        ]
+        return {
+            "pooled_sample_weighted": _regression_oof_metrics(frame),
+            "cohort_macro_equal_weight": _regression_mean_metrics(cohort_metrics),
+        }
+    repeat_metrics = [
+        _regression_oof_metrics(group)
+        for _, group in frame.groupby("_repeat", sort=True)
+    ]
+    return {"mean_repeat_pooled_oof": _regression_mean_metrics(repeat_metrics)}
+
+
+def _resample_regression_subjects(frame: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
+    subjects = [
+        group.reset_index(drop=True)
+        for _, group in frame.groupby("_subject_id", sort=True)
+    ]
+    if not subjects:
+        return frame.iloc[0:0].copy()
+    chosen = rng.integers(0, len(subjects), size=len(subjects))
+    return pd.concat([subjects[int(index)] for index in chosen], ignore_index=True)
+
+
+def _regression_bootstrap_estimands(
+    frame: pd.DataFrame, protocol: str, n_bootstrap: int, rng: np.random.Generator
+) -> dict[str, dict[str, np.ndarray]]:
+    key = str(protocol).strip().lower()
+    names = (
+        ("pooled_sample_weighted", "cohort_macro_equal_weight")
+        if key in {"lodo", "leave_one_dataset_out"}
+        else ("mean_repeat_pooled_oof",)
+    )
+    storage = {
+        name: {metric: np.full(int(n_bootstrap), np.nan, dtype=float) for metric in REGRESSION_METRIC_COLUMNS}
+        for name in names
+    }
+    if frame.empty:
+        return storage
+    if key in {"lodo", "leave_one_dataset_out"}:
+        cohorts = [group.reset_index(drop=True) for _, group in frame.groupby("_cluster", sort=True)]
+        for i in range(int(n_bootstrap)):
+            chosen = rng.integers(0, len(cohorts), size=len(cohorts))
+            sampled = [_resample_regression_subjects(cohorts[int(index)], rng) for index in chosen]
+            pooled = _regression_oof_metrics(pd.concat(sampled, ignore_index=True))
+            macro = _regression_mean_metrics([_regression_oof_metrics(group) for group in sampled])
+            for metric in REGRESSION_METRIC_COLUMNS:
+                storage["pooled_sample_weighted"][metric][i] = pooled.get(metric, np.nan)
+                storage["cohort_macro_equal_weight"][metric][i] = macro.get(metric, np.nan)
+        return storage
+    for i in range(int(n_bootstrap)):
+        sampled = _resample_regression_subjects(frame, rng)
+        metrics = [
+            _regression_oof_metrics(group)
+            for _, group in sampled.groupby("_repeat", sort=True)
+        ]
+        averaged = _regression_mean_metrics(metrics)
+        for metric in REGRESSION_METRIC_COLUMNS:
+            storage["mean_repeat_pooled_oof"][metric][i] = averaged.get(metric, np.nan)
+    return storage
+
+
+def _paired_regression_prediction_frame(a: pd.DataFrame, b: pd.DataFrame, protocol: str) -> pd.DataFrame:
+    left = _prepare_regression_oof(a, protocol)
+    right = _prepare_regression_oof(b, protocol)
+    if left.empty or right.empty:
+        return pd.DataFrame()
+    keep_left = ["outer_split_key", "sample_id", "_subject_id", "_repeat", "_cluster", "y_true", "y_pred"]
+    keep_right = ["outer_split_key", "sample_id", "y_true", "y_pred"]
+    merged = left[keep_left].merge(
+        right[keep_right],
+        on=["outer_split_key", "sample_id"],
+        how="inner",
+        suffixes=("_a", "_b"),
+    )
+    if merged.empty:
+        return merged
+    if not np.allclose(merged["y_true_a"].to_numpy(dtype=float), merged["y_true_b"].to_numpy(dtype=float), rtol=0.0, atol=1e-12):
+        raise ValueError("Paired regression strategies disagree on held-out targets.")
+    return merged
+
+
+def _paired_regression_oof_ci(
+    merged: pd.DataFrame, metric: str, protocol: str, seed: int, n_bootstrap: int = 2000
+) -> tuple[float, float, float]:
+    if merged.empty:
+        return float("nan"), float("nan"), float("nan")
+    def metric_value(frame: pd.DataFrame, pred_col: str) -> float:
+        values = compute_regression_metrics(
+            frame["y_true_a"].to_numpy(dtype=float), frame[pred_col].to_numpy(dtype=float)
+        )
+        return float(values.get(metric, np.nan))
+    key = str(protocol).strip().lower()
+    if key in {"lodo", "leave_one_dataset_out"}:
+        estimate = metric_value(merged, "y_pred_a") - metric_value(merged, "y_pred_b")
+    else:
+        differences = []
+        for _, group in merged.groupby("_repeat", sort=True):
+            differences.append(metric_value(group, "y_pred_a") - metric_value(group, "y_pred_b"))
+        estimate = float(np.mean(differences)) if differences else float("nan")
+    rng = np.random.default_rng(int(seed))
+    draws = np.full(int(n_bootstrap), np.nan, dtype=float)
+    if key in {"lodo", "leave_one_dataset_out"}:
+        cohorts = [group.reset_index(drop=True) for _, group in merged.groupby("_cluster", sort=True)]
+        for i in range(int(n_bootstrap)):
+            chosen = rng.integers(0, len(cohorts), size=len(cohorts))
+            sampled = []
+            for index in chosen:
+                cohort = cohorts[int(index)]
+                subjects = [g.reset_index(drop=True) for _, g in cohort.groupby("_subject_id", sort=True)]
+                subject_draws = rng.integers(0, len(subjects), size=len(subjects))
+                sampled.append(pd.concat([subjects[int(j)] for j in subject_draws], ignore_index=True))
+            boot = pd.concat(sampled, ignore_index=True)
+            draws[i] = metric_value(boot, "y_pred_a") - metric_value(boot, "y_pred_b")
+    else:
+        subjects = [group.reset_index(drop=True) for _, group in merged.groupby("_subject_id", sort=True)]
+        for i in range(int(n_bootstrap)):
+            chosen = rng.integers(0, len(subjects), size=len(subjects))
+            boot = pd.concat([subjects[int(j)] for j in chosen], ignore_index=True)
+            diffs = []
+            for _, group in boot.groupby("_repeat", sort=True):
+                diffs.append(metric_value(group, "y_pred_a") - metric_value(group, "y_pred_b"))
+            if diffs:
+                draws[i] = float(np.mean(diffs))
+    finite = draws[np.isfinite(draws)]
+    if not len(finite):
+        return estimate, float("nan"), float("nan")
+    low, high = np.quantile(finite, [0.025, 0.975])
+    return estimate, float(low), float(high)
+
+
 def _regression_statistics(
     root: Path, seed: int, protocol: str
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
 
     frames = _regression_strategy_frames(root)
+    prediction_frames = _regression_prediction_frames(root)
 
     rows: list[dict[str, Any]] = []
-
-    for strategy, frame in frames.items():
-        for metric in REGRESSION_METRIC_COLUMNS:
-            if metric not in frame.columns:
-                continue
-
-            values = _finite(frame[metric])
-
-            if len(values) == 0:
-                continue
-
-            if "outer_split_key" in frame.columns:
-                boot = _bootstrap_unit_mean(
-                    frame,
-                    metric,
-                    protocol,
-                    2000,
-                    np.random.default_rng(seed + len(rows) * 101),
-                )
-
+    for strategy, raw in prediction_frames.items():
+        frame = _prepare_regression_oof(raw, protocol)
+        if frame.empty:
+            continue
+        point = _regression_point_estimands(frame, protocol)
+        boot = _regression_bootstrap_estimands(
+            frame,
+            protocol,
+            2000,
+            np.random.default_rng(seed + len(rows) * 101),
+        )
+        for estimand, metrics in point.items():
+            for metric in REGRESSION_METRIC_COLUMNS:
+                estimate = float(metrics.get(metric, np.nan))
+                if not np.isfinite(estimate):
+                    continue
+                samples = np.asarray(boot[estimand][metric], dtype=float)
+                samples = samples[np.isfinite(samples)]
                 low = high = float("nan")
-
-                if len(boot):
-                    low, high = np.quantile(boot, [0.025, 0.975])
-
-            else:
-                low, high = _bootstrap_mean(values, seed + len(rows) * 101, 2000)
-
-            rows.append(
-                {
-                    "Strategy": strategy,
-                    "metric": metric,
-                    "estimate": float(np.mean(values)),
-                    "std": float(np.std(values, ddof=1)) if len(values) > 1 else 0.0,
-                    "ci_low": float(low),
-                    "ci_high": float(high),
-                    "n_outer_units": int(len(values)),
-                    "n_bootstrap": 2000,
-                }
-            )
-
+                if len(samples):
+                    low, high = np.quantile(samples, [0.025, 0.975])
+                rows.append(
+                    {
+                        "Strategy": strategy,
+                        "estimand": estimand,
+                        "metric": metric,
+                        "estimate": estimate,
+                        "std": float(np.std(samples, ddof=1)) if len(samples) > 1 else 0.0,
+                        "ci_low": float(low),
+                        "ci_high": float(high),
+                        "n_outer_units": int(frame["outer_split_key"].nunique()),
+                        "n_subjects": int(frame["_subject_id"].nunique()),
+                        "n_bootstrap": 2000,
+                    }
+                )
     summary = pd.DataFrame(rows)
 
     pair_rows: list[dict[str, Any]] = []
@@ -236,14 +441,28 @@ def _regression_statistics(
                     dtype=float
                 ) - pd.to_numeric(matched["b"], errors="coerce").to_numpy(dtype=float)
 
-                low, high = _paired_bootstrap_difference(
-                    matched,
-                    "a",
-                    "b",
+                prediction_pair = pd.DataFrame()
+                if strategy_a in prediction_frames and strategy_b in prediction_frames:
+                    prediction_pair = _paired_regression_prediction_frame(
+                        prediction_frames[strategy_a], prediction_frames[strategy_b], protocol
+                    )
+                oof_difference, low, high = _paired_regression_oof_ci(
+                    prediction_pair,
+                    metric,
                     protocol,
+                    seed + 5000 + len(pair_rows) * 101,
                     2000,
-                    np.random.default_rng(seed + 5000 + len(pair_rows) * 101),
                 )
+                if not np.isfinite(oof_difference):
+                    oof_difference = float(np.mean(diff))
+                    low, high = _paired_bootstrap_difference(
+                        matched,
+                        "a",
+                        "b",
+                        protocol,
+                        2000,
+                        np.random.default_rng(seed + 5000 + len(pair_rows) * 101),
+                    )
 
                 if str(protocol).strip().lower() in {"lodo", "leave_one_dataset_out"}:
                     _, p_value, test = _exact_sign_flip_test(
@@ -258,9 +477,11 @@ def _regression_statistics(
                         "metric": metric,
                         "strategy_a": strategy_a,
                         "strategy_b": strategy_b,
-                        "difference_a_minus_b": float(np.mean(diff)),
+                        "difference_a_minus_b": float(oof_difference),
                         "difference_ci_low": low,
                         "difference_ci_high": high,
+                        "effect_estimand": "pooled_sample_weighted_oof" if str(protocol).strip().lower() in {"lodo", "leave_one_dataset_out"} else "mean_repeat_pooled_oof",
+                        "test_estimand": "paired_outer_cohort_metrics" if str(protocol).strip().lower() in {"lodo", "leave_one_dataset_out"} else "paired_outer_fold_metrics_corrected_resampled_t",
                         "n_matched_outer_units": int(len(diff)),
                         "test": test,
                         "p_value": p_value,
@@ -322,6 +543,19 @@ def _format_metric(
     return f"<strong>{body}</strong>" if bold else body
 
 
+def _regression_estimand_label(value: Any) -> str:
+
+    labels = {
+        "mean_repeat_pooled_oof": "Mean repeat-level pooled OOF",
+        "pooled_sample_weighted": "Pooled sample-weighted OOF",
+        "cohort_macro_equal_weight": "Equal-cohort macro OOF",
+    }
+
+    text = str(value)
+
+    return labels.get(text, text)
+
+
 def _regression_performance_table(
     statistics: pd.DataFrame, primary_metric: str = "RMSE"
 ) -> pd.DataFrame:
@@ -329,39 +563,63 @@ def _regression_performance_table(
     if statistics.empty:
         return pd.DataFrame()
 
+    working = statistics.copy()
+
+    if "estimand" not in working.columns:
+        working["estimand"] = "legacy_outer_unit_mean"
+
     primary = str(primary_metric).strip()
 
     display_metrics = [primary] + [
         metric for metric in _REGRESSION_DISPLAY_METRICS if metric != primary
     ]
 
-    strategies = statistics["Strategy"].dropna().astype(str).drop_duplicates().tolist()
+    units = (
+        working[["Strategy", "estimand"]]
+        .dropna(subset=["Strategy", "estimand"])
+        .astype(str)
+        .drop_duplicates()
+    )
 
-    best: dict[str, str] = {}
+    best: dict[tuple[str, str], str] = {}
 
-    for metric in display_metrics:
-        sub = statistics[statistics["metric"].astype(str).eq(metric)].copy()
+    for estimand in units["estimand"].drop_duplicates().tolist():
+        for metric in display_metrics:
+            sub = working[
+                working["estimand"].astype(str).eq(str(estimand))
+                & working["metric"].astype(str).eq(metric)
+            ].copy()
 
-        sub["estimate"] = pd.to_numeric(sub["estimate"], errors="coerce")
+            sub["estimate"] = pd.to_numeric(sub["estimate"], errors="coerce")
 
-        sub = sub[np.isfinite(sub["estimate"].to_numpy(dtype=float))]
+            sub = sub[np.isfinite(sub["estimate"].to_numpy(dtype=float))]
 
-        if sub.empty:
-            continue
+            if sub.empty:
+                continue
 
-        sub = sub.sort_values("estimate", ascending=metric_is_loss(metric))
+            sub = sub.sort_values("estimate", ascending=metric_is_loss(metric))
 
-        best[metric] = str(sub.iloc[0]["Strategy"])
+            best[(str(estimand), metric)] = str(sub.iloc[0]["Strategy"])
 
     rows = []
 
-    for strategy in strategies:
+    show_estimand = units["estimand"].nunique() > 1 or not units[
+        "estimand"
+    ].eq("mean_repeat_pooled_oof").all()
+
+    for item in units.to_dict(orient="records"):
+        strategy = str(item["Strategy"])
+        estimand = str(item["estimand"])
         row: dict[str, Any] = {"Strategy": strategy}
 
+        if show_estimand:
+            row["Estimand"] = _regression_estimand_label(estimand)
+
         for metric in display_metrics:
-            sub = statistics[
-                statistics["Strategy"].astype(str).eq(strategy)
-                & statistics["metric"].astype(str).eq(metric)
+            sub = working[
+                working["Strategy"].astype(str).eq(strategy)
+                & working["estimand"].astype(str).eq(estimand)
+                & working["metric"].astype(str).eq(metric)
             ]
 
             if sub.empty:
@@ -369,21 +627,20 @@ def _regression_performance_table(
 
                 continue
 
-            item = sub.iloc[0]
+            item_metric = sub.iloc[0]
 
             row[metric] = _format_metric(
                 metric,
-                item.get("estimate"),
-                item.get("std"),
-                item.get("ci_low"),
-                item.get("ci_high"),
-                bold=best.get(metric) == strategy,
+                item_metric.get("estimate"),
+                item_metric.get("std"),
+                item_metric.get("ci_low"),
+                item_metric.get("ci_high"),
+                bold=best.get((estimand, metric)) == strategy,
             )
 
         rows.append(row)
 
     return pd.DataFrame(rows)
-
 
 def _regression_mean_std_cell(mean: Any, std: Any) -> str:
 
@@ -560,15 +817,14 @@ def _regression_performance_note(protocol: Any, n_bootstrap: int = 2000) -> str:
     key = str(protocol).strip().lower()
 
     if key in {"lodo", "leave_one_dataset_out"}:
-        uncertainty = f"Held-out strategy performance is summarized across held-out datasets as mean ± SD, with 95% percentile confidence intervals from {int(n_bootstrap):,} bootstrap replicates that resample held-out datasets with replacement."
+        uncertainty = f"Regression metrics are calculated directly from held-out out-of-fold predictions. Both pooled sample-weighted and equal-cohort macro estimands are reported. Their 95% percentile confidence intervals and displayed bootstrap standard deviations use {int(n_bootstrap):,} two-stage replicates that resample held-out cohorts and then subjects within each sampled cohort."
 
     else:
-        uncertainty = f"Held-out strategy performance is summarized across outer test folds as mean ± SD, with 95% percentile confidence intervals from {int(n_bootstrap):,} hierarchical bootstrap replicates that resample repeats and then outer folds within sampled repeats."
+        uncertainty = f"Regression metrics are calculated directly from held-out out-of-fold predictions within each repeat and averaged equally across repeats. Their 95% percentile confidence intervals and displayed bootstrap standard deviations use {int(n_bootstrap):,} subject-cluster replicates; every sampled subject carries all of its repeat-specific held-out predictions together."
 
     metrics = " RMSE is the square root of mean squared error. MAE is mean absolute error. R² compares explained variation with a mean-prediction baseline. Pearson r measures linear association. Spearman ρ measures rank association. Lower RMSE and MAE are better. Higher R² and correlations are better."
 
     return f"<p>{html.escape(uncertainty + metrics)}</p>"
-
 
 def _regression_procedure(sweep: Sweep, root: Path) -> pd.DataFrame:
 
@@ -960,8 +1216,9 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
                 "summary": statistics_path,
                 "pairwise": pairwise_path,
                 "n_bootstrap": 2000,
-                "nested_cv_bootstrap": "hierarchical repeat/outer-fold bootstrap",
-                "lodo_bootstrap": "held-out-dataset bootstrap",
+                "nested_cv_bootstrap": "subject-cluster bootstrap preserving all repeat-specific held-out predictions per sampled subject",
+                "lodo_bootstrap": "two-stage held-out cohort and subject-cluster bootstrap",
+                "regression_estimands": "metrics computed directly from held-out OOF predictions; repeated CV averages repeat-level pooled OOF metrics and LODO reports pooled sample-weighted plus equal-cohort macro estimands",
                 "nested_cv_pairwise_test": "Nadeau–Bengio corrected resampled paired t-test",
                 "lodo_pairwise_test": "paired sign-flip randomization test",
                 "multiple_testing": "Holm adjustment across strategy pairs within each metric",

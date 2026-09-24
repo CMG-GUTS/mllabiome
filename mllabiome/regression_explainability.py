@@ -31,6 +31,8 @@ from .explainability import (
     _AleModelWrapper,
     _auto_ale_bins,
     _plot_ale_curves,
+    _project_input,
+    _projection_required,
     _quiet_pyale_info,
     _require_pyale,
 )
@@ -74,6 +76,25 @@ _REGRESSION_METRICS = {
     "spearmanr": "SpearmanR",
     "spearman": "SpearmanR",
 }
+
+
+
+
+class _RegressionBlockProjector:
+    def __init__(self, blocks: Sequence[tuple[slice, Any]]):
+        self.blocks = list(blocks)
+
+    def __call__(self, X: np.ndarray) -> np.ndarray:
+        arr = np.asarray(X, dtype=float).copy()
+        for slc, transform in self.blocks:
+            arr[:, slc] = np.asarray(transform.project_model_input(arr[:, slc]), dtype=float)
+        return arr
+
+    def geometry(self) -> tuple[str, ...]:
+        return tuple(str(transform.perturbation_geometry()) for _, transform in self.blocks)
+
+    def requires_projection(self) -> bool:
+        return any(_projection_required(value) for value in self.geometry())
 
 
 class _FittedRegressionEnsemble(BaseEstimator):
@@ -274,6 +295,8 @@ def _fit_individual_folds(
         pred = np.asarray(
             _estimator_call(model, "predict", X_test), dtype=float
         ).reshape(-1)
+        geometry = transform.perturbation_geometry()
+        projector = transform.project_model_input if _projection_required(geometry) else None
         folds.append(
             {
                 "split_key": str(split["split_key"]),
@@ -286,6 +309,8 @@ def _fit_individual_folds(
                 "y_test": np.asarray(dataset.y[test_idx], dtype=float),
                 "y_pred": pred,
                 "estimator": model,
+                "input_projector": projector,
+                "perturbation_geometry": geometry,
             }
         )
         if progress_callback is not None:
@@ -354,6 +379,7 @@ def _fit_ensemble_folds(
         feature_names: list[str] = []
         coordinate_metadata: list[dict[str, Any]] = []
         fitted: list[dict[str, Any]] = []
+        projection_blocks: list[tuple[slice, Any]] = []
         start = 0
         for row, X_base, names, feature_blocks in materialized:
             X_train0, X_test0, mask = _lodo_feature_pair(
@@ -371,6 +397,7 @@ def _fit_ensemble_folds(
             model.fit(X_train_member, dataset.y[train_idx])
             stop = start + X_train_member.shape[1]
             fitted.append({"slice": slice(start, stop), "estimator": model})
+            projection_blocks.append((slice(start, stop), transform))
             prefix = (
                 f"{row['resolution']}|{transform_key}|{learner_key}|{row['config_id']}"
             )
@@ -385,6 +412,8 @@ def _fit_ensemble_folds(
         X_test = np.concatenate(test_blocks, axis=1)
         ensemble = _FittedRegressionEnsemble(fitted, aggregation, weights)
         pred = ensemble.predict(X_test)
+        block_projector = _RegressionBlockProjector(projection_blocks)
+        projector = block_projector if block_projector.requires_projection() else None
         folds.append(
             {
                 "split_key": str(split["split_key"]),
@@ -397,6 +426,8 @@ def _fit_ensemble_folds(
                 "y_test": np.asarray(dataset.y[test_idx], dtype=float),
                 "y_pred": pred,
                 "estimator": ensemble,
+                "input_projector": projector,
+                "perturbation_geometry": block_projector.geometry(),
             }
         )
         if progress_callback is not None:
@@ -564,8 +595,9 @@ def _permutation_importance(
     indices = _sample_indices(len(X), n, seed)
     X_eval = X[indices]
     y_eval = y[indices]
+    projector = fold.get("input_projector")
     baseline_pred = np.asarray(
-        _estimator_call(fold["estimator"], "predict", X_eval), dtype=float
+        _estimator_call(fold["estimator"], "predict", _project_input(X_eval, projector)), dtype=float
     ).reshape(-1)
     baseline = compute_regression_metrics(y_eval, baseline_pred)[metric]
     rng = np.random.default_rng(seed)
@@ -576,7 +608,7 @@ def _permutation_importance(
             permuted = X_eval.copy()
             permuted[:, j] = permuted[rng.permutation(len(permuted)), j]
             pred = np.asarray(
-                _estimator_call(fold["estimator"], "predict", permuted), dtype=float
+                _estimator_call(fold["estimator"], "predict", _project_input(permuted, projector)), dtype=float
             ).reshape(-1)
             score = compute_regression_metrics(y_eval, pred)[metric]
             values.append(
@@ -591,9 +623,8 @@ def _permutation_importance(
                 "within_fold_importance_sd": float(np.std(values, ddof=1))
                 if len(values) > 1
                 else 0.0,
-                "scoring": f"increase_in_{metric}"
-                if metric_is_loss(metric)
-                else f"decrease_in_{metric}",
+                "scoring": (f"increase_in_{metric}" if metric_is_loss(metric) else f"decrease_in_{metric}") + ("_geometry_projected" if projector is not None else ""),
+                "perturbation_projection": "fitted_model_input_geometry" if projector is not None else "none",
             }
         )
         if progress_callback is not None:
@@ -631,10 +662,13 @@ def _shap_importance(
             1, 4, f"background {len(background)} · explain {len(X_explain)}"
         )
     model = fold["estimator"]
+    projector = fold.get("input_projector")
     requested = str(spec.algorithm).strip().casefold()
     values = None
     backend = "permutation"
-    if requested in {"auto", "tree"} and not isinstance(
+    if requested == "tree" and projector is not None:
+        raise ValueError("Tree SHAP cannot preserve constrained compositional geometry; use algorithm='auto' or 'permutation'.")
+    if requested in {"auto", "tree"} and projector is None and not isinstance(
         model, _FittedRegressionEnsemble
     ):
         try:
@@ -661,10 +695,14 @@ def _shap_importance(
             masker = shap.maskers.Independent(background, max_samples=len(background))
         algorithm = "permutation" if requested == "auto" else requested
         minimum = 2 * len(names) + 1
-        max_evals = max(minimum, minimum * max(1, int(spec.permutation_rounds)))
+        max_evals = (
+            max(minimum, 2 ** len(names))
+            if algorithm == "exact"
+            else max(minimum, minimum * max(1, int(spec.permutation_rounds)))
+        )
         explainer = shap.Explainer(
             lambda x: np.asarray(
-                _estimator_call(model, "predict", np.asarray(x, dtype=float)),
+                _estimator_call(model, "predict", _project_input(np.asarray(x, dtype=float), projector)),
                 dtype=float,
             ),
             masker,
@@ -678,7 +716,7 @@ def _shap_importance(
             values = explainer(X_explain, max_evals=max_evals, silent=True).values
         except TypeError:
             values = explainer(X_explain, max_evals=max_evals).values
-        backend = algorithm
+        backend = f"{algorithm}_projected" if projector is not None else algorithm
         if progress_callback is not None:
             progress_callback(3, 4, f"{algorithm} attributions")
     arr = np.asarray(values, dtype=float)
@@ -753,6 +791,7 @@ def _lime_importance(
     explainer = LimeTabularExplainer(**kwargs)
     values: list[np.ndarray] = []
     model = fold["estimator"]
+    projector = fold.get("input_projector")
     for sample_no, index in enumerate(rows, start=1):
         call_kwargs: dict[str, Any] = {
             "num_features": len(names),
@@ -763,7 +802,7 @@ def _lime_importance(
         exp = explainer.explain_instance(
             X_test[int(index)],
             lambda x: np.asarray(
-                _estimator_call(model, "predict", np.asarray(x, dtype=float)),
+                _estimator_call(model, "predict", _project_input(np.asarray(x, dtype=float), projector)),
                 dtype=float,
             ),
             **call_kwargs,
@@ -792,7 +831,8 @@ def _lime_importance(
                 "within_fold_importance_sd": float(np.std(np.abs(arr[:, j]), ddof=1))
                 if len(arr) > 1
                 else 0.0,
-                "scoring": "mean_abs_regression_lime_coefficient",
+                "scoring": "mean_abs_regression_lime_coefficient" + ("_geometry_projected" if projector is not None else ""),
+                "perturbation_projection": "fitted_model_input_geometry" if projector is not None else "none",
             }
             for j, name in enumerate(names)
         ]
@@ -819,9 +859,10 @@ def _ale_importance(
     X = np.asarray(fold["X_test"], dtype=float)
     names = list(fold["feature_names"])
     frame = pd.DataFrame(X, columns=names)
+    projector = fold.get("input_projector")
     wrapper = _AleModelWrapper(
         lambda x: np.asarray(
-            _estimator_call(fold["estimator"], "predict", np.asarray(x, dtype=float)),
+            _estimator_call(fold["estimator"], "predict", _project_input(np.asarray(x, dtype=float), projector)),
             dtype=float,
         )
     )
@@ -868,7 +909,8 @@ def _ale_importance(
                 "importance_mean": strength,
                 "signed_importance_mean": signed_mean,
                 "within_fold_importance_sd": effect_sd,
-                "scoring": "rms_distribution_weighted_regression_ale",
+                "scoring": "rms_distribution_weighted_regression_ale" + ("_geometry_projected" if projector is not None else ""),
+                "perturbation_projection": "fitted_model_input_geometry" if projector is not None else "none",
             }
         )
         if grid is not None and len(grid) == len(vals):
@@ -921,9 +963,10 @@ def _interaction_importance(
             candidates.append((float(score), i, j))
     candidates.sort(reverse=True)
     frame = pd.DataFrame(X, columns=names)
+    projector = fold.get("input_projector")
     wrapper = _AleModelWrapper(
         lambda x: np.asarray(
-            _estimator_call(fold["estimator"], "predict", np.asarray(x, dtype=float)),
+            _estimator_call(fold["estimator"], "predict", _project_input(np.asarray(x, dtype=float), projector)),
             dtype=float,
         )
     )
@@ -959,7 +1002,8 @@ def _interaction_importance(
                 "feature_1": f1,
                 "feature_2": f2,
                 "interaction_strength": float(np.sqrt(np.mean(centred**2))),
-                "scoring": "rms_centered_regression_2d_ale",
+                "scoring": "rms_centered_regression_2d_ale" + ("_geometry_projected" if projector is not None else ""),
+                "perturbation_projection": "fitted_model_input_geometry" if projector is not None else "none",
             }
         )
         if progress_callback is not None:
@@ -1522,6 +1566,28 @@ def _explain_target(
     explanation_spaces = sorted(
         {str(fold.get("explanation_space", "model_coordinates")) for fold in folds}
     )
+    perturbation_geometries = sorted(
+        {
+            str(value)
+            for fold in folds
+            for value in (
+                fold.get("perturbation_geometry", ())
+                if isinstance(fold.get("perturbation_geometry", ()), (list, tuple, set))
+                else (fold.get("perturbation_geometry", "unverified"),)
+            )
+        }
+    )
+    projection_applied = any(fold.get("input_projector") is not None for fold in folds)
+    perturbation_policy = {
+        "geometry": perturbation_geometries,
+        "projection_applied": bool(projection_applied),
+        "projection_scope": "generated perturbations are projected onto the fitted model-input geometry before prediction when a supported constraint is known",
+        "interpretation": "predictive model-coordinate attribution under geometry-preserving perturbations; not a causal or isolated biological effect",
+        "tree_shap_policy": "disabled for constrained projected inputs because TreeSHAP cannot apply the projection operator to masked samples",
+    }
+    perturbation_path = target_dir / "perturbation_policy.json"
+    dump_json_standard(perturbation_policy, perturbation_path)
+    outputs["perturbation_policy"] = perturbation_path
     explained = {
         "task": "regression",
         "target": str(target_col),
@@ -1543,6 +1609,9 @@ def _explain_target(
         "explanation_space": explanation_spaces[0]
         if len(explanation_spaces) == 1
         else explanation_spaces,
+        "perturbation_geometry": perturbation_geometries,
+        "geometry_projection_applied": bool(projection_applied),
+        "perturbation_interpretation": perturbation_policy["interpretation"],
     }
     meta_path = target_dir / "explained_unit.json"
     dump_json_standard(explained, meta_path)

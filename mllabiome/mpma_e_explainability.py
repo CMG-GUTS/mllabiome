@@ -157,6 +157,8 @@ def _fit_oof_members_fold_task(
         X_train, X_test = ct.apply_pair(X_train_raw, X_test_raw)
         coordinate_metadata = ct.coordinate_metadata(names)
         transformed_names = [str(item.name) for item in coordinate_metadata]
+        perturbation_geometry = ct.perturbation_geometry()
+        input_projector = ct.project_model_input if _core._projection_required(perturbation_geometry) else None
         if (
             len(transformed_names) != X_train.shape[1]
             or X_train.shape[1] != X_test.shape[1]
@@ -204,6 +206,8 @@ def _fit_oof_members_fold_task(
                 "X_test": np.asarray(X_test, dtype=float),
                 "estimator": clf,
                 "proba": np.asarray(proba, dtype=float),
+                "input_projector": input_projector,
+                "perturbation_geometry": perturbation_geometry,
             }
         )
     stack = np.stack(member_proba, axis=0)
@@ -328,10 +332,14 @@ def _shap_member_values(
     background = X_train[np.asarray(rows_bg, dtype=int)]
     selected = X_test[np.asarray(rows_ex, dtype=int)]
     classes = np.arange(len(class_labels), dtype=int)
-    model_fn = _core._explain_predict_proba(member["estimator"], classes)
+    raw_model_fn = _core._explain_predict_proba(member["estimator"], classes)
+    input_projector = member.get("input_projector")
+    model_fn = lambda values: raw_model_fn(_core._project_input(values, input_projector))
     requested_algorithm = str(spec.algorithm).strip().lower()
     explanation = None
-    if requested_algorithm in {"auto", "tree"}:
+    if requested_algorithm == "tree" and input_projector is not None:
+        raise _core.ExplainabilityConfigurationError("TreeSHAP cannot preserve constrained compositional geometry for this MPMA-E member; use algorithm='auto' or 'permutation'.")
+    if requested_algorithm in {"auto", "tree"} and input_projector is None:
         try:
             explainer = shap.TreeExplainer(
                 member["estimator"],
@@ -1178,8 +1186,35 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
     linear_exact = (
         str(mpma_e["aggregation_strategy"]) in LINEAR_PROBABILITY_AGGREGATIONS
     )
+    perturbation_geometries = sorted(
+        {
+            str(value)
+            for fold in bundle.get("folds", [])
+            for member in fold.get("members", [])
+            for value in (
+                member.get("perturbation_geometry", ())
+                if isinstance(member.get("perturbation_geometry", ()), (list, tuple, set))
+                else (member.get("perturbation_geometry", "unverified"),)
+            )
+        }
+    )
+    projection_applied = any(
+        member.get("input_projector") is not None
+        for fold in bundle.get("folds", [])
+        for member in fold.get("members", [])
+    )
+    perturbation_policy = {
+        "geometry": perturbation_geometries,
+        "projection_applied": bool(projection_applied),
+        "projection_scope": "generated member-level SHAP perturbations are projected onto each fitted member model-input geometry before prediction when a supported constraint is known",
+        "interpretation": "predictive model-coordinate attribution under geometry-preserving perturbations; not a causal or isolated biological effect",
+        "tree_shap_policy": "disabled for constrained projected member inputs",
+    }
+    perturbation_path = out_dir / "perturbation_policy.json"
+    dump_json_standard(perturbation_policy, perturbation_path)
+    outputs["perturbation_policy"] = perturbation_path
     metadata = {
-        "schema_version": 3,
+        "schema_version": 4,
         "unit": "MPMA-E",
         "ensemble_config_id": mpma_e.get("ensemble_config_id", ""),
         "selection_strategy": mpma_e.get("selection_strategy", ""),
@@ -1196,9 +1231,12 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
             if linear_exact
             else "Unavailable at ensemble level because the selected aggregation is non-linear. Member-native coordinate SHAP and leave-one-member-out aggregation influence are reported instead."
         ),
-        "taxon_level_attribution_policy": "Signed taxon SHAP is emitted only for one-to-one feature coordinates. ALR and ILR remain exact model-coordinate explanations and are not back-projected as signed taxon SHAP.",
+        "taxon_level_attribution_policy": "Signed taxon SHAP is emitted only for one-to-one feature coordinates. CLR, standardized CLR, ALR, and ILR remain model-coordinate log-ratio or balance explanations and are not back-projected as signed taxon SHAP.",
         "taxon_participation_policy": "Unsigned non-additive taxon participation is derived from absolute coordinate SHAP weighted by normalized absolute log-contrast coefficients and is reported separately from SHAP attribution.",
         "pseudo_concatenated_mpdr_feature_space_used": False,
+        "perturbation_geometry": perturbation_geometries,
+        "geometry_projection_applied": bool(projection_applied),
+        "perturbation_interpretation": perturbation_policy["interpretation"],
         "methods": list(methods),
         "method_parameters": [_core.method_to_dict(x) for x in method_specs],
         "explainability_config": _core._explainability_config_payload(

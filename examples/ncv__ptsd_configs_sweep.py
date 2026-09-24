@@ -214,7 +214,7 @@ ENSEMBLE = mll.Ensemble(
 )
 
 EXPLAINABILITY = mll.Explainability(
-    targets=("mpma_b", "mpma_e"),
+    targets=("mpma_b",),# "mpma_e"),
     profile="screening",
     methods=(
         mll.Permutation(),

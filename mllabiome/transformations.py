@@ -313,6 +313,7 @@ class _BuiltinTransformer:
         self.variable_mask_: np.ndarray | None = None
         self.sorted_columns_: list[np.ndarray] | None = None
         self.prevalence_: np.ndarray | None = None
+        self.base_reference_: np.ndarray | None = None
         self.basis_: np.ndarray | None = None
         self.alr_reference_index_: int | None = None
         self.n_features_in_: int | None = None
@@ -403,6 +404,7 @@ class _BuiltinTransformer:
             self.scaler_ = StandardScaler().fit(base)
         elif name == "yeo_johnson_relative_abundance":
             base = _relative_abundance(X)
+            self.base_reference_ = np.median(base, axis=0)
             mask = np.ptp(base, axis=0) > 0
             self.variable_mask_ = mask
             if np.any(mask):
@@ -584,6 +586,118 @@ class _BuiltinTransformer:
             )
         raise KeyError(f"Unknown abundance transformation {name!r}.")
 
+    def perturbation_geometry(self) -> str:
+        mapping = {
+            "relative_abundance": "simplex",
+            "prevalence_weighted_relative_abundance": "simplex",
+            "hellinger": "hellinger_sphere",
+            "arcsine_sqrt": "arcsine_simplex",
+            "centered_log_ratio_multiplicative_replacement": "clr_zero_sum",
+            "standardized_centered_log_ratio_multiplicative_replacement": "standardized_clr_affine",
+            "log10_relative_abundance_half_min_pseudocount": "log_relative_abundance",
+            "yeo_johnson_relative_abundance": "transformed_simplex",
+            "quantile_normal_relative_abundance": "transformed_simplex",
+            "robust_scaled_relative_abundance": "transformed_simplex",
+            "within_sample_fractional_rank": "within_sample_rank",
+            "presence_absence": "binary_hypercube",
+            "additive_log_ratio_training_reference_multiplicative_replacement": "unconstrained_logratio",
+            "isometric_log_ratio_egozcue_multiplicative_replacement": "unconstrained_logratio",
+        }
+        return mapping.get(self.name, "unconstrained_or_featurewise")
+
+    def project_transformed(self, X: np.ndarray) -> np.ndarray:
+        arr = np.asarray(X, dtype=np.float64)
+        if arr.ndim != 2:
+            raise ValueError("Model-input projection requires a two-dimensional matrix.")
+        name = self.name
+        if name in {
+            "identity",
+            "standardize",
+            "robust_scale",
+            "power_yeo_johnson",
+            "quantile_normal_numeric",
+            "training_ecdf_rank",
+            "additive_log_ratio_training_reference_multiplicative_replacement",
+            "isometric_log_ratio_egozcue_multiplicative_replacement",
+        }:
+            return _finite_output(arr, expected_shape=arr.shape, context="model-input projection")
+
+        def close(values: np.ndarray) -> np.ndarray:
+            values = np.maximum(np.asarray(values, dtype=np.float64), 0.0)
+            sums = values.sum(axis=1, keepdims=True)
+            zero = sums[:, 0] <= 0
+            if np.any(zero):
+                values[zero] = 1.0
+                sums = values.sum(axis=1, keepdims=True)
+            return values / sums
+
+        if name in {"relative_abundance", "prevalence_weighted_relative_abundance"}:
+            out = close(arr)
+        elif name == "presence_absence":
+            out = (arr >= 0.5).astype(np.float64)
+        elif name == "hellinger":
+            values = np.maximum(arr, 0.0)
+            norms = np.sqrt(np.sum(values**2, axis=1, keepdims=True))
+            zero = norms[:, 0] <= 0
+            if np.any(zero):
+                values[zero] = 1.0
+                norms = np.sqrt(np.sum(values**2, axis=1, keepdims=True))
+            out = values / norms
+        elif name == "arcsine_sqrt":
+            bounded = np.clip(arr, 0.0, np.pi / 2.0)
+            rel = close(np.sin(bounded) ** 2)
+            out = np.arcsin(np.sqrt(rel))
+        elif name == "centered_log_ratio_multiplicative_replacement":
+            out = arr - np.mean(arr, axis=1, keepdims=True)
+        elif name == "standardized_centered_log_ratio_multiplicative_replacement":
+            if self.scaler_ is None:
+                raise RuntimeError("Transformation has not been fitted.")
+            base = np.asarray(self.scaler_.inverse_transform(arr), dtype=np.float64)
+            base = base - np.mean(base, axis=1, keepdims=True)
+            out = self.scaler_.transform(base)
+        elif name == "log10_relative_abundance_half_min_pseudocount":
+            if self.pseudocount_ is None:
+                raise RuntimeError("Transformation has not been fitted.")
+            abundance = np.maximum(np.power(10.0, np.clip(arr, -300.0, 300.0)) - self.pseudocount_, 0.0)
+            rel = close(abundance)
+            out = np.log10(rel + self.pseudocount_)
+        elif name == "robust_scaled_relative_abundance":
+            if self.scaler_ is None:
+                raise RuntimeError("Transformation has not been fitted.")
+            rel = close(self.scaler_.inverse_transform(arr))
+            out = self.scaler_.transform(rel)
+        elif name == "quantile_normal_relative_abundance":
+            if self.scaler_ is None:
+                raise RuntimeError("Transformation has not been fitted.")
+            rel = close(self.scaler_.inverse_transform(arr))
+            out = self.scaler_.transform(rel)
+        elif name == "yeo_johnson_relative_abundance":
+            mask = self.variable_mask_
+            if mask is None:
+                raise RuntimeError("Transformation has not been fitted.")
+            rel = np.tile(
+                np.zeros(arr.shape[1], dtype=np.float64)
+                if self.base_reference_ is None
+                else np.asarray(self.base_reference_, dtype=np.float64),
+                (arr.shape[0], 1),
+            )
+            if np.any(mask):
+                if self.scaler_ is None:
+                    raise RuntimeError("Transformation has not been fitted.")
+                rel[:, mask] = self.scaler_.inverse_transform(arr[:, mask])
+            rel = close(rel)
+            out = np.zeros_like(rel)
+            if np.any(mask):
+                out[:, mask] = self.scaler_.transform(rel[:, mask])
+        elif name == "within_sample_fractional_rank":
+            if arr.shape[1] == 0:
+                out = arr
+            else:
+                out = np.apply_along_axis(rankdata, 1, arr) / (arr.shape[1] + 1.0)
+        else:
+            out = arr
+        return _finite_output(out, expected_shape=arr.shape, context="model-input projection")
+
     def get_feature_names_out(
         self, input_features: list[str] | tuple[str, ...] | np.ndarray | None = None
     ) -> list[str]:
@@ -628,6 +742,34 @@ class _BuiltinTransformer:
             else [str(x) for x in list(input_features)]
         )
         names = self.get_feature_names_out(features)
+        if self.name in {
+            "centered_log_ratio_multiplicative_replacement",
+            "standardized_centered_log_ratio_multiplicative_replacement",
+        }:
+            dimension = len(features)
+            coordinates: list[TransformationCoordinate] = []
+            for index, (name, feature) in enumerate(zip(names, features)):
+                coefficients = np.full(dimension, -1.0 / dimension, dtype=float)
+                coefficients[index] += 1.0
+                coordinate_type = "clr_logcontrast"
+                if self.name == "standardized_centered_log_ratio_multiplicative_replacement":
+                    if self.scaler_ is None:
+                        raise RuntimeError("Transformation has not been fitted.")
+                    scale = float(np.asarray(self.scaler_.scale_, dtype=float)[index])
+                    if scale > 0:
+                        coefficients = coefficients / scale
+                    coordinate_type = "standardized_clr_logcontrast"
+                coordinates.append(
+                    TransformationCoordinate(
+                        name=name,
+                        coordinate_type=coordinate_type,
+                        anchor_feature=feature,
+                        components=tuple(features),
+                        coefficients=tuple(float(value) for value in coefficients),
+                        exact_feature_identity=False,
+                    )
+                )
+            return coordinates
         if (
             self.name
             == "additive_log_ratio_training_reference_multiplicative_replacement"
@@ -882,6 +1024,16 @@ class CountTransformation:
                 f"Count transformation {self.name!r} has not been fitted."
             )
         return self._impl.coordinate_metadata(input_features)
+
+    def perturbation_geometry(self) -> str:
+        if self._impl is None:
+            raise RuntimeError(f"Count transformation {self.name!r} has not been fitted.")
+        return self._impl.perturbation_geometry()
+
+    def project_model_input(self, X: np.ndarray) -> np.ndarray:
+        if self._impl is None:
+            raise RuntimeError(f"Count transformation {self.name!r} has not been fitted.")
+        return self._impl.project_transformed(X)
 
     def apply_pair(
         self, X_tr: np.ndarray, X_te: np.ndarray
@@ -1245,6 +1397,51 @@ class CountTransformationAdapter:
             )
             for name in names
         ]
+
+    def perturbation_geometry(self) -> str:
+        if self.block_objects_ is not None:
+            geometries = []
+            for block_name, _, obj in self.block_objects_:
+                geometry = obj.perturbation_geometry() if hasattr(obj, "perturbation_geometry") else "unverified_custom"
+                geometries.append(f"{block_name}:{geometry}")
+            return "rank-wise[" + ",".join(geometries) + "]"
+        if self.obj is None:
+            raise RuntimeError(f"Count transformation {self.identity!r} has not been fitted.")
+        if hasattr(self.obj, "perturbation_geometry"):
+            return str(self.obj.perturbation_geometry())
+        return "unverified_custom"
+
+    def project_model_input(self, X: np.ndarray) -> np.ndarray:
+        arr = np.asarray(X, dtype=np.float64)
+        if arr.ndim != 2:
+            raise ValueError("Model-input projection requires a two-dimensional matrix.")
+        if self.n_features_out_ is None or arr.shape[1] != int(self.n_features_out_):
+            raise ValueError("Model-input projection width differs from the fitted transformation output width.")
+        if self.block_objects_ is not None:
+            pieces = []
+            start = 0
+            for _, _, obj in self.block_objects_:
+                width = int(getattr(obj, "n_features_out_", 0))
+                block = arr[:, start : start + width]
+                if hasattr(obj, "project_model_input"):
+                    block = obj.project_model_input(block)
+                elif hasattr(obj, "project_transformed"):
+                    block = obj.project_transformed(block)
+                pieces.append(np.asarray(block, dtype=np.float64))
+                start += width
+            if start != arr.shape[1]:
+                raise ValueError("Rank-wise model-input projection did not consume all transformed coordinates.")
+            out = np.concatenate(pieces, axis=1) if pieces else arr
+        else:
+            if self.obj is None:
+                raise RuntimeError(f"Count transformation {self.identity!r} has not been fitted.")
+            if hasattr(self.obj, "project_model_input"):
+                out = self.obj.project_model_input(arr)
+            elif hasattr(self.obj, "project_transformed"):
+                out = self.obj.project_transformed(arr)
+            else:
+                out = arr
+        return _finite_output(out, expected_shape=arr.shape, context="model-input projection")
 
     def apply_pair(
         self, X_tr: np.ndarray, X_te: np.ndarray

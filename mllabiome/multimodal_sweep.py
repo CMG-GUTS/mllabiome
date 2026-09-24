@@ -16,12 +16,19 @@ import pandas as pd
 from joblib import delayed
 from threadpoolctl import threadpool_limits
 
+from ._version import __version__
 from .compute import ResourceTracker, machine_profile
 from .console import path_table, progress, stage, success, summary_table
 from .integrations import Integration, IntegrationModel, integration_modality_sets
 from .learners import fit_classifier
 from .metrics import _estimator_call, compute_metrics, compute_regression_metrics
-from .modalities import ModalityDataset, load_modalities
+from .modalities import (
+    ModalityDataset,
+    load_modalities,
+    modality_dataset_fingerprint,
+    modality_fingerprints,
+    modality_source_fingerprints,
+)
 from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
 from .runtime import (
     configure_estimator_threads,
@@ -50,6 +57,7 @@ class CandidateSpec:
     integration: Integration
     n_components: int | None
     learner: str
+    learner_fingerprint: str
 
     @property
     def modalities(self) -> tuple[str, ...]:
@@ -73,17 +81,28 @@ def _candidate_id(
     integration: Integration,
     n_components: int | None,
     learner: str,
+    learner_fingerprint: str,
 ) -> str:
+    from .configs_sweep import _scientific_digest, _scientific_value
+
     payload = {
         "paths": [
-            (p.modality, p.representation, p.selector, p.transformation) for p in paths
+            {
+                "modality": p.modality,
+                "representation": p.representation,
+                "selector": p.selector,
+                "transformation": p.transformation,
+                "transformation_spec": _scientific_value(p.transformation_item),
+            }
+            for p in paths
         ],
-        "integration": integration.key,
+        "integration": _scientific_value(integration),
         "n_components": n_components,
         "learner": str(learner),
-        "semantics": "modality_candidate_nested_v1",
+        "learner_fingerprint": str(learner_fingerprint),
+        "semantics": "modality_candidate_nested_v3",
     }
-    return hashlib.sha1(_canonical(payload).encode()).hexdigest()[:12]
+    return _scientific_digest(payload)[:12]
 
 
 def _representation_specs(
@@ -204,7 +223,12 @@ def build_modality_candidates(
     paths = _modality_paths(
         modality_names, representations, transformations, feature_blocks_by_path
     )
-    learner_names = [learner_name_fn(item) for item in learners]
+    from .configs_sweep import _learner_fingerprint, _learner_payload, _scientific_digest, _scientific_value
+
+    learner_specs = [
+        (learner_name_fn(item), _learner_fingerprint(item), _learner_payload(item))
+        for item in learners
+    ]
     specs: list[CandidateSpec] = []
     for integration in integrations:
         if integration.stage == "late":
@@ -213,9 +237,13 @@ def build_modality_candidates(
             path_lists = [paths[name] for name in modality_set]
             for selected in itertools.product(*path_lists):
                 for n_components in integration.component_values():
-                    for learner in learner_names:
+                    for learner, learner_fingerprint, learner_payload in learner_specs:
                         cid = _candidate_id(
-                            selected, integration, n_components, learner
+                            selected,
+                            integration,
+                            n_components,
+                            learner,
+                            learner_fingerprint,
                         )
                         family = integration.stage
                         specs.append(
@@ -226,26 +254,56 @@ def build_modality_candidates(
                                 integration,
                                 n_components,
                                 learner,
+                                learner_fingerprint,
                             )
                         )
     unique = {spec.config_id: spec for spec in specs}
     specs = [unique[key] for key in sorted(unique)]
+    learner_payloads = {name: payload for name, _, payload in learner_specs}
     rows = []
     for spec in specs:
+        learner_payload = learner_payloads[spec.learner]
+        transformation_fingerprint = _scientific_digest(
+            [
+                {
+                    "modality": path.modality,
+                    "transformation": path.transformation,
+                    "spec": _scientific_value(path.transformation_item),
+                }
+                for path in spec.modality_paths
+            ]
+        )
+        resolution_fingerprint = _scientific_digest(
+            [
+                {
+                    "modality": path.modality,
+                    "representation": path.representation,
+                    "selector": path.selector,
+                }
+                for path in spec.modality_paths
+            ]
+        )
         rows.append(
             {
                 "config_id": spec.config_id,
-                "mpdr_id": hashlib.sha1(
-                    (
-                        spec.representation_label + "__" + spec.transformation_label
-                    ).encode()
-                ).hexdigest()[:12],
+                "mpdr_id": _scientific_digest(
+                    {
+                        "representation": spec.representation_label,
+                        "transformation_fingerprint": transformation_fingerprint,
+                    }
+                )[:12],
                 "count_transformation": spec.transformation_label,
+                "transformation_fingerprint": transformation_fingerprint,
+                "resolution_fingerprint": resolution_fingerprint,
                 "resolution": spec.representation_label,
                 "levels": ";".join(
                     f"{p.modality}:{','.join(p.selector)}" for p in spec.modality_paths
                 ),
                 "learner": spec.learner,
+                "learner_display": spec.learner,
+                "learner_fingerprint": spec.learner_fingerprint,
+                "learner_class": learner_payload["class"],
+                "learner_params": json.dumps(learner_payload["params"], sort_keys=True, separators=(",", ":")),
                 "active": 1,
                 "candidate_family": spec.family,
                 "modalities": ",".join(spec.modalities),
@@ -329,6 +387,7 @@ def _prepare_candidate_pair_details(
     te_blocks = {}
     coordinate_names = {}
     coordinate_metadata = {}
+    transformation_models = {}
     for path in spec.modality_paths:
         X = matrices[(path.modality, path.representation, path.selector)]
         feature_names, feature_blocks = names[
@@ -348,6 +407,7 @@ def _prepare_candidate_pair_details(
         )
         fitted = factory()
         Xtr, Xte = fitted.apply_pair(Xtr_raw, Xte_raw)
+        transformation_models[path.modality] = fitted
         tr_blocks[path.modality] = np.asarray(Xtr, dtype=float)
         te_blocks[path.modality] = np.asarray(Xte, dtype=float)
         if hasattr(fitted, "get_feature_names_out"):
@@ -392,6 +452,7 @@ def _prepare_candidate_pair_details(
         "source_coordinates": source_coords,
         "integration_model": model,
         "modality_slices": slices,
+        "transformation_models": transformation_models,
     }
 
 
@@ -418,6 +479,39 @@ def _prepare_candidate_pair(
         lodo_feature_pair,
     )
     return details["X_train"], details["X_test"], details["coordinates"]
+
+
+class _ModalityInputProjector:
+    def __init__(self, transformation_models, modality_slices):
+        self.transformation_models = dict(transformation_models)
+        self.modality_slices = dict(modality_slices)
+
+    def geometry(self) -> str:
+        parts = []
+        for modality, model in self.transformation_models.items():
+            value = model.perturbation_geometry() if hasattr(model, "perturbation_geometry") else "unverified_custom"
+            parts.append(f"{modality}:{value}")
+        return "multimodal[" + ",".join(parts) + "]"
+
+    def requires_projection(self) -> bool:
+        geometry = self.geometry()
+        constrained = (
+            "simplex",
+            "sphere",
+            "clr",
+            "rank",
+            "binary",
+        )
+        return any(token in geometry for token in constrained)
+
+    def __call__(self, X):
+        arr = np.asarray(X, dtype=float).copy()
+        for modality, slc in self.modality_slices.items():
+            model = self.transformation_models.get(modality)
+            if model is None or not hasattr(model, "project_model_input"):
+                continue
+            arr[:, slc] = np.asarray(model.project_model_input(arr[:, slc]), dtype=float)
+        return arr
 
 
 class _IntegratedRegressionPredictor:
@@ -1138,8 +1232,14 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         _qualification_map,
         _resolved_evaluation_splits,
         _strata_from_metadata,
+        _experiment_fingerprint,
+        _scientific_digest,
+        _scientific_value,
+        _software_provenance,
+        _source_tree_sha256,
+        _subject_safe_groups,
+        _validate_experiment_identity,
         _write_config_table,
-        _write_manifest,
         _write_rankings_and_figures,
         _write_tables,
         write_mpma_b_selection_outputs,
@@ -1166,18 +1266,77 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         _learner_name,
         feature_blocks_by_path=feature_blocks_by_path,
     )
-    _write_config_table(root, configs)
+    modality_hashes = modality_fingerprints(dataset)
+    source_hashes = modality_source_fingerprints(sweep.samples, sweep.modalities)
+    dataset_hash = modality_dataset_fingerprint(dataset)
+    plan = sweep.evaluation
+    configured_groups = _groups_from_metadata(dataset.metadata, sweep.samples.group_col)
+    effective_groups, effective_group_col = _subject_safe_groups(
+        plan, dataset, configured_groups, sweep.samples.group_col
+    )
+    fingerprint_strata = (
+        _strata_from_metadata(dataset.metadata, dataset.y, sweep.samples.stratify_col)
+        if dataset.task == "classification"
+        else None
+    )
+    evaluation_fingerprint = _scientific_digest(
+        {
+            "schema": "multimodal-evaluation-fingerprint-v2",
+            "source_tree_sha256": _source_tree_sha256(),
+            "package_version": __version__,
+            "model_runtime_dependencies": _software_provenance()["dependencies"],
+            "dataset_fingerprint": dataset_hash,
+            "modality_fingerprints": modality_hashes,
+            "config_ids": sorted(configs["config_id"].astype(str).tolist()),
+            "task": dataset.task,
+            "target": dataset.target_name,
+            "evaluation": {
+                "protocol": str(plan.protocol),
+                "outer_folds": int(plan.outer_folds),
+                "inner_folds": int(plan.inner_folds),
+                "repeats": int(plan.repeats),
+                "random_state": int(plan.random_state),
+                "optimize_metric": _scientific_value(plan.optimize_metric),
+            },
+            "group_col": sweep.samples.group_col,
+            "effective_group_col": effective_group_col,
+            "group_assignments": None if effective_groups is None else _scientific_digest(np.asarray(effective_groups, dtype=object).astype(str).tolist()),
+            "subject_id_policy": "auto_group_repeated_subjects",
+            "stratify_col": _scientific_value(sweep.samples.stratify_col),
+            "strata_assignments": None if fingerprint_strata is None else _scientific_digest(np.asarray(fingerprint_strata, dtype=object).astype(str).tolist()),
+            "gate": _scientific_value(sweep.gate),
+        }
+    )
+    _validate_experiment_identity(
+        root, evaluation_fingerprint, redo=bool(sweep.evaluation.redo)
+    )
     if sweep.evaluation.redo:
         _clear_evaluation_checkpoints(root)
+    _write_config_table(root, configs)
     manifest = {
+        "package": "mllabiome",
+        "package_version": __version__,
+        "software_provenance": _software_provenance(),
         "title": sweep.title,
-        "version": "modality_sweep_v1",
+        "version": "modality_sweep_v3",
         "primary_modality": dataset.primary_modality,
         "sample_alignment": "primary_modality_required_in_all_modalities",
         "n_samples": len(dataset.sample_ids),
         "cv_splits": "tables/cv_splits.parquet",
+        "dataset_fingerprint": dataset_hash,
+        "dataset_fingerprint_algorithm": "sha256-multimodal-model-input-v1",
+        "modality_fingerprints": modality_hashes,
+        "source_file_sha256": source_hashes,
+        "evaluation_fingerprint": evaluation_fingerprint,
+        "evaluation_fingerprint_algorithm": "sha256-scientific-multimodal-evaluation-v2",
+        "experiment_fingerprint": _experiment_fingerprint(sweep, evaluation_fingerprint),
+        "experiment_fingerprint_algorithm": "sha256-scientific-experiment-v1",
         "modalities": {
-            name: {"n_features": int(modality.X.shape[1]), "format": modality.format}
+            name: {
+                "n_features": int(modality.X.shape[1]),
+                "format": modality.format,
+                "fingerprint": modality_hashes[name],
+            }
             for name, modality in dataset.modalities.items()
         },
         "integrations": [integration.key for integration in integrations],
@@ -1192,11 +1351,7 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         },
         root / "manifest.json",
     )
-    groups = (
-        None
-        if sweep.samples.group_col is None
-        else dataset.metadata[sweep.samples.group_col].to_numpy()
-    )
+    groups = _groups_from_metadata(dataset.metadata, sweep.samples.group_col)
     strata = (
         _strata_from_metadata(dataset.metadata, dataset.y, sweep.samples.stratify_col)
         if dataset.task == "classification"
@@ -1606,6 +1761,9 @@ def fit_modality_candidate_oof_for_explainability(sweep, row):
             X_test = details["X_test"]
             coords = details["coordinates"]
             proba = direct_proba
+        projector = _ModalityInputProjector(
+            details["transformation_models"], details["modality_slices"]
+        )
         return int(split_no), {
             "split_key": str(split["split_key"]),
             "train_idx": train_idx,
@@ -1620,6 +1778,8 @@ def fit_modality_candidate_oof_for_explainability(sweep, row):
             if spec.integration.stage == "intermediate"
             else "model_coordinates",
             "integration": spec.integration.key,
+            "input_projector": projector if projector.requires_projection() else None,
+            "perturbation_geometry": projector.geometry(),
         }
 
     tasks = [
@@ -1741,6 +1901,12 @@ def fit_modality_regression_candidate_folds(sweep, row, progress_callback=None):
                 if spec.integration.stage == "intermediate"
                 else "model_coordinates",
                 "integration": spec.integration.key,
+                "input_projector": _ModalityInputProjector(
+                    details["transformation_models"], details["modality_slices"]
+                ),
+                "perturbation_geometry": _ModalityInputProjector(
+                    details["transformation_models"], details["modality_slices"]
+                ).geometry(),
             }
         )
         if progress_callback is not None:

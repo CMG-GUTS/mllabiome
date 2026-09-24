@@ -24,6 +24,7 @@ from .configs_sweep import (
     _effective_local_explanations_mode,
     _groups_from_metadata,
     _resolved_evaluation_splits,
+    _source_tree_sha256,
     _strata_from_metadata,
 )
 from .console import info, path_table, progress, stage, success, summary_table
@@ -483,6 +484,19 @@ def _parallel_progress_results(
     return results
 
 
+def _projection_required(geometry: Any) -> bool:
+    text = str(geometry).casefold()
+    return any(token in text for token in ("simplex", "sphere", "clr", "rank", "binary"))
+
+
+def _project_input(X: np.ndarray, input_projector: Any | None) -> np.ndarray:
+    arr = _as_float_matrix(X)
+    if input_projector is None:
+        return arr
+    projected = input_projector(arr)
+    return _as_float_matrix(projected)
+
+
 def _permutation_feature_importance(
     clf: BaseEstimator,
     X: np.ndarray,
@@ -494,6 +508,7 @@ def _permutation_feature_importance(
     spec: Permutation,
     random_state: int,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    input_projector: Any | None = None,
 ) -> pd.DataFrame:
     classes = np.arange(len(class_labels), dtype=int)
     X = _as_float_matrix(X)
@@ -546,7 +561,9 @@ def _permutation_feature_importance(
         for repeat_index in range(n_repeats):
             feature_rng.shuffle(shuffling_idx)
             X_eval[:, feature_index] = X_eval[shuffling_idx, feature_index]
-            permuted = _predict_proba_aligned(clf, X_eval, classes)
+            permuted = _predict_proba_aligned(
+                clf, _project_input(X_eval, input_projector), classes
+            )
             values[:, feature_index, repeat_index] = scores(y_eval, permuted) - baseline
             done += 1
             if progress_callback is not None:
@@ -571,7 +588,8 @@ def _permutation_feature_importance(
                     "within_fold_importance_sd": np.nanstd(arr, axis=1, ddof=1)
                     if n_repeats > 1
                     else np.zeros(n_features, dtype=float),
-                    "scoring": f"increase_in_one_vs_rest_{scoring_name}",
+                    "scoring": f"increase_in_one_vs_rest_{scoring_name}" + ("_geometry_projected" if input_projector is not None else ""),
+                    "perturbation_projection": "fitted_model_input_geometry" if input_projector is not None else "none",
                 }
             )
         )
@@ -698,6 +716,7 @@ def _ale_feature_importance(
     spec: ALE,
     top_features: Sequence[str] | None,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    input_projector: Any | None = None,
 ) -> pd.DataFrame:
     pyale = _require_pyale()
     X = _as_float_matrix(X)
@@ -723,7 +742,10 @@ def _ale_feature_importance(
         )
     for class_index in class_indices:
         c = int(class_index)
-        wrapper = _AleModelWrapper(_explain_predict_class_probability(clf, classes, c))
+        predict_class = _explain_predict_class_probability(clf, classes, c)
+        wrapper = _AleModelWrapper(
+            lambda values, fn=predict_class: fn(_project_input(values, input_projector))
+        )
         for fname in features:
             try:
                 col = X[:, name_to_index[fname]]
@@ -788,7 +810,8 @@ def _ale_feature_importance(
                         "feature": fname,
                         "importance_mean": strength,
                         "within_fold_importance_sd": effect_sd,
-                        "scoring": "rms_distribution_weighted_class_probability_ale",
+                        "scoring": "rms_distribution_weighted_class_probability_ale" + ("_geometry_projected" if input_projector is not None else ""),
+                        "perturbation_projection": "fitted_model_input_geometry" if input_projector is not None else "none",
                     }
                 )
                 if grid is not None and len(grid) == len(vals):
@@ -887,15 +910,17 @@ def _ale_interactions(
     spec: ALEInteractions,
     scores: pd.Series,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    input_projector: Any | None = None,
 ) -> dict[str, pd.DataFrame]:
     pyale = _require_pyale()
     X = _as_float_matrix(X)
     df_X = pd.DataFrame(X, columns=list(feature_names))
     c = int(class_index)
+    predict_class = _explain_predict_class_probability(
+        clf, np.arange(len(class_labels), dtype=int), c
+    )
     wrapper = _AleModelWrapper(
-        _explain_predict_class_probability(
-            clf, np.arange(len(class_labels), dtype=int), c
-        )
+        lambda values, fn=predict_class: fn(_project_input(values, input_projector))
     )
     n_bins = _auto_ale_bins(X.shape[0], spec)
     pairs = _candidate_pairs_from_scores(
@@ -981,6 +1006,7 @@ def _ale_interactions(
                     "n_bins": int(n_bins),
                     "correction_applied": bool(correction_applied),
                     "correction_error": correction_error,
+                    "perturbation_projection": "fitted_model_input_geometry" if input_projector is not None else "none",
                 }
             )
         finally:
@@ -1006,6 +1032,7 @@ def _ale_interactions(
                 "n_bins",
                 "correction_applied",
                 "correction_error",
+                "perturbation_projection",
             ]
         ].copy()
         d = d.rename(columns={method: "interaction_strength"})
@@ -1615,6 +1642,7 @@ def _explainability_source_signature(
     config = {key: row.get(key) for key in config_keys if key in row.index}
     return _signature_hash(
         {
+            "source_tree_sha256": _source_tree_sha256(),
             "target": str(row.get("unit", row.get("config_id", target_slug))),
             "config": config,
             "features": list(feature_names),
@@ -1994,7 +2022,9 @@ def _safe_cache_name(value: str | None) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in text)
 
 
-def _explainability_cache_complete(target_dir: Path, explainability: Any) -> bool:
+def _explainability_cache_complete(
+    target_dir: Path, explainability: Any, expected_config_id: str | None = None
+) -> bool:
     meta_path = target_dir / "explained_unit.json"
     if not meta_path.exists():
         return False
@@ -2006,10 +2036,16 @@ def _explainability_cache_complete(target_dir: Path, explainability: Any) -> boo
         meta.get("explainability_config_signature", "")
     ) != _explainability_config_signature(explainability):
         return False
+    if expected_config_id is not None:
+        config = meta.get("config")
+        if not isinstance(config, dict) or str(config.get("config_id", "")) != str(expected_config_id):
+            return False
     specs = _normalise_explainability_method_specs(explainability.methods)
     global_methods = {method_name(spec) for spec in specs if method_has_global(spec)}
     local_methods = {method_name(spec) for spec in specs if method_has_local(spec)}
     if global_methods:
+        if not (target_dir / "perturbation_policy.json").exists():
+            return False
         if not table_exists(target_dir / "feature_importance.parquet"):
             return False
         if not table_exists(target_dir / "top_features.parquet"):
@@ -2051,6 +2087,7 @@ def _existing_explainability_outputs(target_dir: Path) -> dict[str, Path]:
         "local_explanations": target_dir / "local_explanations.parquet",
         "local_cohort_context": target_dir / "local_cohort_context.parquet",
         "local_explanations_figure": target_dir / "figures" / "local_explanations.svg",
+        "perturbation_policy": target_dir / "perturbation_policy.json",
     }
     for key, path in candidates.items():
         if path.exists():
@@ -2084,7 +2121,7 @@ def _ensure_mpma_member_explanations(
             ]
         cid = str(matches.iloc[0]["config_id"]) if not matches.empty else str(member)
         cache_dir = sweep.root() / "explainability" / "cache" / _safe_cache_name(cid)
-        if _explainability_cache_complete(cache_dir, sweep.explainability):
+        if _explainability_cache_complete(cache_dir, sweep.explainability, str(member)):
             info(f"MPMA-E member {i}/{total} · config={cid} · cached")
             continue
         if matches.empty:
@@ -2138,6 +2175,7 @@ def _shap_values_for_data(
     force_explain_rows: Sequence[int] = (),
     show_progress: bool = True,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    input_projector: Any | None = None,
 ) -> tuple[np.ndarray, np.ndarray, str]:
     try:
         import shap
@@ -2209,7 +2247,7 @@ def _shap_values_for_data(
         return np.concatenate(chunks, axis=0)
 
     requested_algorithm = str(spec.algorithm).strip().lower()
-    if requested_algorithm in {"auto", "tree"}:
+    if requested_algorithm in {"auto", "tree"} and input_projector is None:
         try:
             explainer = shap.TreeExplainer(
                 clf,
@@ -2231,8 +2269,17 @@ def _shap_values_for_data(
                 raise ExplainabilityConfigurationError(
                     "TreeSHAP was requested but the fitted estimator is not supported in probability space."
                 ) from exc
+    if requested_algorithm == "tree" and input_projector is not None:
+        raise ExplainabilityConfigurationError(
+            "TreeSHAP cannot enforce the fitted compositional input constraint. Use SHAP algorithm='auto' or 'permutation' for this transformation."
+        )
     classes = np.arange(len(class_labels), dtype=int)
-    model_fn = _explain_predict_proba(clf, classes)
+    raw_model_fn = _explain_predict_proba(clf, classes)
+    model_fn = (
+        raw_model_fn
+        if input_projector is None
+        else lambda values: raw_model_fn(_project_input(values, input_projector))
+    )
     masker_name = str(spec.masker).strip().lower()
     if masker_name == "independent":
         masker = shap.maskers.Independent(background, max_samples=len(background))
@@ -2246,7 +2293,11 @@ def _shap_values_for_data(
         )
     algorithm = "permutation" if requested_algorithm == "auto" else requested_algorithm
     minimum = 2 * len(feature_names) + 1
-    max_evals = max(minimum, minimum * max(1, int(spec.permutation_rounds)))
+    max_evals = (
+        max(minimum, 2 ** len(feature_names))
+        if algorithm == "exact"
+        else max(minimum, minimum * max(1, int(spec.permutation_rounds)))
+    )
     try:
         explainer = shap.Explainer(
             model_fn,
@@ -2272,18 +2323,19 @@ def _shap_values_for_data(
                 except TypeError:
                     return explainer(batch)
 
-        arr = evaluate_in_batches(call_explainer, algorithm)
+        backend = f"{algorithm}_projected" if input_projector is not None else algorithm
+        arr = evaluate_in_batches(call_explainer, backend)
         if progress_callback is not None and len(X_selected) <= 1:
             progress_callback(
                 len(X_selected),
                 total_samples,
-                f"sample {len(X_selected)}/{len(X_selected)} · backend={algorithm}",
+                f"sample {len(X_selected)}/{len(X_selected)} · backend={backend}",
             )
     except Exception as exc:
         raise ExplainabilityConfigurationError(
             "SHAP failed for an outer-test fold."
         ) from exc
-    return arr, rows_ex, algorithm
+    return arr, rows_ex, backend
 
 
 def _value_frame_for_fold(
@@ -2360,6 +2412,7 @@ def _lime_values_for_data(
     spec: LIME,
     force_explain_rows: Sequence[int] = (),
     progress_callback: Callable[[int, int, str], None] | None = None,
+    input_projector: Any | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     try:
         from lime.lime_tabular import LimeTabularExplainer
@@ -2383,7 +2436,14 @@ def _lime_values_for_data(
                 sorted(set(rows.tolist()) | set(forced.tolist())), dtype=int
             )
     X_selected = X_explain[rows]
-    predict_fn = _explain_predict_proba(clf, np.arange(len(class_labels), dtype=int))
+    raw_predict_fn = _explain_predict_proba(
+        clf, np.arange(len(class_labels), dtype=int)
+    )
+    predict_fn = (
+        raw_predict_fn
+        if input_projector is None
+        else lambda values: raw_predict_fn(_project_input(values, input_projector))
+    )
     kwargs: dict[str, Any] = {
         "training_data": X_training,
         "feature_names": list(feature_names),
@@ -2650,6 +2710,16 @@ def _fit_oof_single_fold_task(
         clf, X_train, y[train_idx], None if groups is None else groups[train_idx]
     )
     proba = _predict_proba_aligned(clf, X_test, np.arange(int(class_count), dtype=int))
+    geometry = (
+        ct.perturbation_geometry()
+        if hasattr(ct, "perturbation_geometry")
+        else "unverified_custom"
+    )
+    projector = (
+        ct.project_model_input
+        if _projection_required(geometry) and hasattr(ct, "project_model_input")
+        else None
+    )
     return int(split_no), {
         "split_key": str(split["split_key"]),
         "train_idx": train_idx,
@@ -2659,6 +2729,8 @@ def _fit_oof_single_fold_task(
         "y_test": y[test_idx],
         "estimator": clf,
         "proba": proba,
+        "input_projector": projector,
+        "perturbation_geometry": geometry,
     }
 
 
@@ -2737,6 +2809,7 @@ def _fit_oof_single_for_explainability(
         "X_base": np.asarray(X_reference, dtype=float),
         "feature_names": transformed_feature_names,
         "coordinate_metadata": coordinate_metadata,
+        "perturbation_geometry": ct_reference.perturbation_geometry() if hasattr(ct_reference, "perturbation_geometry") else "unverified_custom",
         "folds": folds,
         "execution": execution,
     }
@@ -3039,6 +3112,7 @@ def _compute_local_method_rows(
                 spec=spec,
                 force_explain_rows=force_rows,
                 show_progress=False,
+                input_projector=fold.get("input_projector"),
             )
         elif method == "lime":
             values, rows_ex = _lime_values_for_data(
@@ -3052,6 +3126,7 @@ def _compute_local_method_rows(
                 spec=spec,
                 force_explain_rows=force_rows,
                 progress_callback=None,
+                input_projector=fold.get("input_projector"),
             )
         else:
             continue
@@ -3276,6 +3351,10 @@ def _aggregate_oof_interactions(
                 :240
             ],
         ),
+        perturbation_projection=(
+            "perturbation_projection",
+            lambda x: "fitted_model_input_geometry" if any(str(v) == "fitted_model_input_geometry" for v in x) else "none",
+        ),
     )
     out["method"] = method
     return out.sort_values(
@@ -3319,6 +3398,7 @@ def _shap_fold_parallel_task(
         force_explain_rows=force_rows,
         show_progress=False,
         progress_callback=callback,
+        input_projector=fold.get("input_projector"),
     )
     fold_frame = _value_frame_for_fold(
         "shap",
@@ -3332,6 +3412,7 @@ def _shap_fold_parallel_task(
     fold_frame["fold_key"] = str(fold.get("split_key", ""))
     fold_frame["fold_no"] = int(fold_no)
     fold_frame["shap_backend"] = str(backend)
+    fold_frame["perturbation_projection"] = "fitted_model_input_geometry" if fold.get("input_projector") is not None else "none"
     rows = (
         _local_value_rows_for_fold(
             fold,
@@ -3448,6 +3529,7 @@ def _lime_fold_parallel_task(
         spec=spec,
         force_explain_rows=force_rows,
         progress_callback=callback,
+        input_projector=fold.get("input_projector"),
     )
     frame = _value_frame_for_fold(
         "lime",
@@ -3459,6 +3541,7 @@ def _lime_fold_parallel_task(
     )
     frame["fold_key"] = str(fold.get("split_key", ""))
     frame["fold_no"] = int(fold_no)
+    frame["perturbation_projection"] = "fitted_model_input_geometry" if fold.get("input_projector") is not None else "none"
     rows = (
         _local_value_rows_for_fold(
             fold,
@@ -3503,6 +3586,7 @@ def _permutation_fold_parallel_task(
         spec=spec,
         random_state=int(random_state),
         progress_callback=callback,
+        input_projector=fold.get("input_projector"),
     )
     frame["fold_key"] = str(fold.get("split_key", ""))
     frame["fold_no"] = int(fold_no)
@@ -3534,6 +3618,7 @@ def _ale_fold_parallel_task(
         spec=spec,
         top_features=None,
         progress_callback=callback,
+        input_projector=fold.get("input_projector"),
     )
     skipped = frame.attrs.get("skipped_features")
     skipped_out = None
@@ -3649,7 +3734,7 @@ def _explain_one(
     if (
         allow_member_cache
         and target_dir.exists()
-        and _explainability_cache_complete(target_dir, sweep.explainability)
+        and _explainability_cache_complete(target_dir, sweep.explainability, config_id_for_cache)
     ):
         info(f"Reusing existing explainability for {target_label}")
         return _existing_explainability_outputs(target_dir)
@@ -3658,7 +3743,7 @@ def _explain_one(
         and allow_member_cache
         and cache_dir is not None
         and cache_dir.exists()
-        and _explainability_cache_complete(cache_dir, sweep.explainability)
+        and _explainability_cache_complete(cache_dir, sweep.explainability, config_id_for_cache)
     ):
         if target_dir != cache_dir:
             _copy_explainability_cache(cache_dir, target_dir)
@@ -3681,6 +3766,29 @@ def _explain_one(
         feature_names = oof_bundle["feature_names"]
         coordinate_metadata = list(oof_bundle.get("coordinate_metadata", []))
         oof_folds = oof_bundle["folds"]
+
+    geometries = sorted(
+        {
+            str(value)
+            for fold in oof_folds
+            for value in (
+                fold.get("perturbation_geometry", ())
+                if isinstance(fold.get("perturbation_geometry", ()), (list, tuple, set))
+                else (fold.get("perturbation_geometry", "unverified"),)
+            )
+        }
+    )
+    projection_applied = any(fold.get("input_projector") is not None for fold in oof_folds)
+    perturbation_policy = {
+        "geometry": geometries,
+        "projection_applied": bool(projection_applied),
+        "projection_scope": "generated perturbations are projected onto the fitted model-input geometry before prediction when a supported constraint is known",
+        "methods": [name for name in global_methods if name in {"shap", "lime", "ale", "permutation", "interactions"}],
+        "interpretation": "predictive model-coordinate attribution under geometry-preserving perturbations; not a causal or isolated biological effect",
+        "tree_shap_policy": "disabled for constrained projected inputs because TreeSHAP cannot apply the projection operator to masked samples",
+    }
+    perturbation_policy_path = target_dir / "perturbation_policy.json"
+    dump_json_standard(perturbation_policy, perturbation_policy_path)
 
     class_indices = _resolve_explainability_classes(
         dataset, sweep.explainability.classes
@@ -3882,6 +3990,7 @@ def _explain_one(
                         else [],
                         show_progress=False,
                         progress_callback=_progress_callback(prog, task, prefix),
+                        input_projector=fold.get("input_projector"),
                     )
                     fold_frame = _value_frame_for_fold(
                         "shap",
@@ -3895,6 +4004,7 @@ def _explain_one(
                     fold_frame["fold_key"] = str(fold.get("split_key", ""))
                     fold_frame["fold_no"] = int(fold_no)
                     fold_frame["shap_backend"] = str(backend)
+                    fold_frame["perturbation_projection"] = "fitted_model_input_geometry" if fold.get("input_projector") is not None else "none"
                     shap_fold_frames.append(fold_frame)
                     if shap_local_enabled:
                         shap_oof_rows.extend(
@@ -4054,6 +4164,7 @@ def _explain_one(
                     spec=spec,
                     force_explain_rows=force_rows,
                     progress_callback=_progress_callback(prog, task, prefix),
+                    input_projector=fold.get("input_projector"),
                 )
                 fold_frame = _value_frame_for_fold(
                     "lime",
@@ -4065,6 +4176,7 @@ def _explain_one(
                 )
                 fold_frame["fold_key"] = str(fold.get("split_key", ""))
                 fold_frame["fold_no"] = int(fold_no)
+                fold_frame["perturbation_projection"] = "fitted_model_input_geometry" if fold.get("input_projector") is not None else "none"
                 lime_fold_frames.append(fold_frame)
                 if lime_local_enabled:
                     lime_oof_rows.extend(
@@ -4191,6 +4303,7 @@ def _explain_one(
                     spec=spec,
                     random_state=sweep.explainability.random_state + fold_no * 997,
                     progress_callback=_progress_callback(prog, task, prefix),
+                    input_projector=fold.get("input_projector"),
                 )
                 frame["fold_key"] = str(fold.get("split_key", ""))
                 frame["fold_no"] = int(fold_no)
@@ -4297,6 +4410,7 @@ def _explain_one(
                     spec=spec,
                     top_features=None,
                     progress_callback=_progress_callback(prog, task, prefix),
+                    input_projector=fold.get("input_projector"),
                 )
                 skipped = frame.attrs.get("skipped_features")
                 if isinstance(skipped, pd.DataFrame) and not skipped.empty:
@@ -4564,6 +4678,7 @@ def _explain_one(
                         spec=spec,
                         scores=score_series,
                         progress_callback=_progress_callback(prog, task, prefix),
+                        input_projector=fold.get("input_projector"),
                     )
                 except ExplainabilityConfigurationError:
                     prog.update(
@@ -4714,6 +4829,9 @@ def _explain_one(
             "fallbacks": False,
             "cross_validation_explanations": "outer_test_folds",
             "out_of_fold": True,
+            "perturbation_geometry": geometries,
+            "geometry_projection_applied": bool(projection_applied),
+            "perturbation_interpretation": perturbation_policy["interpretation"],
             "n_outer_folds_explained": len(oof_folds),
             "ale_feature_scope": "all_estimable_features",
             "consensus_strategy": "mean_within_method_rank_support_available_methods",
@@ -4747,6 +4865,7 @@ def _explain_one(
         "explainability_dir": target_dir,
         "importance": target_dir / "feature_importance.parquet",
         "stability": target_dir / "feature_stability.parquet",
+        "perturbation_policy": perturbation_policy_path,
     }
     if coordinate_metadata_path is not None:
         outputs["coordinate_metadata"] = coordinate_metadata_path
