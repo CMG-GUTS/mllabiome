@@ -1,18 +1,12 @@
 from __future__ import annotations
 
-
-from typing import Any, Sequence
-
 import re
-
+from typing import Any, Sequence
 
 import numpy as np
 
-
 from .data import Dataset
-
 from .utils import TAXONOMIC_LEVELS
-
 
 _RAW_ALIASES = {"raw", "all", "features", "asis"}
 

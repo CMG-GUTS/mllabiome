@@ -1,15 +1,18 @@
 from __future__ import annotations
+
 import argparse
 import importlib.util
 import sys
 import webbrowser
 from pathlib import Path
+
 from rich.traceback import install as install_rich_traceback
+
 from .configs_sweep import Sweep, build_sweep_from_module
 from .console import error, progress, stage, success, warn
+from .figure_export import export_svg_tree
 from .pipeline import run_stage
 from .storage import export_tsv_tree
-from .figure_export import export_svg_tree
 
 
 def _load_sweep(path: Path) -> Sweep:

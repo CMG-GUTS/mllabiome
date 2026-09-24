@@ -1,8 +1,10 @@
 from __future__ import annotations
-import inspect
+
 import hashlib
+import inspect
 from dataclasses import dataclass
 from typing import Any, Callable
+
 import numpy as np
 import pandas as pd
 from scipy.stats import rankdata
@@ -18,6 +20,7 @@ from sklearn.preprocessing import (
     RobustScaler,
     StandardScaler,
 )
+
 from .utils import _as_float_matrix
 
 
@@ -902,7 +905,23 @@ def _count_transformation_name(item: Any) -> str:
         return _transformation_identity(name, scope)
     if isinstance(item, tuple):
         return _count_transformation_name(item[0])
-    base, scope = _parse_transformation_identity(item)
+    text = str(item).strip()
+    if ":" in text:
+        parts = text.split("+")
+        if all(":" in part for part in parts):
+            qualified = []
+            for part in parts:
+                modality, transformation = part.split(":", 1)
+                modality = modality.strip()
+                transformation = transformation.strip()
+                if not modality or not transformation:
+                    qualified = []
+                    break
+                base, scope = _parse_transformation_identity(transformation)
+                qualified.append(f"{modality}:{_transformation_identity(base, scope)}")
+            if qualified:
+                return "+".join(qualified)
+    base, scope = _parse_transformation_identity(text)
     return _transformation_identity(base, scope)
 
 

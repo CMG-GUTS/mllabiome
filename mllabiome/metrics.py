@@ -2,23 +2,23 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from scipy.stats import pearsonr, spearmanr
 from sklearn.base import BaseEstimator
 from sklearn.metrics import (
     accuracy_score,
     auc,
     average_precision_score,
-    f1_score,
-    precision_recall_curve,
-    precision_score,
-    recall_score,
-    roc_auc_score,
     explained_variance_score,
+    f1_score,
     mean_absolute_error,
     mean_squared_error,
     median_absolute_error,
+    precision_recall_curve,
+    precision_score,
     r2_score,
+    recall_score,
+    roc_auc_score,
 )
-from scipy.stats import pearsonr, spearmanr
 
 from .utils import METRIC_COLUMNS, REGRESSION_METRIC_COLUMNS
 

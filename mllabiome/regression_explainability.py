@@ -25,41 +25,40 @@ from .console import (
     summary_table,
 )
 from .data import load_dataset
-from .explainability_context import build_local_relative_abundance_context
 from .explainability import (
-    _AleModelWrapper,
     _ale_1d_effect_summary,
     _ale_result_values,
+    _AleModelWrapper,
     _auto_ale_bins,
     _plot_ale_curves,
     _quiet_pyale_info,
     _require_pyale,
 )
+from .explainability_context import build_local_relative_abundance_context
 from .explainability_methods import (
     ALE,
-    ALEInteractions,
     LIME,
-    Permutation,
     SHAP,
+    ALEInteractions,
+    Permutation,
     method_has_global,
     method_has_local,
     method_name,
 )
-from .learners import _learner_factory
-from .metrics import _estimator_call, compute_regression_metrics, metric_is_loss
-from .regression_ensemble import aggregate_regression_predictions
-from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
-from .runtime import configure_estimator_threads
-from .transformations import _count_transformation_factory
 from .explainability_visuals import (
     plot_interaction_network,
     plot_local_attributions,
     plot_regression_feature_support,
 )
 from .final_models import build_final_models
+from .learners import _learner_factory
+from .metrics import _estimator_call, compute_regression_metrics, metric_is_loss
+from .regression_ensemble import aggregate_regression_predictions
+from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
+from .runtime import configure_estimator_threads
+from .storage import read_table, table_exists, write_table
+from .transformations import _count_transformation_factory
 from .utils import dump_json_standard
-from .storage import read_table, write_table, table_exists
-
 
 _REGRESSION_METRICS = {
     "r2": "R2",

@@ -1,26 +1,16 @@
 from __future__ import annotations
 
-
+import sqlite3
 from pathlib import Path
-
 from typing import Any
 
-import sqlite3
-
-
 import numpy as np
-
 import pandas as pd
 
-
 from .metrics import metric_is_loss
-
 from .storage import read_table
-
 from .transformations import TRANSFORMATION_SPACE, transformation_label
-
 from .utils import TAXONOMIC_LEVELS
-
 
 _TRANSFORM_DISPLAY = {
     "identity": "Raw",
@@ -578,13 +568,9 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
         return
 
     import matplotlib as mpl
-
     import matplotlib.gridspec as gridspec
-
     import matplotlib.pyplot as plt
-
     import matplotlib.ticker as mticker
-
     import matplotlib.transforms as mtransforms
 
     from .style import (

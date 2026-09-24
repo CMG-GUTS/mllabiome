@@ -7,9 +7,9 @@ import numpy as np
 import pandas as pd
 
 from .metrics import compute_metrics, compute_regression_metrics, metric_is_loss
-from .utils import dump_json_standard
-from .storage import read_table, write_table, table_exists
+from .storage import read_table, table_exists, write_table
 from .transformations import _count_transformation_name
+from .utils import dump_json_standard
 
 
 def _eligible_config_ids(configs: pd.DataFrame, plan: Any | None = None) -> set[str]:

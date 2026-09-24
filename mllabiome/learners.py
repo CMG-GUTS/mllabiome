@@ -22,18 +22,17 @@ from sklearn.ensemble import (
 )
 from sklearn.linear_model import (
     ElasticNet,
-    Ridge,
     LogisticRegression,
     PassiveAggressiveClassifier,
+    Ridge,
     RidgeClassifier,
     SGDClassifier,
 )
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 from sklearn.naive_bayes import BernoulliNB, GaussianNB, MultinomialNB
 from sklearn.neighbors import KNeighborsClassifier, NearestCentroid
-from sklearn.svm import LinearSVC, SVC
-from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
+from sklearn.svm import SVC, LinearSVC
 from sklearn.tree import DecisionTreeClassifier
-
 
 _COMPUTE_ONLY_DISPLAY_PARAMS = {
     "n_jobs",

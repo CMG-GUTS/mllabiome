@@ -27,11 +27,16 @@ uv run pytest -q
 Runnable example configurations are available under `examples/`:
 
 ```bash
-mllabiome examples/ptsd_configs_sweep.py
-mllabiome examples/ptsd_configs_sweep.py --stage evaluate
-mllabiome examples/ptsd_configs_sweep.py --stage ensemble
-mllabiome examples/ptsd_configs_sweep.py --stage explain
+# run everything end2end
+mllabiome examples/ncv__ptsd_configs_sweep.py
 
+# run stage-by-stage
+mllabiome examples/ncv__ptsd_configs_sweep.py --stage evaluate
+mllabiome examples/ncv__ptsd_configs_sweep.py --stage ensemble
+mllabiome examples/ncv__ptsd_configs_sweep.py --stage explain
+mllabiome examples/ncv__ptsd_configs_sweep.py --stage report
+
+# iecv example
 mllabiome examples/ibs_lodo_configs_sweep.py --stage evaluate
 ```
 

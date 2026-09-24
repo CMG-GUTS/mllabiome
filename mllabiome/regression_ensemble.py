@@ -10,18 +10,17 @@ import pandas as pd
 from scipy.optimize import minimize
 
 from .compute import ResourceTracker
-from .ensemble_progress import EnsembleSearchProgress
 from .configs_sweep import Ensemble, Sweep
 from .console import path_table, stage, success, summary_table
+from .ensemble_progress import EnsembleSearchProgress
 from .metrics import compute_regression_metrics, metric_better, metric_is_loss
 from .selection import (
     select_final_mpma_candidate,
     select_mpma_b_by_outer_fold,
     selected_mpma_b_outer_predictions,
 )
-from .storage import read_table, write_table, table_exists
+from .storage import read_table, table_exists, write_table
 from .utils import dump_json_standard
-
 
 _REGRESSION_SEARCH_SCHEMA = "mpmae_regression_search_v1"
 _WEIGHT_TOL = 1e-8

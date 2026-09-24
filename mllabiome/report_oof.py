@@ -1,14 +1,17 @@
 from __future__ import annotations
+
 import html
 import json
 from pathlib import Path
 from typing import Any
+
 import numpy as np
 import pandas as pd
-from .storage import read_table
+
 from . import report as _report_module
 from .console import console, path_table, phase_progress, stage, success
 from .final_models import load_final_models
+from .storage import read_table
 
 _PERCENT_METRICS = {
     "AUC",

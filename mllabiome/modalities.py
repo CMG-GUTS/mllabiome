@@ -32,6 +32,7 @@ class Samples:
     positive_class: int | str = 1
     target_class_labels: Mapping[str, tuple[str, ...]] | None = None
     target_positive_classes: Mapping[str, int | str] | None = None
+    subject_id_col: str | None = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,7 @@ class ModalityMatrix:
 class ModalityDataset:
     samples: Samples
     sample_ids: list[str]
+    subject_ids: list[str]
     y: np.ndarray
     metadata: pd.DataFrame
     class_labels: list[str]
@@ -71,6 +73,23 @@ class ModalityDataset:
 
     def as_dataset(self, modality_name: str) -> Dataset:
         return self.modalities[str(modality_name)].dataset
+
+
+def _subject_ids(
+    samples: Samples, frame: pd.DataFrame, sample_ids: Sequence[str]
+) -> list[str]:
+    if not samples.subject_id_col:
+        return [str(value) for value in sample_ids]
+    if samples.subject_id_col not in frame.columns:
+        raise ValueError(
+            f"subject_id_col={samples.subject_id_col!r} was not found in the Samples table."
+        )
+    values = frame[samples.subject_id_col]
+    if values.isna().any():
+        raise ValueError(
+            f"subject_id_col={samples.subject_id_col!r} contains missing values."
+        )
+    return values.astype(str).tolist()
 
 
 def _read_samples(
@@ -217,6 +236,7 @@ def load_modalities(
         order = np.asarray([index[sid] for sid in primary_ids], dtype=int)
         X_aligned = np.asarray(X[order], dtype=np.float32)
         primary_meta = meta_index.loc[primary_ids].reset_index(drop=True)
+        subject_ids = _subject_ids(samples, primary_meta, primary_ids)
         y_lookup = dict(zip(meta[samples.sample_id_col].astype(str), np.asarray(y_all)))
         y = np.asarray(
             [y_lookup[sid] for sid in primary_ids],
@@ -227,6 +247,7 @@ def load_modalities(
             list(features),
             y,
             list(primary_ids),
+            subject_ids,
             primary_meta,
             list(labels),
             positive,
@@ -238,6 +259,7 @@ def load_modalities(
             str(modality.name), X_aligned, list(features), fmt, ds
         )
     primary_meta = meta_index.loc[primary_ids].reset_index(drop=True)
+    subject_ids = _subject_ids(samples, primary_meta, primary_ids)
     y_lookup = dict(zip(meta[samples.sample_id_col].astype(str), np.asarray(y_all)))
     y = np.asarray(
         [y_lookup[sid] for sid in primary_ids],
@@ -246,6 +268,7 @@ def load_modalities(
     return ModalityDataset(
         samples,
         list(primary_ids),
+        subject_ids,
         y,
         primary_meta,
         list(labels),

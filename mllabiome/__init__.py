@@ -19,23 +19,23 @@ from .configs_sweep import (
     evaluate,
 )
 from .data import Data, Dataset, load_dataset
-from .integrations import Integration, IntegratedCoordinate, IntegrationModel
-from .modalities import (
-    Samples,
-    Modality,
-    ModalityDataset,
-    ModalityMatrix,
-    load_modalities,
-)
 from .ensemble_sweep import sweep_ensemble
-from .explainability_methods import ALE, ALEInteractions, LIME, Permutation, SHAP
 from .explainability import (
     ExplainabilityConfigurationError,
     ExplainabilityDependencyError,
 )
+from .explainability_methods import ALE, LIME, SHAP, ALEInteractions, Permutation
 from .final_explainability import explain
+from .integrations import IntegratedCoordinate, Integration, IntegrationModel
 from .learners import FLAMLClassifier, build_learner, validate_model_specs
 from .metrics import compute_metrics, compute_regression_metrics
+from .modalities import (
+    Modality,
+    ModalityDataset,
+    ModalityMatrix,
+    Samples,
+    load_modalities,
+)
 from .pipeline import run_all
 from .report import write_report
 from .resolutions import materialize_mpdr

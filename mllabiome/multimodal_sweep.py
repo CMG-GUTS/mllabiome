@@ -4,11 +4,11 @@ import hashlib
 import itertools
 import json
 import time
+from dataclasses import dataclass
 from multiprocessing import Manager
+from pathlib import Path
 from queue import Empty
 from threading import Event, Thread
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -19,8 +19,9 @@ from threadpoolctl import threadpool_limits
 from .compute import ResourceTracker, machine_profile
 from .console import path_table, progress, stage, success, summary_table
 from .integrations import Integration, IntegrationModel, integration_modality_sets
-from .metrics import _estimator_call, compute_metrics, compute_regression_metrics
 from .learners import fit_classifier
+from .metrics import _estimator_call, compute_metrics, compute_regression_metrics
+from .modalities import ModalityDataset, load_modalities
 from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
 from .runtime import (
     configure_estimator_threads,
@@ -30,7 +31,6 @@ from .runtime import (
 )
 from .transformations import _count_transformation_specs_for_blocks
 from .utils import dump_json_standard
-from .modalities import ModalityDataset, load_modalities
 
 
 @dataclass(frozen=True)
@@ -104,6 +104,43 @@ def _representation_specs(
             )
             out.append((str(name), values))
     return tuple(out)
+
+
+def _normalise_modality_transformations(
+    modality_names: Sequence[str],
+    primary_modality: str,
+    transformations: Any,
+) -> dict[str, tuple[Any, ...]]:
+    names = tuple(str(name) for name in modality_names)
+    primary = str(primary_modality)
+    if primary not in names:
+        raise ValueError(
+            f"Primary modality {primary!r} is not present in the loaded modalities."
+        )
+    if transformations is None:
+        return {}
+    if isinstance(transformations, Mapping):
+        unknown = sorted(
+            str(name) for name in transformations if str(name) not in names
+        )
+        if unknown:
+            raise ValueError(
+                f"TRANSFORMATIONS references unknown modalities: {unknown!r}."
+            )
+        return {str(name): tuple(values) for name, values in transformations.items()}
+    if isinstance(transformations, (str, bytes)):
+        raise TypeError(
+            "TRANSFORMATIONS must be a per-modality mapping or a sequence of transformation specifications."
+        )
+    try:
+        values = tuple(transformations)
+    except TypeError as exc:
+        raise TypeError(
+            "TRANSFORMATIONS must be a per-modality mapping or a sequence of transformation specifications."
+        ) from exc
+    if not values:
+        return {}
+    return {primary: values}
 
 
 def _transformation_specs(
@@ -480,6 +517,7 @@ def _classification_task(
     classes,
     class_labels,
     sample_ids,
+    subject_ids,
     train_idx,
     test_idx,
     inner_splits,
@@ -503,8 +541,8 @@ def _classification_task(
         _failed_metric_row,
         _lodo_feature_pair,
         _metric_row,
-        _prediction_rows_values,
         _predict_proba_aligned,
+        _prediction_rows_values,
     )
 
     tracker = ResourceTracker(sample_interval_s=resource_sample_interval_s).start()
@@ -601,21 +639,21 @@ def _classification_task(
                     ),
                     spec,
                 )
-                result["inner_metrics"].append(row)
-                result["inner_predictions"].extend(
-                    _prediction_rows_values(
-                        inner_key,
-                        spec.config_id,
-                        va_idx,
-                        sample_ids,
-                        y,
-                        class_labels,
-                        pred,
-                        proba,
-                        "inner",
-                        split_key,
-                    )
+                prediction_rows = _prediction_rows_values(
+                    inner_key,
+                    spec.config_id,
+                    va_idx,
+                    sample_ids,
+                    subject_ids,
+                    y,
+                    class_labels,
+                    pred,
+                    proba,
+                    "inner",
+                    split_key,
                 )
+                result["inner_metrics"].append(row)
+                result["inner_predictions"].extend(prediction_rows)
                 score = float(metrics.get(gate.metric, np.nan))
                 if np.isfinite(score):
                     scores.append(score)
@@ -712,34 +750,33 @@ def _classification_task(
                 proba = _predict_proba_aligned(clf, Xte, classes)
                 pred = classes[proba.argmax(axis=1)]
                 metrics = compute_metrics(y[test_idx], pred, proba, classes)
-                result["outer_metrics"].append(
-                    _meta_row(
-                        _metric_row(
-                            metrics,
-                            split_key,
-                            None,
-                            spec.config_id,
-                            mpdr,
-                            spec.learner,
-                            "outer",
-                        ),
-                        spec,
-                    )
-                )
-                result["outer_predictions"].extend(
-                    _prediction_rows_values(
+                row = _meta_row(
+                    _metric_row(
+                        metrics,
                         split_key,
+                        None,
                         spec.config_id,
-                        test_idx,
-                        sample_ids,
-                        y,
-                        class_labels,
-                        pred,
-                        proba,
+                        mpdr,
+                        spec.learner,
                         "outer",
-                        split_key,
-                    )
+                    ),
+                    spec,
                 )
+                prediction_rows = _prediction_rows_values(
+                    split_key,
+                    spec.config_id,
+                    test_idx,
+                    sample_ids,
+                    subject_ids,
+                    y,
+                    class_labels,
+                    pred,
+                    proba,
+                    "outer",
+                    split_key,
+                )
+                result["outer_metrics"].append(row)
+                result["outer_predictions"].extend(prediction_rows)
                 result["fits"] += 1
             except Exception as exc:
                 result["outer_metrics"].append(
@@ -904,33 +941,32 @@ def _regression_task(
                 reg.fit(Xtr, y[tr_idx])
                 pred = np.asarray(_estimator_call(reg, "predict", Xva), dtype=float)
                 metrics = compute_regression_metrics(y[va_idx], pred)
-                result["inner_metrics"].append(
-                    _meta_row(
-                        _regression_metric_row(
-                            metrics,
-                            split_key,
-                            inner_key,
-                            spec.config_id,
-                            mpdr,
-                            spec.learner,
-                            "inner",
-                        ),
-                        spec,
-                    )
-                )
-                result["inner_predictions"].extend(
-                    _regression_prediction_rows(
+                row = _meta_row(
+                    _regression_metric_row(
+                        metrics,
+                        split_key,
                         inner_key,
                         spec.config_id,
-                        va_idx,
-                        dataset.sample_ids,
-                        y,
-                        pred,
+                        mpdr,
+                        spec.learner,
                         "inner",
-                        split_key,
-                        dataset.target_name,
-                    )
+                    ),
+                    spec,
                 )
+                prediction_rows = _regression_prediction_rows(
+                    inner_key,
+                    spec.config_id,
+                    va_idx,
+                    dataset.sample_ids,
+                    dataset.subject_ids,
+                    y,
+                    pred,
+                    "inner",
+                    split_key,
+                    dataset.target_name,
+                )
+                result["inner_metrics"].append(row)
+                result["inner_predictions"].extend(prediction_rows)
                 score = float(metrics.get(gate.metric, np.nan))
                 if np.isfinite(score):
                     scores.append(score)
@@ -1000,33 +1036,32 @@ def _regression_task(
                 reg.fit(Xtr, y[train_idx])
                 pred = np.asarray(_estimator_call(reg, "predict", Xte), dtype=float)
                 metrics = compute_regression_metrics(y[test_idx], pred)
-                result["outer_metrics"].append(
-                    _meta_row(
-                        _regression_metric_row(
-                            metrics,
-                            split_key,
-                            None,
-                            spec.config_id,
-                            mpdr,
-                            spec.learner,
-                            "outer",
-                        ),
-                        spec,
-                    )
-                )
-                result["outer_predictions"].extend(
-                    _regression_prediction_rows(
+                row = _meta_row(
+                    _regression_metric_row(
+                        metrics,
                         split_key,
+                        None,
                         spec.config_id,
-                        test_idx,
-                        dataset.sample_ids,
-                        y,
-                        pred,
+                        mpdr,
+                        spec.learner,
                         "outer",
-                        split_key,
-                        dataset.target_name,
-                    )
+                    ),
+                    spec,
                 )
+                prediction_rows = _regression_prediction_rows(
+                    split_key,
+                    spec.config_id,
+                    test_idx,
+                    dataset.sample_ids,
+                    dataset.subject_ids,
+                    y,
+                    pred,
+                    "outer",
+                    split_key,
+                    dataset.target_name,
+                )
+                result["outer_metrics"].append(row)
+                result["outer_predictions"].extend(prediction_rows)
                 result["fits"] += 1
             except Exception as exc:
                 row = _regression_metric_row(
@@ -1095,18 +1130,18 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         _existing_inner_scores,
         _existing_outputs,
         _groups_from_metadata,
+        _learner_factory,
+        _learner_name,
         _load_existing_evaluation,
         _outer_pair_complete,
-        _resolved_evaluation_splits,
         _prepare_dirs,
         _qualification_map,
+        _resolved_evaluation_splits,
         _strata_from_metadata,
         _write_config_table,
         _write_manifest,
         _write_rankings_and_figures,
         _write_tables,
-        _learner_factory,
-        _learner_name,
         write_mpma_b_selection_outputs,
     )
     from .figures import _write_representation_impact_figure
@@ -1119,10 +1154,13 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
     matrices, names, feature_blocks_by_path = _representation_cache(
         dataset, sweep.representations
     )
+    transformations = _normalise_modality_transformations(
+        tuple(dataset.modalities), dataset.primary_modality, sweep.transformations
+    )
     specs, configs = build_modality_candidates(
         tuple(dataset.modalities),
         sweep.representations,
-        sweep.transformations,
+        transformations,
         integrations,
         sweep.learners,
         _learner_name,
@@ -1234,6 +1272,7 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
                     dataset.classes,
                     tuple(dataset.class_labels),
                     tuple(dataset.sample_ids),
+                    tuple(dataset.subject_ids),
                     train_idx,
                     test_idx,
                     tuple(inner),
@@ -1465,10 +1504,13 @@ def candidate_from_row(
     matrices, names, feature_blocks_by_path = _representation_cache(
         dataset, sweep.representations
     )
+    transformations = _normalise_modality_transformations(
+        tuple(dataset.modalities), dataset.primary_modality, sweep.transformations
+    )
     specs, _ = build_modality_candidates(
         tuple(dataset.modalities),
         sweep.representations,
-        sweep.transformations,
+        transformations,
         tuple(sweep.integrations or (Integration("unimodal"),)),
         sweep.learners,
         _learner_name,
@@ -1487,10 +1529,10 @@ def candidate_from_row(
 def fit_modality_candidate_oof_for_explainability(sweep, row):
     from .configs_sweep import (
         _groups_from_metadata,
-        _resolved_evaluation_splits,
-        _strata_from_metadata,
         _learner_factory,
         _predict_proba_aligned,
+        _resolved_evaluation_splits,
+        _strata_from_metadata,
     )
     from .explainability import (
         ExplainabilityConfigurationError,
@@ -1620,11 +1662,11 @@ def fit_modality_candidate_oof_for_explainability(sweep, row):
 
 def fit_modality_regression_candidate_folds(sweep, row, progress_callback=None):
     from .configs_sweep import (
-        _groups_from_metadata,
-        _resolved_evaluation_splits,
-        _learner_factory,
         _count_transformation_factory,
+        _groups_from_metadata,
+        _learner_factory,
         _lodo_feature_pair,
+        _resolved_evaluation_splits,
     )
 
     dataset, spec, matrices, names = candidate_from_row(sweep, row)

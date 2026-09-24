@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import json
 import os
 import platform
+import sqlite3
 import subprocess
 import sys
-import json
-import sqlite3
 import time
 import zlib
 from dataclasses import asdict, dataclass, field, replace
@@ -27,56 +27,56 @@ from sklearn.model_selection import (
 from threadpoolctl import threadpool_limits
 
 from ._version import __version__
-from .data import Data, Dataset, dataset_fingerprint, load_dataset
-from .integrations import Integration
-from .modalities import Samples, Modality
+from .compute import ResourceTracker, machine_profile
 from .console import info, path_table, progress, stage, success, summary_table
-from .figures import _write_representation_impact_figure
+from .data import Data, Dataset, dataset_fingerprint, load_dataset
 from .explainability_methods import (
     ALE,
-    Permutation,
     SHAP,
+    Permutation,
     apply_profile,
     method_has_local,
     normalise_profile,
 )
+from .figures import _write_representation_impact_figure
+from .integrations import Integration
 from .learners import (
     _learner_factory,
     _learner_name,
+    fit_classifier,
     learner_display_label,
     validate_model_specs,
-    fit_classifier,
 )
+from .metrics import _estimator_call
+from .metrics import _predict_proba_aligned as _metrics_predict_proba_aligned
 from .metrics import (
-    _estimator_call,
-    _predict_proba_aligned as _metrics_predict_proba_aligned,
     compute_metrics,
     compute_regression_metrics,
     metric_is_loss,
     metric_passes_threshold,
 )
+from .modalities import Modality, Samples
 from .resolutions import (
     _parse_resolution,
     mask_feature_blocks,
     materialize_mpdr_with_blocks,
 )
-from .utils import METRIC_COLUMNS, TAXONOMIC_LEVELS, dump_json_standard
-from .transformations import (
-    TRANSFORMATION_LABELS,
-    _count_transformation_factory,
-    _count_transformation_name,
-    _count_transformation_specs_for_blocks,
-)
-from .selection import write_mpma_b_selection_outputs
-from .storage import read_table, write_table, table_exists, remove_table
-from .splits import resolve_cv_splits
 from .runtime import (
     configure_estimator_threads,
     iter_parallel_tasks,
     resolve_execution_plan,
     thread_environment,
 )
-from .compute import ResourceTracker, machine_profile
+from .selection import write_mpma_b_selection_outputs
+from .splits import resolve_cv_splits
+from .storage import read_table, remove_table, table_exists, write_table
+from .transformations import (
+    TRANSFORMATION_LABELS,
+    _count_transformation_factory,
+    _count_transformation_name,
+    _count_transformation_specs_for_blocks,
+)
+from .utils import METRIC_COLUMNS, TAXONOMIC_LEVELS, dump_json_standard
 
 
 def _default_transformations():

@@ -1,39 +1,23 @@
 from __future__ import annotations
 
-
 import json
-
 import math
-
 import re
-
 import sqlite3
-
 import textwrap
-
 from dataclasses import dataclass
-
 from pathlib import Path
-
 from typing import Any, Iterable
 
-
 import matplotlib as mpl
-
 import matplotlib.pyplot as plt
-
 import numpy as np
-
 import pandas as pd
-
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap
-
 from scipy.stats import rankdata
 
-from .storage import read_table, write_table, table_exists
-
+from .storage import read_table, table_exists, write_table
 from .style import save_svg
-
 
 try:
     from sklearn.preprocessing import (

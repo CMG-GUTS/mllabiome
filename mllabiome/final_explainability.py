@@ -4,13 +4,12 @@ import json
 import shutil
 from pathlib import Path
 
-
-from .console import info
-from .storage import read_table, table_exists
-from .utils import dump_json_standard
 from . import explainability as _core
+from .console import info
 from .final_models import build_final_models
 from .mpma_e_explainability import explain_mpma_e
+from .storage import read_table, table_exists
+from .utils import dump_json_standard
 
 
 def _read_explained(path: Path) -> dict:

@@ -12,9 +12,9 @@ import numpy as np
 import pandas as pd
 from scipy.stats import t as student_t
 
-from .storage import read_table, write_table, table_exists, resolve_table_path
 from .final_models import build_final_models, fixed_strategy_predictions
 from .metrics import _renormalize_proba, compute_metrics, metric_is_loss
+from .storage import read_table, resolve_table_path, table_exists, write_table
 from .utils import dump_json_standard
 
 DISPLAY_METRICS = ("AUC", "PR_AUC", "AP", "MCC", "nMCC", "F1w", "Precision", "Recall")

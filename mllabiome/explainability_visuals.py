@@ -1025,11 +1025,16 @@ def _draw_network(
         if not side_nodes:
             return
         ordered = sorted(side_nodes, key=lambda node: float(pos[node][1]), reverse=True)
-        slots = np.linspace(4.20, -4.20, len(ordered))
+        count = len(ordered)
+        center = float(np.median([float(pos[node][1]) for node in ordered]))
+        half_span = min(3.15, 0.39 * max(count - 1, 0))
+        center_limit = max(0.0, 3.40 - half_span)
+        center = float(np.clip(center, -center_limit, center_limit))
+        slots = np.linspace(center + half_span, center - half_span, count)
         sign = -1.0 if side == "left" else 1.0
-        text_x = sign * 4.34
-        line_end = sign * 4.30
-        elbow_x = sign * 3.72
+        text_x = sign * 4.10
+        line_end = sign * 4.06
+        elbow_x = sign * 3.52
         horizontal_alignment = "right" if side == "left" else "left"
         for node, slot_y in zip(ordered, slots):
             x, y = map(float, pos[node])

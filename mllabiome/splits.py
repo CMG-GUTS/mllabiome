@@ -12,7 +12,6 @@ import pandas as pd
 
 from .storage import read_table, table_exists, write_table
 
-
 _SCHEMA_VERSION = 2
 _REQUIRED_COLUMNS = {
     "schema_version",

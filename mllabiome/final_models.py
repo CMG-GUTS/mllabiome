@@ -7,14 +7,15 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .storage import read_table, table_exists
-
 from .ensemble_aggregation import (
     PROBABILITY_PRESERVING_AGGREGATIONS,
     SUPPORTED_AGGREGATIONS,
-    aggregate_member_predictions as _aggregate_member_predictions,
-    effective_aggregation_weights,
 )
+from .ensemble_aggregation import (
+    aggregate_member_predictions as _aggregate_member_predictions,
+)
+from .ensemble_aggregation import effective_aggregation_weights
+from .storage import read_table, table_exists
 
 _SCHEMA_VERSION = 2
 _PROBABILITY_PRESERVING = set(PROBABILITY_PRESERVING_AGGREGATIONS)

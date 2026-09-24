@@ -41,8 +41,8 @@ REPRESENTATIONS = {
 TRANSFORMATIONS = (
     mll.Transformation("presence_absence"),
     mll.Transformation("identity"),
-    mll.Transformation("arcsine_sqrt", composition_scope="rank-wise"),
-    mll.Transformation("arcsine_sqrt", composition_scope="joint"),
+    # mll.Transformation("arcsine_sqrt", composition_scope="rank-wise"),
+    # mll.Transformation("arcsine_sqrt", composition_scope="joint"),
     # mll.Transformation("yeo_johnson", composition_scope="rank-wise"),
     # mll.Transformation("yeo_johnson", composition_scope="joint"),
     # mll.Transformation("hellinger", composition_scope="rank-wise"),
@@ -57,25 +57,25 @@ TRANSFORMATIONS = (
 
 
 INTEGRATIONS = (
-    mll.Integration("unimodal"),
-    mll.Integration("early_concat"),
+    # mll.Integration("unimodal"),
+    # mll.Integration("early_concat"),
     mll.Integration("intermediate_joint_pca", n_components=(16, 32)),
     mll.Integration("late_super_learner"),
 )
 
 LEARNERS = (
-    (
-        "ENet_a0p01_l10p5",
-        make_pipeline(
-            StandardScaler(),
-            ElasticNet(
-                alpha=0.01,
-                l1_ratio=0.50,
-                max_iter=20_000,
-                random_state=42,
-            ),
-        ),
-    ),
+    # (
+    #     "ENet_a0p01_l10p5",
+    #     make_pipeline(
+    #         StandardScaler(),
+    #         ElasticNet(
+    #             alpha=0.01,
+    #             l1_ratio=0.50,
+    #             max_iter=20_000,
+    #             random_state=42,
+    #         ),
+    #     ),
+    # ),
     (
         "RF_500_msl5",
         RandomForestRegressor(

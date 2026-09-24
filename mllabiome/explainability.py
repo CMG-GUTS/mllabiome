@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import inspect
 import hashlib
+import inspect
 import json
 import logging
 import math
@@ -29,24 +29,24 @@ from .configs_sweep import (
 from .console import info, path_table, progress, stage, success, summary_table
 from .data import load_dataset
 from .explainability_context import build_local_relative_abundance_context
-from .explainability_visuals import plot_feature_support as _plot_feature_support_visual
-from .explainability_support import top_k_rank_support
 from .explainability_methods import (
     ALE,
-    ALEInteractions,
     LIME,
-    Permutation,
     SHAP,
+    ALEInteractions,
+    Permutation,
     coerce_method,
     method_has_global,
     method_has_local,
     method_name,
     method_to_dict,
 )
+from .explainability_support import top_k_rank_support
+from .explainability_visuals import plot_feature_support as _plot_feature_support_visual
 from .explainability_visuals import (
     plot_interaction_network as _plot_interaction_network_visual,
-    plot_local_attributions,
 )
+from .explainability_visuals import plot_local_attributions
 from .learners import _learner_factory, fit_classifier
 from .metrics import _predict_proba_aligned
 from .resolutions import materialize_mpdr_with_blocks
@@ -56,13 +56,12 @@ from .runtime import (
     resolve_execution_plan,
     thread_environment,
 )
+from .storage import glob_tables, read_table, table_exists, write_table
 from .style import ACC_D, ACC_L, BG, COL_W_2, DIM, INK, MID, TRACK
 from .style import apply as apply_style
 from .style import save_all
 from .transformations import CountTransformationAdapter, _count_transformation_factory
 from .utils import _as_float_matrix, dump_json_standard, feature_tail_ellipsis
-from .storage import read_table, write_table, table_exists, glob_tables
-
 
 for _logger_name in ("PyALE", "PyALE._ALE_generic"):
     logging.getLogger(_logger_name).setLevel(logging.WARNING)
@@ -79,7 +78,6 @@ def _quiet_pyale_info():
         logging.disable(saved_disable)
 
 
-@contextmanager
 class ExplainabilityConfigurationError(RuntimeError):
     pass
 

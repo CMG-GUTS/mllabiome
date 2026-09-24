@@ -1,13 +1,15 @@
 from __future__ import annotations
+
 import hashlib
 import json
 from pathlib import Path
 from typing import Any
+
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
+
 from .compute import ResourceTracker
-from .ensemble_progress import EnsembleSearchProgress
 from .configs_sweep import Ensemble, Sweep, sweep_task
 from .console import path_table, stage, success, summary_table
 from .data import _wide_csv_feature_columns, load_dataset
@@ -16,17 +18,14 @@ from .ensemble_aggregation import (
     aggregate_member_predictions,
     effective_aggregation_weights,
 )
-from .metrics import (
-    _renormalize_proba,
-    compute_metrics,
-    metric_better as _metric_better,
-    metric_is_loss as _metric_is_loss,
-)
+from .ensemble_progress import EnsembleSearchProgress
+from .metrics import _renormalize_proba, compute_metrics
+from .metrics import metric_better as _metric_better
+from .metrics import metric_is_loss as _metric_is_loss
 from .mpma_e_figure import write_single_task_mpma_e_figure
 from .selection import select_final_mpma_candidate
-from .storage import read_table, write_table, table_exists
+from .storage import read_table, table_exists, write_table
 from .utils import TAXONOMIC_LEVELS, dump_json_standard
-
 
 _ENSEMBLE_SEARCH_SCHEMA = "mpmae_search_v3"
 _SUPER_LEARNER_WEIGHT_TOL = 1e-8

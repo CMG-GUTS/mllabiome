@@ -34,7 +34,7 @@ RESOLUTIONS = (
     ("class", ("class",)),
     ("order", ("order",)),
     # ("family", ("family",)),
-    # ("genus", ("genus",)),
+    ("genus", ("genus",)),
     # ("domain-phylum", ("domain", "phylum")),
     # ("domain-class", ("domain", "phylum", "class")),
     # ("domain-order", ("domain", "phylum", "class", "order")),
@@ -44,7 +44,7 @@ RESOLUTIONS = (
     # ("phylum-order", ("phylum", "class", "order")),
     # ("phylum-family", ("phylum", "class", "order", "family")),
     # ("phylum-genus", ("phylum", "class", "order", "family", "genus")),
-    # ("class-order", ("class", "order")),
+    ("class-order", ("class", "order")),
     # ("class-family", ("class", "order", "family")),
     # ("class-genus", ("class", "order", "family", "genus")),
     # ("order-family", ("order", "family")),
@@ -58,7 +58,7 @@ COUNT_TRANSFORMATIONS = (
     mll.Transformation("arcsine_sqrt", composition_scope="rank-wise"),
     mll.Transformation("arcsine_sqrt", composition_scope="joint"),
     # mll.Transformation("yeo_johnson", composition_scope="rank-wise"),
-    mll.Transformation("yeo_johnson", composition_scope="joint"),
+    # mll.Transformation("yeo_johnson", composition_scope="joint"),
     # mll.Transformation("hellinger", composition_scope="rank-wise"),
     # mll.Transformation("hellinger", composition_scope="joint"),
     # mll.Transformation("relative_abundance", composition_scope="rank-wise"),
@@ -80,35 +80,35 @@ MODELS = (
             random_state=42,
         ),
     ),
-    (
-        "LDA_eigen_shrinkage_auto",
-        LinearDiscriminantAnalysis(
-            solver="eigen",
-            shrinkage="auto",
-        ),
-    ),
     # (
-    #     "MLP_32_relu_lbfgs",
-    #     Pipeline(
-    #         steps=(
-    #             (
-    #                 "scaler",
-    #                 StandardScaler(),
-    #             ),
-    #             (
-    #                 "mlp",
-    #                 MLPClassifier(
-    #                     hidden_layer_sizes=(32,),
-    #                     activation="relu",
-    #                     solver="lbfgs",
-    #                     alpha=1e-3,
-    #                     max_iter=2000,
-    #                     random_state=42,
-    #                 ),
-    #             ),
-    #         ),
+    #     "LDA_eigen_shrinkage_auto",
+    #     LinearDiscriminantAnalysis(
+    #         solver="eigen",
+    #         shrinkage="auto",
     #     ),
     # ),
+    (
+        "MLP_32_relu_lbfgs",
+        Pipeline(
+            steps=(
+                (
+                    "scaler",
+                    StandardScaler(),
+                ),
+                (
+                    "mlp",
+                    MLPClassifier(
+                        hidden_layer_sizes=(32,),
+                        activation="relu",
+                        solver="lbfgs",
+                        alpha=1e-3,
+                        max_iter=2000,
+                        random_state=42,
+                    ),
+                ),
+            ),
+        ),
+    ),
     # (
     #     "LightGBM_100_lr0.1_msl20_md20_sub0.8_col0.8",
     #     LGBMClassifier(
@@ -214,7 +214,7 @@ ENSEMBLE = mll.Ensemble(
 )
 
 EXPLAINABILITY = mll.Explainability(
-    targets=("mpma_b",),
+    targets=("mpma_b", "mpma_e"),
     profile="screening",
     methods=(
         mll.Permutation(),

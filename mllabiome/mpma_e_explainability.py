@@ -18,8 +18,8 @@ from .ensemble_aggregation import (
 )
 from .final_models import build_final_models
 from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
+from .storage import read_table, table_exists, write_table
 from .utils import dump_json_standard
-from .storage import read_table, write_table, table_exists
 
 
 def _member_rows_for_final_model(
@@ -329,39 +329,63 @@ def _shap_member_values(
     selected = X_test[np.asarray(rows_ex, dtype=int)]
     classes = np.arange(len(class_labels), dtype=int)
     model_fn = _core._explain_predict_proba(member["estimator"], classes)
-    masker_name = str(spec.masker).strip().lower()
-    if masker_name == "independent":
-        masker = shap.maskers.Independent(background, max_samples=len(background))
-    elif masker_name == "partition":
-        masker = shap.maskers.Partition(
-            background, max_samples=len(background), clustering="correlation"
-        )
-    else:
-        raise _core.ExplainabilityConfigurationError(
-            f"Unsupported SHAP masker {spec.masker!r}."
-        )
-    minimum = 2 * X_train.shape[1] + 1
-    max_evals = max(minimum, minimum * max(1, int(spec.permutation_rounds)))
-    try:
-        explainer = shap.Explainer(
-            model_fn,
-            masker,
-            algorithm=str(spec.algorithm),
-            feature_names=list(member["feature_names_fold"]),
-            output_names=list(class_labels),
-            seed=int(random_state),
-        )
+    requested_algorithm = str(spec.algorithm).strip().lower()
+    explanation = None
+    if requested_algorithm in {"auto", "tree"}:
         try:
-            explanation = explainer(selected, silent=False, max_evals=max_evals)
-        except TypeError:
+            explainer = shap.TreeExplainer(
+                member["estimator"],
+                data=background,
+                model_output="probability",
+                feature_perturbation="interventional",
+                feature_names=list(member["feature_names_fold"]),
+            )
+            explanation = explainer(selected)
+        except Exception as exc:
+            if requested_algorithm == "tree":
+                raise _core.ExplainabilityConfigurationError(
+                    f"TreeSHAP failed for MPMA-E member {member['config_id']!r}."
+                ) from exc
+    if explanation is None:
+        masker_name = str(spec.masker).strip().lower()
+        if masker_name == "independent":
+            masker = shap.maskers.Independent(background, max_samples=len(background))
+        elif masker_name == "partition":
+            masker = shap.maskers.Partition(
+                background, max_samples=len(background), clustering="correlation"
+            )
+        else:
+            raise _core.ExplainabilityConfigurationError(
+                f"Unsupported SHAP masker {spec.masker!r}."
+            )
+        algorithm = (
+            "permutation" if requested_algorithm == "auto" else requested_algorithm
+        )
+        minimum = 2 * X_train.shape[1] + 1
+        if algorithm == "exact":
+            max_evals = max(minimum, 2 ** X_train.shape[1])
+        else:
+            max_evals = max(minimum, minimum * max(1, int(spec.permutation_rounds)))
+        try:
+            explainer = shap.Explainer(
+                model_fn,
+                masker,
+                algorithm=algorithm,
+                feature_names=list(member["feature_names_fold"]),
+                output_names=list(class_labels),
+                seed=int(random_state),
+            )
             try:
-                explanation = explainer(selected, max_evals=max_evals)
+                explanation = explainer(selected, silent=False, max_evals=max_evals)
             except TypeError:
-                explanation = explainer(selected)
-    except Exception as exc:
-        raise _core.ExplainabilityConfigurationError(
-            f"SHAP failed for MPMA-E member {member['config_id']!r}."
-        ) from exc
+                try:
+                    explanation = explainer(selected, max_evals=max_evals)
+                except TypeError:
+                    explanation = explainer(selected)
+        except Exception as exc:
+            raise _core.ExplainabilityConfigurationError(
+                f"SHAP failed for MPMA-E member {member['config_id']!r}."
+            ) from exc
     values = np.asarray(explanation.values, dtype=float)
     base = np.asarray(explanation.base_values, dtype=float)
     n_classes = len(class_labels)
