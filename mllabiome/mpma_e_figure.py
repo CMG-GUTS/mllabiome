@@ -353,7 +353,7 @@ def transform_display(x: Any) -> str:
     key = canonical_transform(base)
 
     canonical = {
-        "identity": "Raw",
+        "identity": "identity",
         "none": "RA",
         "relative_abundance": "RA",
         "binary": "P/A",

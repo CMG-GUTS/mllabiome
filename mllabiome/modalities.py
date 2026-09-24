@@ -72,6 +72,7 @@ class ModalityDataset:
     target_name: str
     primary_modality: str
     modalities: dict[str, ModalityMatrix]
+    inclusion_report: dict[str, Any]
 
     @property
     def classes(self) -> np.ndarray:
@@ -229,6 +230,261 @@ def _read_feature_matrix_modality(
     return available, X, bio.index.astype(str).tolist()
 
 
+def _count_distribution(values: Sequence[Any]) -> dict[str, int]:
+    series = pd.Series(list(values), dtype="object").dropna().astype(str)
+    if series.empty:
+        return {}
+    counts = series.value_counts(sort=False)
+    return {
+        str(key): int(value)
+        for key, value in sorted(counts.items(), key=lambda item: str(item[0]))
+    }
+
+
+def _target_distribution(
+    y: np.ndarray, labels: Sequence[str], task: str
+) -> dict[str, Any]:
+    arr = np.asarray(y)
+    if task == "classification":
+        counts: dict[str, int] = {}
+        for idx in range(len(labels)):
+            counts[str(labels[idx])] = int(np.sum(arr.astype(int) == idx))
+        return {"kind": "classification", "counts": counts}
+    values = (
+        pd.to_numeric(pd.Series(arr), errors="coerce").dropna().to_numpy(dtype=float)
+    )
+    if values.size == 0:
+        return {"kind": "regression", "n": 0}
+    q1, median, q3 = np.quantile(values, [0.25, 0.5, 0.75])
+    return {
+        "kind": "regression",
+        "n": int(values.size),
+        "mean": float(np.mean(values)),
+        "std": float(np.std(values, ddof=1)) if values.size > 1 else 0.0,
+        "median": float(median),
+        "q1": float(q1),
+        "q3": float(q3),
+        "min": float(np.min(values)),
+        "max": float(np.max(values)),
+    }
+
+
+def _categorical_summary(values: pd.Series, limit: int = 8) -> str:
+    series = values.dropna().astype(str)
+    if series.empty:
+        return "n=0"
+    counts = series.value_counts()
+    total = int(counts.sum())
+    parts = [
+        f"{str(key)}: {int(value)} ({100.0 * float(value) / total:.1f}%)"
+        for key, value in counts.iloc[:limit].items()
+    ]
+    remaining = int(counts.iloc[limit:].sum())
+    if remaining:
+        parts.append(f"other: {remaining} ({100.0 * remaining / total:.1f}%)")
+    return "; ".join(parts)
+
+
+def _numeric_summary(values: pd.Series) -> str:
+    numeric = pd.to_numeric(values, errors="coerce").dropna().to_numpy(dtype=float)
+    if numeric.size == 0:
+        return "n=0"
+    q1, median, q3 = np.quantile(numeric, [0.25, 0.5, 0.75])
+    return f"{float(median):.4g} [{float(q1):.4g}, {float(q3):.4g}] (n={int(numeric.size)})"
+
+
+def _characteristic_balance(
+    name: str, primary: pd.Series, complete: pd.Series, excluded: pd.Series
+) -> dict[str, Any]:
+    primary_nonmissing = primary.dropna()
+    numeric_primary = pd.to_numeric(primary_nonmissing, errors="coerce")
+    is_numeric = bool(len(primary_nonmissing)) and bool(numeric_primary.notna().all())
+    if is_numeric:
+        c = pd.to_numeric(complete, errors="coerce").dropna().to_numpy(dtype=float)
+        e = pd.to_numeric(excluded, errors="coerce").dropna().to_numpy(dtype=float)
+        balance = None
+        if c.size and e.size:
+            c_var = float(np.var(c, ddof=1)) if c.size > 1 else 0.0
+            e_var = float(np.var(e, ddof=1)) if e.size > 1 else 0.0
+            pooled = float(np.sqrt((c_var + e_var) / 2.0))
+            if pooled > 0:
+                balance = float((np.mean(c) - np.mean(e)) / pooled)
+            elif float(np.mean(c)) == float(np.mean(e)):
+                balance = 0.0
+        return {
+            "variable": str(name),
+            "kind": "continuous",
+            "primary": _numeric_summary(primary),
+            "complete": _numeric_summary(complete),
+            "excluded": _numeric_summary(excluded),
+            "balance_metric": "standardized_mean_difference_complete_minus_excluded",
+            "balance_value": balance,
+        }
+    categories = sorted(
+        set(primary.dropna().astype(str).tolist())
+        | set(complete.dropna().astype(str).tolist())
+        | set(excluded.dropna().astype(str).tolist())
+    )
+    complete_counts = complete.dropna().astype(str).value_counts()
+    excluded_counts = excluded.dropna().astype(str).value_counts()
+    complete_n = int(complete_counts.sum())
+    excluded_n = int(excluded_counts.sum())
+    max_diff = None
+    if complete_n and excluded_n:
+        diffs = [
+            abs(
+                float(complete_counts.get(category, 0)) / complete_n
+                - float(excluded_counts.get(category, 0)) / excluded_n
+            )
+            for category in categories
+        ]
+        max_diff = float(max(diffs)) if diffs else 0.0
+    return {
+        "variable": str(name),
+        "kind": "categorical",
+        "primary": _categorical_summary(primary),
+        "complete": _categorical_summary(complete),
+        "excluded": _categorical_summary(excluded),
+        "balance_metric": "max_absolute_proportion_difference_complete_vs_excluded",
+        "balance_value": max_diff,
+    }
+
+
+def _multimodal_inclusion_report(
+    samples: Samples,
+    items: Sequence[Modality],
+    loaded: Mapping[str, tuple[list[str], np.ndarray, list[str], str]],
+    primary_ids: Sequence[str],
+    complete_ids: Sequence[str],
+    meta_index: pd.DataFrame,
+    y_lookup: Mapping[str, Any],
+    labels: Sequence[str],
+    task: str,
+) -> dict[str, Any]:
+    primary_ids = [str(value) for value in primary_ids]
+    complete_ids = [str(value) for value in complete_ids]
+    complete_set = set(complete_ids)
+    excluded_ids = [sid for sid in primary_ids if sid not in complete_set]
+    primary_meta = meta_index.loc[primary_ids].reset_index(drop=True)
+    complete_meta = meta_index.loc[complete_ids].reset_index(drop=True)
+    excluded_meta = (
+        meta_index.loc[excluded_ids].reset_index(drop=True)
+        if excluded_ids
+        else primary_meta.iloc[0:0].copy()
+    )
+    primary_subjects = _subject_ids(samples, primary_meta, primary_ids)
+    complete_subjects = _subject_ids(samples, complete_meta, complete_ids)
+    excluded_subject_samples = (
+        _subject_ids(samples, excluded_meta, excluded_ids) if excluded_ids else []
+    )
+    primary_subject_set = set(primary_subjects)
+    complete_subject_set = set(complete_subjects)
+    excluded_subject_sample_set = set(excluded_subject_samples)
+    fully_excluded_subjects = primary_subject_set - complete_subject_set
+    partially_retained_subjects = complete_subject_set & excluded_subject_sample_set
+    availability: dict[str, Any] = {}
+    availability_sets: dict[str, set[str]] = {}
+    for modality in items:
+        ids = set(str(value) for value in loaded[str(modality.name)][0])
+        availability_sets[str(modality.name)] = ids
+        available = sum(sid in ids for sid in primary_ids)
+        missing = len(primary_ids) - available
+        availability[str(modality.name)] = {
+            "available_primary_samples": int(available),
+            "missing_primary_samples": int(missing),
+            "availability_fraction": float(available / len(primary_ids))
+            if primary_ids
+            else 0.0,
+        }
+    patterns: dict[tuple[str, ...], int] = {}
+    for sid in primary_ids:
+        missing = tuple(
+            str(modality.name)
+            for modality in items
+            if sid not in availability_sets[str(modality.name)]
+        )
+        patterns[missing] = patterns.get(missing, 0) + 1
+    pattern_rows = [
+        {
+            "missing_modalities": list(pattern),
+            "n_samples": int(count),
+            "fraction_primary": float(count / len(primary_ids)) if primary_ids else 0.0,
+        }
+        for pattern, count in sorted(
+            patterns.items(), key=lambda item: (-item[1], item[0])
+        )
+    ]
+    primary_y = np.asarray([y_lookup[sid] for sid in primary_ids])
+    complete_y = np.asarray([y_lookup[sid] for sid in complete_ids])
+    excluded_y = np.asarray([y_lookup[sid] for sid in excluded_ids])
+    characteristics: list[dict[str, Any]] = []
+    requested_characteristics: list[str] = []
+    for value in samples.metadata_cols:
+        key = str(value)
+        if key not in requested_characteristics:
+            requested_characteristics.append(key)
+    if samples.group_col and str(samples.group_col) not in requested_characteristics:
+        requested_characteristics.append(str(samples.group_col))
+    stratify = samples.stratify_col
+    stratify_cols = (stratify,) if isinstance(stratify, str) else tuple(stratify or ())
+    for value in stratify_cols:
+        key = str(value)
+        if key not in requested_characteristics:
+            requested_characteristics.append(key)
+    for column in requested_characteristics:
+        if column in primary_meta.columns:
+            characteristics.append(
+                _characteristic_balance(
+                    column,
+                    primary_meta[column],
+                    complete_meta[column],
+                    excluded_meta[column],
+                )
+            )
+    group_distribution = None
+    if samples.group_col and str(samples.group_col) in primary_meta.columns:
+        column = str(samples.group_col)
+        group_distribution = {
+            "column": column,
+            "primary": _count_distribution(primary_meta[column]),
+            "complete": _count_distribution(complete_meta[column]),
+            "excluded": _count_distribution(excluded_meta[column]),
+        }
+    return {
+        "policy": "complete_case",
+        "estimand": (
+            "samples with complete observations across all requested modalities "
+            "within the primary-modality cohort"
+        ),
+        "reference_population": "samples present in the primary modality and Samples metadata",
+        "n_primary_samples": int(len(primary_ids)),
+        "n_complete_samples": int(len(complete_ids)),
+        "n_excluded_samples": int(len(excluded_ids)),
+        "sample_retention_fraction": (
+            float(len(complete_ids) / len(primary_ids)) if primary_ids else 0.0
+        ),
+        "n_primary_subjects": int(len(primary_subject_set)),
+        "n_complete_subjects": int(len(complete_subject_set)),
+        "n_fully_excluded_subjects": int(len(fully_excluded_subjects)),
+        "n_subjects_with_incomplete_samples": int(len(excluded_subject_sample_set)),
+        "n_partially_retained_subjects": int(len(partially_retained_subjects)),
+        "subject_retention_fraction": (
+            float(len(complete_subject_set) / len(primary_subject_set))
+            if primary_subject_set
+            else 0.0
+        ),
+        "modality_availability": availability,
+        "missingness_patterns": pattern_rows,
+        "target_distribution": {
+            "primary": _target_distribution(primary_y, labels, task),
+            "complete": _target_distribution(complete_y, labels, task),
+            "excluded": _target_distribution(excluded_y, labels, task),
+        },
+        "group_distribution": group_distribution,
+        "characteristic_balance": characteristics,
+    }
+
+
 def load_modalities(
     samples: Samples, modalities: Sequence[Modality]
 ) -> ModalityDataset:
@@ -273,37 +529,49 @@ def load_modalities(
     primary_ids = loaded[str(primary.name)][0]
     if not primary_ids:
         raise ValueError(f"Primary Modality {primary.name!r} contains no samples.")
-    missing_meta = [sid for sid in primary_ids if sid not in meta_index.index]
-    if missing_meta:
+    availability_sets = {
+        str(modality.name): set(loaded[str(modality.name)][0]) for modality in items
+    }
+    complete_ids = [
+        sid
+        for sid in primary_ids
+        if all(sid in availability_sets[str(modality.name)] for modality in items)
+    ]
+    if not complete_ids:
         raise ValueError(
-            f"Primary Modality {primary.name!r} contains sample IDs absent from Samples: {missing_meta[:5]!r}."
+            "No complete-case samples remain after intersecting the requested modalities."
         )
+    y_lookup = dict(zip(meta[samples.sample_id_col].astype(str), np.asarray(y_all)))
+    inclusion_report = _multimodal_inclusion_report(
+        samples,
+        items,
+        loaded,
+        primary_ids,
+        complete_ids,
+        meta_index,
+        y_lookup,
+        labels,
+        task,
+    )
+    complete_meta = meta_index.loc[complete_ids].reset_index(drop=True)
+    subject_ids = _subject_ids(samples, complete_meta, complete_ids)
+    y = np.asarray(
+        [y_lookup[sid] for sid in complete_ids],
+        dtype=float if task == "regression" else int,
+    )
     modality_matrices: dict[str, ModalityMatrix] = {}
     for modality in items:
         ids, X, features, fmt = loaded[str(modality.name)]
         index = {sid: i for i, sid in enumerate(ids)}
-        missing = [sid for sid in primary_ids if sid not in index]
-        if missing:
-            preview = missing[:8]
-            raise ValueError(
-                f"Modality {modality.name!r} is missing {len(missing)} sample(s) required by primary Modality {primary.name!r}: {preview!r}. Prepare matched input tables before running integration."
-            )
-        order = np.asarray([index[sid] for sid in primary_ids], dtype=int)
+        order = np.asarray([index[sid] for sid in complete_ids], dtype=int)
         X_aligned = np.asarray(X[order], dtype=np.float32)
-        primary_meta = meta_index.loc[primary_ids].reset_index(drop=True)
-        subject_ids = _subject_ids(samples, primary_meta, primary_ids)
-        y_lookup = dict(zip(meta[samples.sample_id_col].astype(str), np.asarray(y_all)))
-        y = np.asarray(
-            [y_lookup[sid] for sid in primary_ids],
-            dtype=float if task == "regression" else int,
-        )
         ds = _dataset_from_feature_matrix(
             X_aligned,
             list(features),
             y,
-            list(primary_ids),
+            list(complete_ids),
             subject_ids,
-            primary_meta,
+            complete_meta,
             list(labels),
             positive,
             ("all",),
@@ -313,25 +581,19 @@ def load_modalities(
         modality_matrices[str(modality.name)] = ModalityMatrix(
             str(modality.name), X_aligned, list(features), fmt, ds
         )
-    primary_meta = meta_index.loc[primary_ids].reset_index(drop=True)
-    subject_ids = _subject_ids(samples, primary_meta, primary_ids)
-    y_lookup = dict(zip(meta[samples.sample_id_col].astype(str), np.asarray(y_all)))
-    y = np.asarray(
-        [y_lookup[sid] for sid in primary_ids],
-        dtype=float if task == "regression" else int,
-    )
     return ModalityDataset(
         samples,
-        list(primary_ids),
+        list(complete_ids),
         subject_ids,
         y,
-        primary_meta,
+        complete_meta,
         list(labels),
         positive,
         task,
         target,
         str(primary.name),
         modality_matrices,
+        inclusion_report,
     )
 
 

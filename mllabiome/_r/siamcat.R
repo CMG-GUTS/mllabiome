@@ -23,7 +23,7 @@ as_flag <- function(x) {
 mode <- args[[1]]
 
 if (mode == "fit") {
-    if (length(args) != 19) {
+    if (length(args) != 20) {
         stop("Internal error: unexpected number of SIAMCAT fit arguments")
     }
 
@@ -45,6 +45,7 @@ if (mode == "fit") {
     fs_direction <- args[[17]]
     seed <- as.integer(args[[18]])
     verbose <- as.integer(args[[19]])
+    groups_path <- args[[20]]
 
     set.seed(seed)
 
@@ -73,10 +74,39 @@ if (mode == "fit") {
     group <- ifelse(as.integer(labels) == 1L, "case", "control")
     names(group) <- colnames(feat)
 
+    meta_df <- NULL
+    inseparable_var <- NULL
+    if (groups_path != "__NONE__") {
+        groups <- read.delim(
+            groups_path,
+            row.names = 1,
+            check.names = FALSE,
+            quote = "",
+            comment.char = ""
+        )
+        if (!"cv_group" %in% colnames(groups)) {
+            stop("Group file must contain a 'cv_group' column")
+        }
+        if (!all(colnames(feat) %in% rownames(groups))) {
+            stop("Feature samples and group samples do not match")
+        }
+        groups <- groups[colnames(feat), "cv_group", drop = TRUE]
+        if (any(is.na(groups))) {
+            stop("Group file contains missing values")
+        }
+        meta_df <- data.frame(
+            cv_group = as.character(groups),
+            row.names = colnames(feat),
+            check.names = FALSE
+        )
+        inseparable_var <- "cv_group"
+    }
+
     sc <- siamcat(
         feat = feat,
         label = group,
         case = "case",
+        meta = meta_df,
         verbose = verbose
     )
 
@@ -99,7 +129,8 @@ if (mode == "fit") {
         sc,
         num.folds = num_folds,
         num.resample = num_resample,
-        stratify = TRUE,
+        stratify = is.null(inseparable_var),
+        inseparable = inseparable_var,
         verbose = verbose
     )
 

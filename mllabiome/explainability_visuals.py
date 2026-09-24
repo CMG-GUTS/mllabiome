@@ -778,9 +778,53 @@ def _net_node_color(standardized_shift: float):
     return tuple((1.0 - t) * neut + t * target)
 
 
-def _net_node_radius(strength_norm: float, is_hub: bool = False) -> float:
-    norm = float(np.clip(strength_norm, 0.0, 1.0))
-    return float(0.07 + norm * 0.13)
+def _net_node_radius(abundance_norm: float, is_hub: bool = False) -> float:
+    norm = float(np.clip(abundance_norm, 0.0, 1.0))
+    return float(np.sqrt(0.07**2 + norm * (0.20**2 - 0.07**2)))
+
+
+def _net_abundance_norm(value: float, lower: float, upper: float) -> float:
+    abundance = float(value) if np.isfinite(value) else 0.0
+    if abundance <= 0 or upper <= 0:
+        return 0.0
+    if lower <= 0 or upper <= lower:
+        return 0.65
+    scaled = (np.log10(abundance) - np.log10(lower)) / (
+        np.log10(upper) - np.log10(lower)
+    )
+    return float(0.18 + 0.82 * np.clip(scaled, 0.0, 1.0))
+
+
+def _format_relative_abundance(value: float) -> str:
+    abundance = max(0.0, float(value))
+    percentage = abundance * 100.0
+    if percentage >= 10.0:
+        return f"{percentage:.0f}%"
+    if percentage >= 1.0:
+        return f"{percentage:.1f}%"
+    if percentage >= 0.1:
+        return f"{percentage:.2f}%"
+    if percentage >= 0.01:
+        return f"{percentage:.3f}%"
+    if percentage > 0:
+        return f"{percentage:.2g}%"
+    return "0%"
+
+
+def _net_abundance_legend_values(
+    values: Sequence[float], lower: float, upper: float
+) -> list[float]:
+    finite = np.asarray([float(value) for value in values], dtype=float)
+    finite = finite[np.isfinite(finite) & (finite >= 0)]
+    if finite.size == 0 or upper <= 0:
+        return [0.0]
+    has_zero = bool(np.any(finite <= 0))
+    if lower <= 0 or upper <= lower:
+        return [0.0, upper] if has_zero else [upper]
+    if has_zero:
+        positive = np.geomspace(lower, upper, 3)
+        return [0.0, *[float(value) for value in positive]]
+    return [float(value) for value in np.geomspace(lower, upper, 4)]
 
 
 def _net_bezier(p1, p2, curv: float = 0.10):
@@ -859,6 +903,9 @@ def _build_network_graph(interactions: pd.DataFrame, stats: pd.DataFrame | None)
                     standardized_shift=_get_abundance(
                         stat_map, feat, "standardized_mean_difference", 0.0
                     ),
+                    mean_relative_abundance=_get_abundance(
+                        stat_map, feat, "mean_relative_abundance", np.nan
+                    ),
                 )
         if G.has_edge(f1, f2):
             if w > G[f1][f2]["weight"]:
@@ -867,13 +914,6 @@ def _build_network_graph(interactions: pd.DataFrame, stats: pd.DataFrame | None)
             G.add_edge(f1, f2, weight=w, rank=row_i + 1)
     if len(G.edges()) == 0:
         raise RuntimeError("no plottable interaction edges")
-    weighted_degree = {node: float(value) for node, value in G.degree(weight="weight")}
-    max_degree = max(weighted_degree.values()) if weighted_degree else 0.0
-    for node in G.nodes():
-        value = weighted_degree.get(node, 0.0)
-        G.nodes[node]["strength_norm"] = (
-            float(value / max_degree) if max_degree > 0 else 0.0
-        )
     return G
 
 
@@ -985,7 +1025,7 @@ def _draw_network(
     stats: pd.DataFrame | None,
     top_k: int,
     layout: str = "default",
-) -> tuple[float, float]:
+) -> tuple[float, float, float, float, list[float], bool]:
     G = _build_network_graph(interactions.head(int(top_k)), stats)
     if len(G.nodes()) == 0:
         raise RuntimeError("No nodes in graph")
@@ -996,6 +1036,18 @@ def _draw_network(
     pos = {node: np.asarray(value, dtype=float) * 0.90 for node, value in pos.items()}
     strengths = [G[u][v]["weight"] for u, v in G.edges()]
     s_min, s_max = float(min(strengths)), float(max(strengths))
+    abundances = [
+        float(G.nodes[node].get("mean_relative_abundance", np.nan))
+        for node in G.nodes()
+    ]
+    finite_abundances = np.asarray(
+        [value for value in abundances if np.isfinite(value) and value >= 0],
+        dtype=float,
+    )
+    abundance_available = bool(finite_abundances.size)
+    positive_abundances = finite_abundances[finite_abundances > 0]
+    a_lower = float(np.min(positive_abundances)) if positive_abundances.size else 0.0
+    a_upper = float(np.max(positive_abundances)) if positive_abundances.size else 0.0
 
     def _ns(value):
         return (float(value) - s_min) / (s_max - s_min) if s_max > s_min else 0.6
@@ -1022,7 +1074,14 @@ def _draw_network(
     radii: dict[Any, float] = {}
     for node in G.nodes():
         data = G.nodes[node]
-        radius = _net_node_radius(data.get("strength_norm", 0.0))
+        abundance_norm = (
+            _net_abundance_norm(
+                data.get("mean_relative_abundance", np.nan), a_lower, a_upper
+            )
+            if abundance_available
+            else 0.55
+        )
+        radius = _net_node_radius(abundance_norm)
         radii[node] = radius
         x, y = pos[node]
         ax.add_patch(
@@ -1076,7 +1135,14 @@ def _draw_network(
 
     ax.set_xlim(-6.65, 6.65)
     ax.set_ylim(-4.25, 4.25)
-    return float(s_min), float(s_max)
+    return (
+        float(s_min),
+        float(s_max),
+        a_lower,
+        a_upper,
+        abundances,
+        abundance_available,
+    )
 
 
 def _legend_horizontal_gradient(
@@ -1116,13 +1182,40 @@ def _legend_horizontal_gradient(
     )
 
 
-def _legend_horizontal_sizes(ax: plt.Axes, x0: float, x1: float) -> None:
-    xs = np.linspace(x0, x1, 4)
-    values = [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0]
-    labels = ["0", "0.33", "0.67", "1"]
-    for x, value, label in zip(xs, values, labels):
-        radius = _net_node_radius(value)
-        size = 18.0 + 108.0 * ((radius - 0.07) / 0.13) ** 1.35
+def _legend_horizontal_sizes(
+    ax: plt.Axes,
+    x0: float,
+    x1: float,
+    lower: float,
+    upper: float,
+    abundances: Sequence[float],
+    abundance_available: bool,
+) -> None:
+    if not abundance_available:
+        ax.text(
+            (x0 + x1) / 2,
+            0.54,
+            "N/A",
+            ha="center",
+            va="center",
+            fontsize=6.0,
+            color=MID,
+        )
+        ax.text(
+            (x0 + x1) / 2,
+            0.17,
+            "Mean relative abundance",
+            ha="center",
+            va="top",
+            fontsize=6.1,
+            color=MID,
+        )
+        return
+    values = _net_abundance_legend_values(abundances, lower, upper)
+    xs = np.linspace(x0, x1, len(values))
+    for x, value in zip(xs, values):
+        norm = _net_abundance_norm(value, lower, upper)
+        size = 18.0 + 108.0 * norm
         ax.scatter(
             [x],
             [0.54],
@@ -1133,11 +1226,19 @@ def _legend_horizontal_sizes(ax: plt.Axes, x0: float, x1: float) -> None:
             clip_on=False,
             zorder=3,
         )
-        ax.text(x, 0.82, label, ha="center", va="bottom", fontsize=6.0, color=MID)
+        ax.text(
+            x,
+            0.82,
+            _format_relative_abundance(value),
+            ha="center",
+            va="bottom",
+            fontsize=6.0,
+            color=MID,
+        )
     ax.text(
         (x0 + x1) / 2,
         0.17,
-        "Normalized interaction connectivity",
+        "Mean relative abundance",
         ha="center",
         va="top",
         fontsize=6.1,
@@ -1180,6 +1281,10 @@ def _legend_interaction_bottom(
     ax: plt.Axes,
     s_min: float,
     s_max: float,
+    abundance_lower: float,
+    abundance_upper: float,
+    abundances: Sequence[float],
+    abundance_available: bool,
     class_labels: Sequence[str] | None = None,
 ) -> None:
     ax.set_xlim(0.0, 1.0)
@@ -1188,10 +1293,26 @@ def _legend_interaction_bottom(
     labels = [str(x) for x in (class_labels or ())]
     if len(labels) >= 2:
         _legend_horizontal_gradient(ax, 0.045, 0.265, 0.46, 0.66, labels[0], labels[1])
-        _legend_horizontal_sizes(ax, 0.345, 0.585)
+        _legend_horizontal_sizes(
+            ax,
+            0.345,
+            0.585,
+            abundance_lower,
+            abundance_upper,
+            abundances,
+            abundance_available,
+        )
         _legend_horizontal_edge(ax, 0.690, 0.955, s_min, s_max)
     else:
-        _legend_horizontal_sizes(ax, 0.175, 0.445)
+        _legend_horizontal_sizes(
+            ax,
+            0.175,
+            0.445,
+            abundance_lower,
+            abundance_upper,
+            abundances,
+            abundance_available,
+        )
         _legend_horizontal_edge(ax, 0.575, 0.885, s_min, s_max)
 
 
@@ -1210,8 +1331,24 @@ def plot_interaction_network(
     ax_net = fig.add_axes([0.025, 0.225, 0.950, 0.745], zorder=4)
     ax_leg = fig.add_axes([0.035, 0.025, 0.930, 0.155], zorder=12)
     try:
-        s_min, s_max = _draw_network(ax_net, tab, stats, top_k, layout=layout)
-        _legend_interaction_bottom(ax_leg, s_min, s_max, labels)
+        (
+            s_min,
+            s_max,
+            abundance_lower,
+            abundance_upper,
+            abundances,
+            abundance_available,
+        ) = _draw_network(ax_net, tab, stats, top_k, layout=layout)
+        _legend_interaction_bottom(
+            ax_leg,
+            s_min,
+            s_max,
+            abundance_lower,
+            abundance_upper,
+            abundances,
+            abundance_available,
+            labels,
+        )
     except Exception as exc:
         ax_net.clear()
         _soft_missing(ax_net, f"Interaction network unavailable\n{exc}")

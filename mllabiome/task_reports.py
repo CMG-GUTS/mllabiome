@@ -1125,7 +1125,7 @@ def _regression_explainability_blocks(
             parts.append("<h4>ALE interactions</h4>")
 
             parts.append(
-                "<p>Exploratory out-of-fold 2D ALE interaction strengths. Edge weight represents interaction magnitude.</p>"
+                "<p>Exploratory out-of-fold 2D ALE interaction strengths. Edge width and shade represent interaction magnitude. Node area encodes cohort mean relative abundance on a log scale; for log-ratio and balance coordinates, abundance is the absolute-coefficient-weighted mean relative abundance of the underlying component taxa.</p>"
             )
 
             for stem, caption in (

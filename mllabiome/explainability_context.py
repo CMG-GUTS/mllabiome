@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Sequence
 
 import numpy as np
@@ -131,4 +132,134 @@ def build_local_relative_abundance_context(
                     "class_label": class_label,
                 }
             )
+    return pd.DataFrame(rows)
+
+
+def _coordinate_components(
+    feature: str, metadata: Any
+) -> tuple[list[str], np.ndarray, str]:
+    if metadata is not None:
+        if isinstance(metadata, dict):
+            anchor = str(metadata.get("anchor_feature", "")).strip()
+            components_raw = metadata.get("components", ())
+            coefficients_raw = metadata.get("coefficients", ())
+            if isinstance(components_raw, str):
+                try:
+                    components_raw = json.loads(components_raw)
+                except Exception:
+                    components_raw = ()
+            if isinstance(coefficients_raw, str):
+                try:
+                    coefficients_raw = json.loads(coefficients_raw)
+                except Exception:
+                    coefficients_raw = ()
+        else:
+            anchor = (
+                ""
+                if getattr(metadata, "anchor_feature", None) is None
+                else str(metadata.anchor_feature).strip()
+            )
+            components_raw = getattr(metadata, "components", ())
+            coefficients_raw = getattr(metadata, "coefficients", ())
+        if anchor:
+            return [anchor], np.asarray([1.0], dtype=float), "anchor_feature"
+        components = [str(value) for value in list(components_raw or ()) if str(value)]
+        if components:
+            coefficients = np.asarray(list(coefficients_raw or ()), dtype=float)
+            if coefficients.shape != (len(components),) or not np.all(
+                np.isfinite(coefficients)
+            ):
+                coefficients = np.ones(len(components), dtype=float)
+            weights = np.abs(coefficients)
+            if not np.any(weights > 0):
+                weights = np.ones(len(components), dtype=float)
+            return components, weights, "component_weighted"
+    tail = str(feature).rsplit("|", 1)[-1]
+    if tail.startswith("ALR["):
+        closing = tail.find("]")
+        body = tail[4:closing] if closing > 4 else ""
+        if "/" in body:
+            numerator, reference = (part.strip() for part in body.split("/", 1))
+            if numerator and reference:
+                return (
+                    [numerator, reference],
+                    np.asarray([1.0, 1.0], dtype=float),
+                    "component_weighted",
+                )
+    return [str(feature)], np.asarray([1.0], dtype=float), "feature"
+
+
+def build_feature_relative_abundance_summary(
+    dataset: Any,
+    features: Sequence[str],
+    coordinate_metadata: Sequence[Any] | None = None,
+) -> pd.DataFrame:
+    unique_features = list(dict.fromkeys(str(feature) for feature in features))
+    if not unique_features:
+        return pd.DataFrame()
+    metadata_lookup: dict[str, Any] = {}
+    for item in coordinate_metadata or ():
+        if isinstance(item, dict):
+            name = str(item.get("name", item.get("coordinate", ""))).strip()
+        else:
+            name = str(getattr(item, "name", "")).strip()
+        if name:
+            metadata_lookup[name] = item
+    specs: dict[str, tuple[list[str], np.ndarray, str]] = {}
+    requested_sources: list[str] = []
+    for feature in unique_features:
+        components, weights, basis = _coordinate_components(
+            feature, metadata_lookup.get(feature)
+        )
+        specs[feature] = (components, weights, basis)
+        requested_sources.extend(components)
+    requested_sources = list(dict.fromkeys(requested_sources))
+    context = build_local_relative_abundance_context(dataset, requested_sources)
+    if context.empty:
+        return pd.DataFrame(
+            {
+                "feature": unique_features,
+                "mean_relative_abundance": np.nan,
+                "abundance_basis": "unavailable",
+            }
+        )
+    context["relative_abundance"] = pd.to_numeric(
+        context["relative_abundance"], errors="coerce"
+    )
+    context = context.replace([np.inf, -np.inf], np.nan).dropna(
+        subset=["relative_abundance"]
+    )
+    means = context.groupby("feature", sort=False)["relative_abundance"].mean()
+    rows: list[dict[str, Any]] = []
+    for feature in unique_features:
+        components, weights, basis = specs[feature]
+        values: list[float] = []
+        kept_weights: list[float] = []
+        for component, weight in zip(components, weights):
+            if component not in means.index:
+                continue
+            value = float(means.loc[component])
+            if not np.isfinite(value) or value < 0:
+                continue
+            values.append(value)
+            kept_weights.append(float(weight))
+        if values:
+            weight_array = np.asarray(kept_weights, dtype=float)
+            if not np.any(np.isfinite(weight_array) & (weight_array > 0)):
+                weight_array = np.ones(len(values), dtype=float)
+            weight_array = np.where(
+                np.isfinite(weight_array) & (weight_array > 0), weight_array, 0.0
+            )
+            abundance = float(
+                np.average(np.asarray(values, dtype=float), weights=weight_array)
+            )
+        else:
+            abundance = np.nan
+        rows.append(
+            {
+                "feature": feature,
+                "mean_relative_abundance": abundance,
+                "abundance_basis": basis if values else "unavailable",
+            }
+        )
     return pd.DataFrame(rows)

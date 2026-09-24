@@ -36,7 +36,10 @@ from .explainability import (
     _quiet_pyale_info,
     _require_pyale,
 )
-from .explainability_context import build_local_relative_abundance_context
+from .explainability_context import (
+    build_feature_relative_abundance_summary,
+    build_local_relative_abundance_context,
+)
 from .explainability_methods import (
     ALE,
     LIME,
@@ -1217,7 +1220,10 @@ def _write_regression_ale_figure(
 
 
 def _write_regression_interaction_figures(
-    target_dir: Path, interactions: pd.DataFrame, top_k: int
+    target_dir: Path,
+    interactions: pd.DataFrame,
+    top_k: int,
+    abundance_stats: pd.DataFrame | None = None,
 ) -> dict[str, Path]:
     if interactions.empty:
         return {}
@@ -1244,13 +1250,21 @@ def _write_regression_interaction_figures(
     figures = target_dir / "figures"
     stem = figures / "interaction_network_current"
     plot_interaction_network(
-        table, pd.DataFrame(), stem, int(top_k), None, layout="default"
+        table,
+        pd.DataFrame() if abundance_stats is None else abundance_stats,
+        stem,
+        int(top_k),
+        None,
+        layout="default",
     )
     return {"interaction_network_current_svg": stem.with_suffix(".svg")}
 
 
 def _write_regression_explainability_figures(
-    target_dir: Path, importance: pd.DataFrame | None = None, top_k: int = 15
+    target_dir: Path,
+    importance: pd.DataFrame | None = None,
+    top_k: int = 15,
+    interaction_abundance: pd.DataFrame | None = None,
 ) -> dict[str, Path]:
     frame = importance if importance is not None else pd.DataFrame()
     if frame.empty:
@@ -1287,7 +1301,10 @@ def _write_regression_explainability_figures(
     if table_exists(interaction_path):
         outputs.update(
             _write_regression_interaction_figures(
-                target_dir, read_table(interaction_path), int(top_k)
+                target_dir,
+                read_table(interaction_path),
+                int(top_k),
+                interaction_abundance,
             )
         )
     return outputs
@@ -1588,10 +1605,35 @@ def _explain_target(
                 summary.sort_values("interaction_strength_mean", ascending=False),
             )
             outputs["interactions"] = interaction_path
+        interaction_abundance = pd.DataFrame()
+        if interaction_frames:
+            interaction_features = list(
+                dict.fromkeys(
+                    interactions.get("feature_1", pd.Series(dtype=object))
+                    .astype(str)
+                    .tolist()
+                    + interactions.get("feature_2", pd.Series(dtype=object))
+                    .astype(str)
+                    .tolist()
+                )
+            )
+            metadata_for_abundance = (
+                pd.DataFrame(coordinate_rows)
+                .drop_duplicates("coordinate", keep="first")
+                .to_dict("records")
+                if coordinate_rows
+                else []
+            )
+            interaction_abundance = build_feature_relative_abundance_summary(
+                dataset, interaction_features, metadata_for_abundance
+            )
         phase.phase("render explainability figures")
         outputs.update(
             _write_regression_explainability_figures(
-                target_dir, importance, int(sweep.explainability.top_k)
+                target_dir,
+                importance,
+                int(sweep.explainability.top_k),
+                interaction_abundance,
             )
         )
         if local_enabled and not local_table.empty and selected_pairs:

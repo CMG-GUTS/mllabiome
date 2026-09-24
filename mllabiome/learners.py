@@ -6,6 +6,7 @@ import warnings
 from typing import Any, Callable
 
 import numpy as np
+from sklearn import get_config
 from sklearn.base import BaseEstimator, clone
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.discriminant_analysis import (
@@ -313,10 +314,23 @@ class GroupAwareCalibratedClassifier(BaseEstimator):
 
     def fit(self, X, y, groups=None):
         splits = self._splits(X, y, groups)
+        base_estimator = clone(self.estimator)
+        fit_params = {}
+        if groups is not None:
+            try:
+                parameters = inspect.signature(base_estimator.fit).parameters
+            except (TypeError, ValueError):
+                parameters = {}
+            if "groups" in parameters:
+                if bool(get_config().get("enable_metadata_routing", False)) and hasattr(
+                    base_estimator, "set_fit_request"
+                ):
+                    base_estimator = base_estimator.set_fit_request(groups=True)
+                fit_params["groups"] = np.asarray(groups)
         self.model_ = CalibratedClassifierCV(
-            clone(self.estimator), method=self.method, cv=splits
+            base_estimator, method=self.method, cv=splits
         )
-        self.model_.fit(X, y)
+        self.model_.fit(X, y, **fit_params)
         self.classes_ = np.asarray(self.model_.classes_)
         if hasattr(self.model_, "feature_names_in_"):
             self.feature_names_in_ = np.asarray(
@@ -343,17 +357,18 @@ def fit_classifier(estimator: BaseEstimator, X, y, groups=None) -> BaseEstimator
         raise ValueError(
             "SVC(probability=True) uses internal sample-level cross-validation. Use probability=False with GroupAwareCalibratedClassifier for grouped evaluation."
         )
+    fit_params = {}
     if groups_array is not None and isinstance(estimator, CalibratedClassifierCV):
         cv = estimator.cv
+        base_estimator = getattr(
+            estimator, "estimator", getattr(estimator, "base_estimator", None)
+        )
+        if base_estimator is None:
+            raise TypeError(
+                "CalibratedClassifierCV does not expose its base estimator."
+            )
         if cv is None or isinstance(cv, (int, np.integer)):
             n_splits = 5 if cv is None else int(cv)
-            base_estimator = getattr(
-                estimator, "estimator", getattr(estimator, "base_estimator", None)
-            )
-            if base_estimator is None:
-                raise TypeError(
-                    "CalibratedClassifierCV does not expose its base estimator."
-                )
             helper = GroupAwareCalibratedClassifier(
                 base_estimator,
                 method=estimator.method,
@@ -361,15 +376,25 @@ def fit_classifier(estimator: BaseEstimator, X, y, groups=None) -> BaseEstimator
                 random_state=42,
             )
             estimator.set_params(cv=helper._splits(X, y, groups_array))
+        try:
+            base_parameters = inspect.signature(base_estimator.fit).parameters
+        except (TypeError, ValueError):
+            base_parameters = {}
+        if "groups" in base_parameters:
+            if bool(get_config().get("enable_metadata_routing", False)) and hasattr(
+                base_estimator, "set_fit_request"
+            ):
+                base_estimator = base_estimator.set_fit_request(groups=True)
+                estimator.set_params(estimator=base_estimator)
+            fit_params["groups"] = groups_array
     fit = estimator.fit
     try:
         parameters = inspect.signature(fit).parameters
     except (TypeError, ValueError):
         parameters = {}
     if groups_array is not None and "groups" in parameters:
-        fit(X, y, groups=groups_array)
-    else:
-        fit(X, y)
+        fit_params["groups"] = groups_array
+    fit(X, y, **fit_params)
     return estimator
 
 

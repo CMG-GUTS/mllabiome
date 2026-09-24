@@ -31,7 +31,10 @@ from .configs_sweep import (
 )
 from .console import info, path_table, progress, stage, success, summary_table
 from .data import load_dataset
-from .explainability_context import build_local_relative_abundance_context
+from .explainability_context import (
+    build_feature_relative_abundance_summary,
+    build_local_relative_abundance_context,
+)
 from .explainability_methods import (
     ALE,
     LIME,
@@ -3065,7 +3068,7 @@ def _fit_oof_single_for_explainability(
 def _mpma_e_reference_and_folds(
     sweep: Sweep,
     rankings: pd.DataFrame,
-) -> tuple[Any, np.ndarray, list[str], list[dict[str, Any]], pd.Series]:
+) -> tuple[Any, np.ndarray, list[str], list[dict[str, Any]], pd.Series, list[Any]]:
     root = sweep.root()
     members, aggregation = _selected_ensemble_members(root)
     member_rows = _ordered_member_rows(root, rankings, members)
@@ -3082,6 +3085,7 @@ def _mpma_e_reference_and_folds(
 
     feature_names: list[str] = []
     reference_blocks: list[np.ndarray] = []
+    reference_coordinate_metadata: list[Any] = []
     member_materialized: list[dict[str, Any]] = []
     for member_i, (_, r) in enumerate(member_rows.iterrows(), start=1):
         levels = _row_levels(r) or ("all",)
@@ -3101,11 +3105,19 @@ def _mpma_e_reference_and_folds(
         )()
         X_ref_member, _ = ct_ref.apply_pair(X_base_member, X_base_member)
         transformed_names = ct_ref.get_feature_names_out(list(names_member))
-        if X_ref_member.shape[1] != len(transformed_names):
+        transformed_metadata = ct_ref.coordinate_metadata(list(names_member))
+        if X_ref_member.shape[1] != len(transformed_names) or len(
+            transformed_metadata
+        ) != len(transformed_names):
             raise ExplainabilityConfigurationError(
                 f"Transformation {transformation_key!r} produced feature metadata inconsistent with its transformed matrix."
             )
-        feature_names.extend([f"{label_prefix}|{name}" for name in transformed_names])
+        prefixed_names = [f"{label_prefix}|{name}" for name in transformed_names]
+        feature_names.extend(prefixed_names)
+        reference_coordinate_metadata.extend(
+            replace(item, name=prefixed_name)
+            for item, prefixed_name in zip(transformed_metadata, prefixed_names)
+        )
         reference_blocks.append(X_ref_member)
         member_materialized.append(
             {
@@ -3201,7 +3213,14 @@ def _mpma_e_reference_and_folds(
             "learner": "MPMA-E",
         }
     )
-    return dataset, X_reference, feature_names, folds, row
+    return (
+        dataset,
+        X_reference,
+        feature_names,
+        folds,
+        row,
+        reference_coordinate_metadata,
+    )
 
 
 def _aggregate_oof_predictions(
@@ -4027,9 +4046,14 @@ def _explain_one(
     prediction_reproduction: list[dict[str, Any]] = []
     if ensemble_explain:
         info("Preparing selected MPMA-E outer-fold units for OOF explanation")
-        dataset, X_base, feature_names, oof_folds, row = _mpma_e_reference_and_folds(
-            sweep, rankings
-        )
+        (
+            dataset,
+            X_base,
+            feature_names,
+            oof_folds,
+            row,
+            coordinate_metadata,
+        ) = _mpma_e_reference_and_folds(sweep, rankings)
     else:
         info("Preparing selected MPMA outer-fold units for OOF explanation")
         oof_bundle = _fit_oof_single_for_explainability(sweep, row)
@@ -5038,6 +5062,8 @@ def _explain_one(
                 dataset.class_labels,
                 class_indices,
                 int(specs_by_name["interactions"].top_k),
+                dataset,
+                coordinate_metadata,
             )
         )
 
@@ -5612,6 +5638,8 @@ def _ensure_interaction_network_outputs(
     class_labels: Sequence[str],
     class_indices: Sequence[int],
     top_k: int,
+    dataset: Any,
+    coordinate_metadata: Sequence[Any] | None = None,
 ) -> dict[str, Path]:
     path = target_dir / "feature_interactions_current.parquet"
     if not table_exists(path):
@@ -5647,6 +5675,11 @@ def _ensure_interaction_network_outputs(
         stats = _interaction_distribution_stats_for_class(
             features, feature_names, X, y, c
         )
+        abundance = build_feature_relative_abundance_summary(
+            dataset, features, coordinate_metadata
+        )
+        if not abundance.empty:
+            stats = stats.merge(abundance, on="feature", how="outer")
         label = str(class_labels[c])
         other_labels = [str(v) for i, v in enumerate(class_labels) if i != c]
         reference_label = other_labels[0] if len(other_labels) == 1 else "Other classes"

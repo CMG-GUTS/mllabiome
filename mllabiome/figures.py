@@ -13,7 +13,7 @@ from .transformations import TRANSFORMATION_SPACE, transformation_label
 from .utils import TAXONOMIC_LEVELS
 
 _TRANSFORM_DISPLAY = {
-    "identity": "Raw",
+    "identity": "identity",
     "relative_abundance": "RA",
     "presence_absence": "P/A",
     "hellinger": "Hellinger",

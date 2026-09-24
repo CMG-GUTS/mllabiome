@@ -122,6 +122,14 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
         frame.index.name = "sample_id"
         frame.to_csv(path, sep="\t")
 
+    @staticmethod
+    def _write_groups(path: Path, group_codes: np.ndarray) -> None:
+        sample_ids = [f"sample_{i:08d}" for i in range(len(group_codes))]
+        values = [f"group_{int(code):08d}" for code in group_codes]
+        frame = pd.DataFrame({"cv_group": values}, index=sample_ids)
+        frame.index.name = "sample_id"
+        frame.to_csv(path, sep="\t")
+
     def _run_r(self, args: list[str]) -> None:
         rscript, env = self._runtime_env()
         with as_file(self._r_runner_resource()) as runner:
@@ -142,15 +150,33 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
                 print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
 
     def _fit_binary_model(
-        self, X_path: Path, y_binary: np.ndarray, model_path: Path
+        self,
+        X_path: Path,
+        y_binary: np.ndarray,
+        model_path: Path,
+        groups_path: Path | None,
+        group_codes: np.ndarray | None,
     ) -> None:
         labels_path = model_path.with_suffix(".labels.tsv")
         self._write_binary_labels(labels_path, y_binary)
         min_class = int(np.bincount(y_binary, minlength=2).min())
         folds = min(int(self.num_folds), min_class)
+        if group_codes is not None:
+            class_group_counts = [
+                int(np.unique(group_codes[y_binary == klass]).size) for klass in (0, 1)
+            ]
+            folds = min(
+                folds,
+                int(np.unique(group_codes).size),
+                min(class_group_counts),
+            )
         if folds < 2:
+            if group_codes is None:
+                raise ValueError(
+                    "SIAMCAT requires at least two training samples in each binary class."
+                )
             raise ValueError(
-                "SIAMCAT requires at least two training samples in each binary class."
+                "Group-aware SIAMCAT requires each binary class to occur in at least two distinct training groups."
             )
         self._run_r(
             [
@@ -173,15 +199,29 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
                 str(self.fs_direction),
                 str(int(self.random_state)),
                 str(int(self.verbose)),
+                str(groups_path) if groups_path is not None else "__NONE__",
             ]
         )
         labels_path.unlink(missing_ok=True)
 
-    def fit(self, X: Any, y: Any):
+    def fit(self, X: Any, y: Any, groups: Any = None):
         arr = _as_2d_float(X)
         y_arr = np.asarray(y)
         if y_arr.ndim != 1 or len(y_arr) != arr.shape[0]:
             raise ValueError("X and y have incompatible shapes for SIAMCATClassifier.")
+        group_codes = None
+        if groups is not None:
+            groups_arr = np.asarray(groups, dtype=object)
+            if groups_arr.ndim != 1 or len(groups_arr) != arr.shape[0]:
+                raise ValueError(
+                    "groups must contain exactly one value per training sample."
+                )
+            if bool(pd.isna(groups_arr).any()):
+                raise ValueError("SIAMCAT groups must not contain missing values.")
+            group_codes, _ = pd.factorize(groups_arr, sort=False)
+            group_codes = np.asarray(group_codes, dtype=int)
+            if np.any(group_codes < 0):
+                raise ValueError("SIAMCAT groups must not contain missing values.")
         self.classes_ = np.unique(y_arr)
         if len(self.classes_) < 2:
             raise ValueError("SIAMCATClassifier requires at least two classes.")
@@ -190,6 +230,10 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
         self._workdir_ = Path(tempfile.mkdtemp(prefix="mllabiome-siamcat-"))
         X_path = self._workdir_ / "train.tsv"
         self._write_features(X_path, X, fitted=True)
+        groups_path = None
+        if group_codes is not None:
+            groups_path = self._workdir_ / "groups.tsv"
+            self._write_groups(groups_path, group_codes)
         self._model_paths_: list[Path] = []
         target_classes = (
             [self.classes_[-1]] if len(self.classes_) == 2 else list(self.classes_)
@@ -197,7 +241,13 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
         for index, klass in enumerate(target_classes):
             y_binary = (y_arr == klass).astype(int)
             model_path = self._workdir_ / f"model_{index:03d}.rds"
-            self._fit_binary_model(X_path, y_binary, model_path)
+            self._fit_binary_model(
+                X_path,
+                y_binary,
+                model_path,
+                groups_path,
+                group_codes,
+            )
             self._model_paths_.append(model_path)
         self._binary_target_classes_ = np.asarray(target_classes, dtype=object)
         return self

@@ -171,7 +171,43 @@ def _strategy_prediction_frames(
     return frames
 
 
-def _metric_frame(predictions: pd.DataFrame) -> pd.DataFrame:
+def _outer_split_sizes(root: Path) -> pd.DataFrame:
+    frame = _read_table(root / "tables" / "cv_splits.parquet")
+    required = {"stage", "split_key", "role", "sample_index"}
+    if frame.empty or not required.issubset(frame.columns):
+        return pd.DataFrame()
+    frame = frame[
+        frame["stage"].astype(str).eq("outer")
+        & frame["role"].astype(str).isin(["train", "test"])
+    ].copy()
+    if frame.empty:
+        return pd.DataFrame()
+    counts = (
+        frame.groupby(["split_key", "role"], sort=False)["sample_index"]
+        .nunique()
+        .unstack(fill_value=0)
+        .reset_index()
+        .rename(
+            columns={
+                "split_key": "outer_split_key",
+                "train": "n_train",
+                "test": "n_test",
+            }
+        )
+    )
+    for column in ("n_train", "n_test"):
+        if column not in counts.columns:
+            counts[column] = 0
+        counts[column] = (
+            pd.to_numeric(counts[column], errors="coerce").fillna(0).astype(int)
+        )
+    counts["outer_split_key"] = counts["outer_split_key"].astype(str)
+    return counts[["outer_split_key", "n_train", "n_test"]]
+
+
+def _metric_frame(
+    predictions: pd.DataFrame, split_sizes: pd.DataFrame | None = None
+) -> pd.DataFrame:
     if predictions.empty or "outer_split_key" not in predictions.columns:
         return pd.DataFrame()
     pcols = [column for column in predictions.columns if column.startswith("proba_")]
@@ -209,7 +245,12 @@ def _metric_frame(predictions: pd.DataFrame) -> pd.DataFrame:
                 **metrics,
             }
         )
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    if out.empty or split_sizes is None or split_sizes.empty:
+        return out
+    sizes = split_sizes.copy()
+    sizes["outer_split_key"] = sizes["outer_split_key"].astype(str)
+    return out.merge(sizes, on="outer_split_key", how="left", validate="many_to_one")
 
 
 def _repeat_id(split_key: str) -> str:
@@ -399,7 +440,11 @@ def _exact_sign_flip_test(
 def _corrected_resampled_t_test(
     merged: pd.DataFrame, metric_a: str, metric_b: str
 ) -> tuple[float, float, str]:
-    frame = merged[["outer_split_key", metric_a, metric_b]].copy()
+    columns = ["outer_split_key", metric_a, metric_b]
+    for column in ("n_train_a", "n_test_a", "n_train_b", "n_test_b"):
+        if column in merged.columns:
+            columns.append(column)
+    frame = merged[columns].copy()
     frame[metric_a] = pd.to_numeric(frame[metric_a], errors="coerce")
     frame[metric_b] = pd.to_numeric(frame[metric_b], errors="coerce")
     frame = frame[
@@ -411,14 +456,34 @@ def _corrected_resampled_t_test(
     differences = (frame[metric_a] - frame[metric_b]).to_numpy(dtype=float)
     mean_difference = float(np.mean(differences))
     variance = float(np.var(differences, ddof=1))
-    frame["repeat"] = frame["outer_split_key"].map(_repeat_id)
-    fold_counts = (
-        frame.groupby("repeat")["outer_split_key"].nunique().to_numpy(dtype=float)
-    )
-    k = int(round(float(np.median(fold_counts)))) if len(fold_counts) else len(frame)
-    if k < 2:
-        return mean_difference, float("nan"), "nadeau_bengio_corrected_t"
-    test_train_ratio = 1.0 / float(k - 1)
+    ratios: list[np.ndarray] = []
+    for suffix in ("a", "b"):
+        train_column = f"n_train_{suffix}"
+        test_column = f"n_test_{suffix}"
+        if train_column not in frame.columns or test_column not in frame.columns:
+            continue
+        train = pd.to_numeric(frame[train_column], errors="coerce").to_numpy(
+            dtype=float
+        )
+        test = pd.to_numeric(frame[test_column], errors="coerce").to_numpy(dtype=float)
+        valid = np.isfinite(train) & np.isfinite(test) & (train > 0) & (test > 0)
+        if bool(valid.any()):
+            ratios.append(test[valid] / train[valid])
+    if ratios:
+        test_train_ratio = float(np.mean(np.concatenate(ratios)))
+    else:
+        frame["repeat"] = frame["outer_split_key"].map(_repeat_id)
+        fold_counts = (
+            frame.groupby("repeat")["outer_split_key"].nunique().to_numpy(dtype=float)
+        )
+        k = (
+            int(round(float(np.median(fold_counts))))
+            if len(fold_counts)
+            else len(frame)
+        )
+        if k < 2:
+            return mean_difference, float("nan"), "nadeau_bengio_corrected_t"
+        test_train_ratio = 1.0 / float(k - 1)
     corrected_variance = (1.0 / len(differences) + test_train_ratio) * variance
     if corrected_variance <= 0:
         p_value = 1.0 if abs(mean_difference) <= 1e-15 else 0.0
@@ -2284,6 +2349,7 @@ def _statistics_fingerprint(
         root / "configs.parquet",
         root / "inner_results" / "inner_results.parquet",
         root / "tables" / "mpma_b_final_candidate.json",
+        root / "tables" / "cv_splits.parquet",
         root / "ensembling" / "selected_unit.json",
         root / "ensembling" / "mpma_e_final_candidate.json",
     ]
@@ -2301,7 +2367,7 @@ def _statistics_fingerprint(
             float(value) for value in decision_curve_thresholds
         ],
         "files": [_file_signature(path) for path in paths],
-        "schema_version": 9,
+        "schema_version": 10,
     }
     text = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -2420,9 +2486,10 @@ def run_report_statistics(
     if cached is not None:
         return cached
     frames = _strategy_prediction_frames(root, strategy_rows)
+    split_sizes = _outer_split_sizes(root)
     unit_frames: list[pd.DataFrame] = []
     for strategy, predictions in frames.items():
-        metrics = _metric_frame(predictions)
+        metrics = _metric_frame(predictions, split_sizes)
         if metrics.empty:
             continue
         metrics.insert(0, "Strategy", strategy)
@@ -2565,7 +2632,7 @@ def run_report_statistics(
         "confidence_level": 0.95,
         "nested_cv_bootstrap": "hierarchical repeat/outer-fold bootstrap of held-out displayed-strategy metrics",
         "lodo_bootstrap": "cluster bootstrap of held-out cohorts for displayed-strategy metrics",
-        "nested_cv_pairwise_test": "Nadeau-Bengio corrected resampled paired t-test",
+        "nested_cv_pairwise_test": "Nadeau-Bengio corrected resampled paired t-test using the mean observed outer-fold n_test/n_train ratio from the persisted split manifest",
         "lodo_pairwise_test": "paired sign-flip randomization test at held-out cohort level",
         "multiple_testing": "Holm adjustment across all displayed strategy-pair and metric hypotheses",
         "scope": "displayed report strategies only",

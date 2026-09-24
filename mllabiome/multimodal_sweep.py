@@ -1294,7 +1294,7 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
     )
     evaluation_fingerprint = _scientific_digest(
         {
-            "schema": "multimodal-evaluation-fingerprint-v2",
+            "schema": "multimodal-evaluation-fingerprint-v3",
             "source_tree_sha256": _source_tree_sha256(),
             "package_version": __version__,
             "model_runtime_dependencies": _software_provenance()["dependencies"],
@@ -1326,6 +1326,7 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
                 np.asarray(fingerprint_strata, dtype=object).astype(str).tolist()
             ),
             "gate": _scientific_value(sweep.gate),
+            "multimodal_inclusion": _scientific_value(dataset.inclusion_report),
         }
     )
     _validate_experiment_identity(
@@ -1339,9 +1340,10 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         "package_version": __version__,
         "software_provenance": _software_provenance(),
         "title": sweep.title,
-        "version": "modality_sweep_v3",
+        "version": "modality_sweep_v4",
         "primary_modality": dataset.primary_modality,
-        "sample_alignment": "primary_modality_required_in_all_modalities",
+        "sample_alignment": "explicit_complete_case_intersection",
+        "multimodal_inclusion": dataset.inclusion_report,
         "n_samples": len(dataset.sample_ids),
         "cv_splits": "tables/cv_splits.parquet",
         "dataset_fingerprint": dataset_hash,
@@ -1349,7 +1351,7 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         "modality_fingerprints": modality_hashes,
         "source_file_sha256": source_hashes,
         "evaluation_fingerprint": evaluation_fingerprint,
-        "evaluation_fingerprint_algorithm": "sha256-scientific-multimodal-evaluation-v2",
+        "evaluation_fingerprint_algorithm": "sha256-scientific-multimodal-evaluation-v3",
         "experiment_fingerprint": _experiment_fingerprint(
             sweep, evaluation_fingerprint
         ),

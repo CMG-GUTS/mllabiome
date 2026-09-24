@@ -149,7 +149,7 @@ def _display_token(value: Any) -> str:
         base, scope = text, ""
 
     replacements = {
-        "identity": "Raw",
+        "identity": "identity",
         "relative_abundance": "RA",
         "presence_absence": "P/A",
         "hellinger": "√RA",
@@ -1896,53 +1896,400 @@ def _procedure_table(sweep: Sweep, root: Path) -> pd.DataFrame:
 
     classes = manifest.get("class_labels", getattr(source, "class_labels", ()))
 
-    return pd.DataFrame(
+    inclusion = (
+        manifest.get("multimodal_inclusion", {})
+        if getattr(sweep, "uses_modalities", False)
+        else {}
+    )
+
+    sample_value = str(manifest.get("n_samples", ""))
+
+    if isinstance(inclusion, dict) and inclusion:
+        complete = inclusion.get("n_complete_samples", manifest.get("n_samples", ""))
+        primary = inclusion.get("n_primary_samples", "")
+        sample_value = (
+            f"{complete} complete case(s) from {primary} primary-modality sample(s)"
+        )
+
+    rows = [
+        ["Task", sweep.title],
+        ["Experiment directory", str(root)],
         [
-            ["Task", sweep.title],
-            ["Experiment directory", str(root)],
+            "Data format",
+            "multimodal"
+            if getattr(sweep, "uses_modalities", False)
+            else _display_data_format(
+                getattr(source, "format", data.get("format", ""))
+            ),
+        ],
+        ["Samples", sample_value],
+        ["Classes", ", ".join(map(str, classes)) if classes else ""],
+        ["Procedure", ev.protocol],
+        [
+            "Stratification",
+            "target"
+            if not getattr(source, "stratify_col", None)
+            else f"target + {getattr(source, 'stratify_col')}",
+        ],
+        [
+            "Outer folds",
+            ev.outer_folds
+            if ev.protocol not in {"lodo", "leave_one_dataset_out"}
+            else "held-out datasets",
+        ],
+        [
+            "Inner folds",
+            "leave-one-dataset-out across outer-training datasets"
+            if ev.protocol in {"lodo", "leave_one_dataset_out"}
+            else ev.inner_folds,
+        ],
+        ["Repeats", ev.repeats],
+        ["Selection metric", ev.optimize_metric],
+        ["Random seed", ev.random_state],
+        [
+            "Qualification gate",
+            f"on ({gate.metric} ≥ {gate.threshold})" if gate.enabled else "off",
+        ],
+        [
+            "Selection rule",
+            "Reported performance uses held-out outer evaluation predictions.",
+        ],
+    ]
+
+    if isinstance(inclusion, dict) and inclusion:
+        rows.insert(
+            4,
             [
-                "Data format",
-                "multimodal"
-                if getattr(sweep, "uses_modalities", False)
-                else _display_data_format(
-                    getattr(source, "format", data.get("format", ""))
-                ),
+                "Multimodal inclusion",
+                "explicit complete-case intersection across all requested modalities",
             ],
-            ["Samples", str(manifest.get("n_samples", ""))],
-            ["Classes", ", ".join(map(str, classes)) if classes else ""],
-            ["Procedure", ev.protocol],
+        )
+        rows.insert(5, ["Multimodal estimand", str(inclusion.get("estimand", ""))])
+
+    return pd.DataFrame(rows, columns=["Field", "Value"])
+
+
+def _format_count_fraction(count: Any, total: Any) -> str:
+
+    try:
+        count_i = int(count)
+        total_i = int(total)
+    except (TypeError, ValueError):
+        return ""
+
+    if total_i <= 0:
+        return str(count_i)
+
+    return f"{count_i} ({100.0 * count_i / total_i:.1f}%)"
+
+
+def _distribution_frame(
+    payload: dict[str, Any], totals: dict[str, int], label: str
+) -> pd.DataFrame:
+
+    categories: set[str] = set()
+
+    for subset in ("primary", "complete", "excluded"):
+        section = payload.get(subset, {}) if isinstance(payload, dict) else {}
+        counts = section.get("counts", {}) if isinstance(section, dict) else {}
+        if isinstance(counts, dict):
+            categories.update(str(key) for key in counts)
+
+    rows: list[dict[str, Any]] = []
+
+    for category in sorted(categories):
+        row: dict[str, Any] = {label: category}
+        for subset, heading in (
+            ("primary", "Primary"),
+            ("complete", "Complete case"),
+            ("excluded", "Excluded"),
+        ):
+            section = payload.get(subset, {}) if isinstance(payload, dict) else {}
+            counts = section.get("counts", {}) if isinstance(section, dict) else {}
+            count = counts.get(category, 0) if isinstance(counts, dict) else 0
+            row[heading] = _format_count_fraction(count, totals.get(subset, 0))
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def _categorical_distribution_frame(
+    payload: dict[str, Any], totals: dict[str, int], label: str
+) -> pd.DataFrame:
+
+    categories: set[str] = set()
+
+    for subset in ("primary", "complete", "excluded"):
+        values = payload.get(subset, {}) if isinstance(payload, dict) else {}
+        if isinstance(values, dict):
+            categories.update(str(key) for key in values)
+
+    rows: list[dict[str, Any]] = []
+
+    for category in sorted(categories):
+        row: dict[str, Any] = {label: category}
+        for subset, heading in (
+            ("primary", "Primary"),
+            ("complete", "Complete case"),
+            ("excluded", "Excluded"),
+        ):
+            values = payload.get(subset, {}) if isinstance(payload, dict) else {}
+            count = values.get(category, 0) if isinstance(values, dict) else 0
+            row[heading] = _format_count_fraction(count, totals.get(subset, 0))
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def _regression_target_frame(payload: dict[str, Any]) -> pd.DataFrame:
+
+    labels = {
+        "n": "N",
+        "mean": "Mean",
+        "std": "SD",
+        "median": "Median",
+        "q1": "Q1",
+        "q3": "Q3",
+        "min": "Minimum",
+        "max": "Maximum",
+    }
+
+    rows: list[dict[str, Any]] = []
+
+    for key, display in labels.items():
+        row: dict[str, Any] = {"Statistic": display}
+        for subset, heading in (
+            ("primary", "Primary"),
+            ("complete", "Complete case"),
+            ("excluded", "Excluded"),
+        ):
+            section = payload.get(subset, {}) if isinstance(payload, dict) else {}
+            value = section.get(key) if isinstance(section, dict) else None
+            if value is None:
+                row[heading] = ""
+            elif key == "n":
+                row[heading] = str(int(value))
+            else:
+                row[heading] = f"{float(value):.4g}"
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def _multimodal_inclusion_html(manifest: dict[str, Any]) -> str:
+
+    inclusion = manifest.get("multimodal_inclusion", {})
+
+    if not isinstance(inclusion, dict) or not inclusion:
+        return ""
+
+    primary_n = int(inclusion.get("n_primary_samples", 0) or 0)
+    complete_n = int(inclusion.get("n_complete_samples", 0) or 0)
+    excluded_n = int(inclusion.get("n_excluded_samples", 0) or 0)
+    primary_subjects = int(inclusion.get("n_primary_subjects", 0) or 0)
+    complete_subjects = int(inclusion.get("n_complete_subjects", 0) or 0)
+    fully_excluded_subjects = int(inclusion.get("n_fully_excluded_subjects", 0) or 0)
+
+    incomplete_subjects = int(
+        inclusion.get("n_subjects_with_incomplete_samples", 0) or 0
+    )
+    partially_retained_subjects = int(
+        inclusion.get("n_partially_retained_subjects", 0) or 0
+    )
+
+    attrition = pd.DataFrame(
+        [
+            ["Primary-modality samples", str(primary_n)],
+            ["Complete-case samples", _format_count_fraction(complete_n, primary_n)],
+            ["Excluded samples", _format_count_fraction(excluded_n, primary_n)],
+            ["Primary-modality subjects", str(primary_subjects)],
             [
-                "Stratification",
-                "target"
-                if not getattr(source, "stratify_col", None)
-                else f"target + {getattr(source, 'stratify_col')}",
+                "Retained subjects",
+                _format_count_fraction(complete_subjects, primary_subjects),
             ],
             [
-                "Outer folds",
-                ev.outer_folds
-                if ev.protocol not in {"lodo", "leave_one_dataset_out"}
-                else "held-out datasets",
+                "Fully excluded subjects",
+                _format_count_fraction(fully_excluded_subjects, primary_subjects),
             ],
             [
-                "Inner folds",
-                "leave-one-dataset-out across outer-training datasets"
-                if ev.protocol in {"lodo", "leave_one_dataset_out"}
-                else ev.inner_folds,
-            ],
-            ["Repeats", ev.repeats],
-            ["Selection metric", ev.optimize_metric],
-            ["Random seed", ev.random_state],
-            [
-                "Qualification gate",
-                f"on ({gate.metric} ≥ {gate.threshold})" if gate.enabled else "off",
+                "Subjects with ≥1 incomplete sample",
+                _format_count_fraction(incomplete_subjects, primary_subjects),
             ],
             [
-                "Selection rule",
-                "Reported performance uses held-out outer evaluation predictions.",
+                "Partially retained subjects",
+                _format_count_fraction(partially_retained_subjects, primary_subjects),
             ],
         ],
-        columns=["Field", "Value"],
+        columns=["Measure", "Value"],
     )
+
+    availability_rows: list[dict[str, Any]] = []
+    availability = inclusion.get("modality_availability", {})
+
+    if isinstance(availability, dict):
+        for modality, values in availability.items():
+            if not isinstance(values, dict):
+                continue
+            available = int(values.get("available_primary_samples", 0) or 0)
+            missing = int(values.get("missing_primary_samples", 0) or 0)
+            availability_rows.append(
+                {
+                    "Modality": str(modality),
+                    "Available": _format_count_fraction(available, primary_n),
+                    "Missing": _format_count_fraction(missing, primary_n),
+                }
+            )
+
+    availability_frame = pd.DataFrame(availability_rows)
+
+    pattern_rows: list[dict[str, Any]] = []
+    patterns = inclusion.get("missingness_patterns", [])
+
+    if isinstance(patterns, list):
+        for row in patterns:
+            if not isinstance(row, dict):
+                continue
+            missing = row.get("missing_modalities", [])
+            names = (
+                [str(value) for value in missing] if isinstance(missing, list) else []
+            )
+            count = int(row.get("n_samples", 0) or 0)
+            pattern_rows.append(
+                {
+                    "Missing modalities": ", ".join(names) if names else "none",
+                    "Samples": _format_count_fraction(count, primary_n),
+                }
+            )
+
+    pattern_frame = pd.DataFrame(pattern_rows)
+
+    totals = {
+        "primary": primary_n,
+        "complete": complete_n,
+        "excluded": excluded_n,
+    }
+
+    target = inclusion.get("target_distribution", {})
+    target_frame = pd.DataFrame()
+
+    if isinstance(target, dict):
+        primary_target = target.get("primary", {})
+        if (
+            isinstance(primary_target, dict)
+            and primary_target.get("kind") == "classification"
+        ):
+            target_frame = _distribution_frame(target, totals, "Target")
+        elif (
+            isinstance(primary_target, dict)
+            and primary_target.get("kind") == "regression"
+        ):
+            target_frame = _regression_target_frame(target)
+
+    group = inclusion.get("group_distribution")
+    group_frame = pd.DataFrame()
+    group_heading = "Grouping distribution"
+
+    if isinstance(group, dict):
+        group_frame = _categorical_distribution_frame(
+            group, totals, str(group.get("column", "Group"))
+        )
+        group_heading = (
+            f"Grouping distribution: {html.escape(str(group.get('column', 'group')))}"
+        )
+
+    characteristic_rows: list[dict[str, Any]] = []
+    characteristics = inclusion.get("characteristic_balance", [])
+
+    if isinstance(characteristics, list):
+        for row in characteristics:
+            if not isinstance(row, dict):
+                continue
+            value = row.get("balance_value")
+            formatted = "" if value is None else f"{float(value):.3f}"
+            metric = str(row.get("balance_metric", ""))
+            metric_label = (
+                "SMD"
+                if metric.startswith("standardized_mean_difference")
+                else "Max |Δ proportion|"
+            )
+            characteristic_rows.append(
+                {
+                    "Characteristic": str(row.get("variable", "")),
+                    "Type": str(row.get("kind", "")),
+                    "Primary": str(row.get("primary", "")),
+                    "Complete case": str(row.get("complete", "")),
+                    "Excluded": str(row.get("excluded", "")),
+                    metric_label: formatted,
+                }
+            )
+
+    characteristic_frame = pd.DataFrame(characteristic_rows)
+
+    estimand = html.escape(
+        str(
+            inclusion.get(
+                "estimand",
+                "samples with complete observations across all requested modalities "
+                "within the primary-modality cohort",
+            )
+        )
+    )
+    parts = [
+        '<section id="multimodal-inclusion">',
+        "<h2>Multimodal inclusion and missingness</h2>",
+        (
+            "<p>Multimodal evaluation uses an explicit complete-case intersection. "
+            f"Performance estimates therefore apply to {estimand}. The primary-modality "
+            "cohort remains the reporting denominator so exclusions caused by unavailable "
+            "modalities are visible rather than silently discarded.</p>"
+        ),
+        "<h3>Inclusion and attrition</h3>",
+        _html_table(attrition),
+    ]
+
+    if not availability_frame.empty:
+        parts.extend(
+            ["<h3>Modality availability</h3>", _html_table(availability_frame)]
+        )
+
+    if not pattern_frame.empty:
+        parts.extend(["<h3>Missingness patterns</h3>", _html_table(pattern_frame)])
+
+    if not target_frame.empty:
+        parts.extend(
+            [
+                "<h3>Target distribution before and after complete-case restriction</h3>",
+                _html_table(target_frame),
+            ]
+        )
+
+    if not group_frame.empty:
+        parts.extend([f"<h3>{group_heading}</h3>", _html_table(group_frame)])
+
+    if not characteristic_frame.empty:
+        parts.extend(
+            [
+                "<h3>Declared characteristic balance</h3>",
+                (
+                    "<p>Continuous variables are summarized as median [Q1, Q3] with "
+                    "standardized mean difference between complete and excluded samples. "
+                    "Categorical variables are summarized by counts and percentages with "
+                    "the maximum absolute category-proportion difference.</p>"
+                ),
+                _html_table(characteristic_frame),
+            ]
+        )
+
+    if excluded_n:
+        parts.append(
+            "<p>Observed differences between complete and excluded observations should be "
+            "considered when interpreting multimodal generalizability because modality "
+            "availability can change the analyzed population.</p>"
+        )
+
+    parts.append("</section>")
+
+    return "".join(parts)
 
 
 def _html_inline(value: Any) -> str:
@@ -2547,7 +2894,7 @@ def _explainability_report_blocks(
                     parts.append("<h6>ALE interactions</h6>")
 
                     parts.append(
-                        "<p>Exploratory class-specific out-of-fold 2D ALE interaction strengths. Edge weight represents interaction magnitude; node abundance compares the target class with the remaining classes.</p>"
+                        "<p>Exploratory class-specific out-of-fold 2D ALE interaction strengths. Edge width and shade represent interaction magnitude. Node area encodes cohort mean relative abundance on a log scale; for log-ratio and balance coordinates, abundance is the absolute-coefficient-weighted mean relative abundance of the underlying component taxa. Node colour represents the standardized target-versus-reference shift in the model coordinate.</p>"
                     )
 
                     parts.extend(interaction_figs_class)
@@ -3210,6 +3557,12 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
 
         procedure = _procedure_table(sweep, root)
 
+        multimodal_inclusion_html = (
+            _multimodal_inclusion_html(_manifest(root))
+            if getattr(sweep, "uses_modalities", False)
+            else ""
+        )
+
         learner_labels = _learner_display_map(sweep)
 
         top_mpmas = _top_mpma_display(
@@ -3376,6 +3729,7 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
 <div class="report-shell"><main id="top" class="report-content">
 <h2 id="performance-evaluation" class="first-section">Task definition and evaluation procedure</h2>
 {_procedure_grid_html(procedure)}
+{multimodal_inclusion_html}
 <h2 id="performance-summary">Task performance summary</h2>
 {_performance_methodology_html(sweep.evaluation.protocol, 2000)}
 {_html_table(strategy_html, raw_html_cols=strat_metric_cols)}
