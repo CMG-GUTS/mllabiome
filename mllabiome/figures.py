@@ -330,25 +330,33 @@ def _least_squares_sse(y: np.ndarray, X: np.ndarray) -> float:
     return float(np.dot(resid, resid))
 
 
+def _interaction_key(left: str, right: str) -> str:
+
+    return f"{left}×{right}"
+
+
 def _partial_eta2_blocked(
     df: pd.DataFrame,
     metric: str,
     factors: tuple[str, ...],
     block: str,
+    interactions: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, float]:
 
-    cols = [metric, block, *factors]
+    cols = list(dict.fromkeys([metric, block, *factors]))
 
     d = df[cols].dropna().copy()
 
+    terms = [*factors, *(_interaction_key(*pair) for pair in interactions)]
+
     if d.empty:
-        return {factor: 0.0 for factor in factors}
+        return {term: np.nan for term in terms}
 
     y = d[metric].astype(float).to_numpy()
 
     pieces = [np.ones((len(d), 1), dtype=float)]
 
-    factor_slices: dict[str, slice] = {}
+    term_columns: dict[str, np.ndarray] = {}
 
     block_dummies = pd.get_dummies(
         d[block].astype(str), prefix="block", drop_first=True, dtype=float
@@ -359,29 +367,70 @@ def _partial_eta2_blocked(
 
     offset = sum(piece.shape[1] for piece in pieces)
 
+    factor_designs: dict[str, np.ndarray] = {}
+
     for factor in factors:
-        dummy = pd.get_dummies(
+        design = pd.get_dummies(
             d[factor].astype(str), prefix=factor, drop_first=True, dtype=float
         ).to_numpy(dtype=float)
 
-        factor_slices[factor] = slice(offset, offset + dummy.shape[1])
+        factor_designs[factor] = design
 
-        if dummy.shape[1]:
-            pieces.append(dummy)
+        term_columns[factor] = np.arange(offset, offset + design.shape[1])
 
-        offset += dummy.shape[1]
+        if design.shape[1]:
+            pieces.append(design)
+
+        offset += design.shape[1]
+
+    for left, right in interactions:
+        left_design = factor_designs[left]
+        right_design = factor_designs[right]
+
+        if left_design.shape[1] and right_design.shape[1]:
+            design = (left_design[:, :, None] * right_design[:, None, :]).reshape(
+                len(d), -1
+            )
+        else:
+            design = np.empty((len(d), 0), dtype=float)
+
+        key = _interaction_key(left, right)
+
+        term_columns[key] = np.arange(offset, offset + design.shape[1])
+
+        if design.shape[1]:
+            pieces.append(design)
+
+        offset += design.shape[1]
 
     X = np.column_stack(pieces)
+
+    rank_full = int(np.linalg.matrix_rank(X))
 
     sse_full = _least_squares_sse(y, X)
 
     values: dict[str, float] = {}
 
-    for factor in factors:
-        target = factor_slices[factor]
+    interaction_keys = {pair: _interaction_key(*pair) for pair in interactions}
 
-        if target.stop <= target.start:
-            values[factor] = 0.0
+    for term in terms:
+        remove = [term_columns[term]]
+
+        if term in factors:
+            remove.extend(
+                term_columns[key]
+                for pair, key in interaction_keys.items()
+                if term in pair
+            )
+
+        target = (
+            np.unique(np.concatenate([columns for columns in remove if columns.size]))
+            if any(columns.size for columns in remove)
+            else np.empty(0, dtype=int)
+        )
+
+        if not target.size:
+            values[term] = np.nan
 
             continue
 
@@ -389,13 +438,20 @@ def _partial_eta2_blocked(
 
         keep[target] = False
 
-        sse_reduced = _least_squares_sse(y, X[:, keep])
+        X_reduced = X[:, keep]
+
+        if rank_full <= int(np.linalg.matrix_rank(X_reduced)):
+            values[term] = np.nan
+
+            continue
+
+        sse_reduced = _least_squares_sse(y, X_reduced)
 
         ss_effect = max(0.0, sse_reduced - sse_full)
 
         denom = ss_effect + sse_full
 
-        values[factor] = 0.0 if denom <= 1e-12 else float(ss_effect / denom)
+        values[term] = np.nan if denom <= 1e-12 else float(ss_effect / denom)
 
     return values
 
@@ -548,7 +604,7 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
     is_modality_sweep = "candidate_family" in df.columns or "modalities" in df.columns
 
     representation_label = (
-        "Modality representation" if is_modality_sweep else "Taxonomic resolution"
+        "Modality representation" if is_modality_sweep else "Taxonomic representation"
     )
 
     learner_label = "Learner" if is_modality_sweep else "Learner"
@@ -850,22 +906,52 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
 
     factors = ("resolution", "_canonical_transform", "learner")
 
-    effects = _partial_eta2_blocked(semantic, metric, factors, "split_key")
+    interactions = (
+        ("resolution", "learner"),
+        ("_canonical_transform", "learner"),
+    )
+
+    effects = _partial_eta2_blocked(
+        semantic,
+        metric,
+        factors,
+        "split_key",
+        interactions,
+    )
+
+    rep_interaction = _interaction_key("resolution", "learner")
+
+    transform_interaction = _interaction_key("_canonical_transform", "learner")
+
+    effect_terms = [
+        "resolution",
+        "_canonical_transform",
+        "learner",
+        rep_interaction,
+        transform_interaction,
+    ]
 
     factor_labels = [
         "Taxonomy" if not is_modality_sweep else representation_label,
         transformation_label_text,
         learner_label,
+        "Taxonomy × learner" if not is_modality_sweep else "Representation × learner",
+        "Transformation × learner",
     ]
 
-    eta_vals = [effects.get(factor, 0.0) for factor in factors]
+    eta_vals = np.asarray(
+        [effects.get(term, np.nan) for term in effect_terms],
+        dtype=float,
+    )
 
-    ypos = np.arange(len(factors))
+    plot_vals = np.where(np.isfinite(eta_vals), eta_vals, 0.0)
+
+    ypos = np.array([0.0, 1.0, 2.0, 3.35, 4.35])
 
     bars = ax_b.barh(
         ypos,
-        eta_vals,
-        color=[C_DARK, C_MID, C_SKY],
+        plot_vals,
+        color=[C_DARK, C_MID, C_SKY, C_DARK, C_MID],
         height=0.58,
         zorder=3,
     )
@@ -878,16 +964,33 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
 
     ax_b.xaxis.set_major_locator(mticker.MultipleLocator(0.25))
 
-    ax_b.set_xlabel("Adjusted partial η²", labelpad=4)
+    ax_b.set_xlabel("Split-adjusted partial η²", labelpad=4)
 
     ax_b.invert_yaxis()
 
     for bar, value in zip(bars, eta_vals, strict=False):
+        y = bar.get_y() + bar.get_height() / 2
+
+        if not np.isfinite(value):
+            ax_b.text(
+                0.025,
+                y,
+                "n/a",
+                ha="left",
+                va="center",
+                fontsize=NATURE_TEXT_PT,
+                color="#64748b",
+            )
+
+            continue
+
+        label = "<0.01" if 0.0 < value < 0.01 else f"{value:.2f}"
+
         if value >= 0.82:
             ax_b.text(
                 max(0.02, value - 0.03),
-                bar.get_y() + bar.get_height() / 2,
-                f"{value:.2f}",
+                y,
+                label,
                 ha="right",
                 va="center",
                 fontsize=NATURE_TEXT_PT,
@@ -897,15 +1000,15 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
         else:
             ax_b.text(
                 min(0.96, value + 0.025),
-                bar.get_y() + bar.get_height() / 2,
-                f"{value:.2f}",
+                y,
+                label,
                 ha="left",
                 va="center",
                 fontsize=NATURE_TEXT_PT,
                 color="#0f172a",
             )
 
-    set_panel_title(ax_b, "Adjusted factor effects")
+    set_panel_title(ax_b, "Hierarchical factor effects")
 
     tag(ax_b, "b")
 

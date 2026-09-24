@@ -31,8 +31,8 @@ DATA = mll.Data(
 
 RESOLUTIONS = (
     # ("phylum", ("phylum",)),
-    # ("class", ("class",)),
-    # ("order", ("order",)),
+    ("class", ("class",)),
+    ("order", ("order",)),
     # ("family", ("family",)),
     # ("genus", ("genus",)),
     # ("domain-phylum", ("domain", "phylum")),
@@ -131,51 +131,51 @@ MODELS = (
             verbose=-1,
         ),
     ),
-    (
-        "XGB_250_lr0.1_msl3_g0.1_col0.5_sub0.5",
-        XGBClassifier(
-            learning_rate=0.1,
-            n_estimators=250,
-            colsample_bytree=0.5,
-            subsample=0.5,
-            max_depth=3,
-            gamma=0.1,
-            reg_alpha=0.01,
-            reg_lambda=0.5,
-            objective="binary:logistic",
-            eval_metric="logloss",
-            n_jobs=1,
-            random_state=42,
-        ),
-    ),
-    (
-        "logreg_scaler_saga_c1.0",
-        Pipeline(
-            steps=(
-                ("scaler", StandardScaler()),
-                (
-                    "model",
-                    LogisticRegression(
-                        solver="saga",
-                        C=1.0,
-                        l1_ratio=0.5,
-                        max_iter=10000,
-                        random_state=42,
-                    ),
-                ),
-            ),
-        ),
-    ),
-    (
-        "ExtraTrees_1000_msl5",
-        ExtraTreesClassifier(
-            n_estimators=1000,
-            min_samples_leaf=5,
-            max_features="sqrt",
-            n_jobs=1,
-            random_state=42,
-        ),
-    ),
+    # (
+    #     "XGB_250_lr0.1_msl3_g0.1_col0.5_sub0.5",
+    #     XGBClassifier(
+    #         learning_rate=0.1,
+    #         n_estimators=250,
+    #         colsample_bytree=0.5,
+    #         subsample=0.5,
+    #         max_depth=3,
+    #         gamma=0.1,
+    #         reg_alpha=0.01,
+    #         reg_lambda=0.5,
+    #         objective="binary:logistic",
+    #         eval_metric="logloss",
+    #         n_jobs=1,
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "logreg_scaler_saga_c1.0",
+    #     Pipeline(
+    #         steps=(
+    #             ("scaler", StandardScaler()),
+    #             (
+    #                 "model",
+    #                 LogisticRegression(
+    #                     solver="saga",
+    #                     C=1.0,
+    #                     l1_ratio=0.5,
+    #                     max_iter=10000,
+    #                     random_state=42,
+    #                 ),
+    #             ),
+    #         ),
+    #     ),
+    # ),
+    # (
+    #     "ExtraTrees_1000_msl5",
+    #     ExtraTreesClassifier(
+    #         n_estimators=1000,
+    #         min_samples_leaf=5,
+    #         max_features="sqrt",
+    #         n_jobs=1,
+    #         random_state=42,
+    #     ),
+    # ),
 )
 
 EVALUATION = mll.Evaluation(

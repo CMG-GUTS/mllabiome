@@ -16,6 +16,10 @@ _PERCENT_METRICS = {
     "AUC_weighted",
     "PR_AUC",
     "PR_AUC_macro",
+    "PR_AUC_weighted",
+    "AP",
+    "AP_macro",
+    "MCC",
     "nMCC",
     "Accuracy",
     "BalAcc",
@@ -28,6 +32,8 @@ _PERCENT_METRICS = {
 _PRIMARY_METRIC_ORDER = (
     "AUC",
     "PR_AUC",
+    "AP",
+    "MCC",
     "nMCC",
     "F1w",
     "Precision",
@@ -39,6 +45,8 @@ _MULTICLASS_METRIC_ORDER = (
     "AUC_macro",
     "AUC_weighted",
     "PR_AUC_macro",
+    "PR_AUC_weighted",
+    "AP_macro",
     "F1_macro",
 )
 _PROBABILITY_METRIC_ORDER = (
@@ -52,6 +60,10 @@ _CONTRAST_METRIC_ORDER = (
     "AUC_weighted",
     "PR_AUC",
     "PR_AUC_macro",
+    "PR_AUC_weighted",
+    "AP",
+    "AP_macro",
+    "MCC",
     "nMCC",
     "F1w",
     "F1_macro",
@@ -72,8 +84,12 @@ _METRIC_LABELS = {
     "AUC": "ROC-AUC",
     "AUC_macro": "ROC-AUC macro",
     "AUC_weighted": "ROC-AUC weighted",
-    "PR_AUC": "PR-AUC (AP)",
+    "PR_AUC": "PR-AUC",
     "PR_AUC_macro": "PR-AUC macro",
+    "PR_AUC_weighted": "PR-AUC weighted",
+    "AP": "Average precision",
+    "AP_macro": "Average precision macro",
+    "MCC": "MCC",
     "nMCC": "nMCC",
     "Accuracy": "Accuracy",
     "BalAcc": "Balanced accuracy",
@@ -432,6 +448,8 @@ def _contrast_display(
             "AUC_macro",
             "AUC_weighted",
             "PR_AUC_macro",
+            "PR_AUC_weighted",
+            "AP_macro",
             "F1_macro",
             "Brier_multiclass",
         }
@@ -522,8 +540,8 @@ def _design_display(manifest: dict[str, Any]) -> pd.DataFrame:
 def _classification_metric_note() -> str:
     return (
         "<p>ROC-AUC measures how well predicted scores rank classes across decision thresholds. "
-        "PR-AUC (AP) is average precision and summarizes the precision-recall trade-off. "
-        "nMCC is Matthews correlation coefficient rescaled from [-1, 1] to [0, 1]. "
+        "PR-AUC is trapezoidal area under the empirical precision-recall curve, while average precision (AP) is the recall-increment-weighted precision summary. "
+        "MCC is reported on its conventional [-1, 1] scale, while nMCC rescales MCC to [0, 1]. "
         "F1w is support-weighted F1. Precision and recall are macro-averaged across classes. "
         "Balanced accuracy is the mean class-specific recall, whereas accuracy is the overall fraction of correct predictions. Higher values are better for all metrics in this table.</p>"
     )
@@ -925,7 +943,8 @@ def _terminal_oof_summary(report_dir: Path) -> None:
         "Strategy",
         "Estimand",
         "ROC-AUC",
-        "PR-AUC (AP)",
+        "PR-AUC",
+        "Average precision",
         "nMCC",
         "Brier score",
         "Log loss",

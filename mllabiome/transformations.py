@@ -72,8 +72,9 @@ TRANSFORMATION_LABELS: tuple[TransformationLabel, ...] = (
         ),
     ),
     TransformationLabel(
-        "additive_log_ratio_first_reference_multiplicative_replacement",
+        "additive_log_ratio_training_reference_multiplicative_replacement",
         (
+            "additive_log_ratio_first_reference_multiplicative_replacement",
             "alr",
             "scikit-bio_alr",
             "skbio_alr",
@@ -229,11 +230,25 @@ def _egozcue_basis(n_components: int) -> np.ndarray:
     return basis
 
 
-def _alr_matrix(X: np.ndarray) -> np.ndarray:
+def _select_alr_reference_index(X: np.ndarray) -> int:
+    raw = _matrix(X, nonnegative=True, nonzero_rows=True)
+    if raw.shape[1] < 2:
+        raise ValueError("ALR requires at least two features.")
+    prevalence = np.mean(raw > 0.0, axis=0)
+    positive = _positive_composition(raw)
+    log_geometric_mean = np.mean(np.log(positive), axis=0)
+    order = np.lexsort((np.arange(raw.shape[1]), -log_geometric_mean, -prevalence))
+    return int(order[0])
+
+
+def _alr_matrix(X: np.ndarray, ref_idx: int) -> np.ndarray:
     positive = _positive_composition(X)
     if positive.shape[1] < 2:
         raise ValueError("ALR requires at least two features.")
-    out = np.asarray(skbio_alr(positive, ref_idx=0), dtype=np.float64)
+    ref_idx = int(ref_idx)
+    if ref_idx < 0 or ref_idx >= positive.shape[1]:
+        raise ValueError("ALR reference index is outside the fitted feature range.")
+    out = np.asarray(skbio_alr(positive, ref_idx=ref_idx), dtype=np.float64)
     if out.ndim == 1 and positive.shape[0] == 1:
         out = out.reshape(1, -1)
     expected = (positive.shape[0], positive.shape[1] - 1)
@@ -296,6 +311,7 @@ class _BuiltinTransformer:
         self.sorted_columns_: list[np.ndarray] | None = None
         self.prevalence_: np.ndarray | None = None
         self.basis_: np.ndarray | None = None
+        self.alr_reference_index_: int | None = None
         self.n_features_in_: int | None = None
         self.n_features_out_: int | None = None
 
@@ -313,8 +329,10 @@ class _BuiltinTransformer:
             return np.arcsin(np.sqrt(_relative_abundance(X)))
         if name == "centered_log_ratio_multiplicative_replacement":
             return _clr_matrix(X)
-        if name == "additive_log_ratio_first_reference_multiplicative_replacement":
-            return _alr_matrix(X)
+        if name == "additive_log_ratio_training_reference_multiplicative_replacement":
+            if self.alr_reference_index_ is None:
+                raise RuntimeError("Transformation has not been fitted.")
+            return _alr_matrix(X, self.alr_reference_index_)
         if name == "isometric_log_ratio_egozcue_multiplicative_replacement":
             if self.basis_ is None:
                 raise RuntimeError("Transformation has not been fitted.")
@@ -332,7 +350,7 @@ class _BuiltinTransformer:
         self.n_features_in_ = int(raw.shape[1])
         name = self.name
         if name in {
-            "additive_log_ratio_first_reference_multiplicative_replacement",
+            "additive_log_ratio_training_reference_multiplicative_replacement",
             "isometric_log_ratio_egozcue_multiplicative_replacement",
         }:
             if raw.shape[1] < 2:
@@ -341,6 +359,11 @@ class _BuiltinTransformer:
                 )
             _positive_composition(X)
             self.n_features_out_ = int(raw.shape[1] - 1)
+            if (
+                name
+                == "additive_log_ratio_training_reference_multiplicative_replacement"
+            ):
+                self.alr_reference_index_ = _select_alr_reference_index(X)
             if name == "isometric_log_ratio_egozcue_multiplicative_replacement":
                 self.basis_ = _egozcue_basis(raw.shape[1])
         else:
@@ -402,7 +425,7 @@ class _BuiltinTransformer:
             abundance = _matrix(X, nonnegative=True)
             self.prevalence_ = (abundance > 0).mean(axis=0).astype(np.float64)
         elif name not in {
-            "additive_log_ratio_first_reference_multiplicative_replacement",
+            "additive_log_ratio_training_reference_multiplicative_replacement",
             "isometric_log_ratio_egozcue_multiplicative_replacement",
         }:
             self._base_transform(X)
@@ -428,7 +451,7 @@ class _BuiltinTransformer:
             "hellinger",
             "arcsine_sqrt",
             "centered_log_ratio_multiplicative_replacement",
-            "additive_log_ratio_first_reference_multiplicative_replacement",
+            "additive_log_ratio_training_reference_multiplicative_replacement",
             "isometric_log_ratio_egozcue_multiplicative_replacement",
             "within_sample_fractional_rank",
         }:
@@ -572,9 +595,18 @@ class _BuiltinTransformer:
             raise ValueError(
                 f"Input feature-name count differs from the fitted abundance transformation: expected {self.n_features_in_}, got {len(features)}."
             )
-        if self.name == "additive_log_ratio_first_reference_multiplicative_replacement":
-            reference = features[0]
-            return [f"ALR[{feature}/{reference}]" for feature in features[1:]]
+        if (
+            self.name
+            == "additive_log_ratio_training_reference_multiplicative_replacement"
+        ):
+            if self.alr_reference_index_ is None:
+                raise RuntimeError("Transformation has not been fitted.")
+            reference = features[self.alr_reference_index_]
+            return [
+                f"ALR[{feature}/{reference}]"
+                for index, feature in enumerate(features)
+                if index != self.alr_reference_index_
+            ]
         if self.name == "isometric_log_ratio_egozcue_multiplicative_replacement":
             return [
                 f"ILR_{i + 1:04d}_{_coordinate_digest(features, i)}"
@@ -593,8 +625,18 @@ class _BuiltinTransformer:
             else [str(x) for x in list(input_features)]
         )
         names = self.get_feature_names_out(features)
-        if self.name == "additive_log_ratio_first_reference_multiplicative_replacement":
-            reference = features[0]
+        if (
+            self.name
+            == "additive_log_ratio_training_reference_multiplicative_replacement"
+        ):
+            if self.alr_reference_index_ is None:
+                raise RuntimeError("Transformation has not been fitted.")
+            reference = features[self.alr_reference_index_]
+            numerators = [
+                feature
+                for index, feature in enumerate(features)
+                if index != self.alr_reference_index_
+            ]
             return [
                 TransformationCoordinate(
                     name=name,
@@ -604,7 +646,7 @@ class _BuiltinTransformer:
                     coefficients=(1.0, -1.0),
                     exact_feature_identity=False,
                 )
-                for name, feature in zip(names, features[1:])
+                for name, feature in zip(names, numerators)
             ]
         if self.name == "isometric_log_ratio_egozcue_multiplicative_replacement":
             if self.basis_ is None:
@@ -654,7 +696,7 @@ _COMPOSITION_SENSITIVE = frozenset(
         "arcsine_sqrt",
         "log10_relative_abundance_half_min_pseudocount",
         "centered_log_ratio_multiplicative_replacement",
-        "additive_log_ratio_first_reference_multiplicative_replacement",
+        "additive_log_ratio_training_reference_multiplicative_replacement",
         "isometric_log_ratio_egozcue_multiplicative_replacement",
         "standardized_centered_log_ratio_multiplicative_replacement",
         "yeo_johnson_relative_abundance",
@@ -666,7 +708,7 @@ _COMPOSITION_SENSITIVE = frozenset(
 )
 _LOG_RATIO_COORDINATES = frozenset(
     {
-        "additive_log_ratio_first_reference_multiplicative_replacement",
+        "additive_log_ratio_training_reference_multiplicative_replacement",
         "isometric_log_ratio_egozcue_multiplicative_replacement",
     }
 )
@@ -674,7 +716,7 @@ _LOG_RATIO_BLOCK_TRANSFORMS = frozenset(
     {
         "centered_log_ratio_multiplicative_replacement",
         "standardized_centered_log_ratio_multiplicative_replacement",
-        "additive_log_ratio_first_reference_multiplicative_replacement",
+        "additive_log_ratio_training_reference_multiplicative_replacement",
         "isometric_log_ratio_egozcue_multiplicative_replacement",
     }
 )

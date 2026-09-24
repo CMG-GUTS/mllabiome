@@ -31,6 +31,7 @@ from sklearn.linear_model import (
 from sklearn.naive_bayes import BernoulliNB, GaussianNB, MultinomialNB
 from sklearn.neighbors import KNeighborsClassifier, NearestCentroid
 from sklearn.svm import LinearSVC, SVC
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 from sklearn.tree import DecisionTreeClassifier
 
 
@@ -259,8 +260,124 @@ def _logistic_regression(*, kind: str = "l2", **kwargs) -> LogisticRegression:
     return LogisticRegression(**params)
 
 
+class GroupAwareCalibratedClassifier(BaseEstimator):
+    def __init__(self, estimator, method="sigmoid", n_splits=3, random_state=42):
+        self.estimator = estimator
+        self.method = method
+        self.n_splits = n_splits
+        self.random_state = random_state
+
+    def _splits(self, X, y, groups):
+        y = np.asarray(y)
+        classes, counts = np.unique(y, return_counts=True)
+        if len(classes) < 2:
+            raise ValueError("Calibration requires at least two outcome classes.")
+        if groups is None:
+            n_splits = min(int(self.n_splits), int(counts.min()))
+            if n_splits < 2:
+                raise ValueError(
+                    "Calibration requires at least two samples in every class."
+                )
+            splitter = StratifiedKFold(
+                n_splits=n_splits, shuffle=True, random_state=int(self.random_state)
+            )
+            return list(splitter.split(np.zeros(len(y), dtype=np.uint8), y))
+        groups = np.asarray(groups)
+        if groups.shape[0] != y.shape[0]:
+            raise ValueError(
+                "groups must contain exactly one value per training sample."
+            )
+        unique_groups = np.unique(groups)
+        class_group_counts = [len(np.unique(groups[y == klass])) for klass in classes]
+        max_splits = min(
+            int(self.n_splits), len(unique_groups), min(class_group_counts)
+        )
+        if max_splits < 2:
+            raise ValueError(
+                "Group-aware calibration requires every class to occur in at least two distinct training groups."
+            )
+        required = set(classes.tolist())
+        for n_splits in range(max_splits, 1, -1):
+            splitter = StratifiedGroupKFold(
+                n_splits=n_splits, shuffle=True, random_state=int(self.random_state)
+            )
+            splits = list(splitter.split(np.zeros(len(y), dtype=np.uint8), y, groups))
+            if all(
+                set(np.unique(y[tr]).tolist()) == required
+                and set(np.unique(y[va]).tolist()) == required
+                for tr, va in splits
+            ):
+                return splits
+        raise ValueError(
+            "Group-aware calibration could not construct folds containing every class in both training and calibration partitions."
+        )
+
+    def fit(self, X, y, groups=None):
+        splits = self._splits(X, y, groups)
+        self.model_ = CalibratedClassifierCV(
+            clone(self.estimator), method=self.method, cv=splits
+        )
+        self.model_.fit(X, y)
+        self.classes_ = np.asarray(self.model_.classes_)
+        if hasattr(self.model_, "feature_names_in_"):
+            self.feature_names_in_ = np.asarray(
+                self.model_.feature_names_in_, dtype=object
+            )
+        return self
+
+    def predict(self, X):
+        return self.model_.predict(X)
+
+    def predict_proba(self, X):
+        return self.model_.predict_proba(X)
+
+
+def fit_classifier(estimator: BaseEstimator, X, y, groups=None) -> BaseEstimator:
+    groups_array = None if groups is None else np.asarray(groups)
+    if groups_array is not None and groups_array.shape[0] != len(y):
+        raise ValueError("groups must contain exactly one value per training sample.")
+    if (
+        groups_array is not None
+        and isinstance(estimator, SVC)
+        and bool(estimator.probability)
+    ):
+        raise ValueError(
+            "SVC(probability=True) uses internal sample-level cross-validation. Use probability=False with GroupAwareCalibratedClassifier for grouped evaluation."
+        )
+    if groups_array is not None and isinstance(estimator, CalibratedClassifierCV):
+        cv = estimator.cv
+        if cv is None or isinstance(cv, (int, np.integer)):
+            n_splits = 5 if cv is None else int(cv)
+            base_estimator = getattr(
+                estimator, "estimator", getattr(estimator, "base_estimator", None)
+            )
+            if base_estimator is None:
+                raise TypeError(
+                    "CalibratedClassifierCV does not expose its base estimator."
+                )
+            helper = GroupAwareCalibratedClassifier(
+                base_estimator,
+                method=estimator.method,
+                n_splits=n_splits,
+                random_state=42,
+            )
+            estimator.set_params(cv=helper._splits(X, y, groups_array))
+    fit = estimator.fit
+    try:
+        parameters = inspect.signature(fit).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if groups_array is not None and "groups" in parameters:
+        fit(X, y, groups=groups_array)
+    else:
+        fit(X, y)
+    return estimator
+
+
 def _calibrated(estimator: BaseEstimator) -> BaseEstimator:
-    return CalibratedClassifierCV(estimator, method="sigmoid", cv=3)
+    return GroupAwareCalibratedClassifier(
+        estimator, method="sigmoid", n_splits=3, random_state=42
+    )
 
 
 def _require_probability_estimator(estimator: BaseEstimator) -> BaseEstimator:
@@ -384,7 +501,7 @@ class FLAMLClassifier(BaseEstimator):
         self.verbose = verbose
         self.kwargs = kwargs
 
-    def fit(self, X, y):
+    def fit(self, X, y, groups=None):
         from flaml import AutoML
 
         self.feature_names_in_ = np.asarray(_feature_names_from_X(X), dtype=object)
@@ -408,6 +525,18 @@ class FLAMLClassifier(BaseEstimator):
         )
         if self.estimator_list is not None:
             fit_kwargs["estimator_list"] = self.estimator_list
+        if groups is not None:
+            groups = np.asarray(groups)
+            if groups.shape[0] != y.shape[0]:
+                raise ValueError(
+                    "groups must contain exactly one value per training sample."
+                )
+            if len(np.unique(groups)) < 2:
+                raise ValueError(
+                    "Group-aware FLAML fitting requires at least two distinct training groups."
+                )
+            fit_kwargs["groups"] = groups
+            fit_kwargs["split_type"] = "group"
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             self.model_.fit(**fit_kwargs)
@@ -487,13 +616,15 @@ def build_learner(name: str, task: str = "classification") -> BaseEstimator:
     if base in {"histgb", "histgradientboosting"}:
         return HistGradientBoostingClassifier(random_state=42)
     if base in {"svc_rbf", "svc_rbf_bal"}:
-        return SVC(
-            kernel="rbf",
-            C=1.0,
-            gamma="scale",
-            probability=True,
-            class_weight="balanced",
-            random_state=42,
+        return _calibrated(
+            SVC(
+                kernel="rbf",
+                C=1.0,
+                gamma="scale",
+                probability=False,
+                class_weight="balanced",
+                random_state=42,
+            )
         )
     if base in {"calib_lsvc", "caliblsvc_c1_sig"}:
         return _calibrated(

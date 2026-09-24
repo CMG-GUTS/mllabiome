@@ -39,6 +39,7 @@ from .learners import (
     _learner_name,
     learner_display_label,
     validate_model_specs,
+    fit_classifier,
 )
 from .metrics import (
     _estimator_call,
@@ -696,6 +697,7 @@ def _evaluate_mpma_split_task(
     X_base: np.ndarray,
     feature_blocks: Any,
     y: np.ndarray,
+    groups: np.ndarray | None,
     classes: np.ndarray,
     class_labels: Sequence[str],
     sample_ids: Sequence[str],
@@ -764,7 +766,9 @@ def _evaluate_mpma_split_task(
             try:
                 X_tr, X_va = fitted.apply_pair(X_inner_train, X_inner_val)
                 clf = configure_estimator_threads(learner_factory(), threads_per_worker)
-                clf.fit(X_tr, y[tr_idx])
+                fit_classifier(
+                    clf, X_tr, y[tr_idx], None if groups is None else groups[tr_idx]
+                )
                 proba = _predict_proba_aligned(clf, X_va, classes)
                 pred = classes[proba.argmax(axis=1)]
                 metrics = compute_metrics(y[va_idx], pred, proba, classes)
@@ -838,7 +842,12 @@ def _evaluate_mpma_split_task(
             try:
                 X_train, X_test = fitted_outer.apply_pair(X_outer_train, X_outer_test)
                 clf = configure_estimator_threads(learner_factory(), threads_per_worker)
-                clf.fit(X_train, y[train_idx])
+                fit_classifier(
+                    clf,
+                    X_train,
+                    y[train_idx],
+                    None if groups is None else groups[train_idx],
+                )
                 proba = _predict_proba_aligned(clf, X_test, classes)
                 pred = classes[proba.argmax(axis=1)]
                 metrics = compute_metrics(y[test_idx], pred, proba, classes)
@@ -2126,6 +2135,7 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
                         X_base,
                         feature_blocks,
                         y,
+                        groups,
                         dataset.classes,
                         tuple(dataset.class_labels),
                         tuple(dataset.sample_ids),

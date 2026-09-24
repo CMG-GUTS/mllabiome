@@ -5,8 +5,10 @@ import pandas as pd
 from sklearn.base import BaseEstimator
 from sklearn.metrics import (
     accuracy_score,
+    auc,
     average_precision_score,
     f1_score,
+    precision_recall_curve,
     precision_score,
     recall_score,
     roc_auc_score,
@@ -247,6 +249,7 @@ def compute_metrics(
         recall_score(y_true, y_pred, average="macro", zero_division=0)
     )
     mcc = _matthews_corrcoef(y_true, y_pred, classes)
+    out["MCC"] = float(mcc) if np.isfinite(mcc) else float("nan")
     out["nMCC"] = float((mcc + 1.0) / 2.0) if np.isfinite(mcc) else float("nan")
 
     class_to_col = {int(klass): j for j, klass in enumerate(classes)}
@@ -257,7 +260,18 @@ def compute_metrics(
     out["log_loss"] = float(-np.mean(np.log(picked)))
     target = np.zeros_like(probability)
     target[np.arange(len(y_true)), true_cols] = 1.0
-    out["brier"] = float(np.mean(np.sum((probability - target) ** 2, axis=1)))
+    if len(classes) == 2:
+        pos = int(classes[-1] if positive_class is None else positive_class)
+        matches = np.flatnonzero(classes == pos)
+        if len(matches) != 1:
+            raise ValueError(
+                f"positive_class={pos!r} is not in classes {classes.tolist()!r}."
+            )
+        pos_col = int(matches[0])
+        binary = (y_true == pos).astype(float)
+        out["brier"] = float(np.mean((probability[:, pos_col] - binary) ** 2))
+    else:
+        out["brier"] = float(np.mean(np.sum((probability - target) ** 2, axis=1)))
 
     if len(classes) == 2:
         pos = int(classes[-1] if positive_class is None else positive_class)
@@ -269,11 +283,16 @@ def compute_metrics(
         pos_col = int(matches[0])
         binary = (y_true == pos).astype(int)
         if len(np.unique(binary)) == 2:
-            out["AUC"] = float(roc_auc_score(binary, score[:, pos_col]))
-            out["PR_AUC"] = float(average_precision_score(binary, score[:, pos_col]))
+            binary_score = score[:, pos_col]
+            precision, recall, _ = precision_recall_curve(binary, binary_score)
+            out["AUC"] = float(roc_auc_score(binary, binary_score))
+            out["PR_AUC"] = float(auc(recall, precision))
+            out["AP"] = float(average_precision_score(binary, binary_score))
     else:
         auc_values = []
         auc_weights = []
+        pr_auc_values = []
+        pr_auc_weights = []
         ap_values = []
         for j, klass in enumerate(classes):
             binary = (y_true == klass).astype(int)
@@ -281,14 +300,23 @@ def compute_metrics(
             negatives = int(len(binary) - positives)
             if positives == 0 or negatives == 0:
                 continue
-            auc_values.append(float(roc_auc_score(binary, score[:, j])))
+            class_score = score[:, j]
+            precision, recall, _ = precision_recall_curve(binary, class_score)
+            auc_values.append(float(roc_auc_score(binary, class_score)))
             auc_weights.append(float(positives))
-            ap_values.append(float(average_precision_score(binary, score[:, j])))
+            pr_auc_values.append(float(auc(recall, precision)))
+            pr_auc_weights.append(float(positives))
+            ap_values.append(float(average_precision_score(binary, class_score)))
         if auc_values:
             out["AUC_macro"] = float(np.mean(auc_values))
             out["AUC_weighted"] = float(np.average(auc_values, weights=auc_weights))
             out["AUC"] = out["AUC_macro"]
-            out["PR_AUC_macro"] = float(np.mean(ap_values))
+            out["PR_AUC_macro"] = float(np.mean(pr_auc_values))
+            out["PR_AUC_weighted"] = float(
+                np.average(pr_auc_values, weights=pr_auc_weights)
+            )
+            out["PR_AUC"] = out["PR_AUC_macro"]
+            out["AP_macro"] = float(np.mean(ap_values))
 
     return {
         key: round(value, 6) if np.isfinite(value) else float("nan")

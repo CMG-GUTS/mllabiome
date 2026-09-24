@@ -4,7 +4,7 @@ from .threading import configure_thread_limits
 
 configure_thread_limits()
 
-__version__ = "0.1.0rc67"
+__version__ = "0.1.0rc69"
 from .configs_sweep import (
     MPDR,
     MPMA,

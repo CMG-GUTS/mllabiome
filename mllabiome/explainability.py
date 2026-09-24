@@ -47,7 +47,7 @@ from .explainability_visuals import (
     plot_interaction_network as _plot_interaction_network_visual,
     plot_local_attributions,
 )
-from .learners import _learner_factory
+from .learners import _learner_factory, fit_classifier
 from .metrics import _predict_proba_aligned
 from .resolutions import materialize_mpdr_with_blocks
 from .runtime import (
@@ -513,7 +513,6 @@ def _permutation_feature_importance(
         n_draw = max(1, min(n_samples, int(spec.max_samples)))
     seed_rng = np.random.RandomState(int(random_state))
     random_seed = int(seed_rng.randint(np.iinfo(np.int32).max + 1))
-    full_baseline_proba = _predict_proba_aligned(clf, X, classes)
     values = np.full((len(class_indices), n_features, n_repeats), np.nan, dtype=float)
     total = max(1, n_features * n_repeats)
     done = 0
@@ -535,7 +534,6 @@ def _permutation_feature_importance(
                 )
         return out
 
-    baseline = scores(y, full_baseline_proba)
     for feature_index, feature in enumerate(feature_names):
         feature_rng = np.random.RandomState(random_seed)
         if n_draw < n_samples:
@@ -545,6 +543,7 @@ def _permutation_feature_importance(
         else:
             X_eval = X.copy()
             y_eval = y
+        baseline = scores(y_eval, _predict_proba_aligned(clf, X_eval, classes))
         shuffling_idx = np.arange(len(X_eval))
         for repeat_index in range(n_repeats):
             feature_rng.shuffle(shuffling_idx)
@@ -2651,6 +2650,7 @@ def _fit_oof_single_fold_task(
     split: dict[str, Any],
     X_base: np.ndarray,
     y: np.ndarray,
+    groups: np.ndarray | None,
     class_count: int,
     ct_factory: Callable[[], Any],
     learner_factory: Callable[[], BaseEstimator],
@@ -2663,7 +2663,9 @@ def _fit_oof_single_fold_task(
     ct = ct_factory()
     X_train, X_test = ct.apply_pair(X_base[train_idx], X_base[test_idx])
     clf = configure_estimator_threads(learner_factory(), threads_per_worker)
-    clf.fit(X_train, y[train_idx])
+    fit_classifier(
+        clf, X_train, y[train_idx], None if groups is None else groups[train_idx]
+    )
     proba = _predict_proba_aligned(clf, X_test, np.arange(int(class_count), dtype=int))
     return int(split_no), {
         "split_key": str(split["split_key"]),
@@ -2691,6 +2693,7 @@ def _fit_oof_single_for_explainability(
         dataset, levels
     )
     splits = _explainability_outer_splits(sweep, dataset)
+    groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
     transformation_key = str(row["count_transformation"])
     learner_key = str(row["learner"])
     ct_factory = _configured_count_transformation_factory(
@@ -2706,6 +2709,7 @@ def _fit_oof_single_for_explainability(
                 split,
                 X_base,
                 dataset.y,
+                groups,
                 len(dataset.class_labels),
                 ct_factory,
                 learner_factory,
@@ -2771,6 +2775,7 @@ def _mpma_e_reference_and_folds(
         all_levels = ["all"]
     dataset = load_dataset(sweep.data, tuple(all_levels))
     splits = _explainability_outer_splits(sweep, dataset)
+    groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
 
     feature_names: list[str] = []
     reference_blocks: list[np.ndarray] = []
@@ -2843,7 +2848,12 @@ def _mpma_e_reference_and_folds(
                 spec["X_base"][train_idx], spec["X_base"][test_idx]
             )
             clf_member = _configured_learner_factory(sweep, spec["learner_key"])()
-            clf_member.fit(X_train_member, dataset.y[train_idx])
+            fit_classifier(
+                clf_member,
+                X_train_member,
+                dataset.y[train_idx],
+                None if groups is None else groups[train_idx],
+            )
             stop = start + X_train_member.shape[1]
             X_train_blocks.append(X_train_member)
             X_test_blocks.append(X_test_member)

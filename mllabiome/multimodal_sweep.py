@@ -20,6 +20,7 @@ from .compute import ResourceTracker, machine_profile
 from .console import path_table, progress, stage, success, summary_table
 from .integrations import Integration, IntegrationModel, integration_modality_sets
 from .metrics import _estimator_call, compute_metrics, compute_regression_metrics
+from .learners import fit_classifier
 from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
 from .runtime import (
     configure_estimator_threads,
@@ -475,6 +476,7 @@ def _classification_task(
     matrices,
     names,
     y,
+    groups,
     classes,
     class_labels,
     sample_ids,
@@ -581,7 +583,9 @@ def _classification_task(
                     _lodo_feature_pair,
                 )
                 clf = configure_estimator_threads(learner_factory(), threads_per_worker)
-                clf.fit(Xtr, y[tr_idx])
+                fit_classifier(
+                    clf, Xtr, y[tr_idx], None if groups is None else groups[tr_idx]
+                )
                 proba = _predict_proba_aligned(clf, Xva, classes)
                 pred = classes[proba.argmax(axis=1)]
                 metrics = compute_metrics(y[va_idx], pred, proba, classes)
@@ -699,7 +703,12 @@ def _classification_task(
                     _lodo_feature_pair,
                 )
                 clf = configure_estimator_threads(learner_factory(), threads_per_worker)
-                clf.fit(Xtr, y[train_idx])
+                fit_classifier(
+                    clf,
+                    Xtr,
+                    y[train_idx],
+                    None if groups is None else groups[train_idx],
+                )
                 proba = _predict_proba_aligned(clf, Xte, classes)
                 pred = classes[proba.argmax(axis=1)]
                 metrics = compute_metrics(y[test_idx], pred, proba, classes)
@@ -1221,6 +1230,7 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
                 task = delayed(_classification_task)(
                     *args_common,
                     dataset.y,
+                    groups,
                     dataset.classes,
                     tuple(dataset.class_labels),
                     tuple(dataset.sample_ids),
@@ -1529,7 +1539,12 @@ def fit_modality_candidate_oof_for_explainability(sweep, row):
             _lodo_feature_pair,
         )
         clf = configure_estimator_threads(learner_factory(), threads_per_worker)
-        clf.fit(details["X_train"], dataset.y[train_idx])
+        fit_classifier(
+            clf,
+            details["X_train"],
+            dataset.y[train_idx],
+            None if groups is None else groups[train_idx],
+        )
         direct_proba = _predict_proba_aligned(clf, details["X_test"], dataset.classes)
         if spec.integration.stage == "intermediate":
             estimator = _IntegratedClassificationPredictor(

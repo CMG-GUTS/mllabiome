@@ -531,7 +531,9 @@ def _regression_top_mpmas(
             )
 
         else:
-            row["Resolution"] = _report._display_token(item.get("resolution", ""))
+            row["Taxonomic representation"] = _report._display_token(
+                item.get("resolution", "")
+            )
 
             row["Count transformation"] = _report._display_token(
                 item.get("count_transformation", "")
@@ -1307,6 +1309,8 @@ def _multilabel_summary(children: list[Sweep]) -> pd.DataFrame:
         for metric in (
             "AUC",
             "PR_AUC",
+            "AP",
+            "MCC",
             "nMCC",
             "F1w",
             "BalAcc",

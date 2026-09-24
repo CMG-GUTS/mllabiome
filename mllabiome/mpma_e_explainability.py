@@ -137,6 +137,7 @@ def _fit_oof_members_fold_task(
     test_idx = np.asarray(split["test_idx"], dtype=int)
     if len(test_idx) == 0 or len(np.unique(dataset.y[train_idx])) < 2:
         return int(split_no), None, []
+    groups = _core._groups_from_metadata(dataset.metadata, sweep.data.group_col)
     fitted_members: list[dict[str, Any]] = []
     member_proba: list[np.ndarray] = []
     reproduction_rows: list[dict[str, Any]] = []
@@ -167,7 +168,12 @@ def _fit_oof_members_fold_task(
             _core._configured_learner_factory(sweep, spec["learner_key"])(),
             threads_per_worker,
         )
-        clf.fit(X_train, dataset.y[train_idx])
+        _core.fit_classifier(
+            clf,
+            X_train,
+            dataset.y[train_idx],
+            None if groups is None else groups[train_idx],
+        )
         proba = _core._predict_proba_aligned(
             clf, X_test, np.arange(len(dataset.class_labels), dtype=int)
         )

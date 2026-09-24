@@ -17,13 +17,17 @@ from .final_models import build_final_models, fixed_strategy_predictions
 from .metrics import _renormalize_proba, compute_metrics, metric_is_loss
 from .utils import dump_json_standard
 
-DISPLAY_METRICS = ("AUC", "PR_AUC", "nMCC", "F1w", "Precision", "Recall")
+DISPLAY_METRICS = ("AUC", "PR_AUC", "AP", "MCC", "nMCC", "F1w", "Precision", "Recall")
 OOF_METRIC_ORDER = (
     "AUC",
     "AUC_macro",
     "AUC_weighted",
     "PR_AUC",
     "PR_AUC_macro",
+    "PR_AUC_weighted",
+    "AP",
+    "AP_macro",
+    "MCC",
     "nMCC",
     "F1w",
     "F1_macro",
@@ -44,6 +48,10 @@ _OOF_CONTRAST_METRICS = (
     "AUC_weighted",
     "PR_AUC",
     "PR_AUC_macro",
+    "PR_AUC_weighted",
+    "AP",
+    "AP_macro",
+    "MCC",
     "nMCC",
     "F1w",
     "F1_macro",
@@ -57,7 +65,14 @@ _OOF_CONTRAST_METRICS = (
 )
 METRIC_LABELS = {
     "AUC": "ROC-AUC",
-    "PR_AUC": "PR-AUC (AP)",
+    "AUC_macro": "ROC-AUC macro",
+    "AUC_weighted": "ROC-AUC weighted",
+    "PR_AUC": "PR-AUC",
+    "PR_AUC_macro": "PR-AUC macro",
+    "PR_AUC_weighted": "PR-AUC weighted",
+    "AP": "Average precision",
+    "AP_macro": "Average precision macro",
+    "MCC": "MCC",
     "nMCC": "nMCC",
     "F1w": "F1w",
     "Precision": "Precision",
@@ -397,21 +412,15 @@ def _holm_adjust(frame: pd.DataFrame) -> pd.DataFrame:
         return frame
     out = frame.copy()
     out["p_holm"] = np.nan
-    for metric, group in out.groupby("metric", sort=False):
-        indices = group.index[
-            np.isfinite(
-                pd.to_numeric(group["p_value"], errors="coerce").to_numpy(dtype=float)
-            )
-        ]
-        if len(indices) == 0:
-            continue
-        ordered = sorted(indices, key=lambda index: float(out.loc[index, "p_value"]))
-        m = len(ordered)
-        running = 0.0
-        for rank, index in enumerate(ordered):
-            adjusted = min(1.0, (m - rank) * float(out.loc[index, "p_value"]))
-            running = max(running, adjusted)
-            out.loc[index, "p_holm"] = running
+    values = pd.to_numeric(out["p_value"], errors="coerce").to_numpy(dtype=float)
+    indices = out.index[np.isfinite(values)]
+    ordered = sorted(indices, key=lambda index: float(out.loc[index, "p_value"]))
+    m = len(ordered)
+    running = 0.0
+    for rank, index in enumerate(ordered):
+        adjusted = min(1.0, (m - rank) * float(out.loc[index, "p_value"]))
+        running = max(running, adjusted)
+        out.loc[index, "p_holm"] = running
     out["significant_holm_0_05"] = pd.to_numeric(out["p_holm"], errors="coerce").lt(
         0.05
     )
@@ -723,13 +732,15 @@ def _proper_metrics(y_true: np.ndarray, proba: np.ndarray) -> dict[str, float]:
     return out
 
 
-def _binary_auc_ap(y_true: np.ndarray, score: np.ndarray) -> tuple[float, float]:
+def _binary_auc_pr_auc_ap(
+    y_true: np.ndarray, score: np.ndarray
+) -> tuple[float, float, float]:
     y = np.asarray(y_true, dtype=int)
     s = np.asarray(score, dtype=float)
     positives = int(np.sum(y == 1))
     negatives = int(np.sum(y == 0))
     if positives == 0 or negatives == 0:
-        return float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan")
     order = np.argsort(s, kind="mergesort")
     sorted_scores = s[order]
     sorted_y = y[order]
@@ -757,7 +768,14 @@ def _binary_auc_ap(y_true: np.ndarray, score: np.ndarray) -> tuple[float, float]
     recall = tp / float(positives)
     recall_previous = np.r_[0.0, recall[:-1]]
     ap = float(np.sum((recall - recall_previous) * precision))
-    return float(auc), ap
+    curve_recall = np.r_[0.0, recall]
+    curve_precision = np.r_[1.0, precision]
+    pr_auc = float(
+        np.sum(
+            np.diff(curve_recall) * (curve_precision[:-1] + curve_precision[1:]) * 0.5
+        )
+    )
+    return float(auc), pr_auc, ap
 
 
 def _fast_classification_metrics(
@@ -775,6 +793,10 @@ def _fast_classification_metrics(
         "AUC_weighted": float("nan"),
         "PR_AUC": float("nan"),
         "PR_AUC_macro": float("nan"),
+        "PR_AUC_weighted": float("nan"),
+        "AP": float("nan"),
+        "AP_macro": float("nan"),
+        "MCC": float("nan"),
         "nMCC": float("nan"),
         "F1w": float("nan"),
         "F1_macro": float("nan"),
@@ -826,29 +848,42 @@ def _fast_classification_metrics(
         )
     )
     mcc = numerator / denominator if denominator > 0 else 0.0
+    out["MCC"] = float(mcc)
     out["nMCC"] = float((mcc + 1.0) / 2.0)
     if n_classes == 2:
-        auc, ap = _binary_auc_ap((y == 1).astype(int), values[:, 1])
-        out["AUC"] = auc
-        out["PR_AUC"] = ap
+        roc_auc, pr_auc, ap = _binary_auc_pr_auc_ap((y == 1).astype(int), values[:, 1])
+        out["AUC"] = roc_auc
+        out["PR_AUC"] = pr_auc
+        out["AP"] = ap
     else:
         auc_values = []
         auc_weights = []
+        pr_auc_values = []
+        pr_auc_weights = []
         ap_values = []
         for class_index in range(n_classes):
             binary = (y == class_index).astype(int)
-            auc, ap = _binary_auc_ap(binary, values[:, class_index])
-            if np.isfinite(auc):
-                auc_values.append(auc)
+            roc_auc, pr_auc, ap = _binary_auc_pr_auc_ap(binary, values[:, class_index])
+            if np.isfinite(roc_auc):
+                auc_values.append(roc_auc)
                 auc_weights.append(float(np.sum(binary)))
+            if np.isfinite(pr_auc):
+                pr_auc_values.append(pr_auc)
+                pr_auc_weights.append(float(np.sum(binary)))
             if np.isfinite(ap):
                 ap_values.append(ap)
         if auc_values:
             out["AUC_macro"] = float(np.mean(auc_values))
             out["AUC_weighted"] = float(np.average(auc_values, weights=auc_weights))
             out["AUC"] = out["AUC_macro"]
+        if pr_auc_values:
+            out["PR_AUC_macro"] = float(np.mean(pr_auc_values))
+            out["PR_AUC_weighted"] = float(
+                np.average(pr_auc_values, weights=pr_auc_weights)
+            )
+            out["PR_AUC"] = out["PR_AUC_macro"]
         if ap_values:
-            out["PR_AUC_macro"] = float(np.mean(ap_values))
+            out["AP_macro"] = float(np.mean(ap_values))
     return out
 
 
@@ -1596,7 +1631,13 @@ def run_report_statistics(
     }
     requested_metric = str(resolved_selection).strip()
     selection_key = requested_metric.casefold().replace("-", "_").replace(" ", "_")
-    aliases = {"logloss": "log_loss", "brier_loss": "brier"}
+    aliases = {
+        "logloss": "log_loss",
+        "brier_loss": "brier",
+        "average_precision": "AP",
+        "ap": "AP",
+        "pr_auc": "PR_AUC",
+    }
     selection_key = aliases.get(selection_key, selection_key)
     selected_metric = metric_lookup.get(selection_key.casefold(), selection_key)
     inference_metrics = tuple(
@@ -1698,7 +1739,7 @@ def run_report_statistics(
         "lodo_bootstrap": "cluster bootstrap of held-out cohorts for displayed-strategy metrics",
         "nested_cv_pairwise_test": "Nadeau-Bengio corrected resampled paired t-test",
         "lodo_pairwise_test": "paired sign-flip randomization test at held-out cohort level",
-        "multiple_testing": "Holm adjustment across displayed strategy pairs within each displayed metric",
+        "multiple_testing": "Holm adjustment across all displayed strategy-pair and metric hypotheses",
         "scope": "displayed report strategies only",
         "selection_metric": selected_metric,
         "cache": "statistics are reused when source artefacts and statistical settings are unchanged",

@@ -42,7 +42,9 @@ from .explainability_visuals import plot_feature_support, plot_local_attribution
 
 _METRICS = [
     ("AUC", "ROC-AUC"),
-    ("PR_AUC", "PR-AUC (AP)"),
+    ("PR_AUC", "PR-AUC"),
+    ("AP", "Average precision"),
+    ("MCC", "MCC"),
     ("nMCC", "nMCC"),
     ("F1w", "F1$_{w}$"),
     ("Precision", "Precision"),
@@ -63,7 +65,9 @@ def _canonical_metric_name(metric: Any) -> str:
         "roc_auc": "AUC",
         "auc": "AUC",
         "pr_auc": "PR_AUC",
-        "average_precision": "PR_AUC",
+        "average_precision": "AP",
+        "ap": "AP",
+        "mcc": "MCC",
         "nmcc": "nMCC",
         "f1w": "F1w",
         "precision": "Precision",
@@ -83,7 +87,14 @@ def _metric_display_label(metric: Any) -> str:
 
     labels = {
         "AUC": "ROC-AUC",
-        "PR_AUC": "PR-AUC (AP)",
+        "AUC_macro": "ROC-AUC macro",
+        "AUC_weighted": "ROC-AUC weighted",
+        "PR_AUC": "PR-AUC",
+        "PR_AUC_macro": "PR-AUC macro",
+        "PR_AUC_weighted": "PR-AUC weighted",
+        "AP": "Average precision",
+        "AP_macro": "Average precision macro",
+        "MCC": "MCC",
         "nMCC": "nMCC",
         "F1w": "F1w",
         "Precision": "Precision",
@@ -451,7 +462,7 @@ def _abbreviations_html(heading_level: int = 2) -> str:
 
     return (
         f'<h{level} id="abbreviations">Abbreviations</h{level}>'
-        "<p>nMCC = normalized Matthews correlation coefficient. RA = relative abundance. "
+        "<p>AP = average precision. PR-AUC = trapezoidal area under the precision-recall curve. nMCC = normalized Matthews correlation coefficient. RA = relative abundance. "
         "P/A = presence/absence. CLR = centered log-ratio. ALR = additive log-ratio. "
         "ILR = isometric log-ratio. YJ = Yeo–Johnson. QN = quantile normalization. "
         "ECDF = empirical cumulative distribution function. rank-wise = transformation applied independently within each taxonomic-rank block. "
@@ -573,8 +584,8 @@ def _performance_methodology_html(protocol: Any, n_bootstrap: int = 2000) -> str
         )
 
     metrics = (
-        " ROC-AUC measures ranking discrimination across thresholds. PR-AUC (AP) is average precision. "
-        "nMCC is Matthews correlation coefficient rescaled from [-1, 1] to [0, 1]. F1w is support-weighted F1. "
+        " ROC-AUC measures ranking discrimination across thresholds. PR-AUC is the trapezoidal area under the empirical precision-recall curve. Average precision summarizes precision weighted by recall increments and is reported separately. "
+        "MCC is reported on its conventional [-1, 1] scale, while nMCC rescales MCC to [0, 1]. F1w is support-weighted F1. "
         "Precision and recall are macro-averaged across classes."
     )
 
@@ -592,7 +603,7 @@ def _inferential_layer_html(protocol: Any, metric: Any) -> str:
             f"For each strategy pair, {metric_text} values are matched by held-out dataset. "
             "The reported difference is Strategy A minus Strategy B, and its 95% confidence interval is obtained by paired bootstrap resampling of the matched held-out datasets. "
             "The p-value is from a paired sign-flip randomization test at the held-out-dataset level. "
-            "Holm adjustment is applied across strategy pairs within each metric. "
+            "Holm adjustment is applied across all displayed strategy-pair and metric hypotheses. "
             "For higher-is-better metrics, a positive difference favors Strategy A. For loss metrics, a negative difference favors Strategy A."
         )
 
@@ -601,7 +612,7 @@ def _inferential_layer_html(protocol: Any, metric: Any) -> str:
             f"For each strategy pair, {metric_text} values are matched by outer test fold. "
             "The reported difference is Strategy A minus Strategy B, and its 95% confidence interval is obtained from a paired hierarchical bootstrap that resamples repeats and then matched outer folds within sampled repeats. "
             "The p-value is from the Nadeau–Bengio corrected resampled paired t-test, which adjusts the variance for dependence induced by overlapping training sets. "
-            "Holm adjustment is applied across strategy pairs within each metric. "
+            "Holm adjustment is applied across all displayed strategy-pair and metric hypotheses. "
             "For higher-is-better metrics, a positive difference favors Strategy A. For loss metrics, a negative difference favors Strategy A."
         )
 
@@ -760,7 +771,7 @@ def _representation_impact_note(metric: str, modality: bool = False) -> str:
 
     return (
         f"<p>Panel a shows the distribution of outer-unit mean {metric_text} values across transformation–learner configurations for each representation; boxes show the median and interquartile range, whiskers extend to 1.5×IQR, and points are individual outer evaluation units. "
-        "Panel b provides split-adjusted partial η² from a joint additive least-squares model. "
+        "Panel b reports split-adjusted hierarchical partial η² from a least-squares model containing representation, transformation, learner, representation×learner, and transformation×learner terms. Main-factor effects remove the factor together with interactions containing it; interaction effects remove only that interaction. Effects are conditional, need not sum to one, and non-estimable terms are shown as n/a. "
         f"{heatmap_text} mean held-out {metric_text} across learners and outer units.</p>"
     )
 
@@ -1184,7 +1195,7 @@ def _top_mpma_display(
     for _, r in df.iterrows():
         row = {
             "Rank": int(r.get("rank", len(rows) + 1)),
-            "Resolution": _display_token(r.get("resolution", "")),
+            "Taxonomic representation": _display_token(r.get("resolution", "")),
             "Count transformation": _display_token(
                 r.get("transformation_abbreviation", r.get("count_transformation", ""))
             ),
@@ -2989,6 +3000,7 @@ def _print_report_summary(
             "Modalities",
             "Integration",
             "Representation",
+            "Taxonomic representation",
             "Resolution",
             "Transformation",
             "Count transformation",
@@ -3018,6 +3030,7 @@ def _print_report_summary(
             c
             for c in [
                 "Member",
+                "Taxonomic representation",
                 "Resolution",
                 "Count transformation",
                 "Learner type",
@@ -3216,6 +3229,7 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
         if getattr(sweep, "uses_modalities", False) and not top_mpmas.empty:
             top_mpmas = top_mpmas.rename(
                 columns={
+                    "Taxonomic representation": "Representation",
                     "Resolution": "Representation",
                     "Count transformation": "Transformation",
                 }
