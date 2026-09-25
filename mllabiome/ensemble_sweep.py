@@ -468,13 +468,13 @@ def _evaluate_selected_members(
         "members": json.dumps(members),
         "weights": json.dumps(stored_weights),
         "selection_weights": json.dumps(selection_weights),
-        "member_count": int(len(members)),
-        "ensemble_size": int(len(members)),
+        "member_count": len(members),
+        "ensemble_size": len(members),
         "effective_member_count": int(
             np.count_nonzero(np.asarray(stored_weights, dtype=float) > 1e-12)
         )
         if stored_weights
-        else int(len(members)),
+        else len(members),
         "aggregation_weight_source": aggregation_weight_source,
         "weight_source": aggregation_weight_source,
         **{f"{key}_mean": float(value) for key, value in metrics.items()},
@@ -768,7 +768,7 @@ def _candidate_from_simple_selector(
         stack,
         ordered["y_true"].to_numpy(dtype=int),
         metric,
-        extra={"inner_oof_rows": int(len(ordered)), "selection_weight_source": "none"},
+        extra={"inner_oof_rows": len(ordered), "selection_weight_source": "none"},
     )
 
 
@@ -819,9 +819,9 @@ def _candidate_from_caruana(
         native_weights=native_weights,
         native_weight_source="caruana_selection_frequency",
         extra={
-            "inner_oof_rows": int(len(ordered)),
+            "inner_oof_rows": len(ordered),
             "candidate_library_policy": "all_complete_inner_oof_mpmas",
-            "candidate_library_size": int(len(library)),
+            "candidate_library_size": len(library),
             "selection_weight_source": "caruana_selection_frequency",
             "caruana_trajectory": json.dumps([float(x) for x in trajectory]),
             **diagnostics,
@@ -878,9 +878,9 @@ def _candidate_from_super_learner(
         native_weights=native_weights,
         native_weight_source=f"convex_{super_loss}",
         extra={
-            "inner_oof_rows": int(len(ordered)),
+            "inner_oof_rows": len(ordered),
             "candidate_library_policy": "all_complete_inner_oof_mpmas",
-            "candidate_library_size": int(len(library)),
+            "candidate_library_size": len(library),
             "selection_weight_source": f"convex_{super_loss}",
             "super_learner_loss": super_loss,
             "super_learner_loss_rule": "brier_if_optimize_metric_is_brier_else_log_loss",
@@ -1091,8 +1091,8 @@ def select_mpma_e_by_outer_fold(
                 "selection_strategy": str(winner["selection_strategy"]),
                 "aggregation_strategy": aggregation,
                 "max_size": int(winner.get("max_size", len(members))),
-                "ensemble_size": int(len(members)),
-                "member_count": int(len(members)),
+                "ensemble_size": len(members),
+                "member_count": len(members),
                 "effective_member_count": int(
                     winner.get("effective_member_count", len(members))
                 ),
@@ -1141,7 +1141,7 @@ def summarize_mpma_e_strategy(fold_metrics: pd.DataFrame) -> dict[str, Any]:
     out: dict[str, Any] = {
         "Strategy": "MPMA-E",
         "selection_basis": "outer_fold_inner_oof_predictions_only",
-        "n_outer_folds": int(len(fold_metrics)),
+        "n_outer_folds": len(fold_metrics),
     }
     for metric in fold_metrics.columns:
         if metric in {"outer_split_key", "ensemble_config_id"}:
@@ -1155,7 +1155,7 @@ def summarize_mpma_e_strategy(fold_metrics: pd.DataFrame) -> dict[str, Any]:
             continue
         out[f"outer_{metric}_mean"] = float(vals.mean())
         out[f"outer_{metric}_std"] = float(vals.std(ddof=1)) if len(vals) > 1 else 0.0
-        out[f"outer_{metric}_count"] = int(len(vals))
+        out[f"outer_{metric}_count"] = len(vals)
     return out
 
 
@@ -1245,7 +1245,7 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
     inner_prediction_path = root / "inner_predictions" / "inner_predictions.parquet"
     config_path = root / "configs.parquet"
     required = [outer_path, inner_result_path, inner_prediction_path, config_path]
-    if any((not table_exists(path) for path in required)):
+    if any(not table_exists(path) for path in required):
         raise FileNotFoundError("Run evaluate(sweep) before sweep_ensemble(sweep).")
     outer_predictions = read_table(outer_path)
     inner_results = read_table(inner_result_path)

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -633,7 +634,7 @@ def _combine_feature_importance(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
     grouped["importance_sd"] = grouped["importance_sd"].fillna(0.0)
     grouped["consensus_score"] = grouped["importance_mean"]
     grouped["consensus_sd"] = grouped["importance_sd"]
-    grouped["n_methods_total"] = int(len(dict.fromkeys(method_names)))
+    grouped["n_methods_total"] = len(dict.fromkeys(method_names))
     grouped["method_coverage"] = grouped["n_methods"] / grouped["n_methods_total"]
     grouped["method"] = "consensus"
     grouped["scoring"] = "mean_within_method_rank_support_available_methods"
@@ -815,7 +816,7 @@ def _plot_ale_curves(
     import matplotlib.patheffects as mpe
     import matplotlib.pyplot as plt
 
-    from .style import ACC_D, ACC_L, BG, INK, MID, MM, TRACK, save_all
+    from .style import MM
 
     if (
         curves is not None

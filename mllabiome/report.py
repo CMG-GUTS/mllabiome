@@ -13,13 +13,12 @@ import numpy as np
 import pandas as pd
 
 from .configs_sweep import Sweep
-from .console import console, path_table, phase_progress, stage, success
-from .explainability_visuals import plot_feature_support, plot_local_attributions
+from .console import path_table, phase_progress, stage, success
 from .metrics import canonical_metric_name, compute_metrics, metric_is_loss
 from .report_compute import run_compute_accounting
 from .report_statistics import run_report_statistics
-from .storage import glob_tables, read_table, table_exists, write_table
-from .utils import TAXONOMIC_LEVELS, dump_json_standard, feature_tail_ellipsis
+from .storage import read_table, table_exists, write_table
+from .utils import TAXONOMIC_LEVELS, dump_json_standard
 
 _METRICS = [
     ("AUROC", "AUROC"),
@@ -577,7 +576,7 @@ def _inferential_layer_html(protocol: Any, metric: Any) -> str:
 
 def _top_mpma_heading(table: pd.DataFrame) -> str:
 
-    n = int(len(table))
+    n = len(table)
 
     return f"Top {n} MPMA-B configurations" if n > 0 else "Top MPMA-B configurations"
 
@@ -649,22 +648,10 @@ def _pick_deepest_single_rank(
 
 
 from .report_explainability import (
-    _asset_uri,
     _explainability_report_blocks,
     _fig,
-    _inline_svg,
     _read_json,
     _read_table,
-    _refresh_xai_support_figures,
-    _target_dirs_by_label,
-    _xai_class_slug,
-    _xai_coordinate_column,
-    _xai_figure_for_class,
-    _xai_local_figure,
-    _xai_local_mode,
-    _xai_method_display,
-    _xai_method_global_text,
-    _xai_target_metadata,
 )
 
 
@@ -1217,7 +1204,7 @@ def _ensemble_outer_metrics_from_predictions(
 
         out[f"outer_{col}_std"] = float(vals.std(ddof=1)) if len(vals) > 1 else 0.0
 
-        out[f"outer_{col}_count"] = int(len(vals))
+        out[f"outer_{col}_count"] = len(vals)
 
         out[f"{col}_mean"] = out[f"outer_{col}_mean"]
 
@@ -1854,7 +1841,7 @@ def _procedure_table(sweep: Sweep, root: Path) -> pd.DataFrame:
             "Stratification",
             "target"
             if not getattr(source, "stratify_col", None)
-            else f"target + {getattr(source, 'stratify_col')}",
+            else f"target + {source.stratify_col}",
         ],
         [
             "Outer folds",
@@ -2217,19 +2204,40 @@ def _multimodal_inclusion_html(manifest: dict[str, Any]) -> str:
     return "".join(parts)
 
 
+from .console import console as console
+from .explainability_visuals import plot_feature_support as plot_feature_support
+from .explainability_visuals import plot_local_attributions as plot_local_attributions
+from .report_explainability import _asset_uri as _asset_uri
+from .report_explainability import _inline_svg as _inline_svg
+from .report_explainability import (
+    _refresh_xai_support_figures as _refresh_xai_support_figures,
+)
+from .report_explainability import _target_dirs_by_label as _target_dirs_by_label
+from .report_explainability import _xai_class_slug as _xai_class_slug
+from .report_explainability import _xai_coordinate_column as _xai_coordinate_column
+from .report_explainability import _xai_figure_for_class as _xai_figure_for_class
+from .report_explainability import _xai_local_figure as _xai_local_figure
+from .report_explainability import _xai_local_mode as _xai_local_mode
+from .report_explainability import _xai_method_display as _xai_method_display
+from .report_explainability import _xai_method_global_text as _xai_method_global_text
+from .report_explainability import _xai_target_metadata as _xai_target_metadata
 from .report_terminal import (
-    _compact_procedure_for_terminal,
-    _feature_support_table,
-    _feature_support_terminal,
+    _compact_procedure_for_terminal as _compact_procedure_for_terminal,
+)
+from .report_terminal import _feature_support_table
+from .report_terminal import _feature_support_terminal as _feature_support_terminal
+from .report_terminal import (
     _hardware_summary_table,
     _html_inline,
     _print_report_summary,
     _short_feature_label,
-    _strip_cell_markup,
-    _target_dirs_for_terminal,
-    _terminal_feature_label,
-    _terminal_table,
 )
+from .report_terminal import _strip_cell_markup as _strip_cell_markup
+from .report_terminal import _target_dirs_for_terminal as _target_dirs_for_terminal
+from .report_terminal import _terminal_feature_label as _terminal_feature_label
+from .report_terminal import _terminal_table as _terminal_table
+from .storage import glob_tables as glob_tables
+from .utils import feature_tail_ellipsis as feature_tail_ellipsis
 
 
 def _html_taxon_prefixes(value: Any) -> str:

@@ -361,10 +361,10 @@ def _evaluate_candidate(
     metrics = compute_regression_metrics(y_true, pred)
     row: dict[str, Any] = {
         **spec,
-        "member_count": int(len(members)),
+        "member_count": len(members),
         "effective_member_count": int(np.count_nonzero(weights > _WEIGHT_TOL))
         if weights is not None
-        else int(len(members)),
+        else len(members),
         "members": json.dumps(members),
         "weights": json.dumps([float(x) for x in weights])
         if weights is not None
@@ -539,7 +539,7 @@ def _candidate_table(
                     stack,
                     ordered["y_true"].to_numpy(dtype=float),
                     metric,
-                    extra={"inner_oof_rows": int(len(ordered))},
+                    extra={"inner_oof_rows": len(ordered)},
                 )
             else:
                 library = [str(x) for x in scores.index.tolist()]
@@ -562,7 +562,7 @@ def _candidate_table(
                         metric,
                         weights,
                         {
-                            "inner_oof_rows": int(len(ordered)),
+                            "inner_oof_rows": len(ordered),
                             "weight_source": "caruana_selection_frequency",
                             "caruana_trajectory": json.dumps(
                                 [float(x) for x in trajectory]
@@ -584,7 +584,7 @@ def _candidate_table(
                         metric,
                         weights,
                         {
-                            "inner_oof_rows": int(len(ordered)),
+                            "inner_oof_rows": len(ordered),
                             "weight_source": f"convex_{metric}",
                         },
                     )
@@ -767,7 +767,7 @@ def sweep_regression_ensemble(sweep: Sweep) -> dict[str, Path]:
         "Strategy": "MPMA-B",
         "task": "regression",
         "selection_basis": "outer_fold_inner_validation",
-        "n_outer_folds": int(len(mpma_b_metrics)),
+        "n_outer_folds": len(mpma_b_metrics),
     }
     for name in [
         "R2",
@@ -915,7 +915,7 @@ def sweep_regression_ensemble(sweep: Sweep) -> dict[str, Path]:
         "Strategy": "MPMA-E",
         "task": "regression",
         "selection_basis": "outer_fold_inner_oof_predictions_only",
-        "n_outer_folds": int(len(metrics_df)),
+        "n_outer_folds": len(metrics_df),
     }
     for name in [
         "R2",

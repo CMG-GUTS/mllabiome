@@ -217,8 +217,8 @@ def export_tsv_tree(
             {
                 "source": str(source.relative_to(root)),
                 "tsv": str(target.relative_to(root)),
-                "rows": int(len(frame)),
-                "columns": int(len(frame.columns)),
+                "rows": len(frame),
+                "columns": len(frame.columns),
                 "parquet_bytes": int(source.stat().st_size),
                 "tsv_bytes": int(target.stat().st_size),
             }
@@ -244,8 +244,8 @@ def export_tsv_tree(
                     {
                         "source": "configs.db::configs",
                         "tsv": str(target.relative_to(root)),
-                        "rows": int(len(frame)),
-                        "columns": int(len(frame.columns)),
+                        "rows": len(frame),
+                        "columns": len(frame.columns),
                         "parquet_bytes": None,
                         "tsv_bytes": int(target.stat().st_size),
                     }

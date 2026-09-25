@@ -5,9 +5,10 @@ import math
 import re
 import sqlite3
 import textwrap
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -2005,7 +2006,7 @@ def write_single_task_mpma_e_figure(
     if X is None or taxa is None:
         X, taxa, source = synthetic_taxa_matrix(seed=seed)
 
-        source = f"synthetic schematic matrix; real sweep matrix unavailable for figure renderer"
+        source = "synthetic schematic matrix; real sweep matrix unavailable for figure renderer"
 
     spec = TaskSpec(str(task_key), str(task_title), (str(experiment_dir),))
 

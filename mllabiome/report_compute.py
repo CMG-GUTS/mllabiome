@@ -86,9 +86,9 @@ def _resource_summary(
     fits = pd.to_numeric(frame.get("fits"), errors="coerce").fillna(0).astype(int)
     rss = pd.to_numeric(frame.get("peak_rss_gib"), errors="coerce")
     return {
-        "candidate_configs": int(len(config_ids)),
-        "outer_units": int(len(outer_keys)),
-        "resource_jobs": int(len(pairs)),
+        "candidate_configs": len(config_ids),
+        "outer_units": len(outer_keys),
+        "resource_jobs": len(pairs),
         "expected_jobs": int(expected),
         "coverage_fraction": coverage,
         "model_fits": int(fits.sum()),

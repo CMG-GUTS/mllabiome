@@ -3,15 +3,21 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
-import math
-import re
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.stats import t as student_t
 
+from .diagnostic_statistics import (
+    _confusion_rows,
+    _decision_curve_grid,
+    _decision_curve_rows,
+    _operating_confusion_rows,
+    _roc_curve_rows,
+    _threshold_metric_rows,
+    _validated_diagnostic_thresholds,
+)
 from .evaluation_predictions import (
     evaluation_prediction_metadata,
     load_evaluation_predictions,
@@ -22,73 +28,25 @@ from .metrics import (
     compute_metrics,
     metric_is_loss,
 )
-from .storage import read_table, resolve_table_path, table_exists, write_table
-from .utils import dump_json_standard
-
-from .diagnostic_statistics import (
-    _binary_confusion,
-    _binary_threshold_counts,
-    _bootstrap_decision_curve,
-    _bootstrap_threshold_estimands,
-    _confusion_components,
-    _confusion_estimands,
-    _decision_curve_grid,
-    _confusion_rows,
-    _decision_curve_rows,
-    _decision_curve_point_estimands,
-    _decision_curve_values,
-    _diagnostic_values_from_counts,
-    _mean_decision_vectors,
-    _mean_diagnostic_vectors,
-    _nanmean_vectors,
-    _operating_confusion_rows,
-    _roc_curve_rows,
-    _operating_confusion_estimands,
-    _operating_confusion_matrix,
-    _safe_ratio_array,
-    _threshold_metric_rows,
-    _threshold_diagnostic_values,
-    _threshold_point_estimands,
-    _validated_diagnostic_thresholds,
-)
 from .oof_statistics import (
-    _binary_auc_pr_auc_ap,
-    _bootstrap_oof_estimands,
-    _calibration_binary,
     _calibration_coefficient_rows,
-    _fast_classification_metrics,
-    _mean_metric_dicts,
-    _oof_metrics,
-    _point_oof_estimands,
-    _proper_metrics,
     _performance_rows,
     _prepare_oof_frame,
     _probability_columns,
     _probability_semantics,
-    _resample_subjects,
-    _sigmoid,
     _reliability_rows,
 )
-from .paired_statistics import (
-    _coverage_row,
-    _match_key_columns,
-    _matched_frames,
-    _oof_design,
-    _paired_bootstrap_advantages,
-    _paired_contrast_rows,
-    _paired_point_estimands,
-    _paired_resample_indices,
-    _subject_cluster_indices,
-)
+from .paired_statistics import _coverage_row, _oof_design, _paired_contrast_rows
 from .statistics_common import (
-    DIAGNOSTIC_METRICS,
-    OOF_METRIC_ORDER,
     _LODO_PROTOCOLS,
     _OOF_CONTRAST_METRICS,
+    OOF_METRIC_ORDER,
     _ensure_outer_split_key,
     _repeat_id,
     _stable_seed,
 )
+from .storage import read_table, resolve_table_path, table_exists, write_table
+from .utils import dump_json_standard
 
 DISPLAY_METRICS = ("AUROC", "AUCPR", "AP", "MCC", "F1w", "Precision", "Recall")
 METRIC_LABELS = {
@@ -220,7 +178,7 @@ def _metric_frame(
         rows.append(
             {
                 "outer_split_key": str(outer_split_key),
-                "n_samples": int(len(y_true_array)),
+                "n_samples": len(y_true_array),
                 **metrics,
             }
         )
@@ -312,7 +270,7 @@ def _summary_rows(
                     "std": float(values.std(ddof=1)) if len(values) > 1 else 0.0,
                     "ci_low": float(ci_low) if np.isfinite(ci_low) else np.nan,
                     "ci_high": float(ci_high) if np.isfinite(ci_high) else np.nan,
-                    "n_outer_units": int(len(values)),
+                    "n_outer_units": len(values),
                     "n_bootstrap": int(n_bootstrap),
                     "bootstrap_method": (
                         "cluster_outer_cohort"
@@ -325,11 +283,63 @@ def _summary_rows(
     return pd.DataFrame(rows)
 
 
+from .diagnostic_statistics import _binary_confusion as _binary_confusion
+from .diagnostic_statistics import _binary_threshold_counts as _binary_threshold_counts
+from .diagnostic_statistics import (
+    _bootstrap_decision_curve as _bootstrap_decision_curve,
+)
+from .diagnostic_statistics import (
+    _bootstrap_threshold_estimands as _bootstrap_threshold_estimands,
+)
+from .diagnostic_statistics import _confusion_components as _confusion_components
+from .diagnostic_statistics import _confusion_estimands as _confusion_estimands
+from .diagnostic_statistics import (
+    _decision_curve_point_estimands as _decision_curve_point_estimands,
+)
+from .diagnostic_statistics import _decision_curve_values as _decision_curve_values
+from .diagnostic_statistics import (
+    _diagnostic_values_from_counts as _diagnostic_values_from_counts,
+)
+from .diagnostic_statistics import _mean_decision_vectors as _mean_decision_vectors
+from .diagnostic_statistics import _mean_diagnostic_vectors as _mean_diagnostic_vectors
+from .diagnostic_statistics import _nanmean_vectors as _nanmean_vectors
+from .diagnostic_statistics import (
+    _operating_confusion_estimands as _operating_confusion_estimands,
+)
+from .diagnostic_statistics import (
+    _operating_confusion_matrix as _operating_confusion_matrix,
+)
+from .diagnostic_statistics import _safe_ratio_array as _safe_ratio_array
+from .diagnostic_statistics import (
+    _threshold_diagnostic_values as _threshold_diagnostic_values,
+)
+from .diagnostic_statistics import (
+    _threshold_point_estimands as _threshold_point_estimands,
+)
+from .oof_statistics import _binary_auc_pr_auc_ap as _binary_auc_pr_auc_ap
+from .oof_statistics import _bootstrap_oof_estimands as _bootstrap_oof_estimands
+from .oof_statistics import _calibration_binary as _calibration_binary
+from .oof_statistics import _fast_classification_metrics as _fast_classification_metrics
+from .oof_statistics import _mean_metric_dicts as _mean_metric_dicts
+from .oof_statistics import _oof_metrics as _oof_metrics
+from .oof_statistics import _point_oof_estimands as _point_oof_estimands
+from .oof_statistics import _proper_metrics as _proper_metrics
+from .oof_statistics import _resample_subjects as _resample_subjects
+from .oof_statistics import _sigmoid as _sigmoid
+from .paired_statistics import _match_key_columns as _match_key_columns
+from .paired_statistics import _matched_frames as _matched_frames
+from .paired_statistics import (
+    _paired_bootstrap_advantages as _paired_bootstrap_advantages,
+)
+from .paired_statistics import _paired_point_estimands as _paired_point_estimands
+from .paired_statistics import _paired_resample_indices as _paired_resample_indices
+from .paired_statistics import _subject_cluster_indices as _subject_cluster_indices
 from .statistical_tests import (
     _corrected_resampled_t_test,
     _exact_sign_flip_test,
     _paired_bootstrap_difference,
 )
+from .statistics_common import DIAGNOSTIC_METRICS as DIAGNOSTIC_METRICS
 
 
 def _holm_adjust(frame: pd.DataFrame) -> pd.DataFrame:
@@ -438,7 +448,7 @@ def _pairwise_rows(
                     "test": test,
                     "test_statistic": statistic,
                     "p_value": p_value,
-                    "n_paired_outer_units": int(len(valid)),
+                    "n_paired_outer_units": len(valid),
                 }
             )
     return _holm_adjust(pd.DataFrame(rows)) if rows else pd.DataFrame()
@@ -893,7 +903,7 @@ def run_report_statistics(
         "decision_curve": {
             "minimum_threshold": float(decision_curve_thresholds[0]),
             "maximum_threshold": float(decision_curve_thresholds[-1]),
-            "points": int(len(decision_curve_thresholds)),
+            "points": len(decision_curve_thresholds),
             "net_benefit": "TP/N - FP/N * threshold/(1-threshold)",
             "reference_strategies": ["treat_none", "treat_all"],
             "ordinary_operating_threshold": 0.5,
@@ -948,7 +958,7 @@ def run_report_statistics(
         "diagnostic_thresholds": list(diagnostic_thresholds),
         "decision_curve_min_threshold": float(decision_curve_thresholds[0]),
         "decision_curve_max_threshold": float(decision_curve_thresholds[-1]),
-        "decision_curve_points": int(len(decision_curve_thresholds)),
+        "decision_curve_points": len(decision_curve_thresholds),
         "cache": "statistics are reused when source artefacts and statistical settings are unchanged",
         "evaluation_predictions": {
             strategy: evaluation_prediction_metadata(strategy) for strategy in frames

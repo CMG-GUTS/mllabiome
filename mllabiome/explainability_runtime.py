@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from queue import Empty
 from threading import Event, Thread
-from typing import Any, Callable, Sequence
+from typing import Any
 
 from threadpoolctl import threadpool_limits
 

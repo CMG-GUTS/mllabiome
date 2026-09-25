@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import numpy as np
 from scipy.stats import rankdata
@@ -104,7 +104,7 @@ def aggregate_member_predictions(
         raise ValueError("Aggregated MPMA-E predictions contain invalid values")
     sums = proba.sum(axis=1, keepdims=True)
     if np.any(sums <= 0.0):
-        zero_rows = np.flatnonzero((sums[:, 0] <= 0.0))
+        zero_rows = np.flatnonzero(sums[:, 0] <= 0.0)
         if method == "rank_mean" and len(zero_rows):
             proba[zero_rows, :] = 1.0
             sums = proba.sum(axis=1, keepdims=True)

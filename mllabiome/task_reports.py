@@ -552,7 +552,7 @@ def _regression_statistics(
                         if str(protocol).strip().lower()
                         in {"lodo", "leave_one_dataset_out"}
                         else "paired_outer_fold_metrics_corrected_resampled_t",
-                        "n_matched_outer_units": int(len(diff)),
+                        "n_matched_outer_units": len(diff),
                         "test": test,
                         "p_value": p_value,
                     }

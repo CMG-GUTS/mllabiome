@@ -1557,7 +1557,7 @@ def _task_class_count(sweep: Any) -> int | None:
     if isinstance(label_map, dict) and label_map:
         values = {str(value) for value in label_map.values()}
         if values:
-            return int(len(values))
+            return len(values)
     return None
 
 

@@ -11,43 +11,28 @@ import subprocess
 import sys
 import time
 import zlib
-from dataclasses import asdict, dataclass, field, replace
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
 from joblib import delayed
 from sklearn.base import BaseEstimator
-from sklearn.model_selection import (
-    GroupKFold,
-    KFold,
-    StratifiedGroupKFold,
-    StratifiedKFold,
-)
 from threadpoolctl import threadpool_limits
 
 from ._version import __version__
 from .compute import ResourceTracker, machine_profile
 from .console import info, path_table, progress, stage, success, summary_table
-from .data import Data, Dataset, dataset_fingerprint, load_dataset
+from .data import Dataset, dataset_fingerprint, load_dataset
 from .estimator_protocol import is_estimator_instance
-from .explainability_methods import (
-    ALE,
-    SHAP,
-    Permutation,
-    apply_profile,
-    method_has_local,
-    normalise_profile,
-)
 from .figures import _write_representation_impact_figure
-from .integrations import Integration
 from .learners import (
     _learner_factory,
     _learner_name,
     fit_classifier,
     learner_display_label,
-    validate_model_specs,
 )
 from .metrics import _estimator_call
 from .metrics import _predict_proba_aligned as _metrics_predict_proba_aligned
@@ -58,9 +43,7 @@ from .metrics import (
     compute_regression_metrics,
     grouped_log_loss,
     metric_is_loss,
-    metric_passes_threshold,
 )
-from .modalities import Modality, Samples
 from .resolutions import (
     _parse_resolution,
     mask_feature_blocks,
@@ -73,8 +56,23 @@ from .runtime import (
     thread_environment,
 )
 from .selection import write_mpma_b_selection_outputs
-from .splits import resolve_cv_splits
 from .storage import read_table, remove_table, table_exists, write_table
+from .sweep_types import MPDR
+from .sweep_types import MPMA as MPMA
+from .sweep_types import Ensemble as Ensemble
+from .sweep_types import Evaluation
+from .sweep_types import Explainability as Explainability
+from .sweep_types import LocalExplanationMode as LocalExplanationMode
+from .sweep_types import LocalExplanations as LocalExplanations
+from .sweep_types import QualificationGate, Sweep
+from .sweep_types import SweepTask as SweepTask
+from .sweep_types import (
+    _effective_local_explanations_mode as _effective_local_explanations_mode,
+)
+from .sweep_types import _normalise_sweep_task
+from .sweep_types import build_sweep_from_module as build_sweep_from_module
+from .sweep_types import sweep_task as sweep_task
+from .sweep_types import validate_sweep_class_count
 from .transformations import (
     TRANSFORMATION_LABELS,
     _count_transformation_factory,
@@ -82,30 +80,6 @@ from .transformations import (
     _count_transformation_specs_for_blocks,
 )
 from .utils import METRIC_COLUMNS, TAXONOMIC_LEVELS, dump_json_standard
-
-
-from .sweep_types import (
-    _default_transformations,
-    _legacy_local_explanations,
-    _normalise_explainability_classes_config,
-    _normalise_explainability_targets_config,
-    Ensemble,
-    Evaluation,
-    Explainability,
-    LocalExplanationMode,
-    LocalExplanations,
-    MPDR,
-    MPMA,
-    QualificationGate,
-    Sweep,
-    SweepTask,
-    _effective_local_explanations_mode,
-    _normalise_sweep_task,
-    build_sweep_from_module,
-    sweep_task,
-    validate_sweep_class_count,
-)
-
 
 _MPDR_SEMANTICS = "select_then_transform_fold_local_rank_composition_v3"
 
@@ -775,9 +749,9 @@ def _evaluate_mpma_split_task(
                     metrics, split_key, inner_key, cid, mpdr, learner_name, "inner"
                 )
                 row.update(fitted.feature_filter_metadata())
-                row["n_samples"] = int(len(va_idx))
-                row["n_subjects"] = int(
-                    len(pd.unique(np.asarray(subject_ids, dtype=object)[va_idx]))
+                row["n_samples"] = len(va_idx)
+                row["n_subjects"] = len(
+                    pd.unique(np.asarray(subject_ids, dtype=object)[va_idx])
                 )
                 result["inner_metrics"].append(row)
                 result["inner_predictions"].extend(
@@ -873,9 +847,9 @@ def _evaluate_mpma_split_task(
                     metrics, split_key, None, cid, mpdr, learner_name, "outer"
                 )
                 row.update(fitted_outer.feature_filter_metadata())
-                row["n_samples"] = int(len(test_idx))
-                row["n_subjects"] = int(
-                    len(pd.unique(np.asarray(subject_ids, dtype=object)[test_idx]))
+                row["n_samples"] = len(test_idx)
+                row["n_subjects"] = len(
+                    pd.unique(np.asarray(subject_ids, dtype=object)[test_idx])
                 )
                 result["outer_metrics"].append(row)
                 result["outer_predictions"].extend(
@@ -1068,7 +1042,7 @@ def _backfill_metrics_from_predictions(
             )
         if "cohort_macro_log_loss" in requested and str(split_key).startswith("lodo_"):
             values["cohort_macro_log_loss"] = float(values["log_loss"])
-        values["n_samples"] = int(len(group))
+        values["n_samples"] = len(group)
         values["n_subjects"] = int(
             group["subject_id"].astype(str).nunique()
             if "subject_id" in group.columns
@@ -1102,28 +1076,45 @@ def _backfill_metrics_from_predictions(
     return out
 
 
+from .data import Data as Data
+from .evaluation_splits import _groups_from_metadata
+from .evaluation_splits import _inner_splits as _inner_splits
+from .evaluation_splits import _normalise_column_names as _normalise_column_names
+from .evaluation_splits import _outer_splits as _outer_splits
+from .evaluation_splits import _regression_inner_splits as _regression_inner_splits
+from .evaluation_splits import _regression_outer_splits as _regression_outer_splits
+from .evaluation_splits import _resolved_evaluation_splits
+from .evaluation_splits import _safe_group_n_splits as _safe_group_n_splits
+from .evaluation_splits import _safe_n_splits as _safe_n_splits
+from .evaluation_splits import _strata_from_metadata
 from .evaluation_splits import (
-    _groups_from_metadata,
-    _inner_splits,
-    _normalise_column_names,
-    _outer_splits,
-    _regression_inner_splits,
-    _regression_outer_splits,
-    _resolved_evaluation_splits,
-    _safe_group_n_splits,
-    _safe_n_splits,
-    _strata_from_metadata,
-    _stratification_error_context,
-    _subject_safe_groups,
+    _stratification_error_context as _stratification_error_context,
 )
-from .target_sweeps import (
-    _explainability_for_target,
-    _learners_for_target,
-    _metric_for_target,
-    _target_columns,
-    _target_task,
-    target_sweeps,
+from .evaluation_splits import _subject_safe_groups
+from .explainability_methods import ALE as ALE
+from .explainability_methods import SHAP as SHAP
+from .explainability_methods import Permutation as Permutation
+from .explainability_methods import apply_profile as apply_profile
+from .explainability_methods import method_has_local as method_has_local
+from .explainability_methods import normalise_profile as normalise_profile
+from .integrations import Integration as Integration
+from .learners import validate_model_specs as validate_model_specs
+from .metrics import metric_passes_threshold as metric_passes_threshold
+from .modalities import Modality as Modality
+from .modalities import Samples as Samples
+from .splits import resolve_cv_splits as resolve_cv_splits
+from .sweep_types import _default_transformations as _default_transformations
+from .sweep_types import _legacy_local_explanations as _legacy_local_explanations
+from .sweep_types import (
+    _normalise_explainability_classes_config as _normalise_explainability_classes_config,
 )
+from .sweep_types import (
+    _normalise_explainability_targets_config as _normalise_explainability_targets_config,
+)
+from .target_sweeps import _explainability_for_target as _explainability_for_target
+from .target_sweeps import _learners_for_target as _learners_for_target
+from .target_sweeps import _metric_for_target as _metric_for_target
+from .target_sweeps import _target_columns, _target_task, target_sweeps
 
 
 def _regression_metric_row(
@@ -2848,7 +2839,7 @@ def _write_rankings_and_figures(
                         "selection_metric": metric,
                         "inner_score": float(score),
                         "inner_score_std": float(spread),
-                        "n_inner_folds": int(len(group)),
+                        "n_inner_folds": len(group),
                     }
                 )
             ranking = pd.DataFrame(rows)

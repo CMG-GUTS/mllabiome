@@ -1,24 +1,19 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import logging
-import math
-import shutil
-from contextlib import contextmanager
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from multiprocessing import Manager
 from pathlib import Path
 from queue import Empty
 from threading import Event, Thread
-from typing import Any, Callable, Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.stats import rankdata
 from sklearn.base import BaseEstimator
-from threadpoolctl import threadpool_limits
 
 from .configs_sweep import (
     Sweep,
@@ -26,131 +21,54 @@ from .configs_sweep import (
     _groups_from_metadata,
     _lodo_feature_pair,
     _resolved_evaluation_splits,
-    _source_tree_sha256,
     _strata_from_metadata,
 )
 from .console import info, path_table, progress, stage, success, summary_table
 from .data import load_dataset
-from .explainability_context import (
-    build_feature_relative_abundance_summary,
-    build_local_relative_abundance_context,
-)
+from .explainability_context import build_local_relative_abundance_context
 from .explainability_methods import (
     ALE,
     LIME,
     SHAP,
-    ALEInteractions,
     Permutation,
-    coerce_method,
     method_has_global,
     method_has_local,
     method_name,
     method_to_dict,
 )
-from .explainability_support import top_k_rank_support
-from .explainability_visuals import plot_feature_support as _plot_feature_support_visual
-from .explainability_visuals import (
-    plot_interaction_network as _plot_interaction_network_visual,
-)
 from .explainability_visuals import plot_local_attributions
-from .learners import _learner_factory, fit_classifier
-from .metrics import _predict_proba_aligned
-from .metrics import metric_is_loss
+from .learners import fit_classifier
+from .metrics import _predict_proba_aligned, metric_is_loss
 from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
-from .runtime import (
-    configure_estimator_threads,
-    iter_parallel_tasks,
-    resolve_execution_plan,
-    thread_environment,
-)
-from .storage import glob_tables, read_table, table_exists, write_table
-from .style import ACC_D, ACC_L, BG, COL_W_2, DIM, INK, MID, TRACK
-from .style import apply as apply_style
-from .style import save_all
-from .transformations import CountTransformationAdapter, _count_transformation_factory
-from .utils import _as_float_matrix, dump_json_standard, feature_tail_ellipsis
+from .runtime import configure_estimator_threads
+from .storage import read_table, table_exists, write_table
+from .utils import dump_json_standard
 
 for _logger_name in ("PyALE", "PyALE._ALE_generic"):
     logging.getLogger(_logger_name).setLevel(logging.WARNING)
     logging.getLogger(_logger_name).propagate = False
 
 
+from .configs_sweep import _source_tree_sha256 as _source_tree_sha256
+from .explainability_algorithms import _ale_1d_effect_summary as _ale_1d_effect_summary
+from .explainability_algorithms import _ale_feature_importance, _ale_interactions
+from .explainability_algorithms import _ale_result_values as _ale_result_values
+from .explainability_algorithms import _AleModelWrapper as _AleModelWrapper
 from .explainability_algorithms import (
-    _AleModelWrapper,
-    _ale_1d_effect_summary,
-    _ale_feature_importance,
-    _ale_interactions,
-    _ale_result_values,
-    _candidate_pairs_from_scores,
-    _combine_feature_importance,
-    _interp_unique,
-    _permutation_feature_importance,
-    _plot_ale_curves,
-    _require_pyale,
-    _same_lineage_pair,
-    _single_method_support_table,
+    _candidate_pairs_from_scores as _candidate_pairs_from_scores,
+)
+from .explainability_algorithms import _combine_feature_importance
+from .explainability_algorithms import _interp_unique as _interp_unique
+from .explainability_algorithms import _permutation_feature_importance, _plot_ale_curves
+from .explainability_algorithms import _require_pyale as _require_pyale
+from .explainability_algorithms import _same_lineage_pair as _same_lineage_pair
+from .explainability_algorithms import (
+    _single_method_support_table as _single_method_support_table,
+)
+from .explainability_algorithms import (
     _write_fold_feature_importance,
     _write_method_outputs,
 )
-from .explainability_model import (
-    _FittedMpmaEnsemble,
-    _aggregate_member_proba,
-    _explain_predict_class_probability,
-    _explain_predict_proba,
-    _project_input,
-    _projection_required,
-    _sample_rows,
-)
-from .explainability_runtime import (
-    _parallel_progress_results,
-    _progress_callback,
-    _queued_progress_callback,
-    _quiet_pyale_info,
-    _run_xai_task,
-    _xai_execution_plan,
-    _xai_task_iterator,
-)
-from .explainability_values import (
-    _aggregate_fold_feature_importance,
-    _lime_values_for_data,
-    _shap_values_for_data,
-    _value_frame_for_fold,
-)
-
-
-from .explainability_config import (
-    ExplainabilityConfigurationError,
-    ExplainabilityDependencyError,
-    _EXPLAINABILITY_PIPELINE_SCHEMA,
-    _auto_ale_bins,
-    _configured_count_transformation_factory,
-    _configured_learner_factory,
-    _method_spec,
-    _normalise_explainability_method_specs,
-    _normalise_explainability_methods,
-    _preflight_explainability_dependencies,
-    _resolve_explainability_classes,
-)
-
-
-from .explainability_reporting import (
-    _class_slug,
-    _collapse_duplicate_feature_importance,
-    _ensure_interaction_network_outputs,
-    _feature_distribution_stats,
-    _interaction_distribution_stats_for_class,
-    _method_display,
-    _method_support_table,
-    _plain_taxon_label,
-    _plot_feature_importance,
-    _plot_interaction_network,
-    _rank_support_from_importance,
-    _standardized_group_shift,
-    _terminal_taxon_label,
-    _write_unavailable_interaction_network,
-)
-
-
 from .explainability_cache import (
     _cached_method_frame,
     _copy_explainability_cache,
@@ -165,17 +83,120 @@ from .explainability_cache import (
     _method_cache_entry,
     _method_cache_entry_status,
     _method_cache_files_complete,
-    _method_cache_sidecar_path,
-    _method_cache_signature,
-    _persist_method_cache_entry,
-    _refresh_target_visuals,
-    _safe_cache_name,
-    _signature_hash,
-    _signature_value,
-    _source_config_compatible,
-    _visual_class_labels,
-    refresh_explainability_visuals,
 )
+from .explainability_cache import (
+    _method_cache_sidecar_path as _method_cache_sidecar_path,
+)
+from .explainability_cache import _method_cache_signature, _persist_method_cache_entry
+from .explainability_cache import _refresh_target_visuals as _refresh_target_visuals
+from .explainability_cache import _safe_cache_name, _signature_hash
+from .explainability_cache import _signature_value as _signature_value
+from .explainability_cache import _source_config_compatible as _source_config_compatible
+from .explainability_cache import _visual_class_labels as _visual_class_labels
+from .explainability_cache import (
+    refresh_explainability_visuals as refresh_explainability_visuals,
+)
+from .explainability_config import (
+    _EXPLAINABILITY_PIPELINE_SCHEMA,
+    ExplainabilityConfigurationError,
+)
+from .explainability_config import (
+    ExplainabilityDependencyError as ExplainabilityDependencyError,
+)
+from .explainability_config import _auto_ale_bins as _auto_ale_bins
+from .explainability_config import (
+    _configured_count_transformation_factory,
+    _configured_learner_factory,
+)
+from .explainability_config import _method_spec as _method_spec
+from .explainability_config import (
+    _normalise_explainability_method_specs,
+    _normalise_explainability_methods,
+    _preflight_explainability_dependencies,
+    _resolve_explainability_classes,
+)
+from .explainability_context import (
+    build_feature_relative_abundance_summary as build_feature_relative_abundance_summary,
+)
+from .explainability_methods import ALEInteractions as ALEInteractions
+from .explainability_methods import coerce_method as coerce_method
+from .explainability_model import _aggregate_member_proba as _aggregate_member_proba
+from .explainability_model import (
+    _explain_predict_class_probability as _explain_predict_class_probability,
+)
+from .explainability_model import _explain_predict_proba as _explain_predict_proba
+from .explainability_model import _FittedMpmaEnsemble
+from .explainability_model import _project_input as _project_input
+from .explainability_model import _projection_required
+from .explainability_model import _sample_rows as _sample_rows
+from .explainability_reporting import _class_slug
+from .explainability_reporting import (
+    _collapse_duplicate_feature_importance as _collapse_duplicate_feature_importance,
+)
+from .explainability_reporting import (
+    _ensure_interaction_network_outputs,
+    _feature_distribution_stats,
+)
+from .explainability_reporting import (
+    _interaction_distribution_stats_for_class as _interaction_distribution_stats_for_class,
+)
+from .explainability_reporting import _method_display as _method_display
+from .explainability_reporting import _method_support_table
+from .explainability_reporting import _plain_taxon_label as _plain_taxon_label
+from .explainability_reporting import _plot_feature_importance
+from .explainability_reporting import (
+    _plot_interaction_network as _plot_interaction_network,
+)
+from .explainability_reporting import (
+    _rank_support_from_importance as _rank_support_from_importance,
+)
+from .explainability_reporting import (
+    _standardized_group_shift as _standardized_group_shift,
+)
+from .explainability_reporting import _terminal_taxon_label as _terminal_taxon_label
+from .explainability_reporting import (
+    _write_unavailable_interaction_network as _write_unavailable_interaction_network,
+)
+from .explainability_runtime import (
+    _parallel_progress_results,
+    _progress_callback,
+    _queued_progress_callback,
+)
+from .explainability_runtime import _quiet_pyale_info as _quiet_pyale_info
+from .explainability_runtime import _run_xai_task as _run_xai_task
+from .explainability_runtime import _xai_execution_plan, _xai_task_iterator
+from .explainability_support import top_k_rank_support as top_k_rank_support
+from .explainability_values import (
+    _aggregate_fold_feature_importance,
+    _lime_values_for_data,
+    _shap_values_for_data,
+    _value_frame_for_fold,
+)
+from .explainability_visuals import plot_feature_support as _plot_feature_support_visual
+from .explainability_visuals import (
+    plot_interaction_network as _plot_interaction_network_visual,
+)
+from .learners import _learner_factory as _learner_factory
+from .runtime import iter_parallel_tasks as iter_parallel_tasks
+from .runtime import resolve_execution_plan as resolve_execution_plan
+from .runtime import thread_environment as thread_environment
+from .storage import glob_tables as glob_tables
+from .style import ACC_D as ACC_D
+from .style import ACC_L as ACC_L
+from .style import BG as BG
+from .style import COL_W_2 as COL_W_2
+from .style import DIM as DIM
+from .style import INK as INK
+from .style import MID as MID
+from .style import TRACK as TRACK
+from .style import apply as apply_style
+from .style import save_all as save_all
+from .transformations import CountTransformationAdapter as CountTransformationAdapter
+from .transformations import (
+    _count_transformation_factory as _count_transformation_factory,
+)
+from .utils import _as_float_matrix as _as_float_matrix
+from .utils import feature_tail_ellipsis as feature_tail_ellipsis
 
 
 def _ensure_mpma_member_explanations(
@@ -667,10 +688,10 @@ def _mpma_e_reference_and_folds(
         transformation_key = str(r["count_transformation"])
         learner_key = str(r["learner"])
         label_prefix = (
-            f"{str(r.get('resolution', '+'.join(levels)))}"
+            f"{r.get('resolution', '+'.join(levels))!s}"
             f"|{transformation_key}"
             f"|{learner_key}"
-            f"|{str(r.get('config_id', member_i))}"
+            f"|{r.get('config_id', member_i)!s}"
         )
         ct_ref = _configured_count_transformation_factory(
             sweep, transformation_key, blocks_member
@@ -723,9 +744,9 @@ def _mpma_e_reference_and_folds(
             r = spec["row"]
             info(
                 "Fitting MPMA-E OOF member "
-                f"{member_i}/{total_members} · split={str(split['split_key'])} · "
-                f"config={str(r.get('config_id', ''))} · "
-                f"{str(r.get('resolution', r.get('levels', 'MPDR')))} · "
+                f"{member_i}/{total_members} · split={split['split_key']!s} · "
+                f"config={r.get('config_id', '')!s} · "
+                f"{r.get('resolution', r.get('levels', 'MPDR'))!s} · "
                 f"{spec['transformation_key']} · {spec['learner_key']}"
             )
             ct = _configured_count_transformation_factory(
@@ -1279,7 +1300,7 @@ def _shap_fold_parallel_task(
         if collect_local
         else []
     )
-    return int(fold_no), fold_frame, rows, int(len(rows_ex)), str(backend)
+    return int(fold_no), fold_frame, rows, len(rows_ex), str(backend)
 
 
 def _local_value_rows_for_fold(

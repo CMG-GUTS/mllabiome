@@ -148,7 +148,9 @@ def test_mpma_b_oof_refits_exclude_every_test_sample(tmp_path, monkeypatch):
     monkeypatch.setattr(
         core,
         "_configured_count_transformation_factory",
-        lambda sweep, key, feature_blocks=None, resolution_feature_blocks=None: IdentityTransformation,
+        lambda sweep, key, feature_blocks=None, resolution_feature_blocks=None: (
+            IdentityTransformation
+        ),
     )
     monkeypatch.setattr(
         core,
@@ -299,7 +301,9 @@ def test_mpma_e_oof_refits_use_final_members_and_exclude_test_samples(
     monkeypatch.setattr(
         mpmae_xai._core,
         "_configured_count_transformation_factory",
-        lambda sweep, key, feature_blocks=None, resolution_feature_blocks=None: IdentityTransformation,
+        lambda sweep, key, feature_blocks=None, resolution_feature_blocks=None: (
+            IdentityTransformation
+        ),
     )
     monkeypatch.setattr(
         mpmae_xai._core,

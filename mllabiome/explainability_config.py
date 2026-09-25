@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import numpy as np
 from sklearn.base import BaseEstimator
@@ -132,22 +133,22 @@ def _preflight_explainability_dependencies(methods: Sequence[str]) -> None:
     missing: list[str] = []
     if "shap" in methods:
         try:
-            import shap
+            pass
         except Exception as exc:
             missing.append(f"shap ({exc})")
     if "lime" in methods:
         try:
-            from lime.lime_tabular import LimeTabularExplainer
+            pass
         except Exception as exc:
             missing.append(f"lime ({exc})")
     if "ale" in methods or "interactions" in methods:
         try:
-            from PyALE import ale as _pyale_preflight
+            pass
         except Exception as exc:
             missing.append(f"PyALE ({exc})")
     if "interactions" in methods:
         try:
-            import networkx as nx
+            pass
         except Exception as exc:
             missing.append(f"networkx ({exc})")
     if missing:

@@ -126,7 +126,7 @@ def _complete_config_scores(
                     "selection_metric": str(metric),
                     "inner_score": score,
                     "inner_score_std": spread,
-                    "n_inner_folds": int(len(valid)),
+                    "n_inner_folds": len(valid),
                 }
             )
     return pd.DataFrame(rows)
@@ -223,7 +223,7 @@ def select_final_mpma_candidate(
                 "config_id": str(config_id),
                 "inner_score": score,
                 "inner_score_std": spread,
-                "n_inner_folds": int(len(group)),
+                "n_inner_folds": len(group),
             }
         )
     if not rows:
@@ -365,7 +365,7 @@ def summarize_mpma_b_strategy(fold_metrics: pd.DataFrame) -> dict[str, Any]:
     out: dict[str, Any] = {
         "Strategy": "MPMA-B",
         "selection_basis": "outer_fold_inner_validation",
-        "n_outer_folds": int(len(fold_metrics)),
+        "n_outer_folds": len(fold_metrics),
     }
     metric_cols = [
         c
@@ -383,7 +383,7 @@ def summarize_mpma_b_strategy(fold_metrics: pd.DataFrame) -> dict[str, Any]:
             continue
         out[f"outer_{metric}_mean"] = float(vals.mean())
         out[f"outer_{metric}_std"] = float(vals.std(ddof=1)) if len(vals) > 1 else 0.0
-        out[f"outer_{metric}_count"] = int(len(vals))
+        out[f"outer_{metric}_count"] = len(vals)
     return out
 
 

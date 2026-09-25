@@ -674,10 +674,10 @@ def _write_representation_impact_figure(
         return
 
     import matplotlib as mpl
-    import matplotlib.gridspec as gridspec
     import matplotlib.pyplot as plt
     import matplotlib.ticker as mticker
     import matplotlib.transforms as mtransforms
+    from matplotlib import gridspec
 
     from .style import (
         C_DARK,

@@ -135,8 +135,8 @@ def _json_clean(obj: Any) -> Any:
         return obj if np.isfinite(obj) else None
     if isinstance(obj, Path):
         return str(obj)
-    if hasattr(obj, "name") and isinstance(getattr(obj, "name"), str):
-        return getattr(obj, "name")
+    if hasattr(obj, "name") and isinstance(obj.name, str):
+        return obj.name
     if callable(obj):
         return getattr(obj, "__name__", repr(obj))
     try:

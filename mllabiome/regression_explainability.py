@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -1121,7 +1122,7 @@ def _aggregate_long_importance(
                 "top_k_frequency": float(
                     group.loc[valid, "_top_k"].astype(float).mean()
                 ),
-                "n_estimable_folds": int(len(values)),
+                "n_estimable_folds": len(values),
                 "n_outer_folds_total": int(n_folds),
                 "fold_coverage": float(len(values) / max(1, int(n_folds))),
                 "scoring": str(group["scoring"].dropna().iloc[0])
@@ -1676,8 +1677,8 @@ def _explain_target(
         "target": str(target_col),
         "unit": unit,
         "methods": list(methods),
-        "outer_folds": int(len(folds)),
-        "sample_count": int(len(dataset.y)),
+        "outer_folds": len(folds),
+        "sample_count": len(dataset.y),
         "top_k": int(sweep.explainability.top_k),
         "local_explanations": local_mode,
         "local_methods": list(local_methods) if local_enabled else [],

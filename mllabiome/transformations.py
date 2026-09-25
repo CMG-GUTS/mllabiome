@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -51,15 +52,15 @@ def _canonical_float(value: float) -> str:
 
 class PrevalenceFilter:
     __slots__ = (
-        "threshold",
         "detection_threshold",
-        "identity",
         "feature_mask_",
-        "prevalence_",
-        "n_samples_fit_",
+        "identity",
         "minimum_samples_",
         "n_features_in_",
         "n_features_out_",
+        "n_samples_fit_",
+        "prevalence_",
+        "threshold",
     )
 
     def __init__(self, threshold: float, detection_threshold: float = 0.0):
@@ -82,10 +83,10 @@ class PrevalenceFilter:
         self.n_features_in_: int | None = None
         self.n_features_out_: int | None = None
 
-    def fresh(self) -> "PrevalenceFilter":
+    def fresh(self) -> PrevalenceFilter:
         return PrevalenceFilter(self.threshold, self.detection_threshold)
 
-    def fit(self, X: np.ndarray) -> "PrevalenceFilter":
+    def fit(self, X: np.ndarray) -> PrevalenceFilter:
         raw = _matrix(X, nonnegative=True)
         n_samples, n_features = raw.shape
         if n_samples < 1:
@@ -453,7 +454,7 @@ class _BuiltinTransformer:
             return ranks / (raw.shape[1] + 1.0)
         raise KeyError(name)
 
-    def fit(self, X: np.ndarray) -> "_BuiltinTransformer":
+    def fit(self, X: np.ndarray) -> _BuiltinTransformer:
         raw = _matrix(X)
         self.n_features_in_ = int(raw.shape[1])
         name = self.name
@@ -771,12 +772,10 @@ class _BuiltinTransformer:
             )
             rel = close(abundance)
             out = np.log10(rel + self.pseudocount_)
-        elif name == "robust_scaled_relative_abundance":
-            if self.scaler_ is None:
-                raise RuntimeError("Transformation has not been fitted.")
-            rel = close(self.scaler_.inverse_transform(arr))
-            out = self.scaler_.transform(rel)
-        elif name == "quantile_normal_relative_abundance":
+        elif (
+            name == "robust_scaled_relative_abundance"
+            or name == "quantile_normal_relative_abundance"
+        ):
             if self.scaler_ is None:
                 raise RuntimeError("Transformation has not been fitted.")
             rel = close(self.scaler_.inverse_transform(arr))
@@ -1048,12 +1047,12 @@ def _transformation_identity(
 
 class Transform:
     __slots__ = (
-        "name",
+        "_fn",
+        "_is_bw",
         "composition_scope",
         "feature_filter",
         "identity",
-        "_fn",
-        "_is_bw",
+        "name",
     )
 
     def __init__(
@@ -1133,7 +1132,7 @@ class CountTransformation:
         self.n_features_in_: int | None = None
         self.n_features_out_: int | None = None
 
-    def fit(self, X: np.ndarray) -> "CountTransformation":
+    def fit(self, X: np.ndarray) -> CountTransformation:
         self._impl = _BuiltinTransformer(self.name, random_state=self.random_state).fit(
             X
         )
@@ -1195,9 +1194,9 @@ def _count_transformation_name(item: Any) -> str:
     if isinstance(item, Transform):
         return item.identity
     if hasattr(item, "identity"):
-        return str(getattr(item, "identity"))
+        return str(item.identity)
     if hasattr(item, "name") and hasattr(item, "apply"):
-        name = str(getattr(item, "name"))
+        name = str(item.name)
         scope = getattr(item, "composition_scope", None)
         feature_filter = getattr(item, "feature_filter", None)
         return _transformation_identity(name, scope, feature_filter)
@@ -1413,7 +1412,7 @@ class CountTransformationAdapter:
             obj.fit(X)
         return obj
 
-    def fit(self, X: np.ndarray) -> "CountTransformationAdapter":
+    def fit(self, X: np.ndarray) -> CountTransformationAdapter:
         X_float = np.asarray(_as_float_matrix(X), dtype=np.float64)
         n_features = int(X_float.shape[1])
         self.n_features_in_ = n_features

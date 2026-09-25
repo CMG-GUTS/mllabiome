@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Literal
 
 from .data import Data
+from .ensemble_aggregation import (
+    PROBABILITY_PRESERVING_AGGREGATIONS,
+    SUPPORTED_AGGREGATIONS,
+)
 from .explainability_methods import (
     ALE,
     SHAP,
@@ -16,17 +21,13 @@ from .explainability_methods import (
 )
 from .integrations import Integration
 from .learners import validate_model_specs
-from .ensemble_aggregation import (
-    PROBABILITY_PRESERVING_AGGREGATIONS,
-    SUPPORTED_AGGREGATIONS,
-)
 from .metrics import (
     canonical_metric_name,
     metric_passes_threshold,
     metric_requires_probability_semantics,
 )
-from .utils import CLASSIFICATION_METRIC_COLUMNS, REGRESSION_METRIC_COLUMNS
 from .modalities import Modality, Samples
+from .utils import CLASSIFICATION_METRIC_COLUMNS, REGRESSION_METRIC_COLUMNS
 
 
 class SweepTask(str, Enum):
@@ -36,7 +37,7 @@ class SweepTask(str, Enum):
     MULTIOUTPUT = "multioutput"
 
     @classmethod
-    def parse(cls, value: Any) -> "SweepTask":
+    def parse(cls, value: Any) -> SweepTask:
         token = str(value).strip().casefold().replace("-", "_")
         aliases = {
             "binary": cls.CLASSIFICATION.value,
@@ -58,7 +59,7 @@ class LocalExplanationMode(str, Enum):
     REPRESENTATIVE_AND_REQUESTED = "representative_and_requested"
 
     @classmethod
-    def parse(cls, value: Any) -> "LocalExplanationMode":
+    def parse(cls, value: Any) -> LocalExplanationMode:
         token = str(value).strip().casefold().replace("-", "_")
         aliases = {
             "": cls.AUTO.value,
@@ -657,8 +658,8 @@ def build_sweep_from_module(mod: Any) -> Sweep:
         ]
         if missing:
             raise TypeError(f"Modality-based config is missing: {', '.join(missing)}.")
-        samples = getattr(mod, "SAMPLES")
-        modalities = tuple(getattr(mod, "MODALITIES"))
+        samples = mod.SAMPLES
+        modalities = tuple(mod.MODALITIES)
         if not isinstance(samples, Samples):
             raise TypeError("SAMPLES must be an instance of mllabiome.Samples(...).")
         if not modalities or not all(
@@ -668,13 +669,13 @@ def build_sweep_from_module(mod: Any) -> Sweep:
                 "MODALITIES must contain one or more mllabiome.Modality(...) instances."
             )
         if hasattr(mod, "TRANSFORMATIONS"):
-            transformations = getattr(mod, "TRANSFORMATIONS")
+            transformations = mod.TRANSFORMATIONS
         elif hasattr(mod, "_build_transformations"):
             transformations = mod._build_transformations()
         else:
             transformations = {}
         if hasattr(mod, "MODELS"):
-            learners = getattr(mod, "MODELS")
+            learners = mod.MODELS
         elif hasattr(mod, "_build_models"):
             learners = mod._build_models()
         else:
@@ -727,8 +728,8 @@ def build_sweep_from_module(mod: Any) -> Sweep:
             )
         return Sweep(
             data=None,
-            title=getattr(mod, "TITLE", Path(getattr(mod, "EXPERIMENT_DIR")).name),
-            experiment_dir=getattr(mod, "EXPERIMENT_DIR"),
+            title=getattr(mod, "TITLE", Path(mod.EXPERIMENT_DIR).name),
+            experiment_dir=mod.EXPERIMENT_DIR,
             learners=learners,
             evaluation=getattr(mod, "EVALUATION", Evaluation()),
             gate=getattr(mod, "GATE", QualificationGate()),
@@ -749,21 +750,21 @@ def build_sweep_from_module(mod: Any) -> Sweep:
             + ", ".join(required)
             + f". Missing: {', '.join(missing)}."
         )
-    data = getattr(mod, "DATA")
+    data = mod.DATA
     if not isinstance(data, Data):
         raise TypeError("DATA must be an instance of mllabiome.Data(...).")
 
     if hasattr(mod, "RESOLUTIONS"):
-        resolutions = getattr(mod, "RESOLUTIONS")
+        resolutions = mod.RESOLUTIONS
     elif hasattr(mod, "_RESOLUTION_SETS"):
-        resolutions = getattr(mod, "_RESOLUTION_SETS")
+        resolutions = mod._RESOLUTION_SETS
     else:
         raise TypeError(
             "Config must define RESOLUTIONS. Legacy _RESOLUTION_SETS is still accepted for compatibility."
         )
 
     if hasattr(mod, "COUNT_TRANSFORMATIONS"):
-        count_transformations = getattr(mod, "COUNT_TRANSFORMATIONS")
+        count_transformations = mod.COUNT_TRANSFORMATIONS
     elif hasattr(mod, "_build_count_transformations"):
         count_transformations = mod._build_count_transformations()
     else:
@@ -772,7 +773,7 @@ def build_sweep_from_module(mod: Any) -> Sweep:
         )
 
     if hasattr(mod, "MODELS"):
-        learners = getattr(mod, "MODELS")
+        learners = mod.MODELS
     elif hasattr(mod, "_build_models"):
         learners = mod._build_models()
     else:
@@ -782,8 +783,8 @@ def build_sweep_from_module(mod: Any) -> Sweep:
     validate_model_specs(learners, context="MODELS")
 
     return Sweep(
-        title=getattr(mod, "TITLE", Path(getattr(mod, "EXPERIMENT_DIR")).name),
-        experiment_dir=getattr(mod, "EXPERIMENT_DIR"),
+        title=getattr(mod, "TITLE", Path(mod.EXPERIMENT_DIR).name),
+        experiment_dir=mod.EXPERIMENT_DIR,
         data=data,
         resolutions=resolutions,
         count_transformations=count_transformations,

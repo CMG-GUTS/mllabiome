@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -12,10 +13,10 @@ from .data import (
     Dataset,
     _dataset_from_feature_matrix,
     _encode_regression,
-    dataset_fingerprint,
     _encode_y,
     _normalise_task,
     _read_feature_by_sample_tsv,
+    dataset_fingerprint,
 )
 
 
@@ -276,7 +277,7 @@ def _categorical_summary(values: pd.Series, limit: int = 8) -> str:
     counts = series.value_counts()
     total = int(counts.sum())
     parts = [
-        f"{str(key)}: {int(value)} ({100.0 * float(value) / total:.1f}%)"
+        f"{key!s}: {int(value)} ({100.0 * float(value) / total:.1f}%)"
         for key, value in counts.iloc[:limit].items()
     ]
     remaining = int(counts.iloc[limit:].sum())
@@ -457,17 +458,17 @@ def _multimodal_inclusion_report(
             "within the primary-modality cohort"
         ),
         "reference_population": "samples present in the primary modality and Samples metadata",
-        "n_primary_samples": int(len(primary_ids)),
-        "n_complete_samples": int(len(complete_ids)),
-        "n_excluded_samples": int(len(excluded_ids)),
+        "n_primary_samples": len(primary_ids),
+        "n_complete_samples": len(complete_ids),
+        "n_excluded_samples": len(excluded_ids),
         "sample_retention_fraction": (
             float(len(complete_ids) / len(primary_ids)) if primary_ids else 0.0
         ),
-        "n_primary_subjects": int(len(primary_subject_set)),
-        "n_complete_subjects": int(len(complete_subject_set)),
-        "n_fully_excluded_subjects": int(len(fully_excluded_subjects)),
-        "n_subjects_with_incomplete_samples": int(len(excluded_subject_sample_set)),
-        "n_partially_retained_subjects": int(len(partially_retained_subjects)),
+        "n_primary_subjects": len(primary_subject_set),
+        "n_complete_subjects": len(complete_subject_set),
+        "n_fully_excluded_subjects": len(fully_excluded_subjects),
+        "n_subjects_with_incomplete_samples": len(excluded_subject_sample_set),
+        "n_partially_retained_subjects": len(partially_retained_subjects),
         "subject_retention_fraction": (
             float(len(complete_subject_set) / len(primary_subject_set))
             if primary_subject_set

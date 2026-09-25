@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import itertools
-import json
 import time
-from dataclasses import dataclass
 from multiprocessing import Manager
 from pathlib import Path
 from queue import Empty
 from threading import Event, Thread
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -19,7 +16,9 @@ from threadpoolctl import threadpool_limits
 from ._version import __version__
 from .compute import ResourceTracker, machine_profile
 from .console import path_table, progress, stage, success, summary_table
-from .integrations import Integration, IntegrationModel, integration_modality_sets
+from .integrations import Integration
+from .integrations import IntegrationModel as IntegrationModel
+from .integrations import integration_modality_sets as integration_modality_sets
 from .learners import fit_classifier
 from .metrics import (
     _estimator_call,
@@ -36,35 +35,40 @@ from .modalities import (
     modality_fingerprints,
     modality_source_fingerprints,
 )
-from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
+from .multimodal_candidates import CandidateSpec
+from .multimodal_candidates import ModalityPath as ModalityPath
+from .multimodal_candidates import _candidate_id as _candidate_id
+from .multimodal_candidates import _canonical as _canonical
+from .multimodal_candidates import (
+    _IntegratedClassificationPredictor,
+    _IntegratedRegressionPredictor,
+)
+from .multimodal_candidates import (
+    _materialize_modality_representation as _materialize_modality_representation,
+)
+from .multimodal_candidates import _modality_paths as _modality_paths
+from .multimodal_candidates import (
+    _ModalityInputProjector,
+    _normalise_modality_transformations,
+    _prepare_candidate_pair,
+    _prepare_candidate_pair_details,
+    _representation_cache,
+)
+from .multimodal_candidates import _representation_specs as _representation_specs
+from .multimodal_candidates import _transformation_specs as _transformation_specs
+from .multimodal_candidates import build_modality_candidates
+from .resolutions import mask_feature_blocks as mask_feature_blocks
+from .resolutions import materialize_mpdr_with_blocks as materialize_mpdr_with_blocks
 from .runtime import (
     configure_estimator_threads,
     iter_parallel_tasks,
     resolve_execution_plan,
     thread_environment,
 )
-from .transformations import _count_transformation_specs_for_blocks
-from .utils import dump_json_standard
-
-
-from .multimodal_candidates import (
-    CandidateSpec,
-    ModalityPath,
-    _IntegratedClassificationPredictor,
-    _IntegratedRegressionPredictor,
-    _ModalityInputProjector,
-    _canonical,
-    _candidate_id,
-    _materialize_modality_representation,
-    _modality_paths,
-    _normalise_modality_transformations,
-    _prepare_candidate_pair,
-    _prepare_candidate_pair_details,
-    _representation_cache,
-    _representation_specs,
-    _transformation_specs,
-    build_modality_candidates,
+from .transformations import (
+    _count_transformation_specs_for_blocks as _count_transformation_specs_for_blocks,
 )
+from .utils import dump_json_standard
 
 
 def _meta_row(base: dict[str, Any], spec: CandidateSpec) -> dict[str, Any]:
@@ -253,9 +257,9 @@ def _classification_task(
                     ),
                     spec,
                 )
-                row["n_samples"] = int(len(va_idx))
-                row["n_subjects"] = int(
-                    len(pd.unique(np.asarray(subject_ids, dtype=object)[va_idx]))
+                row["n_samples"] = len(va_idx)
+                row["n_subjects"] = len(
+                    pd.unique(np.asarray(subject_ids, dtype=object)[va_idx])
                 )
                 prediction_rows = _prediction_rows_values(
                     inner_key,
@@ -396,9 +400,9 @@ def _classification_task(
                     ),
                     spec,
                 )
-                row["n_samples"] = int(len(test_idx))
-                row["n_subjects"] = int(
-                    len(pd.unique(np.asarray(subject_ids, dtype=object)[test_idx]))
+                row["n_samples"] = len(test_idx)
+                row["n_subjects"] = len(
+                    pd.unique(np.asarray(subject_ids, dtype=object)[test_idx])
                 )
                 prediction_rows = _prediction_rows_values(
                     split_key,
@@ -770,6 +774,7 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         _done_pairs,
         _existing_inner_scores,
         _existing_outputs,
+        _experiment_fingerprint,
         _groups_from_metadata,
         _learner_factory,
         _learner_name,
@@ -778,12 +783,11 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         _prepare_dirs,
         _qualification_map,
         _resolved_evaluation_splits,
-        _strata_from_metadata,
-        _experiment_fingerprint,
         _scientific_digest,
         _scientific_value,
         _software_provenance,
         _source_tree_sha256,
+        _strata_from_metadata,
         _subject_safe_groups,
         _validate_experiment_identity,
         _write_config_table,
@@ -791,8 +795,8 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         _write_tables,
         write_mpma_b_selection_outputs,
     )
-    from .sweep_types import validate_sweep_class_count
     from .figures import _write_representation_impact_figure
+    from .sweep_types import validate_sweep_class_count
 
     dataset = load_modalities(sweep.samples, sweep.modalities)
     if dataset.task == "classification":
@@ -1246,7 +1250,6 @@ def candidate_from_row(
 
 def fit_modality_candidate_oof_for_explainability(sweep, row):
     from .configs_sweep import (
-        _groups_from_metadata,
         _learner_factory,
         _predict_proba_aligned,
         _resolved_evaluation_splits,
@@ -1386,7 +1389,6 @@ def fit_modality_candidate_oof_for_explainability(sweep, row):
 def fit_modality_regression_candidate_folds(sweep, row, progress_callback=None):
     from .configs_sweep import (
         _count_transformation_factory,
-        _groups_from_metadata,
         _learner_factory,
         _lodo_feature_pair,
         _resolved_evaluation_splits,

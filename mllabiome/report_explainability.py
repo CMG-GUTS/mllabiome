@@ -7,12 +7,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from .explainability_visuals import plot_feature_support, plot_local_attributions
 from .storage import glob_tables, read_table, table_exists
-from .utils import feature_tail_ellipsis
+from .utils import feature_tail_ellipsis as feature_tail_ellipsis
 
 
 def _asset_uri(path: Path) -> str:

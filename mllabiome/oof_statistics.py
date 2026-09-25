@@ -7,8 +7,8 @@ import pandas as pd
 
 from .metrics import _renormalize_proba
 from .statistics_common import (
-    OOF_METRIC_ORDER,
     _LODO_PROTOCOLS,
+    OOF_METRIC_ORDER,
     _ensure_outer_split_key,
     _repeat_id,
     _stable_seed,
@@ -563,8 +563,8 @@ def _performance_rows(
                     "estimate": estimate,
                     "ci_low": float(low) if np.isfinite(low) else np.nan,
                     "ci_high": float(high) if np.isfinite(high) else np.nan,
-                    "n_bootstrap_valid": int(len(samples)),
-                    "n_rows": int(len(frame)),
+                    "n_bootstrap_valid": len(samples),
+                    "n_rows": len(frame),
                 }
             )
     return rows

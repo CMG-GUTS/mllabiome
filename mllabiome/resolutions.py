@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 
@@ -178,9 +179,9 @@ def _parse_resolution(item: Any) -> tuple[str, tuple[str, ...]]:
         levels = _normalise_levels(levels)
 
     elif hasattr(item, "name") and hasattr(item, "levels"):
-        name = _canonical_name(getattr(item, "name"))
+        name = _canonical_name(item.name)
 
-        levels = _normalise_levels(getattr(item, "levels"))
+        levels = _normalise_levels(item.levels)
 
     else:
         return _resolution_from_name(str(item))

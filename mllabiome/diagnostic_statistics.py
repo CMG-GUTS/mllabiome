@@ -7,7 +7,7 @@ import pandas as pd
 from sklearn.metrics import roc_curve as sklearn_roc_curve
 
 from .oof_statistics import _probability_columns, _resample_subjects
-from .statistics_common import DIAGNOSTIC_METRICS, _LODO_PROTOCOLS, _stable_seed
+from .statistics_common import _LODO_PROTOCOLS, DIAGNOSTIC_METRICS, _stable_seed
 
 
 def _validated_diagnostic_thresholds(values: Any) -> tuple[float, ...]:
@@ -292,8 +292,8 @@ def _threshold_metric_rows(
                         "estimate": estimate,
                         "ci_low": float(low) if np.isfinite(low) else np.nan,
                         "ci_high": float(high) if np.isfinite(high) else np.nan,
-                        "n_bootstrap_valid": int(len(samples)),
-                        "n_rows": int(len(frame)),
+                        "n_bootstrap_valid": len(samples),
+                        "n_rows": len(frame),
                     }
                 )
     return rows
@@ -665,8 +665,8 @@ def _decision_curve_rows(
                         values["standardized_net_benefit"][threshold_index]
                     ),
                     "prevalence": float(values["prevalence"][threshold_index]),
-                    "n_bootstrap_valid": int(len(samples)),
-                    "n_rows": int(len(frame)),
+                    "n_bootstrap_valid": len(samples),
+                    "n_rows": len(frame),
                 }
             )
     return rows
@@ -778,7 +778,7 @@ def _roc_curve_rows(
                     "operating_false_positive_rate": operating_fpr,
                     "operating_sensitivity": operating_tpr,
                     "n_averaged_units": int(n_units),
-                    "n_rows": int(len(frame)),
+                    "n_rows": len(frame),
                 }
             )
     return rows

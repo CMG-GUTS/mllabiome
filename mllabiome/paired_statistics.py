@@ -14,7 +14,7 @@ from .statistics_common import _LODO_PROTOCOLS, _OOF_CONTRAST_METRICS, _stable_s
 def _oof_design(frame: pd.DataFrame, protocol: str) -> dict[str, int]:
     protocol_key = str(protocol).lower()
     design = {
-        "n_rows": int(len(frame)),
+        "n_rows": len(frame),
         "n_unique_samples": int(frame["sample_id"].nunique())
         if "sample_id" in frame.columns
         else 0,
@@ -80,9 +80,9 @@ def _matched_frames(
     ):
         raise ValueError("Matched strategies disagree on held-out outcome labels")
     coverage = {
-        "n_strategy_a": int(len(left)),
-        "n_strategy_b": int(len(right)),
-        "n_matched": int(len(left_match)),
+        "n_strategy_a": len(left),
+        "n_strategy_b": len(right),
+        "n_matched": len(left_match),
         "coverage_fraction_a": float(len(left_match) / len(left))
         if len(left)
         else np.nan,
@@ -303,8 +303,8 @@ def _paired_contrast_rows(
                         "advantage_ci_high": float(high)
                         if np.isfinite(high)
                         else np.nan,
-                        "n_bootstrap_valid": int(len(samples)),
-                        "n_matched": int(len(left)),
+                        "n_bootstrap_valid": len(samples),
+                        "n_matched": len(left),
                     }
                 )
     return pd.DataFrame(rows), pd.DataFrame(coverage_rows)

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import inspect
-from typing import Any, Callable, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -218,9 +219,11 @@ def _value_frame_for_fold(
             ],
             axis=2,
         )
-    elif arr.shape[2] == len(class_indices):
-        selected = arr
-    elif arr.shape[2] == 1 and len(class_indices) == 1:
+    elif (
+        arr.shape[2] == len(class_indices)
+        or arr.shape[2] == 1
+        and len(class_indices) == 1
+    ):
         selected = arr
     else:
         raise ExplainabilityConfigurationError(
@@ -422,7 +425,7 @@ def _aggregate_fold_feature_importance(
             )
             signed = pd.to_numeric(sub.loc[valid, "signed"], errors="coerce")
             signed = signed[np.isfinite(signed)].to_numpy(dtype=float)
-            n = int(len(impv))
+            n = len(impv)
             if n == 0:
                 rows.append(
                     {

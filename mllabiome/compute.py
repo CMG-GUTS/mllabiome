@@ -90,7 +90,7 @@ class ResourceTracker:
         while not self._stop_event.wait(interval):
             self._peak_rss_bytes = max(self._peak_rss_bytes, self._rss_snapshot())
 
-    def start(self) -> "ResourceTracker":
+    def start(self) -> ResourceTracker:
         if self._started:
             return self
         self._started = True
@@ -128,7 +128,7 @@ class ResourceTracker:
         self._started = False
         return dict(self.result)
 
-    def __enter__(self) -> "ResourceTracker":
+    def __enter__(self) -> ResourceTracker:
         return self.start()
 
     def __exit__(self, exc_type, exc, tb) -> None:
