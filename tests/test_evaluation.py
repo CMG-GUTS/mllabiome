@@ -107,11 +107,11 @@ def _sweep(
             outer_folds=3,
             inner_folds=2,
             repeats=1,
-            optimize_metric="nMCC",
+            optimize_metric="MCC",
             random_state=17,
             n_jobs=1,
         ),
-        gate=gate or QualificationGate(enabled=False, metric="nMCC", threshold=0.75),
+        gate=gate or QualificationGate(enabled=False, metric="MCC", threshold=0.5),
         title="evaluation test",
     )
 
@@ -277,15 +277,17 @@ def test_lodo_holds_out_exactly_one_group_and_inner_splits_exclude_outer_group()
 
 
 def test_qualification_gate_contract():
-    gate = QualificationGate(enabled=False, metric="nMCC", threshold=None)
+    gate = QualificationGate(enabled=False, metric="MCC", threshold=None)
     assert gate.qualifies(float("nan"))
     enabled = QualificationGate(enabled=True, metric="nMCC", threshold=0.75)
-    assert enabled.qualifies(0.75)
+    assert enabled.metric == "MCC"
+    assert enabled.threshold == pytest.approx(0.5)
+    assert enabled.qualifies(0.5)
     assert enabled.qualifies(0.80)
-    assert not enabled.qualifies(0.74)
+    assert not enabled.qualifies(0.49)
     assert not enabled.qualifies(float("nan"))
     with pytest.raises(ValueError, match="threshold"):
-        QualificationGate(enabled=True, metric="nMCC", threshold=None).qualifies(0.9)
+        QualificationGate(enabled=True, metric="MCC", threshold=None).qualifies(0.9)
 
 
 def test_config_ids_include_mpdr_semantics_version(monkeypatch):
@@ -361,7 +363,7 @@ def test_gate_is_computed_from_inner_validation_and_unqualified_configs_skip_out
         tmp_path / "gate",
         learners=("signal", "constant"),
         transformations=("identity",),
-        gate=QualificationGate(enabled=True, metric="nMCC", threshold=0.75),
+        gate=QualificationGate(enabled=True, metric="MCC", threshold=0.5),
     )
     evaluate(sweep)
     tables = _read_eval_tables(sweep.root())
@@ -382,7 +384,7 @@ def test_gate_is_computed_from_inner_validation_and_unqualified_configs_skip_out
             & tables["inner"]["ok"].eq(1)
         ]
         assert len(sub) == 2
-        assert float(row.inner_score) == pytest.approx(float(sub["nMCC"].mean()))
+        assert float(row.inner_score) == pytest.approx(float(sub["MCC"].mean()))
 
 
 def test_evaluate_passes_only_inner_training_to_inner_transform_and_only_outer_training_to_outer_transform(
@@ -405,7 +407,7 @@ def test_evaluate_passes_only_inner_training_to_inner_transform_and_only_outer_t
         outer_folds=3,
         inner_folds=2,
         repeats=1,
-        optimize_metric="nMCC",
+        optimize_metric="MCC",
         random_state=31,
     )
     sweep = _sweep(tmp_path / "audit", evaluation=plan)
@@ -473,13 +475,16 @@ def test_outer_test_labels_cannot_change_inner_results_or_gate_decisions(
             "constant": lambda: ConstantEstimator(0),
         }
         _patch_runtime(monkeypatch, dataset, factories)
-        monkeypatch.setattr(cs, "_outer_splits", lambda *args, **kwargs: [fixed_outer])
-        monkeypatch.setattr(cs, "_inner_splits", lambda *args, **kwargs: fixed_inner)
+        monkeypatch.setattr(
+            cs,
+            "_resolved_evaluation_splits",
+            lambda *args, **kwargs: ([fixed_outer], {"fixed_outer": fixed_inner}),
+        )
         sweep = _sweep(
             tmp_path / f"leakage_{run_no}",
             learners=("signal", "constant"),
             transformations=("identity",),
-            gate=QualificationGate(enabled=True, metric="nMCC", threshold=0.75),
+            gate=QualificationGate(enabled=True, metric="MCC", threshold=0.5),
         )
         evaluate(sweep)
         tables = _read_eval_tables(sweep.root())
@@ -507,8 +512,8 @@ def test_outer_test_labels_cannot_change_inner_results_or_gate_decisions(
     outer_a = outputs[0][0]["outer"].sort_values("config_id").reset_index(drop=True)
     outer_b = outputs[1][0]["outer"].sort_values("config_id").reset_index(drop=True)
     assert not np.allclose(
-        outer_a["nMCC"].to_numpy(dtype=float),
-        outer_b["nMCC"].to_numpy(dtype=float),
+        outer_a["MCC"].to_numpy(dtype=float),
+        outer_b["MCC"].to_numpy(dtype=float),
         equal_nan=True,
     )
 

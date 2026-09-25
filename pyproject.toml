@@ -1,16 +1,39 @@
 [build-system]
 requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
+
+
 [project]
 name = "mllabiome"
 dynamic = ["version"]
-description = "Machine learning, ensemble learning, explainable AI for microbiota data"
+description = "Machine learning, ensemble learning, multimodal modeling, and explainable AI for microbiome data with rigorously leakage-controlled machine learning evaluation."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-authors = [{name = "mllabiome contributors"}]
-keywords = ["microbiome", "machine-learning", "bioinformatics", "explainability"]
+authors = [
+  { name = "mllabiome contributors" }
+]
+
+keywords = [
+  "microbiome",
+  "microbiota",
+  "metagenomics",
+  "machine-learning",
+  "bioinformatics",
+  "microbiome-machine-learning",
+  "ensemble-learning",
+  "multimodal-learning",
+  "explainable-ai",
+  "xai",
+  "shap",
+  "lime",
+  "nested-cross-validation",
+  "cross-validation",
+  "compositional-data",
+  "biomarker-discovery",
+]
+
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
@@ -21,8 +44,16 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+
+
+# mllabiome intentionally uses a batteries-included installation model.
+# A standard installation provides the complete supported machine-learning,
+# ensemble-learning, microbiome-analysis, and explainability stack required
+# for documented end-to-end workflows.
 dependencies = [
+  # Core numerical / tabular stack
   "numpy>=1.23",
   "pandas>=1.5",
   "scipy>=1.9",
@@ -30,46 +61,66 @@ dependencies = [
   "matplotlib>=3.6",
   "polars>=0.20",
   "pyarrow>=12",
+
+  # Machine-learning backends
   "xgboost>=2",
   "lightgbm>=4",
   "catboost>=1.2",
+  "flaml>=2",
+
+  # Explainability
   "shap>=0.44",
   "lime>=0.2.0.1",
   "PyALE>=1.2.0",
-  "networkx>=3",
+
+  # Microbiome / scientific analysis
   "scikit-bio>=0.7.0",
+  "networkx>=3",
+
+  # Runtime utilities
   "rich>=13",
-  "flaml>=2",
   "tqdm>=4.66",
   "psutil>=7.2.2",
-  "ruff>=0.16.7",
 ]
+
+
 [project.urls]
 Homepage = "https://github.com/CMG-GUTS/mllabiome"
+Documentation = "https://github.com/CMG-GUTS/mllabiome#readme"
 Repository = "https://github.com/CMG-GUTS/mllabiome"
 Issues = "https://github.com/CMG-GUTS/mllabiome/issues"
 
+# Development dependencies
+# These packages are required for development, testing, and linting only.
+# They are deliberately excluded from the normal mllabiome installation.
+#   pip install -e ".[dev]"
 [project.optional-dependencies]
 dev = [
-  "pytest>=8",
+  "pytest>=9.0.3",
   "ruff>=0.16.7",
 ]
+
 
 [project.scripts]
 mllabiome = "mllabiome.cli:main"
 
+
+# setuptools configuration
 [tool.setuptools.dynamic]
-version = {attr = "mllabiome._version.__version__"}
+version = { attr = "mllabiome._version.__version__" }
+
 
 [tool.setuptools.packages.find]
 include = ["mllabiome*"]
 
+
+[tool.setuptools.package-data]
+mllabiome = [
+  "py.typed",
+  "_r/*.R",
+]
+
+
+# pytest configuration
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-[dependency-groups]
-dev = [
-    "pytest>=9.0.3",
-]
-[tool.setuptools.package-data]
-mllabiome = ["py.typed", "_r/*.R"]

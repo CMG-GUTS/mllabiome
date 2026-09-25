@@ -221,8 +221,9 @@ def _run_candidate(X, y, config_id, invert):
         learner_factory=lambda: _SignalEstimator(invert=invert),
         cid=config_id,
         gate_enabled=False,
-        gate_metric="nMCC",
+        gate_metric="MCC",
         gate_threshold=None,
+        selection_metric="MCC",
         existing_inner_keys=set(),
         existing_inner_scores=(),
         existing_qualification=None,
@@ -289,8 +290,8 @@ def test_heldout_only_feature_cannot_change_inner_hyperparameter_candidate_selec
         ).reset_index(drop=True),
         check_dtype=False,
     )
-    clean_selection = select_mpma_b_by_outer_fold(clean_inner, configs, "nMCC")
-    adv_selection = select_mpma_b_by_outer_fold(adv_inner, configs, "nMCC")
+    clean_selection = select_mpma_b_by_outer_fold(clean_inner, configs, "MCC")
+    adv_selection = select_mpma_b_by_outer_fold(adv_inner, configs, "MCC")
     pd.testing.assert_frame_equal(clean_selection, adv_selection, check_dtype=False)
     assert clean_selection.iloc[0]["config_id"] == "hp_signal"
     pd.testing.assert_frame_equal(
@@ -311,7 +312,7 @@ def test_heldout_only_feature_cannot_change_ensemble_selection_even_if_outer_pre
         max_sizes=(2,),
         selection_strategies=("top_k",),
         aggregation_strategies=("mean_proba",),
-        optimize_metric="nMCC",
+        optimize_metric="MCC",
     )
     baseline, _, _ = select_mpma_e_by_outer_fold(
         inner,
@@ -319,7 +320,7 @@ def test_heldout_only_feature_cannot_change_ensemble_selection_even_if_outer_pre
         outer_predictions,
         configs,
         plan,
-        "nMCC",
+        "MCC",
     )
     adversarial_outer = outer_predictions.copy()
     heldout_signal = y[TEST_IDX]
@@ -342,7 +343,7 @@ def test_heldout_only_feature_cannot_change_ensemble_selection_even_if_outer_pre
         adversarial_outer,
         configs,
         plan,
-        "nMCC",
+        "MCC",
     )
     pd.testing.assert_frame_equal(baseline, changed, check_dtype=False)
 

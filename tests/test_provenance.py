@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -54,7 +55,7 @@ def test_pyproject_uses_dynamic_single_source_version():
     root = Path(__file__).resolve().parents[1]
     text = (root / "pyproject.toml").read_text(encoding="utf-8")
     assert 'dynamic = ["version"]' in text
-    assert 'version = {attr = "mllabiome._version.__version__"}' in text
+    assert re.search(r'version\s*=\s*\{\s*attr\s*=\s*"mllabiome\._version\.__version__"\s*\}', text)
 
 
 def test_software_provenance_has_source_runtime_and_dependency_identity():

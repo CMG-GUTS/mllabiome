@@ -5,6 +5,7 @@ import pandas as pd
 
 from mllabiome.configs_sweep import _backfill_metrics_from_predictions
 from mllabiome.metrics import (
+    canonical_metric_name,
     compute_metrics,
     metric_better,
     metric_is_loss,
@@ -22,12 +23,15 @@ def test_loss_metric_direction_is_lower_is_better():
 
 
 def test_score_metric_direction_is_higher_is_better():
-    for metric in ("nMCC", "AUC", "Accuracy"):
+    for metric in ("MCC", "AUC", "Accuracy"):
         assert not metric_is_loss(metric)
         assert metric_better(0.8, 0.6, metric)
         assert not metric_better(0.6, 0.8, metric)
         assert metric_passes_threshold(0.8, 0.7, metric)
         assert not metric_passes_threshold(0.6, 0.7, metric)
+    assert canonical_metric_name("nMCC") == "MCC"
+    assert metric_passes_threshold(0.4, 0.7, "nMCC")
+    assert not metric_passes_threshold(0.39, 0.7, "nMCC")
 
 
 def test_compute_metrics_includes_binary_log_loss_and_brier():
@@ -67,7 +71,7 @@ def test_existing_metric_rows_are_backfilled_from_saved_probabilities():
                 "inner_key": "inner0",
                 "config_id": "A",
                 "ok": 1,
-                "nMCC": 1.0,
+                "MCC": 1.0,
             }
         ]
     )

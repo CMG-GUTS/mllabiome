@@ -70,7 +70,7 @@ def _inner_results(outer_splits, score_a=0.8, score_b=0.7):
                         "inner_key": f"{outer_key}__i{inner_no}",
                         "config_id": cid,
                         "ok": 1,
-                        "nMCC": float(score),
+                        "MCC": float(score),
                     }
                 )
     return pd.DataFrame(rows)
@@ -211,13 +211,13 @@ def test_lodo_mpma_b_selection_is_outer_cohort_specific_and_inner_only():
     second_key = str(outer[1]["split_key"])
     inner.loc[
         inner["split_key"].eq(first_key) & inner["config_id"].eq("B"),
-        "nMCC",
+        "MCC",
     ] = 0.95
     inner.loc[
         inner["split_key"].eq(second_key) & inner["config_id"].eq("A"),
-        "nMCC",
+        "MCC",
     ] = 0.95
-    selection = select_mpma_b_by_outer_fold(inner, _configs(), "nMCC")
+    selection = select_mpma_b_by_outer_fold(inner, _configs(), "MCC")
     selected = dict(zip(selection["outer_split_key"], selection["config_id"]))
     assert selected[first_key] == "B"
     assert selected[second_key] == "A"
@@ -232,32 +232,32 @@ def test_lodo_mpma_b_averages_inner_cohorts_equally_not_by_sample_count():
                 "inner_key": f"{outer_key}__i0",
                 "config_id": "A",
                 "ok": 1,
-                "nMCC": 0.9,
+                "MCC": 0.9,
             },
             {
                 "split_key": outer_key,
                 "inner_key": f"{outer_key}__i1",
                 "config_id": "A",
                 "ok": 1,
-                "nMCC": 0.1,
+                "MCC": 0.1,
             },
             {
                 "split_key": outer_key,
                 "inner_key": f"{outer_key}__i0",
                 "config_id": "B",
                 "ok": 1,
-                "nMCC": 0.6,
+                "MCC": 0.6,
             },
             {
                 "split_key": outer_key,
                 "inner_key": f"{outer_key}__i1",
                 "config_id": "B",
                 "ok": 1,
-                "nMCC": 0.6,
+                "MCC": 0.6,
             },
         ]
     )
-    selection = select_mpma_b_by_outer_fold(inner, _configs(), "nMCC")
+    selection = select_mpma_b_by_outer_fold(inner, _configs(), "MCC")
     assert selection.iloc[0]["config_id"] == "B"
     assert float(selection.iloc[0]["inner_score"]) == pytest.approx(0.6)
 
@@ -272,7 +272,7 @@ def test_lodo_mpma_e_selection_uses_only_inner_held_out_cohort_predictions():
         sizes=(2,),
         selection_strategies=("top_k",),
         aggregation_strategies=("mean_proba", "weighted_mean_proba"),
-        optimize_metric="nMCC",
+        optimize_metric="MCC",
     )
     first, _, _ = select_mpma_e_by_outer_fold(
         inner_results,
@@ -280,7 +280,7 @@ def test_lodo_mpma_e_selection_uses_only_inner_held_out_cohort_predictions():
         outer_predictions,
         _configs(),
         ensemble,
-        "nMCC",
+        "MCC",
     )
     changed = outer_predictions.copy()
     changed["proba_control"] = outer_predictions["proba_case"].to_numpy()
@@ -292,7 +292,7 @@ def test_lodo_mpma_e_selection_uses_only_inner_held_out_cohort_predictions():
         changed,
         _configs(),
         ensemble,
-        "nMCC",
+        "MCC",
     )
     pd.testing.assert_frame_equal(first, second, check_dtype=False)
     assert len(first) == 6
@@ -439,11 +439,11 @@ def test_evaluate_lodo_applies_fold_local_feature_vocabulary_before_transformati
             protocol="lodo",
             inner_folds=3,
             repeats=1,
-            optimize_metric="nMCC",
+            optimize_metric="MCC",
             random_state=42,
         ),
-        gate=QualificationGate(enabled=False, metric="nMCC", threshold=0.51),
-        ensemble=Ensemble(sizes=(2,), optimize_metric="nMCC"),
+        gate=QualificationGate(enabled=False, metric="MCC", threshold=0.51),
+        ensemble=Ensemble(sizes=(2,), optimize_metric="MCC"),
     )
     evaluate(sweep)
     assert len(calls) == 36
