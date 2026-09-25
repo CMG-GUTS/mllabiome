@@ -2625,6 +2625,19 @@ def _robustness_report_html(root: Path) -> str:
     directory = root / "robustness"
     if not directory.exists():
         return ""
+    manifest_path = directory / "robustness_manifest.json"
+    manifest: dict[str, Any] = {}
+    if manifest_path.exists():
+        try:
+            value = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(value, dict):
+                manifest = value
+        except Exception:
+            manifest = {}
+    task = str(manifest.get("task", "classification"))
+    confidence = float(manifest.get("confidence_level", 0.95))
+    confidence_label = f"{100.0 * confidence:.0f}% CI"
+    resampling_unit = str(manifest.get("robustness_resampling_unit", "subject_id"))
     parts = ['<h2 id="robustness">Robustness, confounding and generalization</h2>']
     inventory_path = directory / "metadata_inventory.parquet"
     if table_exists(inventory_path):
@@ -2636,8 +2649,14 @@ def _robustness_report_html(root: Path) -> str:
                     "category": "Role category",
                     "column": "Metadata column",
                     "kind": "Type",
-                    "n": "Observed",
-                    "missing": "Missing",
+                    "n_samples": "Samples",
+                    "n_subjects": "Declared subjects",
+                    "n_resampling_clusters": "Dependence clusters",
+                    "observed": "Observed samples",
+                    "observed_subjects": "Observed declared subjects",
+                    "observed_clusters": "Observed clusters",
+                    "missing": "Missing samples",
+                    "missing_subjects": "Missing declared subjects",
                     "missing_fraction": "Missing fraction",
                     "unique": "Unique values",
                 }
@@ -2649,8 +2668,14 @@ def _robustness_report_html(root: Path) -> str:
                     "Role category",
                     "Metadata column",
                     "Type",
-                    "Observed",
-                    "Missing",
+                    "Samples",
+                    "Declared subjects",
+                    "Dependence clusters",
+                    "Observed samples",
+                    "Observed declared subjects",
+                    "Observed clusters",
+                    "Missing samples",
+                    "Missing declared subjects",
                     "Missing fraction",
                     "Unique values",
                 )
@@ -2659,7 +2684,7 @@ def _robustness_report_html(root: Path) -> str:
             parts.extend(
                 [
                     "<h3>Metadata specification</h3>",
-                    "<p>Declared metadata semantics are carried from the data specification into robustness analyses. Semantic declarations describe the variables available to the analysis; they do not by themselves imply causal adjustment.</p>",
+                    "<p>Declared metadata semantics are carried from the data specification into robustness analyses. Semantic declarations identify variables available for descriptive balance and subgroup evaluation; they do not constitute causal adjustment.</p>",
                     _html_table(display[keep]),
                 ]
             )
@@ -2667,23 +2692,198 @@ def _robustness_report_html(root: Path) -> str:
     if table_exists(balance_path):
         table = read_table(balance_path)
         if not table.empty:
-            display = table.rename(columns={
-                "covariate": "Covariate",
-                "role": "Role",
-                "kind": "Type",
-                "n": "Observed",
-                "missing": "Missing",
-                "imbalance": "Imbalance",
-                "most_imbalanced_level": "Most imbalanced level",
-            })
-            keep = [column for column in ("Covariate", "Role", "Type", "Observed", "Missing", "Imbalance", "Most imbalanced level") if column in display.columns]
-            parts.extend(["<h3>Covariate and technical balance</h3>", "<p>Imbalance is descriptive. Numeric covariates use the largest standardized mean separation across outcome groups; categorical covariates use the largest absolute difference in level prevalence.</p>", _html_table(display[keep])])
+            display = table.rename(
+                columns={
+                    "covariate": "Covariate",
+                    "role": "Role",
+                    "kind": "Type",
+                    "analysis_unit": "Analysis unit",
+                    "n_units": "Units",
+                    "observed": "Observed",
+                    "missing": "Missing",
+                    "max_pairwise_smd": "Max pairwise SMD",
+                    "max_pairwise_raw_difference": "Raw difference",
+                    "comparison": "Outcome-group comparison",
+                    "most_imbalanced_level": "Level",
+                    "missingness_smd": "Missingness SMD",
+                }
+            )
+            keep = [
+                column
+                for column in (
+                    "Covariate",
+                    "Role",
+                    "Type",
+                    "Analysis unit",
+                    "Units",
+                    "Observed",
+                    "Missing",
+                    "Max pairwise SMD",
+                    "Raw difference",
+                    "Outcome-group comparison",
+                    "Level",
+                    "Missingness SMD",
+                )
+                if column in display.columns
+            ]
+            parts.extend(
+                [
+                    "<h3>Covariate and technical balance</h3>",
+                    "<p>Balance is descriptive and is not interpreted as causal adjustment. Numeric variables use the largest pairwise standardized mean difference with a pooled standard deviation. Categorical variables use the largest pairwise standardized difference in level prevalence. Missingness imbalance is evaluated separately. When both outcome and covariate are invariant within the declared dependence cluster, balance is evaluated once per cluster; otherwise it is sample-level.</p>",
+                    _html_table(display[keep]),
+                ]
+            )
+    support_path = directory / "subgroup_support.parquet"
+    if table_exists(support_path):
+        table = read_table(support_path)
+        if not table.empty:
+            display = table.rename(
+                columns={
+                    "strategy": "Strategy",
+                    "subgroup": "Subgroup",
+                    "level": "Level",
+                    "n_samples": "Unique samples",
+                    "n_subjects": "Declared subjects",
+                    "n_resampling_clusters": "Resampling clusters",
+                    "n_repeats": "CV repeats",
+                    "class_counts_samples": "Class counts by sample",
+                    "class_counts_clusters": "Class counts by cluster",
+                    "support_status": "Support",
+                    "reason": "Support note",
+                }
+            )
+            keep = [
+                column
+                for column in (
+                    "Strategy",
+                    "Subgroup",
+                    "Level",
+                    "Unique samples",
+                    "Declared subjects",
+                    "Resampling clusters",
+                    "CV repeats",
+                    "Class counts by sample",
+                    "Class counts by cluster",
+                    "Support",
+                    "Support note",
+                )
+                if column in display.columns
+            ]
+            parts.extend(
+                [
+                    "<h3>Subgroup support and coverage</h3>",
+                    f"<p>Exact sample, subject and dependence-cluster counts are reported before subgroup performance. The uncertainty resampling unit is <strong>{html.escape(resampling_unit)}</strong>. Limited class support is retained as a warning rather than hidden.</p>",
+                    _html_table(display[keep]),
+                ]
+            )
     subgroup_path = directory / "subgroup_performance.parquet"
     if table_exists(subgroup_path):
         table = read_table(subgroup_path)
         if not table.empty:
-            display = table.rename(columns={"strategy": "Strategy", "subgroup": "Subgroup", "level": "Level", "n_samples": "Unique samples", "n_predictions": "OOF predictions"})
-            parts.extend(["<h3>Subgroup performance</h3>", "<p>Subgroup metrics are computed from the existing strategy-specific outer-held-out predictions; no subgroup-specific model selection or refitting is performed.</p>", _html_table(display)])
+            binary_metrics = ("AUROC", "AP", "log_loss", "brier", "CalibrationSlope", "MCC", "BalAcc")
+            multiclass_metrics = ("AUROC_macro", "AP_macro", "log_loss", "brier", "CalibrationSlope_macro_OvR", "MCC", "BalAcc")
+            regression_metrics = ("R2", "MAE", "RMSE", "SpearmanR")
+            labels = manifest.get("class_labels", [])
+            preferred = regression_metrics if task == "regression" else (binary_metrics if len(labels) == 2 else multiclass_metrics)
+            selected = table[table["metric"].astype(str).isin(preferred)].copy()
+            if not selected.empty:
+                def interval_text(row: pd.Series) -> str:
+                    estimate = pd.to_numeric(pd.Series([row.get("estimate")]), errors="coerce").iloc[0]
+                    low = pd.to_numeric(pd.Series([row.get("ci_low")]), errors="coerce").iloc[0]
+                    high = pd.to_numeric(pd.Series([row.get("ci_high")]), errors="coerce").iloc[0]
+                    if not np.isfinite(estimate):
+                        return ""
+                    if np.isfinite(low) and np.isfinite(high):
+                        return f"{float(estimate):.3f} [{float(low):.3f}, {float(high):.3f}]"
+                    return f"{float(estimate):.3f} [CI unavailable]"
+                selected["value"] = selected.apply(interval_text, axis=1)
+                selected["declared_subjects"] = selected["n_subjects"].map(
+                    lambda value: str(int(value)) if pd.notna(value) else "not declared"
+                )
+                index_columns = [
+                    "strategy",
+                    "subgroup",
+                    "level",
+                    "estimand",
+                    "n_samples",
+                    "declared_subjects",
+                    "n_resampling_clusters",
+                    "support_status",
+                ]
+                wide = selected.pivot_table(
+                    index=index_columns,
+                    columns="metric",
+                    values="value",
+                    aggfunc="first",
+                ).reset_index()
+                wide.columns.name = None
+                wide = wide.rename(
+                    columns={
+                        "strategy": "Strategy",
+                        "subgroup": "Subgroup",
+                        "level": "Level",
+                        "estimand": "Estimand",
+                        "n_samples": "Samples",
+                        "declared_subjects": "Declared subjects",
+                        "n_resampling_clusters": "Clusters",
+                        "support_status": "Support",
+                    }
+                )
+                ordered = [
+                    column
+                    for column in (
+                        "Strategy",
+                        "Subgroup",
+                        "Level",
+                        "Estimand",
+                        "Samples",
+                        "Declared subjects",
+                        "Clusters",
+                        "Support",
+                        *preferred,
+                    )
+                    if column in wide.columns
+                ]
+                parts.extend(
+                    [
+                        "<h3>Subgroup performance</h3>",
+                        f"<p>Subgroup performance is evaluated only from strategy-specific outer-held-out predictions, without subgroup-specific model selection or refitting. Repeated cross-validation is summarized as the mean of repeat-specific pooled OOF metrics rather than by treating repeated predictions as independent observations. Values are estimates [{confidence_label}] from a nonparametric dependence-cluster bootstrap that preserves all repeated observations within each resampled cluster. Calibration and proper scoring metrics are reported alongside discrimination only when the selected strategy outputs valid probabilities; score-only ensemble outputs retain discrimination and threshold metrics without pseudo-probability calibration. Intervals are conditional on the existing outer-held-out predictions and do not rerun model fitting or model selection inside bootstrap replicates.</p>",
+                        _html_table(wide[ordered]),
+                    ]
+                )
+    contrasts_path = directory / "subgroup_contrasts.parquet"
+    if table_exists(contrasts_path):
+        table = read_table(contrasts_path)
+        if not table.empty:
+            def contrast_interval(row: pd.Series) -> str:
+                estimate = pd.to_numeric(pd.Series([row.get("difference_a_minus_b")]), errors="coerce").iloc[0]
+                low = pd.to_numeric(pd.Series([row.get("ci_low")]), errors="coerce").iloc[0]
+                high = pd.to_numeric(pd.Series([row.get("ci_high")]), errors="coerce").iloc[0]
+                if not np.isfinite(estimate):
+                    return ""
+                if np.isfinite(low) and np.isfinite(high):
+                    return f"{float(estimate):.3f} [{float(low):.3f}, {float(high):.3f}]"
+                return f"{float(estimate):.3f} [CI unavailable]"
+            display = table.copy()
+            display["Difference"] = display.apply(contrast_interval, axis=1)
+            display = display.rename(
+                columns={
+                    "strategy": "Strategy",
+                    "subgroup": "Subgroup",
+                    "level_a": "Level A",
+                    "level_b": "Level B",
+                    "estimand": "Estimand",
+                    "metric": "Metric",
+                }
+            )
+            keep = [column for column in ("Strategy", "Subgroup", "Level A", "Level B", "Estimand", "Metric", "Difference") if column in display.columns]
+            parts.extend(
+                [
+                    "<h3>Subgroup performance contrasts</h3>",
+                    f"<p>Pairwise contrasts are Level A minus Level B with paired {confidence_label} cluster-bootstrap intervals. They quantify performance heterogeneity on the held-out predictions. They are exploratory, carry no multiplicity-adjusted hypothesis test, and should not be interpreted by comparing subgroup confidence-interval overlap.</p>",
+                    _html_table(display[keep]),
+                ]
+            )
     features_path = directory / "important_feature_robustness.parquet"
     if table_exists(features_path):
         table = read_table(features_path)
@@ -2701,7 +2901,13 @@ def _robustness_report_html(root: Path) -> str:
             }
             display = table.rename(columns=rename)
             keep = [column for column in ("Strategy", "Feature", "Model / ensemble", "Importance", "Median rank", "Rank IQR", "Top-k frequency", "Fold coverage", "Sign consistency") if column in display.columns]
-            parts.extend(["<h3>Important-feature stability</h3>", "<p>Feature robustness preserves model provenance: MPMA-B summaries use MPMA-B outer-test explanations and MPMA-E summaries use MPMA-E outer-test explanations. These are descriptive cross-fit stability measures, not independent-fold confidence intervals.</p>", _html_table(display[keep])])
+            parts.extend(
+                [
+                    "<h3>Important-feature stability</h3>",
+                    "<p>Feature robustness preserves model provenance: MPMA-B summaries use MPMA-B outer-test explanations and MPMA-E summaries use MPMA-E outer-test explanations. These are descriptive cross-fit stability measures and not independent-fold confidence intervals.</p>",
+                    _html_table(display[keep]),
+                ]
+            )
     if len(parts) == 1:
         return ""
     return "\n".join(parts)

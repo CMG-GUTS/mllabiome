@@ -426,7 +426,9 @@ def _robustness_rows(sweep: Sweep) -> list[tuple[str, object]]:
         target = _target_name(child)
         for filename, label in (
             ("covariate_balance.parquet", "covariates audited"),
-            ("subgroup_performance.parquet", "subgroup rows"),
+            ("subgroup_support.parquet", "subgroup support rows"),
+            ("subgroup_performance.parquet", "subgroup metric rows"),
+            ("subgroup_contrasts.parquet", "subgroup contrast rows"),
             ("important_feature_robustness.parquet", "feature-stability rows"),
         ):
             path = root / filename

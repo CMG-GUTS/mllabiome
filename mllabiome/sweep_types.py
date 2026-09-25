@@ -604,6 +604,12 @@ class Robustness:
     targets: tuple[str, ...] = ("mpma_b", "mpma_e")
     top_k: int = 30
     min_subgroup_size: int = 10
+    min_subgroup_clusters: int | None = None
+    min_class_clusters: int = 5
+    bootstrap_replicates: int = 2000
+    confidence_level: float = 0.95
+    min_bootstrap_valid_fraction: float = 0.80
+    random_state: int = 42
 
     def __post_init__(self) -> None:
         targets = tuple(str(value).strip().casefold().replace("-", "_") for value in self.targets)
@@ -614,10 +620,29 @@ class Robustness:
             raise ValueError("Robustness.top_k must be at least 1.")
         if int(self.min_subgroup_size) < 2:
             raise ValueError("Robustness.min_subgroup_size must be at least 2.")
+        if self.min_subgroup_clusters is not None and int(self.min_subgroup_clusters) < 2:
+            raise ValueError("Robustness.min_subgroup_clusters must be at least 2 when provided.")
+        if int(self.min_class_clusters) < 1:
+            raise ValueError("Robustness.min_class_clusters must be at least 1.")
+        if int(self.bootstrap_replicates) < 200:
+            raise ValueError("Robustness.bootstrap_replicates must be at least 200.")
+        if not 0.50 < float(self.confidence_level) < 1.0:
+            raise ValueError("Robustness.confidence_level must be between 0.50 and 1.0.")
+        if not 0.50 <= float(self.min_bootstrap_valid_fraction) <= 1.0:
+            raise ValueError("Robustness.min_bootstrap_valid_fraction must be between 0.50 and 1.0.")
         object.__setattr__(self, "targets", targets)
-        object.__setattr__(self, "covariates", tuple(str(value) for value in self.covariates))
-        object.__setattr__(self, "technical", tuple(str(value) for value in self.technical))
-        object.__setattr__(self, "subgroups", tuple(str(value) for value in self.subgroups))
+        object.__setattr__(self, "covariates", tuple(dict.fromkeys(str(value) for value in self.covariates)))
+        object.__setattr__(self, "technical", tuple(dict.fromkeys(str(value) for value in self.technical)))
+        object.__setattr__(self, "subgroups", tuple(dict.fromkeys(str(value) for value in self.subgroups)))
+        object.__setattr__(self, "top_k", int(self.top_k))
+        object.__setattr__(self, "min_subgroup_size", int(self.min_subgroup_size))
+        if self.min_subgroup_clusters is not None:
+            object.__setattr__(self, "min_subgroup_clusters", int(self.min_subgroup_clusters))
+        object.__setattr__(self, "min_class_clusters", int(self.min_class_clusters))
+        object.__setattr__(self, "bootstrap_replicates", int(self.bootstrap_replicates))
+        object.__setattr__(self, "confidence_level", float(self.confidence_level))
+        object.__setattr__(self, "min_bootstrap_valid_fraction", float(self.min_bootstrap_valid_fraction))
+        object.__setattr__(self, "random_state", int(self.random_state))
 
 
 @dataclass
