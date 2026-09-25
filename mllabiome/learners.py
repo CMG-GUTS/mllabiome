@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import numpy as np
 from sklearn import get_config
-from sklearn.base import BaseEstimator, clone
+from sklearn.base import BaseEstimator
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.discriminant_analysis import (
     LinearDiscriminantAnalysis,
@@ -34,6 +34,8 @@ from sklearn.naive_bayes import BernoulliNB, GaussianNB, MultinomialNB
 from sklearn.neighbors import KNeighborsClassifier, NearestCentroid
 from sklearn.svm import SVC, LinearSVC
 from sklearn.tree import DecisionTreeClassifier
+
+from .estimator_protocol import EstimatorLike, clone_estimator, is_estimator_instance
 
 _COMPUTE_ONLY_DISPLAY_PARAMS = {
     "n_jobs",
@@ -185,7 +187,7 @@ def learner_display_label(item: Any) -> str:
         return str(item).replace("_", " ")
     name, specification = item
     estimator = specification
-    if not isinstance(estimator, BaseEstimator) and callable(specification):
+    if not is_estimator_instance(estimator) and callable(specification):
         try:
             estimator = specification()
         except Exception:
@@ -314,7 +316,7 @@ class GroupAwareCalibratedClassifier(BaseEstimator):
 
     def fit(self, X, y, groups=None):
         splits = self._splits(X, y, groups)
-        base_estimator = clone(self.estimator)
+        base_estimator = clone_estimator(self.estimator)
         fit_params = {}
         if groups is not None:
             try:
@@ -345,7 +347,7 @@ class GroupAwareCalibratedClassifier(BaseEstimator):
         return self.model_.predict_proba(X)
 
 
-def fit_classifier(estimator: BaseEstimator, X, y, groups=None) -> BaseEstimator:
+def fit_classifier(estimator: EstimatorLike, X, y, groups=None) -> EstimatorLike:
     groups_array = None if groups is None else np.asarray(groups)
     if groups_array is not None and groups_array.shape[0] != len(y):
         raise ValueError("groups must contain exactly one value per training sample.")
@@ -398,13 +400,13 @@ def fit_classifier(estimator: BaseEstimator, X, y, groups=None) -> BaseEstimator
     return estimator
 
 
-def _calibrated(estimator: BaseEstimator) -> BaseEstimator:
+def _calibrated(estimator: EstimatorLike) -> EstimatorLike:
     return GroupAwareCalibratedClassifier(
         estimator, method="sigmoid", n_splits=3, random_state=42
     )
 
 
-def _require_probability_estimator(estimator: BaseEstimator) -> BaseEstimator:
+def _require_probability_estimator(estimator: EstimatorLike) -> EstimatorLike:
     if callable(getattr(estimator, "predict_proba", None)):
         return estimator
     if callable(getattr(estimator, "decision_function", None)):
@@ -443,10 +445,11 @@ def validate_model_specs(models: Any, *, context: str = "MODELS") -> None:
         name, spec = item
         if not str(name).strip():
             raise TypeError(f"{context}[{index}] has an empty model name.")
-        if not isinstance(spec, BaseEstimator):
+        if not is_estimator_instance(spec):
             raise TypeError(
                 f"{context}[{index}] ({name!r}) must contain an instantiated "
-                "scikit-learn BaseEstimator; factories and string aliases are not allowed."
+                "scikit-learn-compatible estimator; factories and string aliases "
+                "are not allowed."
             )
 
 
@@ -466,10 +469,10 @@ def _learner_name(item: Any) -> str:
 
 def _learner_factory(
     item: Any, task: str = "classification"
-) -> tuple[str, Callable[[], BaseEstimator]]:
+) -> tuple[str, Callable[[], EstimatorLike]]:
     task = str(task).strip().casefold()
 
-    def validate(estimator: BaseEstimator) -> BaseEstimator:
+    def validate(estimator: EstimatorLike) -> EstimatorLike:
         if task == "regression":
             if not callable(getattr(estimator, "predict", None)):
                 raise TypeError(
@@ -485,15 +488,16 @@ def _learner_factory(
         )
     if isinstance(item, tuple) and len(item) == 2:
         name, spec = item
-        if isinstance(spec, BaseEstimator):
-            return str(name), lambda spec=spec: validate(clone(spec))
+        if is_estimator_instance(spec):
+            return str(name), lambda spec=spec: validate(clone_estimator(spec))
         if callable(spec):
 
             def factory(spec=spec):
                 estimator = spec()
-                if not isinstance(estimator, BaseEstimator):
+                if not is_estimator_instance(estimator):
                     raise TypeError(
-                        f"Learner factory for {name!r} must return a scikit-learn BaseEstimator."
+                        f"Learner factory for {name!r} must return a "
+                        "scikit-learn-compatible estimator."
                     )
                 return validate(estimator)
 

@@ -31,6 +31,7 @@ from ._version import __version__
 from .compute import ResourceTracker, machine_profile
 from .console import info, path_table, progress, stage, success, summary_table
 from .data import Data, Dataset, dataset_fingerprint, load_dataset
+from .estimator_protocol import is_estimator_instance
 from .explainability_methods import (
     ALE,
     SHAP,
@@ -116,7 +117,7 @@ def _mpdr_id(count_transformation: str, resolution: str) -> str:
 
 
 def _scientific_value(value: Any) -> Any:
-    if isinstance(value, BaseEstimator):
+    if is_estimator_instance(value):
         return {
             "class": f"{type(value).__module__}.{type(value).__qualname__}",
             "params": _scientific_value(value.get_params(deep=True)),
@@ -229,7 +230,7 @@ def _learner_payload(item: Any) -> dict[str, Any]:
     if (
         not isinstance(item, tuple)
         or len(item) != 2
-        or not isinstance(item[1], BaseEstimator)
+        or not is_estimator_instance(item[1])
     ):
         raise TypeError("Learners must be explicit (name, estimator) pairs.")
     name, estimator = item
