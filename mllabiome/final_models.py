@@ -15,6 +15,7 @@ from .ensemble_aggregation import (
     aggregate_member_predictions as _aggregate_member_predictions,
 )
 from .ensemble_aggregation import effective_aggregation_weights
+from .metrics import aggregate_validation_metric, canonical_metric_name
 from .storage import read_table, table_exists
 
 _SCHEMA_VERSION = 3
@@ -106,6 +107,7 @@ def _core_config(row: pd.Series) -> dict[str, Any]:
 
 
 def _member_scores(root: Path, member_ids: list[str], metric: str) -> dict[str, float]:
+    metric = canonical_metric_name(metric)
     inner = _read_table(root / "inner_results" / "inner_results.parquet")
     if "config_id" not in inner.columns or metric not in inner.columns:
         raise ValueError(f"inner_results.parquet must contain config_id and {metric!r}")
@@ -113,12 +115,10 @@ def _member_scores(root: Path, member_ids: list[str], metric: str) -> dict[str, 
     inner["config_id"] = inner["config_id"].astype(str)
     if "ok" in inner.columns:
         inner = inner[pd.to_numeric(inner["ok"], errors="coerce").fillna(0).eq(1)]
-    scores = pd.to_numeric(inner[metric], errors="coerce")
-    inner = inner.assign(_score=scores)
-    means = inner.groupby("config_id")["_score"].mean()
     out: dict[str, float] = {}
     for config_id in member_ids:
-        value = means.get(config_id, np.nan)
+        group = inner[inner["config_id"].eq(str(config_id))]
+        value, _ = aggregate_validation_metric(group, metric)
         if not np.isfinite(value):
             raise ValueError(
                 f"No finite {metric} inner-validation score for MPMA-E member {config_id}"

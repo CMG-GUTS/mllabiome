@@ -55,6 +55,7 @@ from .explainability_visuals import (
 from .explainability_visuals import plot_local_attributions
 from .learners import _learner_factory, fit_classifier
 from .metrics import _predict_proba_aligned
+from .metrics import metric_is_loss
 from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
 from .runtime import (
     configure_estimator_threads,
@@ -200,7 +201,7 @@ def _ensure_mpma_member_explanations(
             continue
         if matches.empty:
             raise ExplainabilityConfigurationError(
-                f"MPMA-E member {member!r} cannot be matched to mpma_rankings.parquet for cached explanation."
+                f"MPMA-E member {member!r} cannot be matched to mpma_inner_rankings.parquet for cached explanation."
             )
         row = matches.iloc[0]
         desc = " · ".join(
@@ -1532,7 +1533,7 @@ def _explain_one(
             "fallbacks": "off",
         },
     )
-    rankings_path = root / "tables" / "mpma_rankings.parquet"
+    rankings_path = root / "tables" / "mpma_inner_rankings.parquet"
     if not table_exists(rankings_path):
         raise FileNotFoundError("Run evaluate(sweep) before explain(sweep).")
     rankings = read_table(rankings_path)
@@ -2794,6 +2795,8 @@ def _explain_one(
 
 def _score_sort_column(df: pd.DataFrame) -> str | None:
     for col in (
+        "rank",
+        "inner_score",
         "inner_validation_score",
         "inner_log_loss_mean",
         "log_loss_mean",
@@ -2843,7 +2846,14 @@ def _resolve_baseline_rf_row(rankings: pd.DataFrame) -> pd.Series | None:
             continue
         sort_col = _score_sort_column(sub)
         if sort_col and sort_col in sub.columns:
-            sub = sub.sort_values(sort_col, ascending=False)
+            if sort_col == "rank":
+                ascending = True
+            elif sort_col in {"inner_score", "inner_validation_score"}:
+                metric = str(sub.get("selection_metric", pd.Series([""])).iloc[0])
+                ascending = metric_is_loss(metric)
+            else:
+                ascending = "loss" in sort_col.casefold()
+            sub = sub.sort_values(sort_col, ascending=ascending)
         return sub.iloc[0].drop(labels=["_single_rank"], errors="ignore")
     return None
 
@@ -2934,7 +2944,7 @@ def _automatic_explainability_targets(
 
 def explain(sweep: Sweep) -> dict[str, Path]:
     root = sweep.root()
-    rankings_path = root / "tables" / "mpma_rankings.parquet"
+    rankings_path = root / "tables" / "mpma_inner_rankings.parquet"
     if not table_exists(rankings_path):
         raise FileNotFoundError("Run evaluate(sweep) before explain(sweep).")
     rankings = read_table(rankings_path)

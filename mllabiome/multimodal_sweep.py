@@ -21,7 +21,14 @@ from .compute import ResourceTracker, machine_profile
 from .console import path_table, progress, stage, success, summary_table
 from .integrations import Integration, IntegrationModel, integration_modality_sets
 from .learners import fit_classifier
-from .metrics import _estimator_call, compute_metrics, compute_regression_metrics
+from .metrics import (
+    _estimator_call,
+    aggregate_validation_metric,
+    canonical_metric_name,
+    compute_metrics,
+    compute_regression_metrics,
+    grouped_log_loss,
+)
 from .modalities import (
     ModalityDataset,
     load_modalities,
@@ -113,6 +120,7 @@ def _classification_task(
     protocol,
     learner_factory,
     gate,
+    selection_metric,
     existing_inner_keys,
     existing_inner_scores,
     existing_qualification,
@@ -148,7 +156,11 @@ def _classification_task(
         "job_resources": [],
         "fits": 0,
     }
-    scores = [float(x) for x in existing_inner_scores if np.isfinite(x)]
+    gate_metric = canonical_metric_name(str(gate.metric))
+    requested_metrics = {canonical_metric_name(str(selection_metric))}
+    if gate.enabled:
+        requested_metrics.add(gate_metric)
+    score_rows = [dict(x) for x in existing_inner_scores if isinstance(x, dict)]
     pending_inner = sum(
         1
         for inner_no in range(len(inner_splits))
@@ -215,6 +227,20 @@ def _classification_task(
                 proba = _predict_proba_aligned(clf, Xva, classes)
                 pred = classes[proba.argmax(axis=1)]
                 metrics = compute_metrics(y[va_idx], pred, proba, classes)
+                if "subject_macro_log_loss" in requested_metrics:
+                    metrics["subject_macro_log_loss"] = grouped_log_loss(
+                        y[va_idx],
+                        proba,
+                        classes,
+                        np.asarray(subject_ids, dtype=object)[va_idx],
+                    )
+                if "cohort_macro_log_loss" in requested_metrics and str(
+                    protocol
+                ).lower() in {
+                    "lodo",
+                    "leave_one_dataset_out",
+                }:
+                    metrics["cohort_macro_log_loss"] = float(metrics["log_loss"])
                 row = _meta_row(
                     _metric_row(
                         metrics,
@@ -226,6 +252,10 @@ def _classification_task(
                         "inner",
                     ),
                     spec,
+                )
+                row["n_samples"] = int(len(va_idx))
+                row["n_subjects"] = int(
+                    len(pd.unique(np.asarray(subject_ids, dtype=object)[va_idx]))
                 )
                 prediction_rows = _prediction_rows_values(
                     inner_key,
@@ -242,9 +272,9 @@ def _classification_task(
                 )
                 result["inner_metrics"].append(row)
                 result["inner_predictions"].extend(prediction_rows)
-                score = float(metrics.get(gate.metric, np.nan))
+                score = float(metrics.get(gate_metric, np.nan))
                 if np.isfinite(score):
-                    scores.append(score)
+                    score_rows.append(dict(row))
                 result["fits"] += 1
             except Exception as exc:
                 result["inner_metrics"].append(
@@ -278,7 +308,9 @@ def _classification_task(
                 qualified = bool(int(existing_qualification.get("qualified", 0)))
                 gate_score = float(existing_qualification.get("inner_score", np.nan))
             else:
-                gate_score = float(np.mean(scores)) if scores else float("nan")
+                gate_score, _ = aggregate_validation_metric(
+                    pd.DataFrame(score_rows), gate_metric
+                )
                 qualified = QualificationGate(
                     True, gate.metric, gate.threshold
                 ).qualifies(gate_score)
@@ -298,7 +330,7 @@ def _classification_task(
                             "levels": ",".join(spec.modalities),
                             "learner": spec.learner,
                             "gate_enabled": 1,
-                            "gate_metric": gate.metric,
+                            "gate_metric": gate_metric,
                             "gate_threshold": gate.threshold,
                             "inner_score": gate_score,
                             "qualified": int(qualified),
@@ -338,6 +370,20 @@ def _classification_task(
                 proba = _predict_proba_aligned(clf, Xte, classes)
                 pred = classes[proba.argmax(axis=1)]
                 metrics = compute_metrics(y[test_idx], pred, proba, classes)
+                if "subject_macro_log_loss" in requested_metrics:
+                    metrics["subject_macro_log_loss"] = grouped_log_loss(
+                        y[test_idx],
+                        proba,
+                        classes,
+                        np.asarray(subject_ids, dtype=object)[test_idx],
+                    )
+                if "cohort_macro_log_loss" in requested_metrics and str(
+                    protocol
+                ).lower() in {
+                    "lodo",
+                    "leave_one_dataset_out",
+                }:
+                    metrics["cohort_macro_log_loss"] = float(metrics["log_loss"])
                 row = _meta_row(
                     _metric_row(
                         metrics,
@@ -349,6 +395,10 @@ def _classification_task(
                         "outer",
                     ),
                     spec,
+                )
+                row["n_samples"] = int(len(test_idx))
+                row["n_subjects"] = int(
+                    len(pd.unique(np.asarray(subject_ids, dtype=object)[test_idx]))
                 )
                 prediction_rows = _prediction_rows_values(
                     split_key,
@@ -476,7 +526,8 @@ def _regression_task(
         "job_resources": [],
         "fits": 0,
     }
-    scores = [float(x) for x in existing_inner_scores if np.isfinite(x)]
+    gate_metric = canonical_metric_name(str(gate.metric))
+    score_rows = [dict(x) for x in existing_inner_scores if isinstance(x, dict)]
     y = np.asarray(dataset.y, dtype=float)
     pending_inner = sum(
         1
@@ -555,9 +606,9 @@ def _regression_task(
                 )
                 result["inner_metrics"].append(row)
                 result["inner_predictions"].extend(prediction_rows)
-                score = float(metrics.get(gate.metric, np.nan))
+                score = float(metrics.get(gate_metric, np.nan))
                 if np.isfinite(score):
-                    scores.append(score)
+                    score_rows.append(dict(row))
                 result["fits"] += 1
             except Exception as exc:
                 row = _regression_metric_row(
@@ -594,7 +645,9 @@ def _regression_task(
                 qualified = bool(int(existing_qualification.get("qualified", 0)))
                 gate_score = float(existing_qualification.get("inner_score", np.nan))
             else:
-                gate_score = float(np.mean(scores)) if scores else float("nan")
+                gate_score, _ = aggregate_validation_metric(
+                    pd.DataFrame(score_rows), gate_metric
+                )
                 qualified = QualificationGate(
                     True, gate.metric, gate.threshold
                 ).qualifies(gate_score)
@@ -738,9 +791,12 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
         _write_tables,
         write_mpma_b_selection_outputs,
     )
+    from .sweep_types import validate_sweep_class_count
     from .figures import _write_representation_impact_figure
 
     dataset = load_modalities(sweep.samples, sweep.modalities)
+    if dataset.task == "classification":
+        validate_sweep_class_count(sweep, len(dataset.class_labels))
     root = sweep.root()
     _prepare_dirs(root)
     learners = [_learner_factory(item, task=dataset.task) for item in sweep.learners]
@@ -941,6 +997,7 @@ def evaluate_modality_sweep(sweep) -> dict[str, Path]:
                     sweep.evaluation.protocol,
                     learner_lookup[spec.learner],
                     sweep.gate,
+                    sweep.evaluation.optimize_metric,
                     set(inner_keys) - missing_inner,
                     _existing_inner_scores(
                         existing["inner_metrics"],

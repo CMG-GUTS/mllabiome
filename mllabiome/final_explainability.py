@@ -132,7 +132,7 @@ def explain(sweep):
     root = Path(sweep.root())
     models = build_final_models(root)
     _invalidate_stale(root, models, sweep.explainability)
-    rankings_path = root / "tables" / "mpma_rankings.parquet"
+    rankings_path = root / "tables" / "mpma_inner_rankings.parquet"
     if not table_exists(rankings_path):
         raise FileNotFoundError("Run evaluate(sweep) before explain(sweep).")
     rankings = read_table(rankings_path)

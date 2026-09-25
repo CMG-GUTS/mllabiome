@@ -14,20 +14,27 @@ from .configs_sweep import Ensemble, Sweep, sweep_task
 from .console import path_table, stage, success, summary_table
 from .data import _wide_csv_feature_columns, load_dataset
 from .ensemble_aggregation import (
+    PROBABILITY_PRESERVING_AGGREGATIONS,
     SUPPORTED_AGGREGATIONS,
     aggregate_member_predictions,
     effective_aggregation_weights,
 )
 from .ensemble_progress import EnsembleSearchProgress
-from .metrics import _renormalize_proba, canonical_metric_name, compute_metrics
+from .metrics import (
+    _renormalize_proba,
+    aggregate_validation_metric,
+    canonical_metric_name,
+    compute_metrics,
+)
 from .metrics import metric_better as _metric_better
 from .metrics import metric_is_loss as _metric_is_loss
+from .metrics import metric_requires_probability_semantics
 from .mpma_e_figure import write_single_task_mpma_e_figure
 from .selection import select_final_mpma_candidate
 from .storage import read_table, table_exists, write_table
 from .utils import TAXONOMIC_LEVELS, dump_json_standard
 
-_ENSEMBLE_SEARCH_SCHEMA = "mpmae_search_v3"
+_ENSEMBLE_SEARCH_SCHEMA = "mpmae_search_v4"
 _SUPER_LEARNER_WEIGHT_TOL = 1e-8
 _SUPER_LEARNER_OPT_MAXITER = 1000
 _SUPER_LEARNER_OPT_FTOL = 1e-12
@@ -150,6 +157,16 @@ def _validate_plan(plan: Ensemble) -> None:
             f"Supported strategies: {list(SUPPORTED_AGGREGATIONS)}."
         )
 
+    metric = canonical_metric_name(str(plan.optimize_metric))
+    if metric_requires_probability_semantics(metric):
+        invalid = sorted(set(aggregations) - set(PROBABILITY_PRESERVING_AGGREGATIONS))
+        if invalid:
+            raise ValueError(
+                f"Ensemble.optimize_metric={metric!r} requires probability-valued aggregation. "
+                f"Remove incompatible aggregation strategy(s) {invalid}; allowed strategies are "
+                f"{sorted(PROBABILITY_PRESERVING_AGGREGATIONS)}."
+            )
+
     max_sizes = _plan_max_sizes(plan)
     if not max_sizes:
         raise ValueError("Ensemble.max_sizes must be non-empty.")
@@ -253,10 +270,10 @@ def _complete_inner_scores(
     frame["config_id"] = frame["config_id"].astype(str)
     frame["inner_key"] = frame["inner_key"].astype(str)
     frame = frame[frame["config_id"].isin(eligible_ids)]
+    expected = set(frame["inner_key"].dropna().astype(str))
     if "ok" in frame.columns:
         ok = pd.to_numeric(frame["ok"], errors="coerce").fillna(0).astype(int)
         frame = frame[ok.eq(1)]
-    expected = set(frame["inner_key"].dropna().astype(str))
     if not expected:
         return pd.Series(dtype=float)
     complete: list[str] = []
@@ -276,8 +293,9 @@ def _complete_inner_scores(
         ordered, stack = _aligned_stack(pred, [config_id], pcols, inner=True)
         if ordered is None or stack is None:
             continue
-        y_true = ordered["y_true"].to_numpy(dtype=int)
-        value = _metric_value(y_true, stack[0], metric)
+        group = frame[frame["config_id"].eq(str(config_id))].copy()
+        group = group.drop_duplicates("inner_key", keep="last")
+        value, _ = aggregate_validation_metric(group, metric)
         if np.isfinite(value):
             rows.append((str(config_id), float(value)))
     if not rows:

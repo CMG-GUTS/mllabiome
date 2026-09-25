@@ -33,18 +33,22 @@ def canonical_metric_name(metric: str) -> str:
         "auc_macro": "AUROC_macro",
         "roc_auc_macro": "AUROC_macro",
         "auroc_macro": "AUROC_macro",
+        "auroc_macro_ovr": "AUROC_macro",
         "auc_weighted": "AUROC_weighted",
         "roc_auc_weighted": "AUROC_weighted",
         "auroc_weighted": "AUROC_weighted",
+        "auroc_weighted_ovr": "AUROC_weighted",
         "pr_auc": "AUCPR",
         "prauc": "AUCPR",
         "aucpr": "AUCPR",
         "pr_auc_macro": "AUCPR_macro",
         "prauc_macro": "AUCPR_macro",
         "aucpr_macro": "AUCPR_macro",
+        "aucpr_macro_ovr": "AUCPR_macro",
         "pr_auc_weighted": "AUCPR_weighted",
         "prauc_weighted": "AUCPR_weighted",
         "aucpr_weighted": "AUCPR_weighted",
+        "aucpr_weighted_ovr": "AUCPR_weighted",
         "average_precision": "AP",
         "ap": "AP",
         "mcc": "MCC",
@@ -60,6 +64,17 @@ def canonical_metric_name(metric: str) -> str:
         "cohort_macro_log_loss": "cohort_macro_log_loss",
         "brier_loss": "brier",
         "brier": "brier",
+        "r2": "R2",
+        "mae": "MAE",
+        "mse": "MSE",
+        "rmse": "RMSE",
+        "medae": "MedAE",
+        "explainedvariance": "ExplainedVariance",
+        "explained_variance": "ExplainedVariance",
+        "pearsonr": "PearsonR",
+        "pearson_r": "PearsonR",
+        "spearmanr": "SpearmanR",
+        "spearman_r": "SpearmanR",
     }
     return aliases.get(key, text)
 
@@ -100,6 +115,45 @@ def metric_passes_threshold(score: float, threshold: float, metric: str) -> bool
     if metric_is_loss(metric):
         return float(score) <= boundary
     return float(score) >= boundary
+
+
+def metric_requires_probability_semantics(metric: str) -> bool:
+    return canonical_metric_name(metric) in {"log_loss", "brier"}
+
+
+def metric_aggregation_weight_column(metric: str) -> str | None:
+    key = canonical_metric_name(metric)
+    if key in {"log_loss", "brier"}:
+        return "n_samples"
+    if key == "subject_macro_log_loss":
+        return "n_subjects"
+    return None
+
+
+def aggregate_validation_metric(rows: pd.DataFrame, metric: str) -> tuple[float, float]:
+    key = canonical_metric_name(metric)
+    if rows is None or rows.empty or key not in rows.columns:
+        return float("nan"), float("nan")
+    values = pd.to_numeric(rows[key], errors="coerce").to_numpy(dtype=float)
+    valid_values = np.isfinite(values)
+    if not np.any(valid_values):
+        return float("nan"), float("nan")
+    finite_values = values[valid_values]
+    weight_column = metric_aggregation_weight_column(key)
+    if weight_column is not None and weight_column in rows.columns:
+        weights = pd.to_numeric(rows[weight_column], errors="coerce").to_numpy(
+            dtype=float
+        )
+        valid = valid_values & np.isfinite(weights) & (weights > 0.0)
+        score = (
+            float(np.average(values[valid], weights=weights[valid]))
+            if np.any(valid)
+            else float(np.mean(finite_values))
+        )
+    else:
+        score = float(np.mean(finite_values))
+    spread = float(np.std(finite_values, ddof=1)) if len(finite_values) > 1 else 0.0
+    return score, spread
 
 
 def _coerce_X_for_estimator(clf: BaseEstimator, X):
@@ -450,12 +504,10 @@ def compute_metrics(
         if auc_values:
             out["AUROC_macro"] = float(np.mean(auc_values))
             out["AUROC_weighted"] = float(np.average(auc_values, weights=auc_weights))
-            out["AUROC"] = out["AUROC_macro"]
             out["AUCPR_macro"] = float(np.mean(pr_auc_values))
             out["AUCPR_weighted"] = float(
                 np.average(pr_auc_values, weights=pr_auc_weights)
             )
-            out["AUCPR"] = out["AUCPR_macro"]
             out["AP_macro"] = float(np.mean(ap_values))
 
     return {

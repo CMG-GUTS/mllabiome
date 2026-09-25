@@ -16,7 +16,16 @@ from .explainability_methods import (
 )
 from .integrations import Integration
 from .learners import validate_model_specs
-from .metrics import metric_passes_threshold
+from .ensemble_aggregation import (
+    PROBABILITY_PRESERVING_AGGREGATIONS,
+    SUPPORTED_AGGREGATIONS,
+)
+from .metrics import (
+    canonical_metric_name,
+    metric_passes_threshold,
+    metric_requires_probability_semantics,
+)
+from .utils import CLASSIFICATION_METRIC_COLUMNS, REGRESSION_METRIC_COLUMNS
 from .modalities import Modality, Samples
 
 
@@ -95,6 +104,16 @@ class QualificationGate:
     metric: str = "MCC"
     threshold: float | None = None
 
+    def __post_init__(self) -> None:
+        raw = str(self.metric).strip().casefold().replace("-", "_").replace(" ", "_")
+        if raw == "nmcc" and self.threshold is not None:
+            self.threshold = 2.0 * float(self.threshold) - 1.0
+        self.metric = canonical_metric_name(str(self.metric))
+        if self.enabled and self.threshold is None:
+            raise ValueError(
+                "QualificationGate.threshold is required when the gate is enabled."
+            )
+
     def qualifies(self, score: float) -> bool:
         if not self.enabled:
             return True
@@ -126,6 +145,27 @@ class Evaluation:
     decision_curve_points: int = 99
     redo: bool = False
 
+    def __post_init__(self) -> None:
+        protocol = str(self.protocol).strip().casefold().replace("-", "_")
+        if protocol not in {
+            "repeated_nested_cv",
+            "nested_cv",
+            "lodo",
+            "leave_one_dataset_out",
+        }:
+            raise ValueError(f"Unsupported evaluation protocol {self.protocol!r}.")
+        self.protocol = protocol
+        self.optimize_metric = canonical_metric_name(str(self.optimize_metric))
+        if int(self.inner_folds) < 2:
+            raise ValueError("Evaluation.inner_folds must be at least 2.")
+        if (
+            protocol in {"repeated_nested_cv", "nested_cv"}
+            and int(self.outer_folds) < 2
+        ):
+            raise ValueError("Evaluation.outer_folds must be at least 2 for nested CV.")
+        if int(self.repeats) < 1:
+            raise ValueError("Evaluation.repeats must be at least 1.")
+
 
 @dataclass
 class Ensemble:
@@ -142,10 +182,8 @@ class Ensemble:
         "mean_proba",
         "weighted_mean_proba",
         "median_proba",
-        "rank_mean",
-        "majority_vote",
     )
-    optimize_metric: Any = "log_loss"
+    optimize_metric: Any = "auto"
 
     include_inactive: bool = True
 
@@ -156,6 +194,24 @@ class Ensemble:
     exclude_learners: tuple[str, ...] = ()
     exclude_resolutions: tuple[str, ...] = ()
     exclude_transformations: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        self.optimize_metric = canonical_metric_name(str(self.optimize_metric))
+        self.max_sizes = tuple(int(value) for value in self.max_sizes)
+        if self.sizes is not None:
+            self.sizes = tuple(int(value) for value in self.sizes)
+        self.selection_strategies = tuple(
+            str(value) for value in self.selection_strategies
+        )
+        self.aggregation_strategies = tuple(
+            str(value) for value in self.aggregation_strategies
+        )
+        if not self.max_sizes or any(value < 2 for value in self.max_sizes):
+            raise ValueError("Every Ensemble.max_sizes entry must be at least 2.")
+        if not self.selection_strategies:
+            raise ValueError("Ensemble.selection_strategies must be non-empty.")
+        if not self.aggregation_strategies:
+            raise ValueError("Ensemble.aggregation_strategies must be non-empty.")
 
 
 @dataclass(frozen=True)
@@ -347,6 +403,198 @@ def _normalise_explainability_classes_config(
     return out or "auto"
 
 
+def _configured_class_count(source: Any) -> int | None:
+    labels = getattr(source, "class_labels", None)
+    if labels is not None:
+        return len(tuple(labels))
+    label_map = getattr(source, "label_map", None)
+    if label_map:
+        return len({int(value) for value in label_map.values()})
+    return None
+
+
+def _validate_metric(
+    metric: str,
+    task: str,
+    protocol: str,
+    n_classes: int | None,
+    role: str,
+) -> str:
+    canonical = canonical_metric_name(metric)
+    if task == "classification":
+        allowed = set(CLASSIFICATION_METRIC_COLUMNS)
+        if canonical not in allowed:
+            raise ValueError(
+                f"{role}={metric!r} is not a supported classification metric. "
+                f"Supported metrics: {sorted(allowed)}."
+            )
+        if canonical == "cohort_macro_log_loss" and protocol not in {
+            "lodo",
+            "leave_one_dataset_out",
+        }:
+            raise ValueError(
+                f"{role}='cohort_macro_log_loss' requires protocol='lodo' or 'leave_one_dataset_out'."
+            )
+        if n_classes is not None and n_classes > 2:
+            binary_only = {
+                "AUROC",
+                "AUCPR",
+                "AP",
+                "Sensitivity",
+                "Specificity",
+                "PPV",
+                "NPV",
+            }
+            if canonical in binary_only:
+                alternatives = {
+                    "AUROC": "AUROC_macro",
+                    "AUCPR": "AUCPR_macro",
+                    "AP": "AP_macro",
+                }
+                suggestion = alternatives.get(canonical)
+                suffix = f" Use {suggestion!r}." if suggestion else ""
+                raise ValueError(
+                    f"{role}={canonical!r} is binary-only when the configured outcome has {n_classes} classes.{suffix}"
+                )
+    elif task == "regression":
+        allowed = set(REGRESSION_METRIC_COLUMNS)
+        if canonical not in allowed:
+            raise ValueError(
+                f"{role}={metric!r} is not a supported regression metric. "
+                f"Supported metrics: {sorted(allowed)}."
+            )
+    else:
+        raise ValueError(f"Unsupported task {task!r}.")
+    return canonical
+
+
+def _validate_sweep_configuration(sweep: Any) -> None:
+    source = sweep.samples if sweep.uses_modalities else sweep.data
+    if source is None:
+        raise ValueError("Sweep requires a data or samples specification.")
+    task = _normalise_sweep_task(source.task)
+    protocol = str(sweep.evaluation.protocol)
+    n_classes = _configured_class_count(source) if task == "classification" else None
+    sweep.evaluation.optimize_metric = _validate_metric(
+        str(sweep.evaluation.optimize_metric),
+        task,
+        protocol,
+        n_classes,
+        "Evaluation.optimize_metric",
+    )
+    if sweep.gate.enabled:
+        sweep.gate.metric = _validate_metric(
+            str(sweep.gate.metric),
+            task,
+            protocol,
+            n_classes,
+            "QualificationGate.metric",
+        )
+    ensemble_metric = str(sweep.ensemble.optimize_metric).strip()
+    if ensemble_metric.casefold() == "auto":
+        ensemble_metric = (
+            "log_loss"
+            if task == "classification"
+            else str(sweep.evaluation.optimize_metric)
+        )
+    sweep.ensemble.optimize_metric = _validate_metric(
+        ensemble_metric,
+        task,
+        protocol,
+        n_classes,
+        "Ensemble.optimize_metric",
+    )
+    supported_selection = {
+        "top_k",
+        "best_per_resolution",
+        "best_per_learner_type",
+        "caruana",
+        "super_learner",
+    }
+    unknown_selection = sorted(
+        set(sweep.ensemble.selection_strategies) - supported_selection
+    )
+    if unknown_selection:
+        raise ValueError(
+            f"Unsupported ensemble selection strategy(s): {unknown_selection}."
+        )
+    learned = set(sweep.ensemble.selection_strategies) & {"caruana", "super_learner"}
+    simple = set(sweep.ensemble.selection_strategies) - learned
+    if task == "classification":
+        grouped_metrics = {"subject_macro_log_loss", "cohort_macro_log_loss"}
+        if sweep.ensemble.optimize_metric in grouped_metrics:
+            raise ValueError(
+                "Ensemble.optimize_metric does not support grouped macro log-loss objectives; use 'log_loss' for probability-ensemble optimization."
+            )
+        if (
+            sweep.evaluation.optimize_metric == "subject_macro_log_loss"
+            or (sweep.gate.enabled and sweep.gate.metric == "subject_macro_log_loss")
+        ) and not getattr(source, "subject_id_col", None):
+            raise ValueError(
+                "subject_macro_log_loss requires an explicit subject_id_col so repeated observations are aggregated by biological subject."
+            )
+        unknown = sorted(
+            set(sweep.ensemble.aggregation_strategies) - set(SUPPORTED_AGGREGATIONS)
+        )
+        if unknown:
+            raise ValueError(
+                f"Unsupported classification ensemble aggregation strategy(s): {unknown}."
+            )
+        if metric_requires_probability_semantics(sweep.ensemble.optimize_metric):
+            invalid = sorted(
+                set(sweep.ensemble.aggregation_strategies)
+                - set(PROBABILITY_PRESERVING_AGGREGATIONS)
+            )
+            if invalid:
+                raise ValueError(
+                    f"Ensemble.optimize_metric={sweep.ensemble.optimize_metric!r} requires probability-valued aggregation. "
+                    f"Remove incompatible aggregation strategy(s) {invalid}; allowed strategies are "
+                    f"{sorted(PROBABILITY_PRESERVING_AGGREGATIONS)}."
+                )
+        if (
+            learned
+            and "weighted_mean_proba" not in sweep.ensemble.aggregation_strategies
+        ):
+            raise ValueError(
+                "Caruana and Super Learner require 'weighted_mean_proba' in Ensemble.aggregation_strategies."
+            )
+        if simple and not any(
+            aggregation != "weighted_mean_proba"
+            for aggregation in sweep.ensemble.aggregation_strategies
+        ):
+            raise ValueError(
+                "Simple ensemble selectors require at least one non-weighted aggregation strategy."
+            )
+
+
+def validate_sweep_class_count(sweep: Any, n_classes: int) -> None:
+    if int(n_classes) < 2:
+        raise ValueError("Classification requires at least two outcome classes.")
+    protocol = str(sweep.evaluation.protocol)
+    sweep.evaluation.optimize_metric = _validate_metric(
+        str(sweep.evaluation.optimize_metric),
+        "classification",
+        protocol,
+        int(n_classes),
+        "Evaluation.optimize_metric",
+    )
+    if sweep.gate.enabled:
+        sweep.gate.metric = _validate_metric(
+            str(sweep.gate.metric),
+            "classification",
+            protocol,
+            int(n_classes),
+            "QualificationGate.metric",
+        )
+    sweep.ensemble.optimize_metric = _validate_metric(
+        str(sweep.ensemble.optimize_metric),
+        "classification",
+        protocol,
+        int(n_classes),
+        "Ensemble.optimize_metric",
+    )
+
+
 @dataclass
 class Sweep:
     data: Data | None
@@ -373,6 +621,7 @@ class Sweep:
 
     def __post_init__(self) -> None:
         validate_model_specs(self.learners, context="Sweep.learners / MODELS")
+        _validate_sweep_configuration(self)
 
     def root(self) -> Path:
         return Path(self.experiment_dir)

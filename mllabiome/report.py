@@ -43,11 +43,11 @@ def _metric_display_label(metric: Any) -> str:
     key = _canonical_metric_name(metric)
     labels = {
         "AUROC": "AUROC",
-        "AUROC_macro": "AUROC macro",
-        "AUROC_weighted": "AUROC weighted",
+        "AUROC_macro": "AUROC macro (OvR)",
+        "AUROC_weighted": "AUROC weighted (OvR)",
         "AUCPR": "AUCPR",
-        "AUCPR_macro": "AUCPR macro",
-        "AUCPR_weighted": "AUCPR weighted",
+        "AUCPR_macro": "AUCPR macro (OvR)",
+        "AUCPR_weighted": "AUCPR weighted (OvR)",
         "AP": "Average precision",
         "AP_macro": "Average precision macro",
         "MCC": "MCC",

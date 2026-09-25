@@ -51,6 +51,7 @@ from .learners import (
 from .metrics import _estimator_call
 from .metrics import _predict_proba_aligned as _metrics_predict_proba_aligned
 from .metrics import (
+    aggregate_validation_metric,
     canonical_metric_name,
     compute_metrics,
     compute_regression_metrics,
@@ -101,6 +102,7 @@ from .sweep_types import (
     _normalise_sweep_task,
     build_sweep_from_module,
     sweep_task,
+    validate_sweep_class_count,
 )
 
 
@@ -698,7 +700,7 @@ def _evaluate_mpma_split_task(
     gate_threshold: float | None,
     selection_metric: str,
     existing_inner_keys: set[str],
-    existing_inner_scores: Sequence[float],
+    existing_inner_scores: Sequence[dict[str, Any]],
     existing_qualification: dict[str, Any] | None,
     needs_outer: bool,
     random_state: int,
@@ -725,7 +727,7 @@ def _evaluate_mpma_split_task(
         "job_resources": [],
         "fits": 0,
     }
-    scores = [float(x) for x in existing_inner_scores if np.isfinite(x)]
+    score_rows = [dict(x) for x in existing_inner_scores if isinstance(x, dict)]
     with (
         thread_environment(threads_per_worker),
         threadpool_limits(limits=max(1, int(threads_per_worker))),
@@ -794,7 +796,7 @@ def _evaluate_mpma_split_task(
                 )
                 score = float(metrics.get(gate_metric, np.nan))
                 if np.isfinite(score):
-                    scores.append(score)
+                    score_rows.append(dict(row))
                 result["fits"] += 1
             except Exception as exc:
                 result["inner_metrics"].append(
@@ -809,7 +811,9 @@ def _evaluate_mpma_split_task(
                 qualified = bool(int(existing_qualification.get("qualified", 0)))
                 gate_score = float(existing_qualification.get("inner_score", np.nan))
             else:
-                gate_score = float(np.mean(scores)) if scores else float("nan")
+                gate_score, _ = aggregate_validation_metric(
+                    pd.DataFrame(score_rows), gate_metric
+                )
                 gate = QualificationGate(
                     enabled=True, metric=gate_metric_input, threshold=gate_threshold
                 )
@@ -1032,6 +1036,9 @@ def _backfill_metrics_from_predictions(
     for metric in METRIC_COLUMNS:
         if metric not in out.columns:
             out[metric] = np.nan
+    for column in ("n_samples", "n_subjects"):
+        if column not in out.columns:
+            out[column] = np.nan
     lookup: dict[tuple[str, str], dict[str, float]] = {}
     for (split_key, config_id), group in predictions.groupby(
         ["split_key", "config_id"], sort=False
@@ -1060,6 +1067,12 @@ def _backfill_metrics_from_predictions(
             )
         if "cohort_macro_log_loss" in requested and str(split_key).startswith("lodo_"):
             values["cohort_macro_log_loss"] = float(values["log_loss"])
+        values["n_samples"] = int(len(group))
+        values["n_subjects"] = int(
+            group["subject_id"].astype(str).nunique()
+            if "subject_id" in group.columns
+            else len(group)
+        )
         lookup[(str(split_key), str(config_id))] = values
     ok = (
         pd.to_numeric(out["ok"], errors="coerce").fillna(0).astype(int).eq(1)
@@ -1079,6 +1092,12 @@ def _backfill_metrics_from_predictions(
                 value = float(values.get(metric, np.nan))
                 if np.isfinite(value):
                     out.at[index, metric] = value
+        for column in ("n_samples", "n_subjects"):
+            current = pd.to_numeric(
+                pd.Series([out.at[index, column]]), errors="coerce"
+            ).iloc[0]
+            if not np.isfinite(current):
+                out.at[index, column] = float(values[column])
     return out
 
 
@@ -1177,7 +1196,7 @@ def _evaluate_regression_split_task(
     gate_metric: str,
     gate_threshold: float | None,
     existing_inner_keys: set[str],
-    existing_inner_scores: Sequence[float],
+    existing_inner_scores: Sequence[dict[str, Any]],
     existing_qualification: dict[str, Any] | None,
     needs_outer: bool,
     random_state: int,
@@ -1201,7 +1220,7 @@ def _evaluate_regression_split_task(
         "job_resources": [],
         "fits": 0,
     }
-    scores = [float(x) for x in existing_inner_scores if np.isfinite(x)]
+    score_rows = [dict(x) for x in existing_inner_scores if isinstance(x, dict)]
     with (
         thread_environment(threads_per_worker),
         threadpool_limits(limits=max(1, int(threads_per_worker))),
@@ -1253,7 +1272,7 @@ def _evaluate_regression_split_task(
                 )
                 score = float(metrics.get(gate_metric, np.nan))
                 if np.isfinite(score):
-                    scores.append(score)
+                    score_rows.append(dict(row))
                 result["fits"] += 1
             except Exception as exc:
                 row = _failed_metric_row(
@@ -1268,7 +1287,9 @@ def _evaluate_regression_split_task(
                 qualified = bool(int(existing_qualification.get("qualified", 0)))
                 gate_score = float(existing_qualification.get("inner_score", np.nan))
             else:
-                gate_score = float(np.mean(scores)) if scores else float("nan")
+                gate_score, _ = aggregate_validation_metric(
+                    pd.DataFrame(score_rows), gate_metric
+                )
                 gate = QualificationGate(
                     enabled=True, metric=gate_metric_input, threshold=gate_threshold
                 )
@@ -1818,6 +1839,7 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
         )
     )
     dataset = load_dataset(sweep.data, all_levels or ("all",))
+    validate_sweep_class_count(sweep, len(dataset.class_labels))
     _validate_dataset_identity(root, dataset)
     learner_factories = [_learner_factory(x) for x in sweep.learners]
     learner_fingerprints = {
@@ -2191,7 +2213,10 @@ def _existing_outputs(root: Path) -> dict[str, Path]:
     return {
         "experiment_dir": root,
         "configs": root / "configs.db",
-        "rankings": root / "tables" / "mpma_rankings.parquet",
+        "rankings": root / "tables" / "mpma_inner_rankings.parquet",
+        "outer_performance_summary": root
+        / "tables"
+        / "mpma_outer_performance_summary.parquet",
         "outer_results": root / "results" / "outer_results.parquet",
         "inner_results": root / "inner_results" / "inner_results.parquet",
         "outer_predictions": root / "predictions" / "outer_predictions.parquet",
@@ -2308,7 +2333,8 @@ def _outer_pair_complete(
 
 def _existing_inner_scores(
     df: pd.DataFrame, outer_split_key: str, config_id: str, metric: str
-) -> list[float]:
+) -> list[dict[str, Any]]:
+    metric = canonical_metric_name(metric)
     if (
         df.empty
         or metric not in df.columns
@@ -2319,11 +2345,18 @@ def _existing_inner_scores(
     sub = df[
         df["config_id"].astype(str).eq(str(config_id))
         & df["split_key"].astype(str).eq(str(outer_split_key))
-    ]
+    ].copy()
     if "ok" in sub.columns:
-        sub = sub[sub["ok"].eq(1)]
-    vals = pd.to_numeric(sub[metric], errors="coerce").to_numpy(dtype=float)
-    return [float(x) for x in vals if np.isfinite(x)]
+        ok = pd.to_numeric(sub["ok"], errors="coerce").fillna(0).astype(int)
+        sub = sub[ok.eq(1)]
+    sub[metric] = pd.to_numeric(sub[metric], errors="coerce")
+    sub = sub[np.isfinite(sub[metric].to_numpy(dtype=float))]
+    keep = [
+        column
+        for column in (metric, "n_samples", "n_subjects")
+        if column in sub.columns
+    ]
+    return sub[keep].to_dict(orient="records")
 
 
 def _concat_existing_new(
@@ -2778,33 +2811,100 @@ def _write_tables(
 def _write_rankings_and_figures(
     root: Path, class_labels: list[str], optimize_metric: str
 ) -> None:
-    path = root / "results" / "outer_results.parquet"
-    if not table_exists(path):
+    metric = canonical_metric_name(optimize_metric)
+    inner_path = root / "inner_results" / "inner_results.parquet"
+    configs_path = root / "configs.parquet"
+    ranking_path = root / "tables" / "mpma_inner_rankings.parquet"
+    legacy_path = root / "tables" / "mpma_rankings.parquet"
+    if table_exists(inner_path) and table_exists(configs_path):
+        inner = read_table(inner_path)
+        configs = read_table(configs_path)
+        if not inner.empty and metric in inner.columns and "config_id" in inner.columns:
+            frame = inner.copy()
+            frame["config_id"] = frame["config_id"].astype(str)
+            expected = (
+                set(frame["inner_key"].dropna().astype(str))
+                if "inner_key" in frame.columns
+                else set()
+            )
+            if "ok" in frame.columns:
+                ok = pd.to_numeric(frame["ok"], errors="coerce").fillna(0).astype(int)
+                frame = frame[ok.eq(1)]
+            frame[metric] = pd.to_numeric(frame[metric], errors="coerce")
+            frame = frame[np.isfinite(frame[metric].to_numpy(dtype=float))]
+            rows: list[dict[str, Any]] = []
+            for config_id, group in frame.groupby("config_id", sort=True):
+                if expected and "inner_key" in group.columns:
+                    group = group.drop_duplicates("inner_key", keep="last")
+                    if set(group["inner_key"].astype(str)) != expected:
+                        continue
+                score, spread = aggregate_validation_metric(group, metric)
+                if not np.isfinite(score):
+                    continue
+                rows.append(
+                    {
+                        "config_id": str(config_id),
+                        "selection_metric": metric,
+                        "inner_score": float(score),
+                        "inner_score_std": float(spread),
+                        "n_inner_folds": int(len(group)),
+                    }
+                )
+            ranking = pd.DataFrame(rows)
+            if not ranking.empty:
+                metadata = configs.drop_duplicates("config_id", keep="last").copy()
+                metadata["config_id"] = metadata["config_id"].astype(str)
+                ranking = ranking.merge(
+                    metadata, on="config_id", how="left", validate="one_to_one"
+                )
+                ranking = ranking.sort_values(
+                    ["inner_score", "config_id"],
+                    ascending=[metric_is_loss(metric), True],
+                    kind="mergesort",
+                ).reset_index(drop=True)
+                ranking.insert(0, "rank", np.arange(1, len(ranking) + 1))
+                write_table(ranking_path, ranking)
+            elif table_exists(ranking_path):
+                remove_table(ranking_path)
+        elif table_exists(ranking_path):
+            remove_table(ranking_path)
+    if table_exists(legacy_path):
+        remove_table(legacy_path)
+    outer_path = root / "results" / "outer_results.parquet"
+    summary_path = root / "tables" / "mpma_outer_performance_summary.parquet"
+    if not table_exists(outer_path):
+        if table_exists(summary_path):
+            remove_table(summary_path)
         return
-    df = read_table(path)
-    if df.empty:
+    outer = read_table(outer_path)
+    if outer.empty or "config_id" not in outer.columns:
+        if table_exists(summary_path):
+            remove_table(summary_path)
         return
-    metrics = [c for c in METRIC_COLUMNS if c in df.columns]
+    metrics = [column for column in METRIC_COLUMNS if column in outer.columns]
     group_cols = [
-        "config_id",
-        "mpdr_id",
-        "count_transformation",
-        "resolution",
-        "levels",
-        "learner",
+        column
+        for column in (
+            "config_id",
+            "mpdr_id",
+            "count_transformation",
+            "resolution",
+            "levels",
+            "learner",
+        )
+        if column in outer.columns
     ]
-    agg = (
-        df[df["ok"].eq(1)]
-        .groupby(group_cols, dropna=False)[metrics]
-        .agg(["mean", "std", "count"])
+    valid = outer.copy()
+    if "ok" in valid.columns:
+        ok = pd.to_numeric(valid["ok"], errors="coerce").fillna(0).astype(int)
+        valid = valid[ok.eq(1)]
+    if valid.empty or not metrics or not group_cols:
+        if table_exists(summary_path):
+            remove_table(summary_path)
+        return
+    summary = valid.groupby(group_cols, dropna=False)[metrics].agg(
+        ["mean", "std", "count"]
     )
-    agg.columns = [f"{m}_{stat}" for m, stat in agg.columns]
-    rank = agg.reset_index()
-    requested_metric = canonical_metric_name(optimize_metric)
-    sort_metric = (
-        requested_metric if f"{requested_metric}_mean" in rank.columns else "log_loss"
-    )
-    sort_col = f"{sort_metric}_mean"
-    rank = rank.sort_values(sort_col, ascending=metric_is_loss(sort_metric))
-    rank.insert(0, "rank", np.arange(1, len(rank) + 1))
-    write_table(root / "tables" / "mpma_rankings.parquet", rank)
+    summary.columns = [f"{metric_name}_{stat}" for metric_name, stat in summary.columns]
+    summary = summary.reset_index()
+    write_table(summary_path, summary)

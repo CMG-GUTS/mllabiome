@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from .metrics import (
+    aggregate_validation_metric,
     canonical_metric_name,
     compute_metrics,
     compute_regression_metrics,
@@ -70,24 +71,7 @@ def _config_metadata(configs: pd.DataFrame) -> dict[str, dict[str, Any]]:
 
 
 def _inner_score(group: pd.DataFrame, metric: str) -> tuple[float, float]:
-    values = group[metric].to_numpy(dtype=float)
-    weight_column = {
-        "log_loss": "n_samples",
-        "subject_macro_log_loss": "n_subjects",
-    }.get(metric)
-    if weight_column is not None and weight_column in group.columns:
-        weights = pd.to_numeric(group[weight_column], errors="coerce").to_numpy(
-            dtype=float
-        )
-        valid = np.isfinite(values) & np.isfinite(weights) & (weights > 0.0)
-        if np.any(valid):
-            score = float(np.average(values[valid], weights=weights[valid]))
-        else:
-            score = float(np.mean(values))
-    else:
-        score = float(np.mean(values))
-    spread = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
-    return score, spread
+    return aggregate_validation_metric(group, metric)
 
 
 def _complete_config_scores(

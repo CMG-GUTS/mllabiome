@@ -55,6 +55,7 @@ from .oof_statistics import (
     _binary_auc_pr_auc_ap,
     _bootstrap_oof_estimands,
     _calibration_binary,
+    _calibration_coefficient_rows,
     _fast_classification_metrics,
     _mean_metric_dicts,
     _oof_metrics,
@@ -92,11 +93,11 @@ from .statistics_common import (
 DISPLAY_METRICS = ("AUROC", "AUCPR", "AP", "MCC", "F1w", "Precision", "Recall")
 METRIC_LABELS = {
     "AUROC": "AUROC",
-    "AUROC_macro": "AUROC macro",
-    "AUROC_weighted": "AUROC weighted",
+    "AUROC_macro": "AUROC macro (OvR)",
+    "AUROC_weighted": "AUROC weighted (OvR)",
     "AUCPR": "AUCPR",
-    "AUCPR_macro": "AUCPR macro",
-    "AUCPR_weighted": "AUCPR weighted",
+    "AUCPR_macro": "AUCPR macro (OvR)",
+    "AUCPR_weighted": "AUCPR weighted (OvR)",
     "AP": "Average precision",
     "AP_macro": "Average precision macro",
     "MCC": "MCC",
@@ -457,6 +458,7 @@ def _run_oof_statistics(
     design: dict[str, dict[str, int]] = {}
     performance_rows: list[dict[str, Any]] = []
     calibration_rows: list[dict[str, Any]] = []
+    calibration_coefficient_rows: list[dict[str, Any]] = []
     threshold_rows: list[dict[str, Any]] = []
     confusion_rows: list[dict[str, Any]] = []
     decision_curve_rows: list[dict[str, Any]] = []
@@ -497,6 +499,14 @@ def _run_oof_statistics(
                 current,
                 probability_valid,
                 calibration_bins,
+            )
+        )
+        calibration_coefficient_rows.extend(
+            _calibration_coefficient_rows(
+                strategy,
+                current,
+                protocol,
+                probability_valid,
             )
         )
         confusion_rows.extend(
@@ -555,6 +565,7 @@ def _run_oof_statistics(
     return {
         "performance": pd.DataFrame(performance_rows),
         "calibration": pd.DataFrame(calibration_rows),
+        "calibration_coefficients": pd.DataFrame(calibration_coefficient_rows),
         "threshold_metrics": pd.DataFrame(threshold_rows),
         "confusion_matrices": pd.DataFrame(confusion_rows),
         "decision_curve": pd.DataFrame(decision_curve_rows),
@@ -647,7 +658,7 @@ def _statistics_fingerprint(
             float(value) for value in decision_curve_thresholds
         ],
         "files": [_file_signature(path) for path in paths],
-        "schema_version": 13,
+        "schema_version": 14,
     }
     text = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -667,6 +678,9 @@ def _cached_result(
     pairwise_path = tables / "strategy_pairwise_tests.parquet"
     oof_performance_path = tables / "strategy_oof_performance.parquet"
     oof_calibration_path = tables / "strategy_oof_calibration.parquet"
+    oof_calibration_coefficients_path = (
+        tables / "strategy_oof_calibration_coefficients.parquet"
+    )
     oof_contrasts_path = tables / "strategy_oof_pairwise_contrasts.parquet"
     oof_manifest_path = tables / "strategy_oof_statistics_manifest.json"
     oof_coverage_path = tables / "strategy_oof_coverage.parquet"
@@ -681,6 +695,7 @@ def _cached_result(
         pairwise_path,
         oof_performance_path,
         oof_calibration_path,
+        oof_calibration_coefficients_path,
         oof_contrasts_path,
         oof_manifest_path,
         oof_coverage_path,
@@ -698,6 +713,7 @@ def _cached_result(
         "pairwise": _read_table(pairwise_path),
         "oof_performance": _read_table(oof_performance_path),
         "oof_calibration": _read_table(oof_calibration_path),
+        "oof_calibration_coefficients": _read_table(oof_calibration_coefficients_path),
         "oof_contrasts": _read_table(oof_contrasts_path),
         "oof_threshold_metrics": _read_table(oof_threshold_metrics_path),
         "oof_confusion_matrices": _read_table(oof_confusion_matrices_path),
@@ -708,6 +724,7 @@ def _cached_result(
         "pairwise_path": pairwise_path,
         "oof_performance_path": oof_performance_path,
         "oof_calibration_path": oof_calibration_path,
+        "oof_calibration_coefficients_path": oof_calibration_coefficients_path,
         "oof_contrasts_path": oof_contrasts_path,
         "oof_threshold_metrics_path": oof_threshold_metrics_path,
         "oof_confusion_matrices_path": oof_confusion_matrices_path,
@@ -836,6 +853,9 @@ def run_report_statistics(
     )
     oof_performance_path = tables / "strategy_oof_performance.parquet"
     oof_calibration_path = tables / "strategy_oof_calibration.parquet"
+    oof_calibration_coefficients_path = (
+        tables / "strategy_oof_calibration_coefficients.parquet"
+    )
     oof_contrasts_path = tables / "strategy_oof_pairwise_contrasts.parquet"
     oof_manifest_path = tables / "strategy_oof_statistics_manifest.json"
     oof_coverage_path = tables / "strategy_oof_coverage.parquet"
@@ -846,6 +866,7 @@ def run_report_statistics(
     oof_roc_curve_path = tables / "strategy_oof_roc_curve.parquet"
     write_table(oof_performance_path, advanced["performance"])
     write_table(oof_calibration_path, advanced["calibration"])
+    write_table(oof_calibration_coefficients_path, advanced["calibration_coefficients"])
     write_table(oof_contrasts_path, advanced["contrasts"])
     write_table(oof_coverage_path, advanced["coverage"])
     write_table(oof_pairwise_coverage_path, advanced["pairwise_coverage"])
@@ -854,7 +875,7 @@ def run_report_statistics(
     write_table(oof_decision_curve_path, advanced["decision_curve"])
     write_table(oof_roc_curve_path, advanced["roc_curve"])
     oof_manifest = {
-        "schema_version": 10,
+        "schema_version": 11,
         "protocol": str(protocol),
         "strategies": list(frames),
         "n_classes": int(advanced["n_classes"]),
@@ -909,7 +930,7 @@ def run_report_statistics(
     }
     dump_json_standard(oof_manifest, oof_manifest_path)
     manifest = {
-        "schema_version": 10,
+        "schema_version": 11,
         "fingerprint": fingerprint,
         "protocol": str(protocol),
         "strategies": list(frames),
@@ -944,6 +965,7 @@ def run_report_statistics(
         "pairwise_path": pairwise_path,
         "oof_performance": advanced["performance"],
         "oof_calibration": advanced["calibration"],
+        "oof_calibration_coefficients": advanced["calibration_coefficients"],
         "oof_contrasts": advanced["contrasts"],
         "oof_threshold_metrics": advanced["threshold_metrics"],
         "oof_confusion_matrices": advanced["confusion_matrices"],
@@ -951,6 +973,7 @@ def run_report_statistics(
         "oof_roc_curve": advanced["roc_curve"],
         "oof_performance_path": oof_performance_path,
         "oof_calibration_path": oof_calibration_path,
+        "oof_calibration_coefficients_path": oof_calibration_coefficients_path,
         "oof_contrasts_path": oof_contrasts_path,
         "oof_threshold_metrics_path": oof_threshold_metrics_path,
         "oof_confusion_matrices_path": oof_confusion_matrices_path,

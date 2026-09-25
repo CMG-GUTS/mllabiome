@@ -86,6 +86,9 @@ _CALIBRATION_METRIC_ORDER = (
     "CalibrationInTheLarge",
     "CalibrationIntercept",
     "CalibrationSlope",
+    "CalibrationInTheLarge_macro_OvR",
+    "CalibrationIntercept_macro_OvR",
+    "CalibrationSlope_macro_OvR",
 )
 _OPERATING_DIAGNOSTIC_METRIC_ORDER = (
     "Sensitivity",
@@ -104,11 +107,11 @@ _DIAGNOSTIC_METRIC_ORDER = (
 )
 _METRIC_LABELS = {
     "AUROC": "AUROC",
-    "AUROC_macro": "AUROC macro",
-    "AUROC_weighted": "AUROC weighted",
+    "AUROC_macro": "AUROC macro (OvR)",
+    "AUROC_weighted": "AUROC weighted (OvR)",
     "AUCPR": "AUCPR",
-    "AUCPR_macro": "AUCPR macro",
-    "AUCPR_weighted": "AUCPR weighted",
+    "AUCPR_macro": "AUCPR macro (OvR)",
+    "AUCPR_weighted": "AUCPR weighted (OvR)",
     "AP": "Average precision",
     "AP_macro": "Average precision macro",
     "MCC": "MCC",
@@ -129,6 +132,9 @@ _METRIC_LABELS = {
     "CalibrationInTheLarge": "Calibration-in-the-large",
     "CalibrationIntercept": "Calibration intercept",
     "CalibrationSlope": "Calibration slope",
+    "CalibrationInTheLarge_macro_OvR": "Calibration-in-the-large macro (OvR)",
+    "CalibrationIntercept_macro_OvR": "Calibration intercept macro (OvR)",
+    "CalibrationSlope_macro_OvR": "Calibration slope macro (OvR)",
 }
 _ESTIMAND_LABELS = {
     "mean_repeat_pooled_oof": "Pooled out-of-fold across outer folds, mean across repeats",
@@ -342,7 +348,14 @@ def _calibration_display(performance: pd.DataFrame) -> pd.DataFrame:
     coefficient = (
         calibration["metric"]
         .astype(str)
-        .isin({"CalibrationIntercept", "CalibrationSlope"})
+        .isin(
+            {
+                "CalibrationIntercept",
+                "CalibrationSlope",
+                "CalibrationIntercept_macro_OvR",
+                "CalibrationSlope_macro_OvR",
+            }
+        )
     )
     unstable = pd.Series(False, index=calibration.index)
     for column in ("estimate", "ci_low", "ci_high"):
@@ -353,6 +366,43 @@ def _calibration_display(performance: pd.DataFrame) -> pd.DataFrame:
         if column in calibration.columns:
             calibration.loc[unstable, column] = np.nan
     return _wide_metric_table(calibration, _CALIBRATION_METRIC_ORDER)
+
+
+def _calibration_coefficients_display(
+    coefficients: pd.DataFrame, n_classes: int | None
+) -> pd.DataFrame:
+    if n_classes is None or int(n_classes) <= 2 or coefficients.empty:
+        return pd.DataFrame()
+    required = {
+        "Strategy",
+        "estimand",
+        "class_label",
+        "CalibrationInTheLarge",
+        "CalibrationIntercept",
+        "CalibrationSlope",
+    }
+    if not required.issubset(coefficients.columns):
+        return pd.DataFrame()
+    out = coefficients[
+        [
+            "Strategy",
+            "estimand",
+            "class_label",
+            "CalibrationInTheLarge",
+            "CalibrationIntercept",
+            "CalibrationSlope",
+        ]
+    ].copy()
+    out = out.rename(
+        columns={
+            "estimand": "Estimand",
+            "class_label": "Class",
+            "CalibrationInTheLarge": "Calibration-in-the-large",
+            "CalibrationIntercept": "Calibration intercept",
+            "CalibrationSlope": "Calibration slope",
+        }
+    )
+    return out
 
 
 def _threshold_metrics_display(threshold_metrics: pd.DataFrame) -> pd.DataFrame:
@@ -1336,6 +1386,7 @@ def _calibration_note() -> str:
     return (
         "<p>Calibration-in-the-large assesses systematic over- or under-prediction using an offset-only logistic recalibration and is ideally 0. "
         "Calibration intercept and slope come from logistic recalibration of the observed outcome on the logit of the predicted probability. Their ideal values are 0 and 1, respectively. "
+        "For multiclass outcomes, calibration coefficients are computed one-vs-rest for each class and only explicitly labeled macro OvR summaries are reported as scalar performance metrics; reliability-curve data remain class-specific. "
         "Complete or quasi-complete separation, or nearly degenerate probabilities, can make the unpenalized calibration intercept and slope non-identifiable. Unstable estimates are reported as NA because extremely large coefficients are not interpretable.</p>"
     )
 
@@ -1344,6 +1395,10 @@ def _links_html(tables_dir: Path) -> str:
     names = [
         ("strategy_oof_performance.parquet", "Long-form out-of-fold estimates"),
         ("strategy_oof_calibration.parquet", "Reliability-curve data"),
+        (
+            "strategy_oof_calibration_coefficients.parquet",
+            "Class-specific calibration coefficients",
+        ),
         ("strategy_oof_pairwise_contrasts.parquet", "Paired out-of-fold contrasts"),
         (
             "strategy_oof_threshold_metrics.parquet",
@@ -1517,6 +1572,9 @@ def oof_section_html(
     tables_dir = report_dir / "tables"
     performance = _read_table(tables_dir / "strategy_oof_performance.parquet")
     calibration_curve = _read_table(tables_dir / "strategy_oof_calibration.parquet")
+    calibration_coefficients = _read_table(
+        tables_dir / "strategy_oof_calibration_coefficients.parquet"
+    )
     threshold_metrics = _read_table(
         tables_dir / "strategy_oof_threshold_metrics.parquet"
     )
@@ -1539,6 +1597,9 @@ def oof_section_html(
     multiclass_table = _multiclass_display(performance, n_classes)
     probability_table = _probability_display(performance, n_classes)
     calibration_table = _calibration_display(performance)
+    calibration_coefficients_table = _calibration_coefficients_display(
+        calibration_coefficients, n_classes
+    )
     threshold_table = _threshold_metrics_display(threshold_metrics)
     confusion_table = _confusion_display(confusion)
     decision_curve_table = _decision_curve_display(decision_curve, manifest)
@@ -1609,13 +1670,19 @@ def oof_section_html(
             ]
         )
     if not calibration_table.empty:
-        parts.extend(
-            [
-                f'<{subheading} id="{prefix}oof-calibration-summary">Calibration</{subheading}>',
-                _calibration_note(),
-                _html_table(calibration_table),
-            ]
-        )
+        calibration_parts = [
+            f'<{subheading} id="{prefix}oof-calibration-summary">Calibration</{subheading}>',
+            _calibration_note(),
+            _html_table(calibration_table),
+        ]
+        if not calibration_coefficients_table.empty:
+            calibration_parts.extend(
+                [
+                    "<p>Class-specific one-vs-rest calibration coefficients:</p>",
+                    _html_table(calibration_coefficients_table),
+                ]
+            )
+        parts.extend(calibration_parts)
     elif not calibration_curve.empty:
         parts.extend(
             [

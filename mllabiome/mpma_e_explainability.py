@@ -1219,7 +1219,7 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
             "MPMA-E explainability was requested, but no final MPMA-E specification is available."
         )
     if rankings is None:
-        rankings_path = root / "tables" / "mpma_rankings.parquet"
+        rankings_path = root / "tables" / "mpma_inner_rankings.parquet"
         if not rankings_path.exists():
             raise FileNotFoundError("Run evaluate(sweep) before explain(sweep).")
         rankings = read_table(rankings_path)

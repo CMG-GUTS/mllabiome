@@ -210,6 +210,9 @@ def _proper_metrics(y_true: np.ndarray, proba: np.ndarray) -> dict[str, float]:
         "CalibrationInTheLarge": float("nan"),
         "CalibrationIntercept": float("nan"),
         "CalibrationSlope": float("nan"),
+        "CalibrationInTheLarge_macro_OvR": float("nan"),
+        "CalibrationIntercept_macro_OvR": float("nan"),
+        "CalibrationSlope_macro_OvR": float("nan"),
     }
     if n_classes == 2:
         target = (y == 1).astype(float)
@@ -226,7 +229,11 @@ def _proper_metrics(y_true: np.ndarray, proba: np.ndarray) -> dict[str, float]:
             target = (y == class_index).astype(float)
             values.append(_calibration_binary(target, p[:, class_index]))
         for output_index, name in enumerate(
-            ("CalibrationInTheLarge", "CalibrationIntercept", "CalibrationSlope")
+            (
+                "CalibrationInTheLarge_macro_OvR",
+                "CalibrationIntercept_macro_OvR",
+                "CalibrationSlope_macro_OvR",
+            )
         ):
             finite = np.asarray(
                 [
@@ -394,13 +401,11 @@ def _fast_classification_metrics(
         if auc_values:
             out["AUROC_macro"] = float(np.mean(auc_values))
             out["AUROC_weighted"] = float(np.average(auc_values, weights=auc_weights))
-            out["AUROC"] = out["AUROC_macro"]
         if pr_auc_values:
             out["AUCPR_macro"] = float(np.mean(pr_auc_values))
             out["AUCPR_weighted"] = float(
                 np.average(pr_auc_values, weights=pr_auc_weights)
             )
-            out["AUCPR"] = out["AUCPR_macro"]
         if ap_values:
             out["AP_macro"] = float(np.mean(ap_values))
     return out
@@ -565,6 +570,91 @@ def _performance_rows(
     return rows
 
 
+def _classwise_calibration_values(
+    frame: pd.DataFrame,
+) -> dict[int, tuple[float, float, float]]:
+    if frame.empty:
+        return {}
+    pcols = _probability_columns(frame)
+    proba = _renormalize_proba(frame[pcols].to_numpy(dtype=float), len(pcols))
+    y_true = frame["y_true"].astype(int).to_numpy()
+    classes = [len(pcols) - 1] if len(pcols) == 2 else list(range(len(pcols)))
+    return {
+        int(class_index): _calibration_binary(
+            (y_true == class_index).astype(float), proba[:, class_index]
+        )
+        for class_index in classes
+    }
+
+
+def _mean_classwise_calibration(
+    values: list[dict[int, tuple[float, float, float]]],
+) -> dict[int, tuple[float, float, float]]:
+    classes = sorted({class_index for value in values for class_index in value})
+    out: dict[int, tuple[float, float, float]] = {}
+    for class_index in classes:
+        summaries: list[float] = []
+        for position in range(3):
+            finite = np.asarray(
+                [
+                    value[class_index][position]
+                    for value in values
+                    if class_index in value
+                    and np.isfinite(value[class_index][position])
+                ],
+                dtype=float,
+            )
+            summaries.append(float(np.mean(finite)) if len(finite) else float("nan"))
+        out[class_index] = tuple(summaries)
+    return out
+
+
+def _calibration_coefficient_rows(
+    strategy: str,
+    frame: pd.DataFrame,
+    protocol: str,
+    probability_valid: bool,
+) -> list[dict[str, Any]]:
+    if frame.empty or not probability_valid:
+        return []
+    pcols = _probability_columns(frame)
+    protocol_key = str(protocol).lower()
+    if protocol_key in _LODO_PROTOCOLS:
+        estimands = {
+            "pooled_sample_weighted": _classwise_calibration_values(frame),
+            "cohort_macro_equal_weight": _mean_classwise_calibration(
+                [
+                    _classwise_calibration_values(group)
+                    for _, group in frame.groupby("_cluster", sort=True)
+                ]
+            ),
+        }
+    else:
+        estimands = {
+            "mean_repeat_pooled_oof": _mean_classwise_calibration(
+                [
+                    _classwise_calibration_values(group)
+                    for _, group in frame.groupby("_repeat", sort=True)
+                ]
+            )
+        }
+    rows: list[dict[str, Any]] = []
+    for estimand, by_class in estimands.items():
+        for class_index, values in by_class.items():
+            rows.append(
+                {
+                    "Strategy": strategy,
+                    "estimand": estimand,
+                    "class_index": int(class_index),
+                    "class_label": str(pcols[class_index])[len("proba_") :],
+                    "CalibrationInTheLarge": float(values[0]),
+                    "CalibrationIntercept": float(values[1]),
+                    "CalibrationSlope": float(values[2]),
+                }
+            )
+    return rows
+
+
 def _reliability_rows(
     strategy: str,
     frame: pd.DataFrame,
@@ -591,6 +681,7 @@ def _reliability_rows(
                 {
                     "Strategy": strategy,
                     "class_index": int(class_index),
+                    "class_label": str(pcols[class_index])[len("proba_") :],
                     "bin": int(bin_index + 1),
                     "n": int(np.sum(mask)),
                     "mean_predicted_probability": float(np.mean(score[mask])),

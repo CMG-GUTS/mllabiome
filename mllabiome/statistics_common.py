@@ -40,6 +40,9 @@ OOF_METRIC_ORDER = (
     "CalibrationInTheLarge",
     "CalibrationIntercept",
     "CalibrationSlope",
+    "CalibrationInTheLarge_macro_OvR",
+    "CalibrationIntercept_macro_OvR",
+    "CalibrationSlope_macro_OvR",
 )
 _OOF_CONTRAST_METRICS = (
     "AUROC",
