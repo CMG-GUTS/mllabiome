@@ -42,6 +42,7 @@ from .diagnostic_statistics import (
     _mean_diagnostic_vectors,
     _nanmean_vectors,
     _operating_confusion_rows,
+    _roc_curve_rows,
     _operating_confusion_estimands,
     _operating_confusion_matrix,
     _safe_ratio_array,
@@ -459,6 +460,7 @@ def _run_oof_statistics(
     threshold_rows: list[dict[str, Any]] = []
     confusion_rows: list[dict[str, Any]] = []
     decision_curve_rows: list[dict[str, Any]] = []
+    roc_curve_rows: list[dict[str, Any]] = []
     coverage_rows: list[dict[str, Any]] = []
     class_labels: tuple[str, ...] = ()
     n_classes = 0
@@ -500,38 +502,48 @@ def _run_oof_statistics(
         confusion_rows.extend(
             _operating_confusion_rows(strategy, current, protocol, current_labels)
         )
-        if current_n_classes == 2 and probability_valid:
-            threshold_rows.extend(
-                _threshold_metric_rows(
+        if current_n_classes == 2:
+            roc_curve_rows.extend(
+                _roc_curve_rows(
                     strategy,
                     current,
                     protocol,
-                    diagnostic_thresholds,
-                    n_bootstrap,
-                    random_state,
                     current_labels[1],
+                    operating_threshold=0.5,
                 )
             )
-            confusion_rows.extend(
-                _confusion_rows(
-                    strategy,
-                    current,
-                    protocol,
-                    diagnostic_thresholds,
-                    (current_labels[0], current_labels[1]),
+            if probability_valid:
+                threshold_rows.extend(
+                    _threshold_metric_rows(
+                        strategy,
+                        current,
+                        protocol,
+                        diagnostic_thresholds,
+                        n_bootstrap,
+                        random_state,
+                        current_labels[1],
+                    )
                 )
-            )
-            decision_curve_rows.extend(
-                _decision_curve_rows(
-                    strategy,
-                    current,
-                    protocol,
-                    decision_curve_thresholds,
-                    n_bootstrap,
-                    random_state,
-                    current_labels[1],
+                confusion_rows.extend(
+                    _confusion_rows(
+                        strategy,
+                        current,
+                        protocol,
+                        diagnostic_thresholds,
+                        (current_labels[0], current_labels[1]),
+                    )
                 )
-            )
+                decision_curve_rows.extend(
+                    _decision_curve_rows(
+                        strategy,
+                        current,
+                        protocol,
+                        decision_curve_thresholds,
+                        n_bootstrap,
+                        random_state,
+                        current_labels[1],
+                    )
+                )
         coverage_rows.append(_coverage_row(strategy, current, protocol))
     contrasts, pairwise_coverage = _paired_contrast_rows(
         prepared,
@@ -546,6 +558,7 @@ def _run_oof_statistics(
         "threshold_metrics": pd.DataFrame(threshold_rows),
         "confusion_matrices": pd.DataFrame(confusion_rows),
         "decision_curve": pd.DataFrame(decision_curve_rows),
+        "roc_curve": pd.DataFrame(roc_curve_rows),
         "contrasts": contrasts,
         "coverage": pd.DataFrame(coverage_rows),
         "pairwise_coverage": pairwise_coverage,
@@ -634,7 +647,7 @@ def _statistics_fingerprint(
             float(value) for value in decision_curve_thresholds
         ],
         "files": [_file_signature(path) for path in paths],
-        "schema_version": 11,
+        "schema_version": 13,
     }
     text = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -661,6 +674,7 @@ def _cached_result(
     oof_threshold_metrics_path = tables / "strategy_oof_threshold_metrics.parquet"
     oof_confusion_matrices_path = tables / "strategy_oof_confusion_matrices.parquet"
     oof_decision_curve_path = tables / "strategy_oof_decision_curve.parquet"
+    oof_roc_curve_path = tables / "strategy_oof_roc_curve.parquet"
     required = (
         unit_path,
         summary_path,
@@ -674,6 +688,7 @@ def _cached_result(
         oof_threshold_metrics_path,
         oof_confusion_matrices_path,
         oof_decision_curve_path,
+        oof_roc_curve_path,
     )
     if any(not table_exists(path) for path in required):
         return None
@@ -687,6 +702,7 @@ def _cached_result(
         "oof_threshold_metrics": _read_table(oof_threshold_metrics_path),
         "oof_confusion_matrices": _read_table(oof_confusion_matrices_path),
         "oof_decision_curve": _read_table(oof_decision_curve_path),
+        "oof_roc_curve": _read_table(oof_roc_curve_path),
         "unit_metrics_path": unit_path,
         "summary_path": summary_path,
         "pairwise_path": pairwise_path,
@@ -696,6 +712,7 @@ def _cached_result(
         "oof_threshold_metrics_path": oof_threshold_metrics_path,
         "oof_confusion_matrices_path": oof_confusion_matrices_path,
         "oof_decision_curve_path": oof_decision_curve_path,
+        "oof_roc_curve_path": oof_roc_curve_path,
         "oof_manifest_path": oof_manifest_path,
         "oof_coverage_path": oof_coverage_path,
         "oof_pairwise_coverage_path": oof_pairwise_coverage_path,
@@ -726,15 +743,15 @@ def run_report_statistics(
         decision_curve_max_threshold,
         decision_curve_points,
     )
-    if diagnostic_thresholds:
-        decision_curve_thresholds = np.unique(
-            np.concatenate(
-                [
-                    decision_curve_thresholds,
-                    np.asarray(diagnostic_thresholds, dtype=float),
-                ]
-            )
+    decision_curve_thresholds = np.unique(
+        np.concatenate(
+            [
+                decision_curve_thresholds,
+                np.asarray([0.5], dtype=float),
+                np.asarray(diagnostic_thresholds, dtype=float),
+            ]
         )
+    )
     resolved_selection = _selection_metric_from_run(
         root, strategy_rows, selection_metric
     )
@@ -826,6 +843,7 @@ def run_report_statistics(
     oof_threshold_metrics_path = tables / "strategy_oof_threshold_metrics.parquet"
     oof_confusion_matrices_path = tables / "strategy_oof_confusion_matrices.parquet"
     oof_decision_curve_path = tables / "strategy_oof_decision_curve.parquet"
+    oof_roc_curve_path = tables / "strategy_oof_roc_curve.parquet"
     write_table(oof_performance_path, advanced["performance"])
     write_table(oof_calibration_path, advanced["calibration"])
     write_table(oof_contrasts_path, advanced["contrasts"])
@@ -834,8 +852,9 @@ def run_report_statistics(
     write_table(oof_threshold_metrics_path, advanced["threshold_metrics"])
     write_table(oof_confusion_matrices_path, advanced["confusion_matrices"])
     write_table(oof_decision_curve_path, advanced["decision_curve"])
+    write_table(oof_roc_curve_path, advanced["roc_curve"])
     oof_manifest = {
-        "schema_version": 8,
+        "schema_version": 10,
         "protocol": str(protocol),
         "strategies": list(frames),
         "n_classes": int(advanced["n_classes"]),
@@ -856,6 +875,12 @@ def run_report_statistics(
             "points": int(len(decision_curve_thresholds)),
             "net_benefit": "TP/N - FP/N * threshold/(1-threshold)",
             "reference_strategies": ["treat_none", "treat_all"],
+            "ordinary_operating_threshold": 0.5,
+        },
+        "roc_curve": {
+            "ordinary_operating_threshold": 0.5,
+            "mean_curve_grid_points": 401,
+            "coordinates": "false_positive_rate=1-specificity, true_positive_rate=sensitivity",
         },
         "metric_order": list(OOF_METRIC_ORDER),
         "estimands": (
@@ -884,7 +909,7 @@ def run_report_statistics(
     }
     dump_json_standard(oof_manifest, oof_manifest_path)
     manifest = {
-        "schema_version": 8,
+        "schema_version": 10,
         "fingerprint": fingerprint,
         "protocol": str(protocol),
         "strategies": list(frames),
@@ -923,12 +948,14 @@ def run_report_statistics(
         "oof_threshold_metrics": advanced["threshold_metrics"],
         "oof_confusion_matrices": advanced["confusion_matrices"],
         "oof_decision_curve": advanced["decision_curve"],
+        "oof_roc_curve": advanced["roc_curve"],
         "oof_performance_path": oof_performance_path,
         "oof_calibration_path": oof_calibration_path,
         "oof_contrasts_path": oof_contrasts_path,
         "oof_threshold_metrics_path": oof_threshold_metrics_path,
         "oof_confusion_matrices_path": oof_confusion_matrices_path,
         "oof_decision_curve_path": oof_decision_curve_path,
+        "oof_roc_curve_path": oof_roc_curve_path,
         "oof_manifest_path": oof_manifest_path,
         "oof_coverage_path": oof_coverage_path,
         "oof_pairwise_coverage_path": oof_pairwise_coverage_path,

@@ -200,7 +200,9 @@ def run_compute_accounting(
                 continue
             overhead = {"cpu_core_hours": 0.0, "wall_time_s": 0.0, "peak_rss_gib": 0.0}
             scope = (
-                "prespecified comparator family + outer-fold inner-validation selection"
+                "SIAMCAT raw identity comparator"
+                if strategy == "SIAMCAT"
+                else "prespecified comparator family + outer-fold inner-validation selection"
             )
         base = _resource_summary(resources, ids, outer_keys)
         if not base:

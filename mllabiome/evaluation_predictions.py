@@ -269,6 +269,9 @@ def _comparator_configs(configs: pd.DataFrame, strategy: str) -> pd.DataFrame:
         active = pd.to_numeric(frame["active"], errors="coerce").fillna(0).astype(int)
         frame = frame[active.eq(1)].copy()
     learner = frame.get("learner", pd.Series("", index=frame.index)).astype(str)
+    learner_class = frame.get("learner_class", pd.Series("", index=frame.index)).astype(
+        str
+    )
     transform = frame.get(
         "count_transformation", pd.Series("", index=frame.index)
     ).astype(str)
@@ -304,8 +307,10 @@ def _comparator_configs(configs: pd.DataFrame, strategy: str) -> pd.DataFrame:
                 return ranked.drop(columns=["_single_rank"])
         return frame.iloc[0:0].drop(columns=["_single_rank"])
     if strategy == "SIAMCAT":
+        siamcat = learner.str.fullmatch("SIAMCAT", case=False).fillna(False)
+        siamcat |= learner_class.str.endswith("SIAMCATClassifier", na=False)
         return frame[
-            learner.str.fullmatch("SIAMCAT", case=False).fillna(False)
+            siamcat
             & transform.str.fullmatch("identity", case=False).fillna(False)
             & resolution.str.fullmatch("raw", case=False).fillna(False)
         ].copy()

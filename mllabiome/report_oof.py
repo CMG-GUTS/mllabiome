@@ -557,10 +557,12 @@ def _decision_curve_display(
 
 def _decision_curve_figure_html(
     decision_curve: pd.DataFrame,
+    roc_curve: pd.DataFrame,
+    performance: pd.DataFrame,
     manifest: dict[str, Any],
     report_dir: Path,
 ) -> str:
-    required = {
+    dca_required = {
         "Strategy",
         "estimand",
         "threshold",
@@ -570,9 +572,26 @@ def _decision_curve_figure_html(
         "treat_all_net_benefit",
         "treat_none_net_benefit",
     }
-    if decision_curve.empty or not required.issubset(decision_curve.columns):
+    roc_required = {
+        "Strategy",
+        "estimand",
+        "point_index",
+        "false_positive_rate",
+        "sensitivity",
+        "operating_threshold",
+        "operating_false_positive_rate",
+        "operating_sensitivity",
+    }
+    dca = (
+        decision_curve.copy()
+        if dca_required.issubset(decision_curve.columns)
+        else pd.DataFrame()
+    )
+    roc = (
+        roc_curve.copy() if roc_required.issubset(roc_curve.columns) else pd.DataFrame()
+    )
+    if dca.empty and roc.empty:
         return ""
-    frame = decision_curve.copy()
     for column in (
         "threshold",
         "net_benefit",
@@ -581,10 +600,29 @@ def _decision_curve_figure_html(
         "treat_all_net_benefit",
         "treat_none_net_benefit",
     ):
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    frame = frame[np.isfinite(frame["threshold"])].copy()
-    if frame.empty:
-        return ""
+        if column in dca.columns:
+            dca[column] = pd.to_numeric(dca[column], errors="coerce")
+    for column in (
+        "point_index",
+        "false_positive_rate",
+        "sensitivity",
+        "operating_threshold",
+        "operating_false_positive_rate",
+        "operating_sensitivity",
+    ):
+        if column in roc.columns:
+            roc[column] = pd.to_numeric(roc[column], errors="coerce")
+    if not dca.empty:
+        dca = dca[np.isfinite(dca["threshold"])].copy()
+    if not roc.empty:
+        roc = roc[
+            np.isfinite(roc["false_positive_rate"]) & np.isfinite(roc["sensitivity"])
+        ].copy()
+    settings = manifest.get("decision_curve", {})
+    settings = settings if isinstance(settings, dict) else {}
+    operating_threshold = _safe_float(settings.get("ordinary_operating_threshold", 0.5))
+    if not np.isfinite(operating_threshold):
+        operating_threshold = 0.5
     configured = manifest.get("diagnostic_thresholds", [])
     thresholds = []
     if isinstance(configured, list):
@@ -603,27 +641,73 @@ def _decision_curve_figure_html(
     strategy_palette = {
         "MPMA-E": _style.C_NAVY,
         "MPMA-B": _style.C_MID,
+        "Baseline RF": _style.C_DARK,
+        "SIAMCAT": _style.C_TEAL,
+        "AutoML": _style.C_BRIGHT,
     }
     fallback_palette = (
-        _style.C_DARK,
-        _style.C_BRIGHT,
         _style.C_SKY,
-        _style.C_TEAL,
         _style.C_HILITE,
+        _style.MID,
+        _style.DIM,
     )
-    blocks: list[str] = []
-    estimands = frame["estimand"].dropna().astype(str).drop_duplicates().tolist()
+
+    def auroc(strategy: str, estimand: str) -> float:
+        if performance.empty:
+            return float("nan")
+        required_performance = {"Strategy", "estimand", "metric", "estimate"}
+        if not required_performance.issubset(performance.columns):
+            return float("nan")
+        selected = performance[
+            performance["Strategy"].astype(str).eq(strategy)
+            & performance["estimand"].astype(str).eq(estimand)
+            & performance["metric"].astype(str).eq("AUROC")
+        ]
+        if selected.empty:
+            return float("nan")
+        return _safe_float(selected.iloc[0].get("estimate"))
+
+    estimands = list(
+        dict.fromkeys(
+            [
+                *dca.get("estimand", pd.Series(dtype=str))
+                .dropna()
+                .astype(str)
+                .tolist(),
+                *roc.get("estimand", pd.Series(dtype=str))
+                .dropna()
+                .astype(str)
+                .tolist(),
+            ]
+        )
+    )
     if not estimands:
-        estimands = [""]
-        frame["estimand"] = ""
+        return ""
+    blocks: list[str] = []
     for index, estimand in enumerate(estimands, start=1):
-        sub = frame[frame["estimand"].astype(str).eq(str(estimand))].copy()
-        if sub.empty:
+        dca_sub = (
+            dca[dca["estimand"].astype(str).eq(str(estimand))].copy()
+            if not dca.empty
+            else pd.DataFrame()
+        )
+        roc_sub = (
+            roc[roc["estimand"].astype(str).eq(str(estimand))].copy()
+            if not roc.empty
+            else pd.DataFrame()
+        )
+        strategy_sequence = list(
+            dict.fromkeys(
+                [
+                    *dca_sub.get("Strategy", pd.Series(dtype=str)).astype(str).tolist(),
+                    *roc_sub.get("Strategy", pd.Series(dtype=str)).astype(str).tolist(),
+                ]
+            )
+        )
+        if not strategy_sequence:
             continue
-        strategies = sub["Strategy"].astype(str).drop_duplicates().tolist()
         fallback_index = 0
         colors: dict[str, str] = {}
-        for strategy in strategies:
+        for strategy in strategy_sequence:
             if strategy in strategy_palette:
                 colors[strategy] = strategy_palette[strategy]
             else:
@@ -632,13 +716,25 @@ def _decision_curve_figure_html(
                 ]
                 fallback_index += 1
         with mpl.rc_context(_style.RC):
-            fig, ax = plt.subplots(figsize=(_style.COL_W_2, 92 * _style.MM))
-            strategy_lines: dict[str, Any] = {}
+            fig, axes = plt.subplots(
+                1,
+                2,
+                figsize=(_style.COL_W_2, 84 * _style.MM),
+                gridspec_kw={"wspace": 0.28},
+            )
+            ax_dca, ax_roc = axes
             model_scale: list[np.ndarray] = []
-            for strategy in strategies:
-                group = sub[sub["Strategy"].astype(str).eq(strategy)].sort_values(
-                    "threshold"
-                )
+            reference_groups: list[tuple[str, np.ndarray, np.ndarray]] = []
+            reference_upper: list[float] = []
+            dca_strategies = (
+                dca_sub["Strategy"].astype(str).drop_duplicates().tolist()
+                if not dca_sub.empty
+                else []
+            )
+            for strategy in dca_strategies:
+                group = dca_sub[
+                    dca_sub["Strategy"].astype(str).eq(strategy)
+                ].sort_values("threshold")
                 x = group["threshold"].to_numpy(dtype=float)
                 y = group["net_benefit"].to_numpy(dtype=float)
                 low = group["ci_low"].to_numpy(dtype=float)
@@ -647,38 +743,51 @@ def _decision_curve_figure_html(
                 if not np.any(valid):
                     continue
                 color = colors[strategy]
-                line = ax.plot(
+                ax_dca.plot(
                     x[valid],
                     y[valid],
                     linewidth=1.0,
                     color=color,
                     label=strategy,
-                )[0]
-                strategy_lines[strategy] = line
+                )
                 band = np.isfinite(x) & np.isfinite(low) & np.isfinite(high)
                 if np.any(band):
-                    ax.fill_between(
+                    ax_dca.fill_between(
                         x[band],
                         low[band],
                         high[band],
                         color=color,
-                        alpha=0.14,
+                        alpha=0.10,
                         linewidth=0.0,
                     )
                     model_scale.extend([low[band], high[band]])
                 model_scale.append(y[valid])
-            reference_groups: list[tuple[str, np.ndarray, np.ndarray]] = []
-            reference_upper: list[float] = []
-            for strategy in strategies:
-                group = sub[sub["Strategy"].astype(str).eq(strategy)].sort_values(
-                    "threshold"
-                )
-                x = group["threshold"].to_numpy(dtype=float)
-                y = group["treat_all_net_benefit"].to_numpy(dtype=float)
-                valid = np.isfinite(x) & np.isfinite(y)
-                if np.any(valid):
-                    values = y[valid]
-                    reference_groups.append((strategy, x[valid], values))
+                operating = group[
+                    np.isclose(
+                        group["threshold"].to_numpy(dtype=float),
+                        operating_threshold,
+                        atol=1e-12,
+                        rtol=1e-12,
+                    )
+                ]
+                if not operating.empty:
+                    operating_net = _safe_float(operating.iloc[0].get("net_benefit"))
+                    if np.isfinite(operating_net):
+                        ax_dca.scatter(
+                            [operating_threshold],
+                            [operating_net],
+                            s=15,
+                            marker="o",
+                            facecolor=color,
+                            edgecolor=_style.BG,
+                            linewidth=0.45,
+                            zorder=8,
+                        )
+                reference_y = group["treat_all_net_benefit"].to_numpy(dtype=float)
+                reference_valid = np.isfinite(x) & np.isfinite(reference_y)
+                if np.any(reference_valid):
+                    values = reference_y[reference_valid]
+                    reference_groups.append((strategy, x[reference_valid], values))
                     reference_upper.append(float(np.max(values)))
             shared_reference = False
             if reference_groups:
@@ -691,7 +800,7 @@ def _decision_curve_figure_html(
                     for _, x, y in reference_groups[1:]
                 )
                 if shared_reference:
-                    ax.plot(
+                    ax_dca.plot(
                         base_x,
                         base_y,
                         linestyle="--",
@@ -701,7 +810,7 @@ def _decision_curve_figure_html(
                     )
                 else:
                     for strategy, x, y in reference_groups:
-                        ax.plot(
+                        ax_dca.plot(
                             x,
                             y,
                             linestyle="--",
@@ -710,22 +819,33 @@ def _decision_curve_figure_html(
                             alpha=0.75,
                             label=f"Treat all ({strategy})",
                         )
-            ax.axhline(
+            ax_dca.axhline(
                 0.0,
                 color=_style.INK,
                 linewidth=0.9,
                 linestyle=":",
                 label="Treat none",
             )
-            for threshold_index, threshold in enumerate(thresholds):
-                ax.axvline(
+            ax_dca.axvline(
+                operating_threshold,
+                color=_style.DIM,
+                linewidth=0.65,
+                linestyle=(0, (3, 2)),
+                alpha=0.9,
+            )
+            threshold_label_used = False
+            for threshold in thresholds:
+                if np.isclose(threshold, operating_threshold, atol=1e-12, rtol=1e-12):
+                    continue
+                ax_dca.axvline(
                     threshold,
                     color=_style.DIM,
-                    linewidth=0.65,
+                    linewidth=0.55,
                     linestyle=(0, (2, 2)),
-                    alpha=0.9,
-                    label="Pre-specified threshold" if threshold_index == 0 else None,
+                    alpha=0.65,
+                    label=None if threshold_label_used else "Pre-specified threshold",
                 )
+                threshold_label_used = True
             finite_chunks = [
                 values[np.isfinite(values)]
                 for values in model_scale
@@ -744,18 +864,30 @@ def _decision_curve_figure_html(
                     max(reference_upper) if reference_upper else 0.0,
                 )
                 span = max(upper - lower, 0.05)
-                ax.set_ylim(lower - 0.08 * span, upper + 0.10 * span)
-            xmin = float(np.nanmin(sub["threshold"].to_numpy(dtype=float)))
-            xmax = float(np.nanmax(sub["threshold"].to_numpy(dtype=float)))
-            xspan = max(xmax - xmin, 1e-6)
-            xleft = max(0.0, xmin - 0.02 * xspan)
-            xright = min(1.0, xmax + 0.02 * xspan)
-            if xmin <= 0.02:
-                xleft = 0.0
-            if xmax >= 0.98:
-                xright = 1.0
-            ax.set_xlim(xleft, xright)
-            ymin, _ = ax.get_ylim()
+                ax_dca.set_ylim(lower - 0.08 * span, upper + 0.10 * span)
+            if not dca_sub.empty:
+                xmin = float(np.nanmin(dca_sub["threshold"].to_numpy(dtype=float)))
+                xmax = float(np.nanmax(dca_sub["threshold"].to_numpy(dtype=float)))
+                xspan = max(xmax - xmin, 1e-6)
+                xleft = max(0.0, xmin - 0.02 * xspan)
+                xright = min(1.0, xmax + 0.02 * xspan)
+                if xmin <= 0.02:
+                    xleft = 0.0
+                if xmax >= 0.98:
+                    xright = 1.0
+                ax_dca.set_xlim(xleft, xright)
+            else:
+                ax_dca.set_xlim(0.0, 1.0)
+                ax_dca.text(
+                    0.5,
+                    0.5,
+                    "Decision-curve analysis unavailable",
+                    transform=ax_dca.transAxes,
+                    ha="center",
+                    va="center",
+                    color=_style.MID,
+                )
+            ymin, _ = ax_dca.get_ylim()
             clipped_reference = False
             for strategy, x, y in reference_groups:
                 below = y < ymin
@@ -775,7 +907,7 @@ def _decision_curve_figure_html(
                 marker_color = (
                     _style.MID if shared_reference else colors.get(strategy, _style.MID)
                 )
-                ax.scatter(
+                ax_dca.scatter(
                     [marker_x],
                     [ymin],
                     marker="v",
@@ -786,25 +918,102 @@ def _decision_curve_figure_html(
                     zorder=7,
                 )
                 clipped_reference = True
-            ax.set_xlabel("Threshold probability")
-            ax.set_ylabel("Net benefit")
-            ax.spines["top"].set_visible(False)
-            ax.spines["right"].set_visible(False)
-            ax.legend(loc="best", ncol=2 if len(strategy_lines) > 1 else 1)
-            fig.tight_layout(pad=0.7)
-            target = report_dir / "figures" / f"decision_curve__{index}.svg"
+            ax_dca.set_xlabel("Threshold probability")
+            ax_dca.set_ylabel("Net benefit")
+            ax_dca.spines["top"].set_visible(False)
+            ax_dca.spines["right"].set_visible(False)
+            if dca_strategies:
+                ax_dca.legend(loc="best", ncol=2 if len(dca_strategies) > 1 else 1)
+
+            roc_strategies = (
+                roc_sub["Strategy"].astype(str).drop_duplicates().tolist()
+                if not roc_sub.empty
+                else []
+            )
+            for strategy in roc_strategies:
+                group = roc_sub[
+                    roc_sub["Strategy"].astype(str).eq(strategy)
+                ].sort_values("point_index")
+                fpr = group["false_positive_rate"].to_numpy(dtype=float)
+                tpr = group["sensitivity"].to_numpy(dtype=float)
+                valid = np.isfinite(fpr) & np.isfinite(tpr)
+                if not np.any(valid):
+                    continue
+                color = colors[strategy]
+                auc = auroc(strategy, str(estimand))
+                label = (
+                    strategy
+                    if not np.isfinite(auc)
+                    else f"{strategy} (AUROC {auc:.3f})"
+                )
+                ax_roc.plot(
+                    np.clip(fpr[valid], 0.0, 1.0),
+                    np.clip(tpr[valid], 0.0, 1.0),
+                    linewidth=1.0,
+                    color=color,
+                    label=label,
+                )
+                first = group.iloc[0]
+                operating_fpr = _safe_float(first.get("operating_false_positive_rate"))
+                operating_tpr = _safe_float(first.get("operating_sensitivity"))
+                if np.isfinite(operating_fpr) and np.isfinite(operating_tpr):
+                    ax_roc.scatter(
+                        [operating_fpr],
+                        [operating_tpr],
+                        s=15,
+                        marker="o",
+                        facecolor=color,
+                        edgecolor=_style.BG,
+                        linewidth=0.45,
+                        zorder=8,
+                    )
+            ax_roc.plot(
+                [0.0, 1.0],
+                [0.0, 1.0],
+                linestyle="--",
+                linewidth=0.8,
+                color=_style.DIM,
+                label="Chance",
+            )
+            ax_roc.set_xlim(0.0, 1.0)
+            ax_roc.set_ylim(0.0, 1.0)
+            ax_roc.set_xlabel("1 − specificity")
+            ax_roc.set_ylabel("Sensitivity")
+            ax_roc.spines["top"].set_visible(False)
+            ax_roc.spines["right"].set_visible(False)
+            if roc_strategies:
+                ax_roc.legend(loc="lower right")
+            ax_dca.text(
+                -0.13,
+                1.03,
+                "a",
+                transform=ax_dca.transAxes,
+                fontweight="bold",
+                va="bottom",
+                ha="left",
+            )
+            ax_roc.text(
+                -0.13,
+                1.03,
+                "b",
+                transform=ax_roc.transAxes,
+                fontweight="bold",
+                va="bottom",
+                ha="left",
+            )
+            fig.subplots_adjust(
+                left=0.08, right=0.985, bottom=0.16, top=0.96, wspace=0.32
+            )
+            target = report_dir / "figures" / f"decision_roc__{index}.svg"
             _style.save_svg(fig, target)
             plt.close(fig)
         estimand_label = _ESTIMAND_LABELS.get(str(estimand), str(estimand))
-        caption = (
-            "Decision-curve analysis with 95% bootstrap confidence intervals, "
-            "treat-all and treat-none references"
-        )
+        caption = "Decision-curve analysis with 95% bootstrap confidence intervals and receiver operating characteristic curves"
         if estimand_label:
             caption += f" ({estimand_label})"
-        caption += ". The y-axis is scaled to the model net-benefit estimates and confidence intervals"
+        caption += f". Filled circles mark the ordinary binary operating threshold p={operating_threshold:.3f} in both panels"
         if clipped_reference:
-            caption += "; a downward triangle marks where a treat-all reference continues below the displayed y-range"
+            caption += "; a downward triangle marks where a treat-all reference continues below the displayed decision-curve y-range"
         caption += "."
         block = _report_module._fig(target, report_dir, caption)
         if block:
@@ -1081,11 +1290,15 @@ def _decision_curve_note(manifest: dict[str, Any]) -> str:
         point_text = f" at {int(points):,} threshold probabilities"
     except (TypeError, ValueError):
         point_text = ""
+    operating = _safe_float(settings.get("ordinary_operating_threshold", 0.5))
+    operating_text = f"{operating:.3f}" if np.isfinite(operating) else "0.500"
     return (
         "<p>Decision-curve analysis evaluates net benefit as TP/N − FP/N × p<sub>t</sub>/(1−p<sub>t</sub>), where p<sub>t</sub> is the threshold probability. "
         f"The curve is evaluated{html.escape(range_text)}{html.escape(point_text)} and compared with treat-all and treat-none reference strategies. "
         "Net-benefit confidence intervals use the same protocol-aware cluster bootstrap. Interpretation should be restricted to threshold probabilities that are clinically plausible because the threshold encodes the relative consequence of false-positive and false-negative decisions. "
-        "The full decision curve is displayed below and provided in the downloadable decision-curve table. Pre-specified diagnostic thresholds, when configured, are marked on the figure and summarized in the compact table.</p>"
+        f"The paired ROC panel is constructed from held-out score rankings for the same protocol-defined estimand; filled circles mark sensitivity and 1−specificity at the ordinary binary operating threshold p={html.escape(operating_text)}. "
+        "For repeated nested cross-validation, repeat-specific pooled out-of-fold ROC curves are averaged on a common false-positive-rate grid; for leave-dataset-out evaluation, both pooled sample-weighted and equal-weight cohort-macro ROC estimands are retained. "
+        "AUROC values in the ROC legend are the corresponding held-out statistical estimates and are not recomputed from the rendered curve. Pre-specified diagnostic thresholds, when configured, remain marked in the decision-curve panel and summarized in the compact table.</p>"
     )
 
 
@@ -1138,6 +1351,7 @@ def _links_html(tables_dir: Path) -> str:
         ),
         ("strategy_oof_confusion_matrices.parquet", "Confusion matrices"),
         ("strategy_oof_decision_curve.parquet", "Decision-curve net benefit"),
+        ("strategy_oof_roc_curve.parquet", "ROC coordinates"),
         ("strategy_oof_statistics_manifest.json", "Out-of-fold methods manifest"),
         ("strategy_oof_coverage.parquet", "Out-of-fold coverage"),
         ("strategy_oof_pairwise_coverage.parquet", "Paired out-of-fold coverage"),
@@ -1308,6 +1522,7 @@ def oof_section_html(
     )
     confusion = _read_table(tables_dir / "strategy_oof_confusion_matrices.parquet")
     decision_curve = _read_table(tables_dir / "strategy_oof_decision_curve.parquet")
+    roc_curve = _read_table(tables_dir / "strategy_oof_roc_curve.parquet")
     contrasts = _read_table(tables_dir / "strategy_oof_pairwise_contrasts.parquet")
     manifest = _read_json(tables_dir / "strategy_oof_statistics_manifest.json")
     if n_classes is None:
@@ -1328,7 +1543,7 @@ def oof_section_html(
     confusion_table = _confusion_display(confusion)
     decision_curve_table = _decision_curve_display(decision_curve, manifest)
     decision_curve_figure = _decision_curve_figure_html(
-        decision_curve, manifest, report_dir
+        decision_curve, roc_curve, performance, manifest, report_dir
     )
     contrast_table = _contrast_display(contrasts, n_classes)
     design_table = _design_display(manifest)
@@ -1425,10 +1640,10 @@ def oof_section_html(
                 _html_table(threshold_table),
             ]
         )
-    if not decision_curve.empty:
+    if not decision_curve.empty or not roc_curve.empty:
         parts.extend(
             [
-                f'<{subheading} id="{prefix}oof-decision-curve">Decision-curve analysis</{subheading}>',
+                f'<{subheading} id="{prefix}oof-decision-curve">Decision-curve analysis and ROC</{subheading}>',
                 _decision_curve_note(manifest),
             ]
         )
@@ -1646,6 +1861,7 @@ def write_report(sweep: Any) -> dict[str, Path]:
         / "strategy_oof_confusion_matrices.parquet",
         "strategy_oof_decision_curve": tables_dir
         / "strategy_oof_decision_curve.parquet",
+        "strategy_oof_roc_curve": tables_dir / "strategy_oof_roc_curve.parquet",
         "strategy_oof_statistics_manifest": tables_dir
         / "strategy_oof_statistics_manifest.json",
         "strategy_oof_coverage": tables_dir / "strategy_oof_coverage.parquet",

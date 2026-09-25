@@ -57,7 +57,7 @@ COUNT_TRANSFORMATIONS = (
     # mll.Transformation("presence_absence"),
     mll.Transformation("identity"),
     # mll.Transformation("arcsine_sqrt", composition_scope="rank-wise"),
-    # mll.Transformation("arcsine_sqrt", composition_scope="joint"),
+    mll.Transformation("arcsine_sqrt", composition_scope="joint"),
     # # mll.Transformation("yeo_johnson", composition_scope="rank-wise"),
     mll.Transformation("yeo_johnson", composition_scope="joint"),
     # mll.Transformation("hellinger", composition_scope="rank-wise"),

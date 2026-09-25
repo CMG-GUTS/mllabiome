@@ -4,6 +4,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from sklearn.metrics import roc_curve as sklearn_roc_curve
 
 from .oof_statistics import _probability_columns, _resample_subjects
 from .statistics_common import DIAGNOSTIC_METRICS, _LODO_PROTOCOLS, _stable_seed
@@ -665,6 +666,118 @@ def _decision_curve_rows(
                     ),
                     "prevalence": float(values["prevalence"][threshold_index]),
                     "n_bootstrap_valid": int(len(samples)),
+                    "n_rows": int(len(frame)),
+                }
+            )
+    return rows
+
+
+def _binary_roc(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    pcols = _probability_columns(frame)
+    if len(pcols) != 2 or frame.empty:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+    y = frame["y_true"].astype(int).to_numpy()
+    if len(np.unique(y)) < 2:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+    score = frame[pcols[1]].to_numpy(dtype=float)
+    fpr, tpr, _ = sklearn_roc_curve(y, score, pos_label=1, drop_intermediate=False)
+    return np.asarray(fpr, dtype=float), np.asarray(tpr, dtype=float)
+
+
+def _interpolated_roc(frame: pd.DataFrame, fpr_grid: np.ndarray) -> np.ndarray:
+    fpr, tpr = _binary_roc(frame)
+    if len(fpr) == 0:
+        return np.full(len(fpr_grid), np.nan, dtype=float)
+    unique_fpr = np.unique(fpr)
+    upper_tpr = np.asarray(
+        [float(np.max(tpr[np.isclose(fpr, value)])) for value in unique_fpr],
+        dtype=float,
+    )
+    values = np.interp(fpr_grid, unique_fpr, upper_tpr)
+    values = np.maximum.accumulate(np.clip(values, 0.0, 1.0))
+    values[0] = 0.0
+    values[-1] = 1.0
+    return values
+
+
+def _mean_roc(
+    groups: list[pd.DataFrame], fpr_grid: np.ndarray
+) -> tuple[np.ndarray, int]:
+    values = [_interpolated_roc(group, fpr_grid) for group in groups]
+    values = [value for value in values if np.isfinite(value).any()]
+    if not values:
+        return np.full(len(fpr_grid), np.nan, dtype=float), 0
+    return _nanmean_vectors(values, len(fpr_grid)), len(values)
+
+
+def _roc_curve_rows(
+    strategy: str,
+    frame: pd.DataFrame,
+    protocol: str,
+    positive_class_label: str,
+    operating_threshold: float = 0.5,
+    grid_points: int = 401,
+) -> list[dict[str, Any]]:
+    fpr_grid = np.linspace(0.0, 1.0, max(2, int(grid_points)), dtype=float)
+    protocol_key = str(protocol).lower()
+    curves: dict[str, tuple[np.ndarray, np.ndarray, int]] = {}
+    if protocol_key in _LODO_PROTOCOLS:
+        pooled_fpr, pooled_tpr = _binary_roc(frame)
+        if len(pooled_fpr):
+            curves["pooled_sample_weighted"] = (
+                pooled_fpr,
+                pooled_tpr,
+                int(frame["_cluster"].nunique()),
+            )
+        groups = [group for _, group in frame.groupby("_cluster", sort=True)]
+        macro_tpr, valid_groups = _mean_roc(groups, fpr_grid)
+        if valid_groups:
+            curves["cohort_macro_equal_weight"] = (
+                fpr_grid,
+                macro_tpr,
+                valid_groups,
+            )
+    else:
+        groups = [group for _, group in frame.groupby("_repeat", sort=True)]
+        mean_tpr, valid_groups = _mean_roc(groups, fpr_grid)
+        if valid_groups:
+            curves["mean_repeat_pooled_oof"] = (fpr_grid, mean_tpr, valid_groups)
+    operating = _threshold_point_estimands(
+        frame, protocol, np.asarray([float(operating_threshold)], dtype=float)
+    )
+    rows: list[dict[str, Any]] = []
+    for estimand, (fpr, tpr, n_units) in curves.items():
+        diagnostics = operating.get(estimand, {})
+        sensitivity = np.asarray(
+            diagnostics.get("Sensitivity", np.asarray([np.nan], dtype=float)),
+            dtype=float,
+        )
+        specificity = np.asarray(
+            diagnostics.get("Specificity", np.asarray([np.nan], dtype=float)),
+            dtype=float,
+        )
+        operating_tpr = float(sensitivity[0]) if len(sensitivity) else np.nan
+        operating_fpr = (
+            float(1.0 - specificity[0])
+            if len(specificity) and np.isfinite(specificity[0])
+            else np.nan
+        )
+        for index, (x, y) in enumerate(zip(fpr, tpr, strict=False)):
+            if not np.isfinite(x) or not np.isfinite(y):
+                continue
+            rows.append(
+                {
+                    "Strategy": strategy,
+                    "estimand": estimand,
+                    "point_index": int(index),
+                    "false_positive_rate": float(x),
+                    "sensitivity": float(y),
+                    "positive_class_index": 1,
+                    "positive_class_label": positive_class_label,
+                    "operating_threshold": float(operating_threshold),
+                    "operating_false_positive_rate": operating_fpr,
+                    "operating_sensitivity": operating_tpr,
+                    "n_averaged_units": int(n_units),
                     "n_rows": int(len(frame)),
                 }
             )

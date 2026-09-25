@@ -1359,6 +1359,10 @@ def _strategy_rows(
             "learner", pd.Series("", index=base.index, dtype=str)
         ).astype(str)
 
+        learner_class = base.get(
+            "learner_class", pd.Series("", index=base.index, dtype=str)
+        ).astype(str)
+
         transform = base.get(
             "count_transformation", pd.Series("", index=base.index, dtype=str)
         ).astype(str)
@@ -1399,8 +1403,10 @@ def _strategy_rows(
                 **baseline,
             }
 
+        siamcat_mask = learner.str.fullmatch("SIAMCAT", case=False).fillna(False)
+        siamcat_mask |= learner_class.str.endswith("SIAMCATClassifier", na=False)
         siamcat = _pick(
-            learner.str.fullmatch("SIAMCAT", case=False).fillna(False)
+            siamcat_mask
             & transform.str.fullmatch("identity", case=False).fillna(False)
             & resolution.str.fullmatch("raw", case=False).fillna(False)
         )

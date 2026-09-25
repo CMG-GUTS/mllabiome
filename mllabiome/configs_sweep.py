@@ -490,19 +490,13 @@ def _validate_incremental_experiment_identity(
 
 
 def _scientifically_compatible_config(
-    count_transformation: str, learner_payload: Mapping[str, Any]
+    count_transformation: str, resolution: str, learner_payload: Mapping[str, Any]
 ) -> bool:
     learner_class = str(learner_payload.get("class", "")).rsplit(".", 1)[-1]
     if learner_class != "SIAMCATClassifier":
         return True
-    transformation = (
-        str(count_transformation)
-        .split("|filter=", 1)[0]
-        .split("@", 1)[0]
-        .strip()
-        .casefold()
-    )
-    return transformation == "identity"
+    transformation = str(count_transformation).strip().casefold()
+    return transformation == "identity" and str(resolution).strip().casefold() == "raw"
 
 
 def build_sweep_configs(
@@ -580,7 +574,9 @@ def build_sweep_configs(
                 learner_fingerprint,
                 learner_payload,
             ) in learner_specs:
-                if not _scientifically_compatible_config(ct_name, learner_payload):
+                if not _scientifically_compatible_config(
+                    ct_name, res_name, learner_payload
+                ):
                     continue
                 rows.append(
                     {
