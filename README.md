@@ -49,7 +49,9 @@ mllabiome examples/ibs_lodo_configs_sweep.py --stage evaluate
 
 
 
+## Keywords
 
+phenotype prediction benchmarking
 
 ## License
 

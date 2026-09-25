@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .evaluation_predictions import comparator_config_ids
 from .storage import read_table, table_exists, write_table
 from .utils import dump_json_standard
 
@@ -106,16 +107,6 @@ def _overhead(path: Path) -> dict[str, float]:
     }
 
 
-def _strategy_config_ids(strategy_rows: list[dict[str, Any]]) -> dict[str, str]:
-    out = {}
-    for row in strategy_rows:
-        strategy = str(row.get("Strategy", "")).strip()
-        config_id = str(row.get("config_id", "")).strip()
-        if strategy and config_id:
-            out[strategy] = config_id
-    return out
-
-
 def compute_display(frame: pd.DataFrame) -> pd.DataFrame:
     display = pd.DataFrame()
     if not frame.empty:
@@ -189,7 +180,6 @@ def run_compute_accounting(
         }
     outer_keys = _outer_keys(root, resources)
     pool_ids = _eligible_config_ids(configs, sweep.ensemble)
-    fixed_ids = _strategy_config_ids(strategy_rows)
     mpma_b_overhead = _overhead(root / "tables" / "mpma_b_selection_resources.json")
     mpma_e_overhead = _overhead(root / "ensembling" / "mpma_e_selection_resources.json")
     rows = []
@@ -205,12 +195,11 @@ def run_compute_accounting(
             overhead = mpma_b_overhead
             scope = "eligible MPMA search pool + MPMA-B selection"
         else:
-            config_id = fixed_ids.get(strategy, "")
-            if not config_id:
+            ids = comparator_config_ids(root, strategy)
+            if not ids:
                 continue
-            ids = {config_id}
             overhead = {"cpu_core_hours": 0.0, "wall_time_s": 0.0, "peak_rss_gib": 0.0}
-            scope = "reported comparator configuration"
+            scope = "prespecified comparator family + outer-fold inner-validation selection"
         base = _resource_summary(resources, ids, outer_keys)
         if not base:
             continue

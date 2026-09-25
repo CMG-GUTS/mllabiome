@@ -31,10 +31,10 @@ DATA = mll.Data(
 
 RESOLUTIONS = (
     # ("phylum", ("phylum",)),
-    # ("class", ("class",)),
+    ("class", ("class",)),
     # ("order", ("order",)),
     # ("family", ("family",)),
-    ("genus", ("genus",)),
+    # ("genus", ("genus",)),
     # # ("domain-phylum", ("domain", "phylum")),
     # # ("domain-class", ("domain", "phylum", "class")),
     # # ("domain-order", ("domain", "phylum", "class", "order")),
@@ -44,18 +44,18 @@ RESOLUTIONS = (
     # # ("phylum-order", ("phylum", "class", "order")),
     # # ("phylum-family", ("phylum", "class", "order", "family")),
     # # ("phylum-genus", ("phylum", "class", "order", "family", "genus")),
-    # ("class-order", ("class", "order")),
+    ("class-order", ("class", "order")),
     # # ("class-family", ("class", "order", "family")),
     # ("class-genus", ("class", "order", "family", "genus")),
     # # ("order-family", ("order", "family")),
     # # ("order-genus", ("order", "family", "genus")),
     # ("family-genus", ("family", "genus")),
-    ("raw", ("raw",)),
+    # ("raw", ("raw",)),
 )
 
 COUNT_TRANSFORMATIONS = (
     # mll.Transformation("presence_absence"),
-    mll.Transformation("identity"),
+    # mll.Transformation("identity"),
     # mll.Transformation("arcsine_sqrt", composition_scope="rank-wise"),
     # mll.Transformation("arcsine_sqrt", composition_scope="joint"),
     # # mll.Transformation("yeo_johnson", composition_scope="rank-wise"),
@@ -63,10 +63,10 @@ COUNT_TRANSFORMATIONS = (
     # # mll.Transformation("hellinger", composition_scope="rank-wise"),
     # mll.Transformation("hellinger", composition_scope="joint"),
     # # mll.Transformation("relative_abundance", composition_scope="rank-wise"),
-    # # mll.Transformation("relative_abundance", composition_scope="joint"),
+    mll.Transformation("relative_abundance", composition_scope="joint"),
     # mll.Transformation("clr", composition_scope="rank-wise"),
     # mll.Transformation("clr", composition_scope="joint"),
-    # mll.Transformation("log10", composition_scope="rank-wise"),
+    mll.Transformation("log10", composition_scope="rank-wise"),
     # mll.Transformation("log10", composition_scope="joint"),
 )
 

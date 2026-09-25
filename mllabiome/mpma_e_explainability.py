@@ -152,7 +152,10 @@ def _fit_oof_members_fold_task(
             if bool(keep)
         ]
         ct = _core._configured_count_transformation_factory(
-            sweep, spec["transformation_key"], feature_blocks
+            sweep,
+            spec["transformation_key"],
+            feature_blocks,
+            resolution_feature_blocks=spec["feature_blocks"],
         )()
         X_train, X_test = ct.apply_pair(X_train_raw, X_test_raw)
         coordinate_metadata = ct.coordinate_metadata(names)
