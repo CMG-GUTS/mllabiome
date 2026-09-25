@@ -93,13 +93,19 @@ def _permutation_feature_importance(
         else:
             X_eval = X.copy()
             y_eval = y
-        baseline = scores(y_eval, _predict_proba_aligned(clf, X_eval, classes))
+        baseline = scores(
+            y_eval,
+            _predict_proba_aligned(
+                clf, _project_input(X_eval, input_projector), classes
+            ),
+        )
         shuffling_idx = np.arange(len(X_eval))
         for repeat_index in range(n_repeats):
             feature_rng.shuffle(shuffling_idx)
-            X_eval[:, feature_index] = X_eval[shuffling_idx, feature_index]
+            X_permuted = X_eval.copy()
+            X_permuted[:, feature_index] = X_eval[shuffling_idx, feature_index]
             permuted = _predict_proba_aligned(
-                clf, _project_input(X_eval, input_projector), classes
+                clf, _project_input(X_permuted, input_projector), classes
             )
             values[:, feature_index, repeat_index] = scores(y_eval, permuted) - baseline
             done += 1

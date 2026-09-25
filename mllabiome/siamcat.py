@@ -68,7 +68,7 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
         verbose: int = 0,
         runtime: str = "auto",
         rscript: str | None = None,
-    ):
+    ) -> None:
         self.method = method
         self.filter_method = filter_method
         self.filter_cutoff = filter_cutoff
@@ -204,7 +204,7 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
         )
         labels_path.unlink(missing_ok=True)
 
-    def fit(self, X: Any, y: Any, groups: Any = None):
+    def fit(self, X: Any, y: Any, groups: Any = None) -> SIAMCATClassifier:
         arr = _as_2d_float(X)
         y_arr = np.asarray(y)
         if y_arr.ndim != 1 or len(y_arr) != arr.shape[0]:

@@ -63,7 +63,7 @@ class PrevalenceFilter:
         "threshold",
     )
 
-    def __init__(self, threshold: float, detection_threshold: float = 0.0):
+    def __init__(self, threshold: float, detection_threshold: float = 0.0) -> None:
         threshold = float(threshold)
         detection_threshold = float(detection_threshold)
         if not np.isfinite(threshold) or threshold <= 0.0 or threshold > 1.0:
@@ -1063,7 +1063,7 @@ class Transform:
         abbreviation: str | None = None,
         composition_scope: str | None = None,
         feature_filter: PrevalenceFilter | None = None,
-    ):
+    ) -> None:
         requested = str(name).strip()
         info = transformation_label(requested)
         if fn is None and info.category == "custom":

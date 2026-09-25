@@ -4,7 +4,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from multiprocessing import Manager
 from pathlib import Path
 from queue import Empty
@@ -24,7 +24,7 @@ from .configs_sweep import (
     _strata_from_metadata,
 )
 from .console import info, path_table, progress, stage, success, summary_table
-from .data import load_dataset
+from .data import Dataset, load_dataset
 from .explainability_context import build_local_relative_abundance_context
 from .explainability_methods import (
     ALE,
@@ -40,7 +40,7 @@ from .explainability_visuals import plot_local_attributions
 from .learners import fit_classifier
 from .metrics import _predict_proba_aligned, metric_is_loss
 from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
-from .runtime import configure_estimator_threads
+from .runtime import ExecutionPlan, configure_estimator_threads
 from .storage import read_table, table_exists, write_table
 from .utils import dump_json_standard
 
@@ -1521,20 +1521,100 @@ def _ale_fold_parallel_task(
     return int(fold_no), frame, curves_out, skipped_out
 
 
-def _explain_one(
-    sweep: Sweep,
-    target_override: str | None = None,
-    *,
-    output_slug_override: str | None = None,
-    display_label_override: str | None = None,
-    allow_member_cache: bool = True,
-) -> dict[str, Path]:
+@dataclass(frozen=True)
+class _ExplainabilityPlan:
+    method_specs: tuple[Any, ...]
+    methods: tuple[str, ...]
+    global_methods: tuple[str, ...]
+    local_methods: tuple[str, ...]
+    specs_by_name: dict[str, Any]
+    local_mode: str
+    local_enabled: bool
+
+
+@dataclass(frozen=True)
+class _ExplainabilityTarget:
+    row: pd.Series
+    label: str
+    slug: str
+    ensemble: bool
+    config_id_for_cache: str | None
+    target_dir: Path
+    cache_dir: Path | None
+
+
+@dataclass(frozen=True)
+class _ExplainabilityUnits:
+    dataset: Dataset
+    X_base: np.ndarray
+    feature_names: list[str]
+    oof_folds: list[dict[str, Any]]
+    coordinate_metadata: list[Any]
+    coordinate_metadata_path: Path | None
+    coordinate_metadata_by_fold_path: Path | None
+    prediction_reproduction_path: Path | None
+    geometries: list[str]
+    projection_applied: bool
+    perturbation_policy: dict[str, Any]
+    perturbation_policy_path: Path
+    class_indices: tuple[int, ...]
+    execution: ExecutionPlan
+    figures_dir: Path
+    source_signature: str
+
+
+@dataclass
+class _ExplainabilityCacheState:
+    meta_path: Path
+    previous_meta: dict[str, Any]
+    previous_method_cache: dict[str, Any]
+    current_method_entries: dict[str, dict[str, Any]]
+    reusable_methods: set[str]
+
+
+@dataclass
+class _ExplainabilityState:
+    method_frames: list[pd.DataFrame]
+    fold_importance_frames: list[pd.DataFrame]
+    method_outputs: dict[str, Path]
+    interaction_outputs: dict[str, Path]
+    resolved_shap_backends: set[str]
+    shap_oof_rows: list[dict[str, Any]]
+    lime_oof_rows: list[dict[str, Any]]
+
+    @classmethod
+    def empty(cls) -> _ExplainabilityState:
+        return cls([], [], {}, {}, set(), [], [])
+
+
+def _build_explainability_plan(sweep: Sweep) -> _ExplainabilityPlan:
     method_specs = _normalise_explainability_method_specs(sweep.explainability.methods)
-    methods = tuple(method_name(x) for x in method_specs)
-    global_methods = tuple(method_name(x) for x in method_specs if method_has_global(x))
-    local_methods = tuple(method_name(x) for x in method_specs if method_has_local(x))
-    specs_by_name = {method_name(x): x for x in method_specs}
+    methods = tuple(method_name(spec) for spec in method_specs)
+    global_methods = tuple(
+        method_name(spec) for spec in method_specs if method_has_global(spec)
+    )
+    local_methods = tuple(
+        method_name(spec) for spec in method_specs if method_has_local(spec)
+    )
+    specs_by_name = {method_name(spec): spec for spec in method_specs}
     _preflight_explainability_dependencies(methods)
+    local_mode = _effective_local_explanations_mode(sweep.explainability)
+    return _ExplainabilityPlan(
+        method_specs=method_specs,
+        methods=methods,
+        global_methods=global_methods,
+        local_methods=local_methods,
+        specs_by_name=specs_by_name,
+        local_mode=local_mode,
+        local_enabled=local_mode != "none" and bool(local_methods),
+    )
+
+
+def _show_explainability_suite(
+    sweep: Sweep,
+    plan: _ExplainabilityPlan,
+    target_override: str | None,
+) -> None:
     root = sweep.root()
     stage("Explainability", str(root))
     summary_table(
@@ -1542,105 +1622,164 @@ def _explain_one(
         {
             "target": target_override
             or _configured_explainability_targets(sweep.explainability),
-            "methods": methods,
+            "methods": plan.methods,
             "profile": str(getattr(sweep.explainability, "profile", "standard")),
             "top features": sweep.explainability.top_k,
-            "local explanations": _effective_local_explanations_mode(
-                sweep.explainability
+            "local explanations": plan.local_mode,
+            "interaction pairs": (
+                int(plan.specs_by_name["interactions"].top_k)
+                if "interactions" in plan.methods
+                else "not requested"
             ),
-            "interaction pairs": int(specs_by_name["interactions"].top_k)
-            if "interactions" in methods
-            else "not requested",
             "fallbacks": "off",
         },
     )
+
+
+def _load_explainability_rankings(root: Path) -> pd.DataFrame:
     rankings_path = root / "tables" / "mpma_inner_rankings.parquet"
     if not table_exists(rankings_path):
         raise FileNotFoundError("Run evaluate(sweep) before explain(sweep).")
     rankings = read_table(rankings_path)
     if rankings.empty:
         raise RuntimeError("No ranked MPMA is available for explainability.")
+    return rankings
+
+
+def _resolve_explainability_target(
+    sweep: Sweep,
+    rankings: pd.DataFrame,
+    target_override: str | None,
+    output_slug_override: str | None,
+    display_label_override: str | None,
+    allow_member_cache: bool,
+) -> _ExplainabilityTarget:
     target = target_override or _single_configured_explainability_target(
         sweep.explainability
     )
-    ensemble_explain = False
+    ensemble = False
     if target in {"best", "best_individual", "best_mpma", "mpma_b", "MPMA-B"}:
         row = rankings.iloc[0]
-        target_label = "MPMA-B"
-        target_slug = "mpma_b"
+        label = "MPMA-B"
+        slug = "mpma_b"
     elif target in {"ensemble", "mpma_e", "MPMA-E"}:
-        ensemble_explain = True
+        ensemble = True
         row = pd.Series({"unit": "MPMA-E"})
-        target_label = "MPMA-E"
-        target_slug = "mpma_e"
+        label = "MPMA-E"
+        slug = "mpma_e"
     elif target in {"baseline_rf", "Baseline RF", "baseline-rf"}:
-        row = _resolve_baseline_rf_row(rankings)
-        if row is None:
+        resolved = _resolve_baseline_rf_row(rankings)
+        if resolved is None:
             raise ExplainabilityConfigurationError(
                 "Baseline RF explainability was requested, but no completed MPMA matches "
                 "RF_1000_msl5 + arcsin_sqrt + deepest available single rank."
             )
-        target_label = "Baseline RF"
-        target_slug = "baseline_rf"
+        row = resolved
+        label = "Baseline RF"
+        slug = "baseline_rf"
     else:
         matches = rankings[rankings["config_id"].astype(str).eq(str(target))]
         if matches.empty:
             raise ValueError(f"No MPMA with config_id={target!r} in rankings.")
         row = matches.iloc[0]
-        target_label = "MPMA"
-        target_slug = str(target)
-
+        label = "MPMA"
+        slug = str(target)
     if output_slug_override:
-        target_slug = output_slug_override.strip("/")
+        slug = output_slug_override.strip("/")
     if display_label_override:
-        target_label = display_label_override
-
-    if ensemble_explain and allow_member_cache:
-        members_for_cache, _ = _selected_ensemble_members(root)
-        _ensure_mpma_member_explanations(sweep, rankings, members_for_cache)
-
-    config_id_for_cache = None
-    if (
-        not ensemble_explain
-        and "config_id" in row.index
-        and not pd.isna(row.get("config_id"))
-    ):
-        config_id_for_cache = str(row.get("config_id"))
-    target_dir = root / "explainability" / target_slug
+        label = display_label_override
+    root = sweep.root()
+    if ensemble and allow_member_cache:
+        members, _ = _selected_ensemble_members(root)
+        _ensure_mpma_member_explanations(sweep, rankings, members)
+    config_id = None
+    if not ensemble and "config_id" in row.index and not pd.isna(row.get("config_id")):
+        config_id = str(row.get("config_id"))
+    target_dir = root / "explainability" / slug
     cache_dir = (
-        root / "explainability" / "cache" / _safe_cache_name(config_id_for_cache)
-        if config_id_for_cache
+        root / "explainability" / "cache" / _safe_cache_name(config_id)
+        if config_id
         else None
     )
+    return _ExplainabilityTarget(
+        row=row,
+        label=label,
+        slug=slug,
+        ensemble=ensemble,
+        config_id_for_cache=config_id,
+        target_dir=target_dir,
+        cache_dir=cache_dir,
+    )
+
+
+def _cached_explainability_outputs(
+    sweep: Sweep,
+    target: _ExplainabilityTarget,
+    allow_member_cache: bool,
+) -> dict[str, Path] | None:
     if (
         allow_member_cache
-        and target_dir.exists()
+        and target.target_dir.exists()
         and _explainability_cache_complete(
-            target_dir, sweep.explainability, config_id_for_cache
+            target.target_dir,
+            sweep.explainability,
+            target.config_id_for_cache,
         )
     ):
-        info(f"Reusing existing explainability for {target_label}")
-        return _existing_explainability_outputs(target_dir)
+        info(f"Reusing existing explainability for {target.label}")
+        return _existing_explainability_outputs(target.target_dir)
     if (
-        not ensemble_explain
+        not target.ensemble
         and allow_member_cache
-        and cache_dir is not None
-        and cache_dir.exists()
+        and target.cache_dir is not None
+        and target.cache_dir.exists()
         and _explainability_cache_complete(
-            cache_dir, sweep.explainability, config_id_for_cache
+            target.cache_dir,
+            sweep.explainability,
+            target.config_id_for_cache,
         )
     ):
-        if target_dir != cache_dir:
-            _copy_explainability_cache(cache_dir, target_dir)
+        if target.target_dir != target.cache_dir:
+            _copy_explainability_cache(target.cache_dir, target.target_dir)
         info(
-            f"Reusing cached explainability for {target_label} · config={config_id_for_cache}"
+            f"Reusing cached explainability for {target.label} · "
+            f"config={target.config_id_for_cache}"
         )
-        return _existing_explainability_outputs(target_dir)
+        return _existing_explainability_outputs(target.target_dir)
+    return None
 
+
+def _coordinate_metadata_frame(items: Sequence[Any]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "coordinate": str(item.name),
+                "coordinate_type": str(item.coordinate_type),
+                "anchor_feature": (
+                    "" if item.anchor_feature is None else str(item.anchor_feature)
+                ),
+                "exact_feature_identity": bool(item.exact_feature_identity),
+                "components": json.dumps(list(item.components), separators=(",", ":")),
+                "coefficients": json.dumps(
+                    [float(value) for value in item.coefficients], separators=(",", ":")
+                ),
+            }
+            for item in items
+        ]
+    )
+
+
+def _prepare_explainability_units(
+    sweep: Sweep,
+    plan: _ExplainabilityPlan,
+    rankings: pd.DataFrame,
+    target: _ExplainabilityTarget,
+) -> tuple[_ExplainabilityUnits, pd.Series]:
     coordinate_metadata: list[Any] = []
     coordinate_metadata_by_fold: list[dict[str, Any]] = []
     prediction_reproduction: list[dict[str, Any]] = []
-    if ensemble_explain:
+    row = target.row
+    if target.ensemble:
         info("Preparing selected MPMA-E outer-fold units for OOF explanation")
         (
             dataset,
@@ -1652,20 +1791,21 @@ def _explain_one(
         ) = _mpma_e_reference_and_folds(sweep, rankings)
     else:
         info("Preparing selected MPMA outer-fold units for OOF explanation")
-        oof_bundle = _fit_oof_single_for_explainability(sweep, row)
-        dataset = oof_bundle["dataset"]
-        X_base = oof_bundle["X_base"]
-        feature_names = oof_bundle["feature_names"]
-        coordinate_metadata = list(oof_bundle.get("coordinate_metadata", []))
+        bundle = _fit_oof_single_for_explainability(sweep, row)
+        dataset = bundle["dataset"]
+        X_base = bundle["X_base"]
+        feature_names = bundle["feature_names"]
+        coordinate_metadata = list(bundle.get("coordinate_metadata", []))
         coordinate_metadata_by_fold = list(
-            oof_bundle.get("coordinate_metadata_by_fold", [])
+            bundle.get("coordinate_metadata_by_fold", [])
         )
-        prediction_reproduction = list(oof_bundle.get("prediction_reproduction", []))
-        oof_folds = oof_bundle["folds"]
+        prediction_reproduction = list(bundle.get("prediction_reproduction", []))
+        oof_folds = bundle["folds"]
+    feature_names = list(feature_names)
+    oof_folds = list(oof_folds)
     for fold in oof_folds:
         if "feature_names" not in fold:
             fold["feature_names"] = list(feature_names)
-
     geometries = sorted(
         {
             str(value)
@@ -1686,15 +1826,14 @@ def _explain_one(
         "projection_scope": "generated perturbations are projected onto the fitted model-input geometry before prediction when a supported constraint is known",
         "methods": [
             name
-            for name in global_methods
+            for name in plan.global_methods
             if name in {"shap", "lime", "ale", "permutation", "interactions"}
         ],
         "interpretation": "predictive model-coordinate attribution under geometry-preserving perturbations; not a causal or isolated biological effect",
         "tree_shap_policy": "disabled for constrained projected inputs because TreeSHAP cannot apply the projection operator to masked samples",
     }
-    perturbation_policy_path = target_dir / "perturbation_policy.json"
+    perturbation_policy_path = target.target_dir / "perturbation_policy.json"
     dump_json_standard(perturbation_policy, perturbation_policy_path)
-
     class_indices = _resolve_explainability_classes(
         dataset, sweep.explainability.classes
     )
@@ -1710,58 +1849,76 @@ def _explain_one(
             "outer folds": len(oof_folds),
             "features": len(feature_names),
             "classes explained": len(class_indices),
-            "class labels": [str(dataset.class_labels[int(i)]) for i in class_indices],
-            "CPU logical/physical": f"{execution.logical_cpus}/{execution.physical_cpus}",
+            "class labels": [
+                str(dataset.class_labels[int(index)]) for index in class_indices
+            ],
+            "CPU logical/physical": (
+                f"{execution.logical_cpus}/{execution.physical_cpus}"
+            ),
             "available memory": memory_gib,
             "workers": execution.workers,
             "threads per worker": execution.threads_per_worker,
             "parallel backend": execution.backend,
         },
     )
-    figures_dir = target_dir / "figures"
+    figures_dir = target.target_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
     coordinate_metadata_path: Path | None = None
     coordinate_metadata_by_fold_path: Path | None = None
     prediction_reproduction_path: Path | None = None
     if coordinate_metadata:
-        coordinate_frame = pd.DataFrame(
-            [
-                {
-                    "coordinate": str(item.name),
-                    "coordinate_type": str(item.coordinate_type),
-                    "anchor_feature": ""
-                    if item.anchor_feature is None
-                    else str(item.anchor_feature),
-                    "exact_feature_identity": bool(item.exact_feature_identity),
-                    "components": json.dumps(
-                        list(item.components), separators=(",", ":")
-                    ),
-                    "coefficients": json.dumps(
-                        [float(x) for x in item.coefficients], separators=(",", ":")
-                    ),
-                }
-                for item in coordinate_metadata
-            ]
+        coordinate_metadata_path = target.target_dir / "coordinate_metadata.parquet"
+        write_table(
+            coordinate_metadata_path, _coordinate_metadata_frame(coordinate_metadata)
         )
-        coordinate_metadata_path = target_dir / "coordinate_metadata.parquet"
-        write_table(coordinate_metadata_path, coordinate_frame)
     if coordinate_metadata_by_fold:
         coordinate_metadata_by_fold_path = (
-            target_dir / "coordinate_metadata_by_outer_fold.parquet"
+            target.target_dir / "coordinate_metadata_by_outer_fold.parquet"
         )
         write_table(
             coordinate_metadata_by_fold_path,
             pd.DataFrame(coordinate_metadata_by_fold),
         )
     if prediction_reproduction:
-        prediction_reproduction_path = target_dir / "prediction_reproduction.parquet"
+        prediction_reproduction_path = (
+            target.target_dir / "prediction_reproduction.parquet"
+        )
         write_table(prediction_reproduction_path, pd.DataFrame(prediction_reproduction))
-
     source_signature = _explainability_source_signature(
-        target_slug, row, oof_folds, feature_names, dataset.class_labels
+        target.slug, row, oof_folds, feature_names, dataset.class_labels
     )
+    return (
+        _ExplainabilityUnits(
+            dataset=dataset,
+            X_base=np.asarray(X_base),
+            feature_names=feature_names,
+            oof_folds=oof_folds,
+            coordinate_metadata=coordinate_metadata,
+            coordinate_metadata_path=coordinate_metadata_path,
+            coordinate_metadata_by_fold_path=coordinate_metadata_by_fold_path,
+            prediction_reproduction_path=prediction_reproduction_path,
+            geometries=geometries,
+            projection_applied=projection_applied,
+            perturbation_policy=perturbation_policy,
+            perturbation_policy_path=perturbation_policy_path,
+            class_indices=class_indices,
+            execution=execution,
+            figures_dir=figures_dir,
+            source_signature=source_signature,
+        ),
+        row,
+    )
+
+
+def _prepare_explainability_cache(
+    sweep: Sweep,
+    plan: _ExplainabilityPlan,
+    target: _ExplainabilityTarget,
+    units: _ExplainabilityUnits,
+    row: pd.Series,
+) -> _ExplainabilityCacheState:
+    meta_path = target.target_dir / "explained_unit.json"
     previous_meta: dict[str, Any] = {}
-    meta_path = target_dir / "explained_unit.json"
     if meta_path.exists():
         try:
             previous_meta = json.loads(meta_path.read_text())
@@ -1770,35 +1927,46 @@ def _explain_one(
     previous_method_cache = dict(previous_meta.get("method_cache", {}))
     current_method_signatures = {
         name: _method_cache_signature(
-            sweep.explainability, specs_by_name[name], source_signature, class_indices
+            sweep.explainability,
+            plan.specs_by_name[name],
+            units.source_signature,
+            units.class_indices,
         )
-        for name in global_methods
+        for name in plan.global_methods
     }
     current_method_entries = {
         name: _method_cache_entry(
             current_method_signatures[name],
-            source_signature,
-            specs_by_name[name],
-            class_indices,
+            units.source_signature,
+            plan.specs_by_name[name],
+            units.class_indices,
             sweep.explainability.top_k,
         )
         for name in current_method_signatures
     }
     reusable_methods: set[str] = set()
     for name, signature in current_method_signatures.items():
-        if not _method_cache_files_complete(target_dir, name):
+        if not _method_cache_files_complete(target.target_dir, name):
             info(
                 f"Cache miss {name.upper()} · required method artifacts are incomplete"
             )
             continue
         entry, provenance_source = _load_method_cache_entry(
-            target_dir, name, previous_method_cache
+            target.target_dir, name, previous_method_cache
         )
         compatible, reason = _method_cache_entry_status(
-            entry, signature, source_signature, specs_by_name[name], class_indices
+            entry,
+            signature,
+            units.source_signature,
+            plan.specs_by_name[name],
+            units.class_indices,
         )
         legacy = not compatible and _legacy_method_cache_valid(
-            previous_meta, row, sweep.explainability, specs_by_name[name], class_indices
+            previous_meta,
+            row,
+            sweep.explainability,
+            plan.specs_by_name[name],
+            units.class_indices,
         )
         if compatible or legacy:
             reusable_methods.add(name)
@@ -1816,19 +1984,32 @@ def _explain_one(
             )
         else:
             info(f"Cache miss {name.upper()} · {reason}")
+    return _ExplainabilityCacheState(
+        meta_path=meta_path,
+        previous_meta=previous_meta,
+        previous_method_cache=previous_method_cache,
+        current_method_entries=current_method_entries,
+        reusable_methods=reusable_methods,
+    )
 
-    method_frames: list[pd.DataFrame] = []
-    fold_importance_frames: list[pd.DataFrame] = []
-    method_outputs: dict[str, Path] = {}
-    interaction_outputs: dict[str, Path] = {}
-    resolved_shap_backends: set[str] = set()
-    for name in global_methods:
-        if name not in reusable_methods:
+
+def _load_reusable_explainability_methods(
+    sweep: Sweep,
+    plan: _ExplainabilityPlan,
+    target: _ExplainabilityTarget,
+    units: _ExplainabilityUnits,
+    cache: _ExplainabilityCacheState,
+) -> _ExplainabilityState:
+    state = _ExplainabilityState.empty()
+    for name in plan.global_methods:
+        if name not in cache.reusable_methods:
             continue
         if name == "interactions":
-            interaction_outputs.update(_existing_method_outputs(target_dir, name))
+            state.interaction_outputs.update(
+                _existing_method_outputs(target.target_dir, name)
+            )
             continue
-        _, fold_long = _cached_method_frame(target_dir, name)
+        _, fold_long = _cached_method_frame(target.target_dir, name)
         fold_frames = (
             [frame.copy() for _, frame in fold_long.groupby("fold_no", sort=True)]
             if "fold_no" in fold_long.columns
@@ -1841,708 +2022,804 @@ def _explain_one(
         frame = _aggregate_fold_feature_importance(
             name,
             fold_frames,
-            feature_names,
-            class_indices,
-            dataset.class_labels,
+            units.feature_names,
+            units.class_indices,
+            units.dataset.class_labels,
             scoring,
             sweep.explainability.top_k,
         )
-        method_frames.append(frame)
-        fold_importance_frames.append(fold_long)
+        state.method_frames.append(frame)
+        state.fold_importance_frames.append(fold_long)
         if name == "shap" and "shap_backend" in fold_long.columns:
-            resolved_shap_backends.update(
-                str(x) for x in fold_long["shap_backend"].dropna().astype(str).unique()
+            state.resolved_shap_backends.update(
+                str(value)
+                for value in fold_long["shap_backend"].dropna().astype(str).unique()
             )
-        method_outputs.update(
+        state.method_outputs.update(
             _write_method_outputs(
                 frame,
-                target_dir=target_dir,
-                figures_dir=figures_dir,
-                X_base=X_base,
-                y=dataset.y,
-                feature_names=feature_names,
-                class_labels=dataset.class_labels,
+                target_dir=target.target_dir,
+                figures_dir=units.figures_dir,
+                X_base=units.X_base,
+                y=units.dataset.y,
+                feature_names=units.feature_names,
+                class_labels=units.dataset.class_labels,
                 top_k=sweep.explainability.top_k,
             )
         )
-        method_outputs.update(_existing_method_outputs(target_dir, name))
-    oof_pred_path = _write_oof_prediction_summary(dataset, oof_folds, target_dir)
-    method_outputs["oof_predictions"] = oof_pred_path
-    local_mode = _effective_local_explanations_mode(sweep.explainability)
-    local_enabled = local_mode != "none" and bool(local_methods)
+        state.method_outputs.update(_existing_method_outputs(target.target_dir, name))
+    state.method_outputs["oof_predictions"] = _write_oof_prediction_summary(
+        units.dataset, units.oof_folds, target.target_dir
+    )
+    return state
 
-    shap_oof_rows: list[dict[str, Any]] = []
-    lime_oof_rows: list[dict[str, Any]] = []
-    shap_local_enabled = local_enabled and "shap" in local_methods
-    if "shap" in global_methods and "shap" not in reusable_methods:
-        spec = specs_by_name["shap"]
-        info("Running global class-specific OOF SHAP feature attribution")
-        shap_fold_frames: list[pd.DataFrame] = []
-        if execution.workers == 1:
-            with progress() as prog:
-                for fold_no, fold in enumerate(oof_folds, start=1):
-                    test_idx = np.asarray(fold["test_idx"], dtype=int)
-                    fold_feature_names = _fold_feature_names(fold, feature_names)
-                    expected_rows = max(
-                        1,
-                        len(test_idx)
-                        if shap_local_enabled
-                        else min(int(spec.max_explain), len(test_idx)),
-                    )
-                    prefix = (
-                        f"SHAP fold {fold_no}/{len(oof_folds)} · "
-                        f"{expected_rows} samples · {len(fold_feature_names)} features · {len(class_indices)} classes"
-                    )
-                    task = prog.add_task(f"{prefix} · preparing", total=expected_rows)
-                    vals, rows_ex, backend = _shap_values_for_data(
-                        configure_estimator_threads(
-                            fold["estimator"], int(execution.threads_per_worker)
-                        ),
-                        fold["X_train"],
-                        fold["X_test"],
-                        fold_feature_names,
-                        dataset.class_labels,
-                        random_state=sweep.explainability.random_state + fold_no * 997,
-                        spec=spec,
-                        force_explain_rows=list(range(len(test_idx)))
-                        if shap_local_enabled
-                        else [],
-                        show_progress=False,
-                        progress_callback=_progress_callback(prog, task, prefix),
-                        input_projector=fold.get("input_projector"),
-                    )
-                    fold_frame = _value_frame_for_fold(
-                        "shap",
-                        vals,
-                        fold_feature_names,
-                        class_indices,
-                        dataset.class_labels,
-                        "mean_abs_probability_shap_within_outer_fold",
-                        positive_class=dataset.positive_class,
-                    )
-                    fold_frame["fold_key"] = str(fold.get("split_key", ""))
-                    fold_frame["fold_no"] = int(fold_no)
-                    fold_frame["shap_backend"] = str(backend)
-                    fold_frame["perturbation_projection"] = (
-                        "fitted_model_input_geometry"
-                        if fold.get("input_projector") is not None
-                        else "none"
-                    )
-                    shap_fold_frames.append(fold_frame)
-                    if shap_local_enabled:
-                        shap_oof_rows.extend(
-                            _local_value_rows_for_fold(
-                                fold,
-                                vals,
-                                rows_ex,
-                                tuple(range(len(dataset.class_labels))),
-                                dataset.class_labels,
-                                dataset.sample_ids,
-                                dataset.y,
-                                positive_class=dataset.positive_class,
-                            )
-                        )
-        else:
-            fold_totals = {
-                fold_no: max(
+
+def _persist_completed_explainability_method(
+    cache: _ExplainabilityCacheState, name: str
+) -> None:
+    _persist_method_cache_entry(
+        cache.meta_path,
+        cache.previous_meta,
+        name,
+        cache.current_method_entries[name],
+    )
+    cache.previous_method_cache[name] = cache.current_method_entries[name]
+
+
+def _run_shap_explainability(
+    sweep: Sweep,
+    plan: _ExplainabilityPlan,
+    target: _ExplainabilityTarget,
+    units: _ExplainabilityUnits,
+    cache: _ExplainabilityCacheState,
+    state: _ExplainabilityState,
+) -> None:
+    if "shap" not in plan.global_methods or "shap" in cache.reusable_methods:
+        return
+    spec = plan.specs_by_name["shap"]
+    local_enabled = plan.local_enabled and "shap" in plan.local_methods
+    info("Running global class-specific OOF SHAP feature attribution")
+    fold_frames: list[pd.DataFrame] = []
+    if units.execution.workers == 1:
+        with progress() as prog:
+            for fold_no, fold in enumerate(units.oof_folds, start=1):
+                test_idx = np.asarray(fold["test_idx"], dtype=int)
+                fold_feature_names = _fold_feature_names(fold, units.feature_names)
+                expected_rows = max(
                     1,
-                    len(np.asarray(fold["test_idx"], dtype=int))
-                    if shap_local_enabled
-                    else min(
-                        int(spec.max_explain),
-                        len(np.asarray(fold["test_idx"], dtype=int)),
-                    ),
+                    len(test_idx)
+                    if local_enabled
+                    else min(int(spec.max_explain), len(test_idx)),
                 )
-                for fold_no, fold in enumerate(oof_folds, start=1)
-            }
-            info(
-                f"SHAP workload · {sum(fold_totals.values()):,} explained samples · "
-                f"{len(oof_folds)} folds × up to {int(spec.max_explain)} samples"
-            )
-            with Manager() as manager:
-                progress_queue = manager.Queue()
-                shap_tasks = [
-                    (
-                        _shap_fold_parallel_task,
-                        (
-                            fold_no,
-                            fold,
-                            feature_names,
-                            dataset.class_labels,
-                            class_indices,
-                            dataset.sample_ids,
-                            dataset.y,
-                            dataset.positive_class,
-                            shap_local_enabled,
-                            sweep.explainability.random_state + fold_no * 997,
-                            spec,
-                            int(execution.threads_per_worker),
-                            progress_queue,
-                        ),
-                        {},
-                    )
-                    for fold_no, fold in enumerate(oof_folds, start=1)
-                ]
-                parallel_results = _parallel_progress_results(
-                    shap_tasks,
-                    execution,
-                    progress_queue,
-                    label="SHAP",
-                    unit_label="samples",
-                    fold_totals=fold_totals,
+                prefix = (
+                    f"SHAP fold {fold_no}/{len(units.oof_folds)} · "
+                    f"{expected_rows} samples · {len(fold_feature_names)} features · "
+                    f"{len(units.class_indices)} classes"
                 )
-            fold_results: dict[
-                int, tuple[pd.DataFrame, list[dict[str, Any]], int, str]
-            ] = {}
-            for fold_no, fold_frame, rows, explained_count, backend in parallel_results:
-                fold_results[int(fold_no)] = (
-                    fold_frame,
-                    rows,
-                    int(explained_count),
-                    str(backend),
-                )
-            for fold_no in sorted(fold_results):
-                fold_frame, rows, _, _ = fold_results[fold_no]
-                shap_fold_frames.append(fold_frame)
-                shap_oof_rows.extend(rows)
-        backend_counts: dict[str, int] = {}
-        for frame in shap_fold_frames:
-            if "shap_backend" not in frame.columns or frame.empty:
-                continue
-            backend = str(frame["shap_backend"].iloc[0])
-            backend_counts[backend] = backend_counts.get(backend, 0) + 1
-        if backend_counts:
-            resolved_shap_backends.update(backend_counts)
-            info(
-                "SHAP backend routing · "
-                + ", ".join(f"{k}={v}" for k, v in sorted(backend_counts.items()))
-            )
-        info("Aggregating SHAP global importance and cross-fold stability")
-        shap_frame = _aggregate_fold_feature_importance(
-            "shap",
-            shap_fold_frames,
-            feature_names,
-            class_indices,
-            dataset.class_labels,
-            "outer_fold_mean_abs_probability_shap",
-            sweep.explainability.top_k,
-        )
-        if backend_counts:
-            shap_frame["shap_backend"] = ",".join(sorted(backend_counts))
-        method_frames.append(shap_frame)
-        fold_path, fold_long = _write_fold_feature_importance(
-            "shap", shap_fold_frames, target_dir
-        )
-        method_outputs["shap_by_outer_fold"] = fold_path
-        fold_importance_frames.append(fold_long)
-        method_outputs.update(
-            _write_method_outputs(
-                shap_frame,
-                target_dir=target_dir,
-                figures_dir=figures_dir,
-                X_base=X_base,
-                y=dataset.y,
-                feature_names=feature_names,
-                class_labels=dataset.class_labels,
-                top_k=sweep.explainability.top_k,
-            )
-        )
-        _persist_method_cache_entry(
-            meta_path, previous_meta, "shap", current_method_entries["shap"]
-        )
-        previous_method_cache["shap"] = current_method_entries["shap"]
-        success("Class-specific OOF SHAP completed")
-
-    lime_local_enabled = local_enabled and "lime" in local_methods
-    if "lime" in global_methods and "lime" not in reusable_methods:
-        spec = specs_by_name["lime"]
-        info("Running global class-specific OOF LIME feature attribution")
-        lime_fold_frames: list[pd.DataFrame] = []
-        if execution.workers == 1:
-            prog = progress()
-            prog.start()
-            for fold_no, fold in enumerate(oof_folds, start=1):
-                fold_feature_names = _fold_feature_names(fold, feature_names)
-                prefix = f"LIME fold {fold_no}/{len(oof_folds)} · {len(fold_feature_names)} features · {len(class_indices)} classes"
-                task = prog.add_task(f"{prefix} · preparing", total=1)
-                force_rows = (
-                    list(range(len(np.asarray(fold["test_idx"], dtype=int))))
-                    if lime_local_enabled
-                    else []
-                )
-                local_class_indices = (
-                    tuple(range(len(dataset.class_labels)))
-                    if lime_local_enabled
-                    else class_indices
-                )
-                coeffs, rows_ex = _lime_values_for_data(
+                task = prog.add_task(f"{prefix} · preparing", total=expected_rows)
+                values, explained_rows, backend = _shap_values_for_data(
                     configure_estimator_threads(
-                        fold["estimator"], int(execution.threads_per_worker)
+                        fold["estimator"], int(units.execution.threads_per_worker)
                     ),
                     fold["X_train"],
                     fold["X_test"],
                     fold_feature_names,
-                    dataset.class_labels,
-                    local_class_indices,
+                    units.dataset.class_labels,
                     random_state=sweep.explainability.random_state + fold_no * 997,
                     spec=spec,
-                    force_explain_rows=force_rows,
+                    force_explain_rows=(
+                        list(range(len(test_idx))) if local_enabled else []
+                    ),
+                    show_progress=False,
                     progress_callback=_progress_callback(prog, task, prefix),
                     input_projector=fold.get("input_projector"),
                 )
                 fold_frame = _value_frame_for_fold(
-                    "lime",
-                    coeffs,
+                    "shap",
+                    values,
                     fold_feature_names,
-                    class_indices,
-                    dataset.class_labels,
-                    "mean_abs_lime_coefficient_within_outer_fold",
+                    units.class_indices,
+                    units.dataset.class_labels,
+                    "mean_abs_probability_shap_within_outer_fold",
+                    positive_class=units.dataset.positive_class,
                 )
                 fold_frame["fold_key"] = str(fold.get("split_key", ""))
                 fold_frame["fold_no"] = int(fold_no)
+                fold_frame["shap_backend"] = str(backend)
                 fold_frame["perturbation_projection"] = (
                     "fitted_model_input_geometry"
                     if fold.get("input_projector") is not None
                     else "none"
                 )
-                lime_fold_frames.append(fold_frame)
-                if lime_local_enabled:
-                    lime_oof_rows.extend(
+                fold_frames.append(fold_frame)
+                if local_enabled:
+                    state.shap_oof_rows.extend(
                         _local_value_rows_for_fold(
                             fold,
-                            coeffs,
-                            rows_ex,
-                            local_class_indices,
-                            dataset.class_labels,
-                            dataset.sample_ids,
-                            dataset.y,
-                            positive_class=dataset.positive_class,
+                            values,
+                            explained_rows,
+                            tuple(range(len(units.dataset.class_labels))),
+                            units.dataset.class_labels,
+                            units.dataset.sample_ids,
+                            units.dataset.y,
+                            positive_class=units.dataset.positive_class,
                         )
                     )
-            prog.stop()
-        else:
-            fold_totals = {
-                fold_no: max(
-                    1,
-                    len(np.asarray(fold["test_idx"], dtype=int))
-                    if lime_local_enabled
-                    else min(
-                        int(spec.max_explain),
-                        len(np.asarray(fold["test_idx"], dtype=int)),
+    else:
+        fold_totals = {
+            fold_no: max(
+                1,
+                len(np.asarray(fold["test_idx"], dtype=int))
+                if local_enabled
+                else min(
+                    int(spec.max_explain),
+                    len(np.asarray(fold["test_idx"], dtype=int)),
+                ),
+            )
+            for fold_no, fold in enumerate(units.oof_folds, start=1)
+        }
+        info(
+            f"SHAP workload · {sum(fold_totals.values()):,} explained samples · "
+            f"{len(units.oof_folds)} folds × up to {int(spec.max_explain)} samples"
+        )
+        with Manager() as manager:
+            progress_queue = manager.Queue()
+            tasks = [
+                (
+                    _shap_fold_parallel_task,
+                    (
+                        fold_no,
+                        fold,
+                        units.feature_names,
+                        units.dataset.class_labels,
+                        units.class_indices,
+                        units.dataset.sample_ids,
+                        units.dataset.y,
+                        units.dataset.positive_class,
+                        local_enabled,
+                        sweep.explainability.random_state + fold_no * 997,
+                        spec,
+                        int(units.execution.threads_per_worker),
+                        progress_queue,
                     ),
+                    {},
                 )
-                for fold_no, fold in enumerate(oof_folds, start=1)
+                for fold_no, fold in enumerate(units.oof_folds, start=1)
+            ]
+            parallel_results = _parallel_progress_results(
+                tasks,
+                units.execution,
+                progress_queue,
+                label="SHAP",
+                unit_label="samples",
+                fold_totals=fold_totals,
+            )
+        results: dict[int, tuple[pd.DataFrame, list[dict[str, Any]], int, str]] = {}
+        for fold_no, fold_frame, rows, explained_count, backend in parallel_results:
+            results[int(fold_no)] = (
+                fold_frame,
+                rows,
+                int(explained_count),
+                str(backend),
+            )
+        for fold_no in sorted(results):
+            fold_frame, rows, _, _ = results[fold_no]
+            fold_frames.append(fold_frame)
+            state.shap_oof_rows.extend(rows)
+    backend_counts: dict[str, int] = {}
+    for frame in fold_frames:
+        if "shap_backend" not in frame.columns or frame.empty:
+            continue
+        backend = str(frame["shap_backend"].iloc[0])
+        backend_counts[backend] = backend_counts.get(backend, 0) + 1
+    if backend_counts:
+        state.resolved_shap_backends.update(backend_counts)
+        info(
+            "SHAP backend routing · "
+            + ", ".join(
+                f"{name}={count}" for name, count in sorted(backend_counts.items())
+            )
+        )
+    info("Aggregating SHAP global importance and cross-fold stability")
+    frame = _aggregate_fold_feature_importance(
+        "shap",
+        fold_frames,
+        units.feature_names,
+        units.class_indices,
+        units.dataset.class_labels,
+        "outer_fold_mean_abs_probability_shap",
+        sweep.explainability.top_k,
+    )
+    if backend_counts:
+        frame["shap_backend"] = ",".join(sorted(backend_counts))
+    state.method_frames.append(frame)
+    fold_path, fold_long = _write_fold_feature_importance(
+        "shap", fold_frames, target.target_dir
+    )
+    state.method_outputs["shap_by_outer_fold"] = fold_path
+    state.fold_importance_frames.append(fold_long)
+    state.method_outputs.update(
+        _write_method_outputs(
+            frame,
+            target_dir=target.target_dir,
+            figures_dir=units.figures_dir,
+            X_base=units.X_base,
+            y=units.dataset.y,
+            feature_names=units.feature_names,
+            class_labels=units.dataset.class_labels,
+            top_k=sweep.explainability.top_k,
+        )
+    )
+    _persist_completed_explainability_method(cache, "shap")
+    success("Class-specific OOF SHAP completed")
+
+
+def _run_lime_explainability(
+    sweep: Sweep,
+    plan: _ExplainabilityPlan,
+    target: _ExplainabilityTarget,
+    units: _ExplainabilityUnits,
+    cache: _ExplainabilityCacheState,
+    state: _ExplainabilityState,
+) -> None:
+    if "lime" not in plan.global_methods or "lime" in cache.reusable_methods:
+        return
+    spec = plan.specs_by_name["lime"]
+    local_enabled = plan.local_enabled and "lime" in plan.local_methods
+    info("Running global class-specific OOF LIME feature attribution")
+    fold_frames: list[pd.DataFrame] = []
+    if units.execution.workers == 1:
+        prog = progress()
+        prog.start()
+        for fold_no, fold in enumerate(units.oof_folds, start=1):
+            fold_feature_names = _fold_feature_names(fold, units.feature_names)
+            prefix = (
+                f"LIME fold {fold_no}/{len(units.oof_folds)} · "
+                f"{len(fold_feature_names)} features · "
+                f"{len(units.class_indices)} classes"
+            )
+            task = prog.add_task(f"{prefix} · preparing", total=1)
+            force_rows = (
+                list(range(len(np.asarray(fold["test_idx"], dtype=int))))
+                if local_enabled
+                else []
+            )
+            local_class_indices = (
+                tuple(range(len(units.dataset.class_labels)))
+                if local_enabled
+                else units.class_indices
+            )
+            coefficients, explained_rows = _lime_values_for_data(
+                configure_estimator_threads(
+                    fold["estimator"], int(units.execution.threads_per_worker)
+                ),
+                fold["X_train"],
+                fold["X_test"],
+                fold_feature_names,
+                units.dataset.class_labels,
+                local_class_indices,
+                random_state=sweep.explainability.random_state + fold_no * 997,
+                spec=spec,
+                force_explain_rows=force_rows,
+                progress_callback=_progress_callback(prog, task, prefix),
+                input_projector=fold.get("input_projector"),
+            )
+            fold_frame = _value_frame_for_fold(
+                "lime",
+                coefficients,
+                fold_feature_names,
+                units.class_indices,
+                units.dataset.class_labels,
+                "mean_abs_lime_coefficient_within_outer_fold",
+            )
+            fold_frame["fold_key"] = str(fold.get("split_key", ""))
+            fold_frame["fold_no"] = int(fold_no)
+            fold_frame["perturbation_projection"] = (
+                "fitted_model_input_geometry"
+                if fold.get("input_projector") is not None
+                else "none"
+            )
+            fold_frames.append(fold_frame)
+            if local_enabled:
+                state.lime_oof_rows.extend(
+                    _local_value_rows_for_fold(
+                        fold,
+                        coefficients,
+                        explained_rows,
+                        local_class_indices,
+                        units.dataset.class_labels,
+                        units.dataset.sample_ids,
+                        units.dataset.y,
+                        positive_class=units.dataset.positive_class,
+                    )
+                )
+        prog.stop()
+    else:
+        fold_totals = {
+            fold_no: max(
+                1,
+                len(np.asarray(fold["test_idx"], dtype=int))
+                if local_enabled
+                else min(
+                    int(spec.max_explain),
+                    len(np.asarray(fold["test_idx"], dtype=int)),
+                ),
+            )
+            for fold_no, fold in enumerate(units.oof_folds, start=1)
+        }
+        info(
+            f"LIME workload · {sum(fold_totals.values()):,} explained samples · "
+            f"{len(units.oof_folds)} folds × up to {int(spec.max_explain)} samples"
+        )
+        with Manager() as manager:
+            progress_queue = manager.Queue()
+            tasks = [
+                (
+                    _lime_fold_parallel_task,
+                    (
+                        fold_no,
+                        fold,
+                        units.feature_names,
+                        units.dataset.class_labels,
+                        units.class_indices,
+                        units.dataset.sample_ids,
+                        units.dataset.y,
+                        units.dataset.positive_class,
+                        local_enabled,
+                        sweep.explainability.random_state + fold_no * 997,
+                        spec,
+                        int(units.execution.threads_per_worker),
+                        progress_queue,
+                    ),
+                    {},
+                )
+                for fold_no, fold in enumerate(units.oof_folds, start=1)
+            ]
+            parallel_results = _parallel_progress_results(
+                tasks,
+                units.execution,
+                progress_queue,
+                label="LIME",
+                unit_label="samples",
+                fold_totals=fold_totals,
+            )
+        results: dict[int, tuple[pd.DataFrame, list[dict[str, Any]]]] = {}
+        for fold_no, frame, rows in parallel_results:
+            results[int(fold_no)] = (frame, rows)
+        fold_frames = [results[index][0] for index in sorted(results)]
+        for index in sorted(results):
+            state.lime_oof_rows.extend(results[index][1])
+    info("Aggregating LIME global importance and cross-fold stability")
+    frame = _aggregate_fold_feature_importance(
+        "lime",
+        fold_frames,
+        units.feature_names,
+        units.class_indices,
+        units.dataset.class_labels,
+        "outer_fold_mean_abs_lime_coefficient",
+        sweep.explainability.top_k,
+    )
+    state.method_frames.append(frame)
+    fold_path, fold_long = _write_fold_feature_importance(
+        "lime", fold_frames, target.target_dir
+    )
+    state.method_outputs["lime_by_outer_fold"] = fold_path
+    state.fold_importance_frames.append(fold_long)
+    state.method_outputs.update(
+        _write_method_outputs(
+            frame,
+            target_dir=target.target_dir,
+            figures_dir=units.figures_dir,
+            X_base=units.X_base,
+            y=units.dataset.y,
+            feature_names=units.feature_names,
+            class_labels=units.dataset.class_labels,
+            top_k=sweep.explainability.top_k,
+        )
+    )
+    _persist_completed_explainability_method(cache, "lime")
+    success("Class-specific OOF LIME completed")
+
+
+def _run_permutation_explainability(
+    sweep: Sweep,
+    plan: _ExplainabilityPlan,
+    target: _ExplainabilityTarget,
+    units: _ExplainabilityUnits,
+    cache: _ExplainabilityCacheState,
+    state: _ExplainabilityState,
+) -> None:
+    if "permutation" not in plan.methods or "permutation" in cache.reusable_methods:
+        return
+    spec = plan.specs_by_name["permutation"]
+    info("Running global class-specific OOF permutation importance")
+    fold_frames: list[pd.DataFrame] = []
+    if units.execution.workers == 1:
+        prog = progress()
+        prog.start()
+        for fold_no, fold in enumerate(units.oof_folds, start=1):
+            fold_feature_names = _fold_feature_names(fold, units.feature_names)
+            prefix = (
+                f"Permutation fold {fold_no}/{len(units.oof_folds)} · "
+                f"{len(fold_feature_names)} features · "
+                f"{len(units.class_indices)} classes"
+            )
+            task = prog.add_task(f"{prefix} · preparing", total=1)
+            frame = _permutation_feature_importance(
+                configure_estimator_threads(
+                    fold["estimator"], int(units.execution.threads_per_worker)
+                ),
+                fold["X_test"],
+                fold["y_test"],
+                fold_feature_names,
+                units.dataset.class_labels,
+                units.class_indices,
+                spec=spec,
+                random_state=sweep.explainability.random_state + fold_no * 997,
+                progress_callback=_progress_callback(prog, task, prefix),
+                input_projector=fold.get("input_projector"),
+            )
+            frame["fold_key"] = str(fold.get("split_key", ""))
+            frame["fold_no"] = int(fold_no)
+            fold_frames.append(frame)
+        prog.stop()
+    else:
+        total_per_fold = max(1, len(units.feature_names) * int(spec.n_repeats))
+        fold_totals = {
+            fold_no: total_per_fold
+            for fold_no, _ in enumerate(units.oof_folds, start=1)
+        }
+        info(
+            f"Permutation workload · {sum(fold_totals.values()):,} feature-repeat jobs · "
+            f"{len(units.feature_names):,} features × {int(spec.n_repeats)} repeats × "
+            f"{len(units.oof_folds)} folds"
+        )
+        with Manager() as manager:
+            progress_queue = manager.Queue()
+            tasks = [
+                (
+                    _permutation_fold_parallel_task,
+                    (
+                        fold_no,
+                        fold,
+                        units.feature_names,
+                        units.dataset.class_labels,
+                        units.class_indices,
+                        sweep.explainability.random_state + fold_no * 997,
+                        spec,
+                        int(units.execution.threads_per_worker),
+                        progress_queue,
+                    ),
+                    {},
+                )
+                for fold_no, fold in enumerate(units.oof_folds, start=1)
+            ]
+            parallel_results = _parallel_progress_results(
+                tasks,
+                units.execution,
+                progress_queue,
+                label="Permutation",
+                unit_label="feature-repeat jobs",
+                fold_totals=fold_totals,
+            )
+        results: dict[int, pd.DataFrame] = {}
+        for fold_no, frame in parallel_results:
+            results[int(fold_no)] = frame
+        fold_frames = [results[index] for index in sorted(results)]
+    info("Aggregating permutation global importance and cross-fold stability")
+    frame = _aggregate_fold_feature_importance(
+        "permutation",
+        fold_frames,
+        units.feature_names,
+        units.class_indices,
+        units.dataset.class_labels,
+        f"outer_fold_increase_in_one_vs_rest_{spec.scoring}",
+        sweep.explainability.top_k,
+    )
+    state.method_frames.append(frame)
+    fold_path, fold_long = _write_fold_feature_importance(
+        "permutation", fold_frames, target.target_dir
+    )
+    state.method_outputs["permutation_by_outer_fold"] = fold_path
+    state.fold_importance_frames.append(fold_long)
+    state.method_outputs.update(
+        _write_method_outputs(
+            frame,
+            target_dir=target.target_dir,
+            figures_dir=units.figures_dir,
+            X_base=units.X_base,
+            y=units.dataset.y,
+            feature_names=units.feature_names,
+            class_labels=units.dataset.class_labels,
+            top_k=sweep.explainability.top_k,
+        )
+    )
+    _persist_completed_explainability_method(cache, "permutation")
+    success("Class-specific OOF permutation importance completed")
+
+
+def _monitor_ale_progress(
+    progress_queue: Any,
+    stop_event: Event,
+    prog: Any,
+    task: Any,
+    fold_progress: dict[int, int],
+    total_work: int,
+    fold_count: int,
+) -> None:
+    while not stop_event.is_set():
+        try:
+            fold_no, completed, total, detail = progress_queue.get(timeout=0.25)
+        except Empty:
+            continue
+        fold_no = int(fold_no)
+        fold_progress[fold_no] = max(
+            fold_progress.get(fold_no, 0),
+            min(max(0, int(completed)), max(1, int(total))),
+        )
+        overall = min(total_work, sum(fold_progress.values()))
+        prog.update(
+            task,
+            completed=overall,
+            description=(
+                f"ALE · {overall:,}/{total_work:,} feature-class jobs · "
+                f"fold {fold_no}/{fold_count} · {detail}"
+            ),
+        )
+
+
+def _run_ale_explainability(
+    sweep: Sweep,
+    plan: _ExplainabilityPlan,
+    target: _ExplainabilityTarget,
+    units: _ExplainabilityUnits,
+    cache: _ExplainabilityCacheState,
+    state: _ExplainabilityState,
+) -> None:
+    if "ale" not in plan.methods or "ale" in cache.reusable_methods:
+        return
+    spec = plan.specs_by_name["ale"]
+    info("Running global class-specific OOF ALE feature effects")
+    fold_frames: list[pd.DataFrame] = []
+    curve_frames: list[pd.DataFrame] = []
+    skipped_frames: list[pd.DataFrame] = []
+    if units.execution.workers == 1:
+        prog = progress()
+        prog.start()
+        for fold_no, fold in enumerate(units.oof_folds, start=1):
+            fold_feature_names = _fold_feature_names(fold, units.feature_names)
+            prefix = (
+                f"ALE fold {fold_no}/{len(units.oof_folds)} · "
+                f"{len(fold_feature_names)} features · "
+                f"{len(units.class_indices)} classes"
+            )
+            task = prog.add_task(f"{prefix} · preparing", total=1)
+            frame = _ale_feature_importance(
+                configure_estimator_threads(
+                    fold["estimator"], int(units.execution.threads_per_worker)
+                ),
+                fold["X_test"],
+                fold_feature_names,
+                units.dataset.class_labels,
+                units.class_indices,
+                spec=spec,
+                top_features=None,
+                progress_callback=_progress_callback(prog, task, prefix),
+                input_projector=fold.get("input_projector"),
+            )
+            skipped = frame.attrs.get("skipped_features")
+            if isinstance(skipped, pd.DataFrame) and not skipped.empty:
+                skipped = skipped.copy()
+                skipped["fold_key"] = str(fold.get("split_key", ""))
+                skipped["fold_no"] = int(fold_no)
+                skipped_frames.append(skipped)
+            if frame.empty:
+                continue
+            curves = frame.attrs.get("curves")
+            frame = frame.copy()
+            frame["fold_key"] = str(fold.get("split_key", ""))
+            frame["fold_no"] = int(fold_no)
+            fold_frames.append(frame)
+            if isinstance(curves, pd.DataFrame) and not curves.empty:
+                curves = curves.copy()
+                curves["fold_key"] = str(fold.get("split_key", ""))
+                curves["fold_no"] = int(fold_no)
+                curve_frames.append(curves)
+        prog.stop()
+    else:
+        total_per_fold = max(1, len(units.feature_names) * len(units.class_indices))
+        total_work = max(1, len(units.oof_folds) * total_per_fold)
+        info(
+            f"ALE workload · {total_work:,} feature-class jobs · "
+            f"{len(units.feature_names):,} features × {len(units.class_indices)} classes × "
+            f"{len(units.oof_folds)} folds"
+        )
+        results: dict[
+            int, tuple[pd.DataFrame, pd.DataFrame | None, pd.DataFrame | None]
+        ] = {}
+        with Manager() as manager:
+            progress_queue = manager.Queue()
+            tasks = [
+                (
+                    _ale_fold_parallel_task,
+                    (
+                        fold_no,
+                        fold,
+                        units.feature_names,
+                        units.dataset.class_labels,
+                        units.class_indices,
+                        spec,
+                        int(units.execution.threads_per_worker),
+                        progress_queue,
+                    ),
+                    {},
+                )
+                for fold_no, fold in enumerate(units.oof_folds, start=1)
+            ]
+            fold_progress = {
+                fold_no: 0 for fold_no in range(1, len(units.oof_folds) + 1)
             }
-            info(
-                f"LIME workload · {sum(fold_totals.values()):,} explained samples · "
-                f"{len(oof_folds)} folds × up to {int(spec.max_explain)} samples"
-            )
-            with Manager() as manager:
-                progress_queue = manager.Queue()
-                tasks = [
-                    (
-                        _lime_fold_parallel_task,
-                        (
-                            fold_no,
-                            fold,
-                            feature_names,
-                            dataset.class_labels,
-                            class_indices,
-                            dataset.sample_ids,
-                            dataset.y,
-                            dataset.positive_class,
-                            lime_local_enabled,
-                            sweep.explainability.random_state + fold_no * 997,
-                            spec,
-                            int(execution.threads_per_worker),
-                            progress_queue,
-                        ),
-                        {},
-                    )
-                    for fold_no, fold in enumerate(oof_folds, start=1)
-                ]
-                parallel_results = _parallel_progress_results(
-                    tasks,
-                    execution,
-                    progress_queue,
-                    label="LIME",
-                    unit_label="samples",
-                    fold_totals=fold_totals,
+            stop_monitor = Event()
+            with progress() as prog:
+                task = prog.add_task(
+                    f"ALE · 0/{total_work:,} feature-class jobs · "
+                    f"{units.execution.workers} workers",
+                    total=total_work,
                 )
-            results: dict[int, tuple[pd.DataFrame, list[dict[str, Any]]]] = {}
-            for fold_no, frame, rows in parallel_results:
-                results[int(fold_no)] = (frame, rows)
-            lime_fold_frames = [results[i][0] for i in sorted(results)]
-            for i in sorted(results):
-                lime_oof_rows.extend(results[i][1])
-        info("Aggregating LIME global importance and cross-fold stability")
-        lime_frame = _aggregate_fold_feature_importance(
-            "lime",
-            lime_fold_frames,
-            feature_names,
-            class_indices,
-            dataset.class_labels,
-            "outer_fold_mean_abs_lime_coefficient",
-            sweep.explainability.top_k,
-        )
-        method_frames.append(lime_frame)
-        fold_path, fold_long = _write_fold_feature_importance(
-            "lime", lime_fold_frames, target_dir
-        )
-        method_outputs["lime_by_outer_fold"] = fold_path
-        fold_importance_frames.append(fold_long)
-        method_outputs.update(
-            _write_method_outputs(
-                lime_frame,
-                target_dir=target_dir,
-                figures_dir=figures_dir,
-                X_base=X_base,
-                y=dataset.y,
-                feature_names=feature_names,
-                class_labels=dataset.class_labels,
-                top_k=sweep.explainability.top_k,
-            )
-        )
-        _persist_method_cache_entry(
-            meta_path, previous_meta, "lime", current_method_entries["lime"]
-        )
-        previous_method_cache["lime"] = current_method_entries["lime"]
-        success("Class-specific OOF LIME completed")
-
-    if "permutation" in methods and "permutation" not in reusable_methods:
-        spec = specs_by_name["permutation"]
-        info("Running global class-specific OOF permutation importance")
-        perm_frames: list[pd.DataFrame] = []
-        if execution.workers == 1:
-            prog = progress()
-            prog.start()
-            for fold_no, fold in enumerate(oof_folds, start=1):
-                fold_feature_names = _fold_feature_names(fold, feature_names)
-                prefix = f"Permutation fold {fold_no}/{len(oof_folds)} · {len(fold_feature_names)} features · {len(class_indices)} classes"
-                task = prog.add_task(f"{prefix} · preparing", total=1)
-                frame = _permutation_feature_importance(
-                    configure_estimator_threads(
-                        fold["estimator"], int(execution.threads_per_worker)
-                    ),
-                    fold["X_test"],
-                    fold["y_test"],
-                    fold_feature_names,
-                    dataset.class_labels,
-                    class_indices,
-                    spec=spec,
-                    random_state=sweep.explainability.random_state + fold_no * 997,
-                    progress_callback=_progress_callback(prog, task, prefix),
-                    input_projector=fold.get("input_projector"),
-                )
-                frame["fold_key"] = str(fold.get("split_key", ""))
-                frame["fold_no"] = int(fold_no)
-                perm_frames.append(frame)
-            prog.stop()
-        else:
-            total_per_fold = max(1, len(feature_names) * int(spec.n_repeats))
-            fold_totals = {
-                fold_no: total_per_fold for fold_no, _ in enumerate(oof_folds, start=1)
-            }
-            info(
-                f"Permutation workload · {sum(fold_totals.values()):,} feature-repeat jobs · "
-                f"{len(feature_names):,} features × {int(spec.n_repeats)} repeats × {len(oof_folds)} folds"
-            )
-            with Manager() as manager:
-                progress_queue = manager.Queue()
-                tasks = [
-                    (
-                        _permutation_fold_parallel_task,
-                        (
-                            fold_no,
-                            fold,
-                            feature_names,
-                            dataset.class_labels,
-                            class_indices,
-                            sweep.explainability.random_state + fold_no * 997,
-                            spec,
-                            int(execution.threads_per_worker),
-                            progress_queue,
-                        ),
-                        {},
-                    )
-                    for fold_no, fold in enumerate(oof_folds, start=1)
-                ]
-                parallel_results = _parallel_progress_results(
-                    tasks,
-                    execution,
-                    progress_queue,
-                    label="Permutation",
-                    unit_label="feature-repeat jobs",
-                    fold_totals=fold_totals,
-                )
-            results: dict[int, pd.DataFrame] = {}
-            for fold_no, frame in parallel_results:
-                results[int(fold_no)] = frame
-            perm_frames = [results[i] for i in sorted(results)]
-        info("Aggregating permutation global importance and cross-fold stability")
-        permutation_frame = _aggregate_fold_feature_importance(
-            "permutation",
-            perm_frames,
-            feature_names,
-            class_indices,
-            dataset.class_labels,
-            f"outer_fold_increase_in_one_vs_rest_{spec.scoring}",
-            sweep.explainability.top_k,
-        )
-        method_frames.append(permutation_frame)
-        fold_path, fold_long = _write_fold_feature_importance(
-            "permutation", perm_frames, target_dir
-        )
-        method_outputs["permutation_by_outer_fold"] = fold_path
-        fold_importance_frames.append(fold_long)
-        method_outputs.update(
-            _write_method_outputs(
-                permutation_frame,
-                target_dir=target_dir,
-                figures_dir=figures_dir,
-                X_base=X_base,
-                y=dataset.y,
-                feature_names=feature_names,
-                class_labels=dataset.class_labels,
-                top_k=sweep.explainability.top_k,
-            )
-        )
-        _persist_method_cache_entry(
-            meta_path,
-            previous_meta,
-            "permutation",
-            current_method_entries["permutation"],
-        )
-        previous_method_cache["permutation"] = current_method_entries["permutation"]
-        success("Class-specific OOF permutation importance completed")
-
-    if "ale" in methods and "ale" not in reusable_methods:
-        spec = specs_by_name["ale"]
-        info("Running global class-specific OOF ALE feature effects")
-        ale_frames: list[pd.DataFrame] = []
-        curve_frames: list[pd.DataFrame] = []
-        skipped_frames: list[pd.DataFrame] = []
-        if execution.workers == 1:
-            prog = progress()
-            prog.start()
-            for fold_no, fold in enumerate(oof_folds, start=1):
-                fold_feature_names = _fold_feature_names(fold, feature_names)
-                prefix = f"ALE fold {fold_no}/{len(oof_folds)} · {len(fold_feature_names)} features · {len(class_indices)} classes"
-                task = prog.add_task(f"{prefix} · preparing", total=1)
-                frame = _ale_feature_importance(
-                    configure_estimator_threads(
-                        fold["estimator"], int(execution.threads_per_worker)
-                    ),
-                    fold["X_test"],
-                    fold_feature_names,
-                    dataset.class_labels,
-                    class_indices,
-                    spec=spec,
-                    top_features=None,
-                    progress_callback=_progress_callback(prog, task, prefix),
-                    input_projector=fold.get("input_projector"),
-                )
-                skipped = frame.attrs.get("skipped_features")
-                if isinstance(skipped, pd.DataFrame) and not skipped.empty:
-                    skipped = skipped.copy()
-                    skipped["fold_key"] = str(fold.get("split_key", ""))
-                    skipped["fold_no"] = int(fold_no)
-                    skipped_frames.append(skipped)
-                if frame.empty:
-                    continue
-                curves = frame.attrs.get("curves")
-                frame = frame.copy()
-                frame["fold_key"] = str(fold.get("split_key", ""))
-                frame["fold_no"] = int(fold_no)
-                ale_frames.append(frame)
-                if isinstance(curves, pd.DataFrame) and not curves.empty:
-                    curves = curves.copy()
-                    curves["fold_key"] = str(fold.get("split_key", ""))
-                    curves["fold_no"] = int(fold_no)
-                    curve_frames.append(curves)
-            prog.stop()
-        else:
-            total_per_fold = max(1, len(feature_names) * len(class_indices))
-            total_work = max(1, len(oof_folds) * total_per_fold)
-            info(
-                f"ALE workload · {total_work:,} feature-class jobs · "
-                f"{len(feature_names):,} features × {len(class_indices)} classes × {len(oof_folds)} folds"
-            )
-            results: dict[
-                int, tuple[pd.DataFrame, pd.DataFrame | None, pd.DataFrame | None]
-            ] = {}
-            with Manager() as manager:
-                progress_queue = manager.Queue()
-                tasks = [
-                    (
-                        _ale_fold_parallel_task,
-                        (
-                            fold_no,
-                            fold,
-                            feature_names,
-                            dataset.class_labels,
-                            class_indices,
-                            spec,
-                            int(execution.threads_per_worker),
-                            progress_queue,
-                        ),
-                        {},
-                    )
-                    for fold_no, fold in enumerate(oof_folds, start=1)
-                ]
-                fold_progress = {fold_no: 0 for fold_no in range(1, len(oof_folds) + 1)}
-                stop_monitor = Event()
-                with progress() as prog:
-                    task = prog.add_task(
-                        f"ALE · 0/{total_work:,} feature-class jobs · {execution.workers} workers",
-                        total=total_work,
-                    )
-
-                    def monitor() -> None:
-                        while not stop_monitor.is_set():
-                            try:
-                                fold_no, completed, total, detail = progress_queue.get(
-                                    timeout=0.25
-                                )
-                            except Empty:
-                                continue
-                            fold_no = int(fold_no)
-                            fold_progress[fold_no] = max(
-                                fold_progress.get(fold_no, 0),
-                                min(max(0, int(completed)), max(1, int(total))),
-                            )
-                            overall = min(total_work, sum(fold_progress.values()))
-                            prog.update(
-                                task,
-                                completed=overall,
-                                description=(
-                                    f"ALE · {overall:,}/{total_work:,} feature-class jobs · "
-                                    f"fold {fold_no}/{len(oof_folds)} · {detail}"
-                                ),
-                            )
-
-                    monitor_thread = Thread(target=monitor, daemon=True)
-                    monitor_thread.start()
-                    try:
-                        for fold_no, frame, curves, skipped in _xai_task_iterator(
-                            tasks, execution
-                        ):
-                            results[int(fold_no)] = (frame, curves, skipped)
-                            fold_progress[int(fold_no)] = total_per_fold
-                            overall = min(total_work, sum(fold_progress.values()))
-                            prog.update(
-                                task,
-                                completed=overall,
-                                description=(
-                                    f"ALE · {overall:,}/{total_work:,} feature-class jobs · "
-                                    f"completed fold {fold_no}/{len(oof_folds)}"
-                                ),
-                            )
-                    finally:
-                        stop_monitor.set()
-                        monitor_thread.join(timeout=2.0)
-                    prog.update(
+                monitor_thread = Thread(
+                    target=_monitor_ale_progress,
+                    args=(
+                        progress_queue,
+                        stop_monitor,
+                        prog,
                         task,
-                        completed=total_work,
-                        description=f"ALE · completed {total_work:,}/{total_work:,} feature-class jobs",
-                    )
-            for fold_no in sorted(results):
-                frame, curves, skipped = results[fold_no]
-                if skipped is not None and not skipped.empty:
-                    skipped_frames.append(skipped)
-                if not frame.empty:
-                    ale_frames.append(frame)
-                if curves is not None and not curves.empty:
-                    curve_frames.append(curves)
-        info("Aggregating ALE global effects and cross-fold stability")
-        if skipped_frames:
-            write_table(
-                target_dir / "ale_skipped_features.parquet",
-                pd.concat(skipped_frames, ignore_index=True),
-            )
-        if not ale_frames:
-            raise ExplainabilityConfigurationError(
-                "ALE was requested, but no candidate feature was estimable in any outer-test fold."
-            )
-        ale_frame = _aggregate_fold_feature_importance(
-            "ale",
-            ale_frames,
-            feature_names,
-            class_indices,
-            dataset.class_labels,
-            "outer_fold_rms_distribution_weighted_class_probability_ale",
-            sweep.explainability.top_k,
-        )
-        if curve_frames:
-            curves_all = pd.concat(curve_frames, ignore_index=True)
-            write_table(target_dir / "ale_curves.parquet", curves_all)
-            for class_index in class_indices:
-                label = str(dataset.class_labels[int(class_index)])
-                slug = _class_slug(label)
-                class_imp = ale_frame[ale_frame["class_index"].eq(int(class_index))]
-                top_features = (
-                    class_imp.dropna(subset=["importance_mean"])
-                    .sort_values("importance_mean", ascending=False)
-                    .head(sweep.explainability.top_k)["feature"]
-                    .astype(str)
-                    .tolist()
+                        fold_progress,
+                        total_work,
+                        len(units.oof_folds),
+                    ),
+                    daemon=True,
                 )
-                class_curves = curves_all[
-                    curves_all["class_index"].eq(int(class_index))
-                ]
-                curve_stem = figures_dir / f"ale_curves__{slug}"
-                _plot_ale_curves(
-                    class_curves,
-                    top_features,
-                    curve_stem,
-                    max_panels=min(12, sweep.explainability.top_k),
-                    x_label="Model-input feature value",
-                    y_label=f"Centered ALE effect on P({label})",
+                monitor_thread.start()
+                try:
+                    for fold_no, frame, curves, skipped in _xai_task_iterator(
+                        tasks, units.execution
+                    ):
+                        results[int(fold_no)] = (frame, curves, skipped)
+                        fold_progress[int(fold_no)] = total_per_fold
+                        overall = min(total_work, sum(fold_progress.values()))
+                        prog.update(
+                            task,
+                            completed=overall,
+                            description=(
+                                f"ALE · {overall:,}/{total_work:,} feature-class jobs · "
+                                f"completed fold {fold_no}/{len(units.oof_folds)}"
+                            ),
+                        )
+                finally:
+                    stop_monitor.set()
+                    monitor_thread.join(timeout=2.0)
+                prog.update(
+                    task,
+                    completed=total_work,
+                    description=(
+                        f"ALE · completed {total_work:,}/{total_work:,} "
+                        "feature-class jobs"
+                    ),
                 )
-                method_outputs[f"ale_curves_{slug}"] = curve_stem.with_suffix(".svg")
-        method_frames.append(ale_frame)
-        fold_path, fold_long = _write_fold_feature_importance(
-            "ale", ale_frames, target_dir
+        for fold_no in sorted(results):
+            frame, curves, skipped = results[fold_no]
+            if skipped is not None and not skipped.empty:
+                skipped_frames.append(skipped)
+            if not frame.empty:
+                fold_frames.append(frame)
+            if curves is not None and not curves.empty:
+                curve_frames.append(curves)
+    info("Aggregating ALE global effects and cross-fold stability")
+    if skipped_frames:
+        write_table(
+            target.target_dir / "ale_skipped_features.parquet",
+            pd.concat(skipped_frames, ignore_index=True),
         )
-        method_outputs["ale_by_outer_fold"] = fold_path
-        fold_importance_frames.append(fold_long)
-        method_outputs.update(
-            _write_method_outputs(
-                ale_frame,
-                target_dir=target_dir,
-                figures_dir=figures_dir,
-                X_base=X_base,
-                y=dataset.y,
-                feature_names=feature_names,
-                class_labels=dataset.class_labels,
-                top_k=sweep.explainability.top_k,
+    if not fold_frames:
+        raise ExplainabilityConfigurationError(
+            "ALE was requested, but no candidate feature was estimable in any outer-test fold."
+        )
+    frame = _aggregate_fold_feature_importance(
+        "ale",
+        fold_frames,
+        units.feature_names,
+        units.class_indices,
+        units.dataset.class_labels,
+        "outer_fold_rms_distribution_weighted_class_probability_ale",
+        sweep.explainability.top_k,
+    )
+    if curve_frames:
+        curves_all = pd.concat(curve_frames, ignore_index=True)
+        write_table(target.target_dir / "ale_curves.parquet", curves_all)
+        for class_index in units.class_indices:
+            label = str(units.dataset.class_labels[int(class_index)])
+            slug = _class_slug(label)
+            class_importance = frame[frame["class_index"].eq(int(class_index))]
+            top_features = (
+                class_importance.dropna(subset=["importance_mean"])
+                .sort_values("importance_mean", ascending=False)
+                .head(sweep.explainability.top_k)["feature"]
+                .astype(str)
+                .tolist()
             )
+            class_curves = curves_all[curves_all["class_index"].eq(int(class_index))]
+            curve_stem = units.figures_dir / f"ale_curves__{slug}"
+            _plot_ale_curves(
+                class_curves,
+                top_features,
+                curve_stem,
+                max_panels=min(12, sweep.explainability.top_k),
+                x_label="Model-input feature value",
+                y_label=f"Centered ALE effect on P({label})",
+            )
+            state.method_outputs[f"ale_curves_{slug}"] = curve_stem.with_suffix(".svg")
+    state.method_frames.append(frame)
+    fold_path, fold_long = _write_fold_feature_importance(
+        "ale", fold_frames, target.target_dir
+    )
+    state.method_outputs["ale_by_outer_fold"] = fold_path
+    state.fold_importance_frames.append(fold_long)
+    state.method_outputs.update(
+        _write_method_outputs(
+            frame,
+            target_dir=target.target_dir,
+            figures_dir=units.figures_dir,
+            X_base=units.X_base,
+            y=units.dataset.y,
+            feature_names=units.feature_names,
+            class_labels=units.dataset.class_labels,
+            top_k=sweep.explainability.top_k,
         )
-        _persist_method_cache_entry(
-            meta_path, previous_meta, "ale", current_method_entries["ale"]
-        )
-        previous_method_cache["ale"] = current_method_entries["ale"]
-        success("Class-specific OOF ALE completed")
+    )
+    _persist_completed_explainability_method(cache, "ale")
+    success("Class-specific OOF ALE completed")
 
-    if not method_frames and not local_enabled:
+
+def _run_global_explainability_methods(
+    sweep: Sweep,
+    plan: _ExplainabilityPlan,
+    target: _ExplainabilityTarget,
+    units: _ExplainabilityUnits,
+    cache: _ExplainabilityCacheState,
+    state: _ExplainabilityState,
+) -> None:
+    _run_shap_explainability(sweep, plan, target, units, cache, state)
+    _run_lime_explainability(sweep, plan, target, units, cache, state)
+    _run_permutation_explainability(sweep, plan, target, units, cache, state)
+    _run_ale_explainability(sweep, plan, target, units, cache, state)
+
+
+def _aggregate_explainability_outputs(
+    sweep: Sweep,
+    plan: _ExplainabilityPlan,
+    target: _ExplainabilityTarget,
+    state: _ExplainabilityState,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not state.method_frames and not plan.local_enabled:
         raise ExplainabilityConfigurationError(
             "No global or local explainability method was executed."
         )
-
-    imp = (
-        _combine_feature_importance(method_frames) if method_frames else pd.DataFrame()
+    importance = (
+        _combine_feature_importance(state.method_frames)
+        if state.method_frames
+        else pd.DataFrame()
     )
-    write_table(target_dir / "feature_importance.parquet", imp)
-    stability_all = (
+    write_table(target.target_dir / "feature_importance.parquet", importance)
+    stability = (
         pd.concat(
             [
                 frame.assign(method=str(frame["method"].iloc[0]))
-                for frame in method_frames
+                for frame in state.method_frames
                 if not frame.empty
             ],
             ignore_index=True,
         )
-        if method_frames
+        if state.method_frames
         else pd.DataFrame()
     )
     stability_columns = [
@@ -2567,44 +2844,64 @@ def _explain_one(
         "sign_negative_fraction",
         "sign_consistency",
     ]
+    stability_path = target.target_dir / "feature_stability.parquet"
     write_table(
-        target_dir / "feature_stability.parquet",
-        stability_all[[c for c in stability_columns if c in stability_all.columns]],
+        stability_path,
+        stability[
+            [column for column in stability_columns if column in stability.columns]
+        ],
     )
-    method_outputs["feature_stability"] = target_dir / "feature_stability.parquet"
+    state.method_outputs["feature_stability"] = stability_path
     fold_all = (
-        pd.concat(fold_importance_frames, ignore_index=True)
-        if fold_importance_frames
+        pd.concat(state.fold_importance_frames, ignore_index=True)
+        if state.fold_importance_frames
         else pd.DataFrame()
     )
-    write_table(target_dir / "feature_importance_by_outer_fold.parquet", fold_all)
-    method_outputs["feature_importance_by_outer_fold"] = (
-        target_dir / "feature_importance_by_outer_fold.parquet"
-    )
+    fold_path = target.target_dir / "feature_importance_by_outer_fold.parquet"
+    write_table(fold_path, fold_all)
+    state.method_outputs["feature_importance_by_outer_fold"] = fold_path
+    return importance, stability
 
-    if "interactions" in global_methods and "interactions" not in reusable_methods:
-        spec = specs_by_name["interactions"]
+
+def _run_interaction_explainability(
+    plan: _ExplainabilityPlan,
+    target: _ExplainabilityTarget,
+    units: _ExplainabilityUnits,
+    cache: _ExplainabilityCacheState,
+    state: _ExplainabilityState,
+    importance: pd.DataFrame,
+) -> None:
+    if (
+        "interactions" in plan.global_methods
+        and "interactions" not in cache.reusable_methods
+    ):
+        spec = plan.specs_by_name["interactions"]
         info("Running class-specific OOF ALE interaction analysis")
         by_method: dict[str, list[pd.DataFrame]] = {
-            m: [] for m in ("current", "corrected", "fixed_pairs", "corrected_fixed")
+            name: []
+            for name in ("current", "corrected", "fixed_pairs", "corrected_fixed")
         }
         all_raw: list[pd.DataFrame] = []
         prog = progress()
         prog.start()
-        for class_index in class_indices:
-            score_series = imp[imp["class_index"].eq(int(class_index))].set_index(
-                "feature"
-            )["importance_mean"]
-            for fold_no, fold in enumerate(oof_folds, start=1):
-                fold_feature_names = _fold_feature_names(fold, feature_names)
-                prefix = f"Interactions · {dataset.class_labels[int(class_index)]} · fold {fold_no}/{len(oof_folds)}"
+        for class_index in units.class_indices:
+            score_series = importance[
+                importance["class_index"].eq(int(class_index))
+            ].set_index("feature")["importance_mean"]
+            for fold_no, fold in enumerate(units.oof_folds, start=1):
+                fold_feature_names = _fold_feature_names(fold, units.feature_names)
+                prefix = (
+                    "Interactions · "
+                    f"{units.dataset.class_labels[int(class_index)]} · "
+                    f"fold {fold_no}/{len(units.oof_folds)}"
+                )
                 task = prog.add_task(f"{prefix} · preparing", total=1)
                 try:
                     tables = _ale_interactions(
                         fold["estimator"],
                         fold["X_test"],
                         fold_feature_names,
-                        dataset.class_labels,
+                        units.dataset.class_labels,
                         int(class_index),
                         spec=spec,
                         scores=score_series,
@@ -2613,16 +2910,19 @@ def _explain_one(
                     )
                 except ExplainabilityConfigurationError:
                     prog.update(
-                        task, completed=1, total=1, description=f"{prefix} · skipped"
+                        task,
+                        completed=1,
+                        total=1,
+                        description=f"{prefix} · skipped",
                     )
                     continue
-                for name, tab in tables.items():
-                    tab = tab.copy()
-                    tab["fold_key"] = str(fold.get("split_key", ""))
+                for name, table in tables.items():
+                    table = table.copy()
+                    table["fold_key"] = str(fold.get("split_key", ""))
                     if name == "all_methods":
-                        all_raw.append(tab)
+                        all_raw.append(table)
                     elif name in by_method:
-                        by_method[name].append(tab)
+                        by_method[name].append(table)
         prog.stop()
         info("Aggregating interaction stability and writing outputs")
         interaction_tables = {
@@ -2631,142 +2931,183 @@ def _explain_one(
             if frames
         }
         if all_raw:
-            all_path = target_dir / "feature_interactions_by_target_all_methods.parquet"
-            write_table(all_path, pd.concat(all_raw, ignore_index=True))
-            interaction_outputs["interactions_all_methods"] = all_path
-        for name, tab in interaction_tables.items():
-            path = target_dir / f"feature_interactions_{name}.parquet"
-            write_table(path, tab)
-            interaction_outputs[f"interactions_{name}"] = path
-        _persist_method_cache_entry(
-            meta_path,
-            previous_meta,
-            "interactions",
-            current_method_entries["interactions"],
-        )
-        previous_method_cache["interactions"] = current_method_entries["interactions"]
+            path = (
+                target.target_dir / "feature_interactions_by_target_all_methods.parquet"
+            )
+            write_table(path, pd.concat(all_raw, ignore_index=True))
+            state.interaction_outputs["interactions_all_methods"] = path
+        for name, table in interaction_tables.items():
+            path = target.target_dir / f"feature_interactions_{name}.parquet"
+            write_table(path, table)
+            state.interaction_outputs[f"interactions_{name}"] = path
+        _persist_completed_explainability_method(cache, "interactions")
         success("Class-specific OOF interaction analysis completed")
-
-    if "interactions" in methods:
-        interaction_outputs.update(
+    if "interactions" in plan.methods:
+        state.interaction_outputs.update(
             _ensure_interaction_network_outputs(
-                target_dir,
-                figures_dir,
-                X_base,
-                dataset.y,
-                feature_names,
-                dataset.class_labels,
-                class_indices,
-                int(specs_by_name["interactions"].top_k),
-                dataset,
-                coordinate_metadata,
+                target.target_dir,
+                units.figures_dir,
+                units.X_base,
+                units.dataset.y,
+                units.feature_names,
+                units.dataset.class_labels,
+                units.class_indices,
+                int(plan.specs_by_name["interactions"].top_k),
+                units.dataset,
+                units.coordinate_metadata,
             )
         )
 
-    method_outputs.update(
+
+def _write_local_explainability_outputs(
+    sweep: Sweep,
+    plan: _ExplainabilityPlan,
+    target: _ExplainabilityTarget,
+    units: _ExplainabilityUnits,
+    state: _ExplainabilityState,
+) -> None:
+    state.method_outputs.update(
         _ensure_local_explanation_outputs(
-            target_dir,
-            source_signature,
+            target.target_dir,
+            units.source_signature,
             sweep,
-            specs_by_name,
-            methods,
-            oof_folds,
-            dataset,
-            feature_names,
-            int(execution.threads_per_worker),
-            precomputed_rows={"shap": shap_oof_rows, "lime": lime_oof_rows},
+            plan.specs_by_name,
+            plan.methods,
+            units.oof_folds,
+            units.dataset,
+            units.feature_names,
+            int(units.execution.threads_per_worker),
+            precomputed_rows={
+                "shap": state.shap_oof_rows,
+                "lime": state.lime_oof_rows,
+            },
         )
     )
 
+
+def _write_explainability_feature_support(
+    sweep: Sweep,
+    target: _ExplainabilityTarget,
+    units: _ExplainabilityUnits,
+    state: _ExplainabilityState,
+    importance: pd.DataFrame,
+    stability: pd.DataFrame,
+) -> dict[str, Path]:
     top_features = (
-        _method_support_table(method_frames, imp, top_k=sweep.explainability.top_k)
-        if method_frames and not imp.empty
+        _method_support_table(
+            state.method_frames, importance, top_k=sweep.explainability.top_k
+        )
+        if state.method_frames and not importance.empty
         else pd.DataFrame()
     )
-    write_table(target_dir / "top_features.parquet", top_features)
-    dist_frames: list[pd.DataFrame] = []
-    class_figure_paths: dict[str, Path] = {}
-    grouped_top_features = (
+    write_table(target.target_dir / "top_features.parquet", top_features)
+    distributions: list[pd.DataFrame] = []
+    figure_paths: dict[str, Path] = {}
+    grouped = (
         top_features.groupby("class_index", sort=True)
         if not top_features.empty and "class_index" in top_features.columns
         else ()
     )
-    for class_index, class_top in grouped_top_features:
-        c = int(class_index)
-        label = str(dataset.class_labels[c])
+    for class_index, class_top in grouped:
+        index = int(class_index)
+        label = str(units.dataset.class_labels[index])
         slug = _class_slug(label)
-        dist = _feature_distribution_stats(
+        distribution = _feature_distribution_stats(
             class_top["feature"].astype(str).tolist(),
-            feature_names,
-            X_base,
-            dataset.y,
-            dataset.class_labels,
+            units.feature_names,
+            units.X_base,
+            units.dataset.y,
+            units.dataset.class_labels,
         )
-        dist.insert(0, "class_label", label)
-        dist.insert(0, "class_index", c)
-        dist_frames.append(dist)
-        support_stem = figures_dir / f"feature_support__{slug}"
+        distribution.insert(0, "class_label", label)
+        distribution.insert(0, "class_index", index)
+        distributions.append(distribution)
+        stem = units.figures_dir / f"feature_support__{slug}"
         _plot_feature_importance(
             class_top,
-            dist,
-            support_stem,
+            distribution,
+            stem,
             sweep.explainability.top_k,
-            dataset.class_labels,
-            stability_all,
+            units.dataset.class_labels,
+            stability,
         )
-        class_figure_paths[f"feature_support_{slug}"] = support_stem.with_suffix(".svg")
-    dist_all = (
-        pd.concat(dist_frames, ignore_index=True) if dist_frames else pd.DataFrame()
+        figure_paths[f"feature_support_{slug}"] = stem.with_suffix(".svg")
+    distribution_all = (
+        pd.concat(distributions, ignore_index=True) if distributions else pd.DataFrame()
     )
-    write_table(target_dir / "feature_distribution_stats.parquet", dist_all)
+    write_table(
+        target.target_dir / "feature_distribution_stats.parquet", distribution_all
+    )
+    return figure_paths
 
+
+def _write_explained_unit_metadata(
+    sweep: Sweep,
+    plan: _ExplainabilityPlan,
+    target: _ExplainabilityTarget,
+    units: _ExplainabilityUnits,
+    cache: _ExplainabilityCacheState,
+    state: _ExplainabilityState,
+    row: pd.Series,
+) -> None:
     dump_json_standard(
         {
             "pipeline_schema": _EXPLAINABILITY_PIPELINE_SCHEMA,
-            "target": target_slug,
-            "target_label": target_label,
+            "target": target.slug,
+            "target_label": target.label,
             "config": row.to_dict(),
-            "methods": list(methods),
-            "method_parameters": [method_to_dict(x) for x in method_specs],
+            "methods": list(plan.methods),
+            "method_parameters": [method_to_dict(spec) for spec in plan.method_specs],
             "method_cache": {
-                **previous_method_cache,
-                **current_method_entries,
+                **cache.previous_method_cache,
+                **cache.current_method_entries,
             },
-            "explanation_source_signature": source_signature,
+            "explanation_source_signature": units.source_signature,
             "explainability_config": _explainability_config_payload(
                 sweep.explainability
             ),
             "explainability_config_signature": _explainability_config_signature(
                 sweep.explainability
             ),
-            "explained_class_indices": [int(x) for x in class_indices],
+            "explained_class_indices": [int(index) for index in units.class_indices],
             "explained_class_labels": [
-                str(dataset.class_labels[int(x)]) for x in class_indices
+                str(units.dataset.class_labels[int(index)])
+                for index in units.class_indices
             ],
             "class_target": "class_probability",
             "explanation_layers": [
-                *(["global", "cross_fold_stability"] if global_methods else []),
-                *(["local"] if local_enabled else []),
+                *(["global", "cross_fold_stability"] if plan.global_methods else []),
+                *(["local"] if plan.local_enabled else []),
             ],
-            "local_explanations": local_mode,
-            "local_methods": list(local_methods) if local_enabled else [],
+            "local_explanations": plan.local_mode,
+            "local_methods": list(plan.local_methods) if plan.local_enabled else [],
             "local_target": "observed_class_probability",
             "local_storage": "top_k_per_oof_split_full_vectors_for_report_representatives",
             "local_top_k": int(sweep.explainability.local.stored_features),
-            "global_methods": [x for x in global_methods if x != "interactions"],
-            "interaction_scope": "global_exploratory"
-            if "interactions" in global_methods
-            else "not_requested",
-            "shap_backends": sorted(resolved_shap_backends),
-            "default_suite": ["shap", "lime", "ale", "permutation", "interactions"],
+            "global_methods": [
+                name for name in plan.global_methods if name != "interactions"
+            ],
+            "interaction_scope": (
+                "global_exploratory"
+                if "interactions" in plan.global_methods
+                else "not_requested"
+            ),
+            "shap_backends": sorted(state.resolved_shap_backends),
+            "default_suite": [
+                "shap",
+                "lime",
+                "ale",
+                "permutation",
+                "interactions",
+            ],
             "strict": True,
             "fallbacks": False,
             "cross_validation_explanations": "outer_test_folds",
             "out_of_fold": True,
-            "perturbation_geometry": geometries,
-            "geometry_projection_applied": bool(projection_applied),
-            "perturbation_interpretation": perturbation_policy["interpretation"],
-            "n_outer_folds_explained": len(oof_folds),
+            "perturbation_geometry": units.geometries,
+            "geometry_projection_applied": bool(units.projection_applied),
+            "perturbation_interpretation": units.perturbation_policy["interpretation"],
+            "n_outer_folds_explained": len(units.oof_folds),
             "ale_feature_scope": "all_estimable_features",
             "consensus_strategy": "mean_within_method_rank_support_available_methods",
             "consensus_missing_values": "excluded_not_zero",
@@ -2781,37 +3122,94 @@ def _explain_one(
             ],
             "fold_level_importance_file": "feature_importance_by_outer_fold.parquet",
             "execution": {
-                "workers": int(execution.workers),
-                "threads_per_worker": int(execution.threads_per_worker),
-                "backend": str(execution.backend),
-                "logical_cpus": int(execution.logical_cpus),
-                "physical_cpus": int(execution.physical_cpus),
+                "workers": int(units.execution.workers),
+                "threads_per_worker": int(units.execution.threads_per_worker),
+                "backend": str(units.execution.backend),
+                "logical_cpus": int(units.execution.logical_cpus),
+                "physical_cpus": int(units.execution.physical_cpus),
             },
         },
-        target_dir / "explained_unit.json",
+        target.target_dir / "explained_unit.json",
     )
-    if not ensemble_explain and cache_dir is not None and target_dir != cache_dir:
-        _copy_explainability_cache(target_dir, cache_dir)
+
+
+def _finalize_explainability_run(
+    sweep: Sweep,
+    plan: _ExplainabilityPlan,
+    target: _ExplainabilityTarget,
+    units: _ExplainabilityUnits,
+    state: _ExplainabilityState,
+    class_figure_paths: Mapping[str, Path],
+) -> dict[str, Path]:
+    if (
+        not target.ensemble
+        and target.cache_dir is not None
+        and target.target_dir != target.cache_dir
+    ):
+        _copy_explainability_cache(target.target_dir, target.cache_dir)
     success(
-        f"Explainability completed · target={target_label} · methods={','.join(methods)}"
+        f"Explainability completed · target={target.label} · "
+        f"methods={','.join(plan.methods)}"
     )
     outputs = {
-        "explainability_dir": target_dir,
-        "importance": target_dir / "feature_importance.parquet",
-        "stability": target_dir / "feature_stability.parquet",
-        "perturbation_policy": perturbation_policy_path,
+        "explainability_dir": target.target_dir,
+        "importance": target.target_dir / "feature_importance.parquet",
+        "stability": target.target_dir / "feature_stability.parquet",
+        "perturbation_policy": units.perturbation_policy_path,
     }
-    if coordinate_metadata_path is not None:
-        outputs["coordinate_metadata"] = coordinate_metadata_path
-    if coordinate_metadata_by_fold_path is not None:
-        outputs["coordinate_metadata_by_outer_fold"] = coordinate_metadata_by_fold_path
-    if prediction_reproduction_path is not None:
-        outputs["prediction_reproduction"] = prediction_reproduction_path
+    if units.coordinate_metadata_path is not None:
+        outputs["coordinate_metadata"] = units.coordinate_metadata_path
+    if units.coordinate_metadata_by_fold_path is not None:
+        outputs["coordinate_metadata_by_outer_fold"] = (
+            units.coordinate_metadata_by_fold_path
+        )
+    if units.prediction_reproduction_path is not None:
+        outputs["prediction_reproduction"] = units.prediction_reproduction_path
     outputs.update(class_figure_paths)
-    outputs.update(method_outputs)
-    outputs.update(interaction_outputs)
+    outputs.update(state.method_outputs)
+    outputs.update(state.interaction_outputs)
     path_table("Explainability outputs", outputs)
     return outputs
+
+
+def _explain_one(
+    sweep: Sweep,
+    target_override: str | None = None,
+    *,
+    output_slug_override: str | None = None,
+    display_label_override: str | None = None,
+    allow_member_cache: bool = True,
+) -> dict[str, Path]:
+    plan = _build_explainability_plan(sweep)
+    _show_explainability_suite(sweep, plan, target_override)
+    rankings = _load_explainability_rankings(sweep.root())
+    target = _resolve_explainability_target(
+        sweep,
+        rankings,
+        target_override,
+        output_slug_override,
+        display_label_override,
+        allow_member_cache,
+    )
+    cached = _cached_explainability_outputs(sweep, target, allow_member_cache)
+    if cached is not None:
+        return cached
+    units, row = _prepare_explainability_units(sweep, plan, rankings, target)
+    cache = _prepare_explainability_cache(sweep, plan, target, units, row)
+    state = _load_reusable_explainability_methods(sweep, plan, target, units, cache)
+    _run_global_explainability_methods(sweep, plan, target, units, cache, state)
+    importance, stability = _aggregate_explainability_outputs(
+        sweep, plan, target, state
+    )
+    _run_interaction_explainability(plan, target, units, cache, state, importance)
+    _write_local_explainability_outputs(sweep, plan, target, units, state)
+    class_figure_paths = _write_explainability_feature_support(
+        sweep, target, units, state, importance, stability
+    )
+    _write_explained_unit_metadata(sweep, plan, target, units, cache, state, row)
+    return _finalize_explainability_run(
+        sweep, plan, target, units, state, class_figure_paths
+    )
 
 
 def _score_sort_column(df: pd.DataFrame) -> str | None:

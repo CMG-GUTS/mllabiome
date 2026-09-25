@@ -5,6 +5,7 @@ import html
 import inspect
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -2446,40 +2447,62 @@ code { font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monosp
 """ + _publication_layout_css()
 
 
-def write_report(sweep: Sweep) -> dict[str, Path]:
+@dataclass(frozen=True)
+class _ReportAnalysis:
+    procedure: pd.DataFrame
+    multimodal_inclusion_html: str
+    learner_labels: dict[str, str]
+    top_mpmas: pd.DataFrame
+    strategy_rows: list[dict[str, Any]]
+    compute_accounting: dict[str, Any]
+    compute_display: pd.DataFrame
+    compute_environment: dict[str, Any]
+    statistics: dict[str, Any]
+    strategy_html: pd.DataFrame
+    primary_pairwise: pd.DataFrame
+    ensemble_summary: pd.DataFrame
+    ensemble_members: pd.DataFrame
 
-    root = sweep.root()
 
+@dataclass(frozen=True)
+class _ReportVisuals:
+    representation_figure: str
+    mpma_e_figure: str
+    explainability_html: str
+    explainability_count: int
+
+
+@dataclass(frozen=True)
+class _ReportTables:
+    feature_summary_path: Path
+    hardware_summary_path: Path
+    hardware_summary: pd.DataFrame
+
+
+def _prepare_report_directories(root: Path) -> tuple[Path, Path]:
     report_dir = root / "report"
-
     report_dir.mkdir(parents=True, exist_ok=True)
-
     tables_dir = report_dir / "tables"
-
     tables_dir.mkdir(exist_ok=True)
+    return report_dir, tables_dir
 
-    stage("Report", str(report_dir))
 
+def _analyze_report(sweep: Sweep, root: Path) -> _ReportAnalysis:
     with phase_progress("Report analysis", 4) as phase:
         phase.phase("procedure and rankings")
-
         procedure = _procedure_table(sweep, root)
-
         multimodal_inclusion_html = (
             _multimodal_inclusion_html(_manifest(root))
             if getattr(sweep, "uses_modalities", False)
             else ""
         )
-
         learner_labels = _learner_display_map(sweep)
-
         top_mpmas = _top_mpma_display(
             _top_mpma_raw(root, 5, str(sweep.evaluation.optimize_metric)),
             selection_metric=str(sweep.evaluation.optimize_metric),
             html_mode=True,
             learner_labels=learner_labels,
         )
-
         if getattr(sweep, "uses_modalities", False) and not top_mpmas.empty:
             top_mpmas = top_mpmas.rename(
                 columns={
@@ -2488,19 +2511,12 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
                     "Count transformation": "Transformation",
                 }
             )
-
         strategy_rows = _strategy_rows(root, str(sweep.evaluation.optimize_metric))
-
         phase.phase("compute accounting")
-
         compute_accounting = run_compute_accounting(root, sweep, strategy_rows)
-
         compute_display = compute_accounting.get("display", pd.DataFrame())
-
         compute_environment = compute_accounting.get("environment", {})
-
         phase.phase("statistics")
-
         statistics = run_report_statistics(
             root,
             sweep.evaluation.protocol,
@@ -2521,159 +2537,168 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
                 sweep.evaluation, "decision_curve_points", 99
             ),
         )
-
         strategy_html = _strategy_performance_display(
             root,
             selection_metric=str(sweep.evaluation.optimize_metric),
             html_mode=True,
         )
-
-        pairwise = statistics.get("pairwise", pd.DataFrame())
-
         primary_pairwise = _primary_pairwise_display(
-            pairwise, str(sweep.evaluation.optimize_metric)
+            statistics.get("pairwise", pd.DataFrame()),
+            str(sweep.evaluation.optimize_metric),
         )
-
         phase.phase("ensemble summaries")
-
         ensemble_summary = _ensemble_summary_table(root)
-
         ensemble_members = _ensemble_members_table(root, learner_labels)
+    return _ReportAnalysis(
+        procedure=procedure,
+        multimodal_inclusion_html=multimodal_inclusion_html,
+        learner_labels=learner_labels,
+        top_mpmas=top_mpmas,
+        strategy_rows=strategy_rows,
+        compute_accounting=compute_accounting,
+        compute_display=compute_display,
+        compute_environment=compute_environment,
+        statistics=statistics,
+        strategy_html=strategy_html,
+        primary_pairwise=primary_pairwise,
+        ensemble_summary=ensemble_summary,
+        ensemble_members=ensemble_members,
+    )
 
-    cpu_model = str(compute_environment.get("cpu_model", "")).strip()
 
-    logical_cpus = compute_environment.get("logical_cpus", "")
-
-    physical_cpus = compute_environment.get("physical_cpus", "")
-
-    workers = compute_environment.get("evaluation_workers", "")
-
-    threads_per_worker = compute_environment.get("threads_per_worker", "")
-
-    total_memory = compute_environment.get("memory_total_bytes")
-
-    memory_text = ""
-
-    try:
-        if total_memory is not None and np.isfinite(float(total_memory)):
-            memory_text = f"{float(total_memory) / (1024**3):.3f} GiB RAM"
-
-    except Exception:
-        memory_text = ""
-
-    hardware_parts = [
-        x
-        for x in [
-            cpu_model,
-            f"{physical_cpus} physical / {logical_cpus} logical CPUs"
-            if physical_cpus and logical_cpus
-            else "",
-            memory_text,
-            f"{workers} workers × {threads_per_worker} threads"
-            if workers and threads_per_worker
-            else "",
-        ]
-        if x
-    ]
-
-    hardware_text = " · ".join(hardware_parts)
-
+def _build_report_visuals(
+    sweep: Sweep,
+    root: Path,
+    report_dir: Path,
+) -> _ReportVisuals:
     with phase_progress("Report outputs", 2) as phase:
         phase.phase("representation and MPMA-E figure")
-
-        representation_fig = _fig(
+        representation_figure = _fig(
             root / "figures" / "representation_impact",
             report_dir,
             "Data representations and learner impact on held-out performance",
         )
-
-        mpma_e_fig = _fig(
-            root / "figures" / "mpma_e", report_dir, "Selected MPMA-E schematic"
+        mpma_e_figure = _fig(
+            root / "figures" / "mpma_e",
+            report_dir,
+            "Selected MPMA-E schematic",
         )
-
         phase.phase("explainability visuals")
-
         from .explainability import refresh_explainability_visuals
 
         refresh_explainability_visuals(root, sweep)
-
         explainability_html, explainability_count = _explainability_report_blocks(
-            root, report_dir, top_n=int(getattr(sweep.explainability, "top_k", 15))
+            root,
+            report_dir,
+            top_n=int(getattr(sweep.explainability, "top_k", 15)),
         )
-
-    feature_summary = _feature_support_table(root, top_n=8)
-
-    feature_summary_path = tables_dir / "important_features.parquet"
-
-    write_table(feature_summary_path, feature_summary)
-
-    hardware_summary = _hardware_summary_table(compute_environment)
-
-    hardware_summary_path = tables_dir / "hardware_environment.parquet"
-
-    write_table(hardware_summary_path, hardware_summary)
-
-    css = _report_css()
-
-    protocol_key = str(sweep.evaluation.protocol).strip().lower()
-
-    evaluation_units = (
-        "held-out datasets"
-        if protocol_key in {"lodo", "leave_one_dataset_out"}
-        else "outer test folds"
+    return _ReportVisuals(
+        representation_figure=representation_figure,
+        mpma_e_figure=mpma_e_figure,
+        explainability_html=explainability_html,
+        explainability_count=explainability_count,
     )
 
+
+def _write_report_tables(
+    root: Path,
+    tables_dir: Path,
+    analysis: _ReportAnalysis,
+) -> _ReportTables:
+    feature_summary_path = tables_dir / "important_features.parquet"
+    write_table(feature_summary_path, _feature_support_table(root, top_n=8))
+    hardware_summary = _hardware_summary_table(analysis.compute_environment)
+    hardware_summary_path = tables_dir / "hardware_environment.parquet"
+    write_table(hardware_summary_path, hardware_summary)
+    return _ReportTables(
+        feature_summary_path=feature_summary_path,
+        hardware_summary_path=hardware_summary_path,
+        hardware_summary=hardware_summary,
+    )
+
+
+def _render_report_html(
+    sweep: Sweep,
+    analysis: _ReportAnalysis,
+    visuals: _ReportVisuals,
+    tables: _ReportTables,
+) -> str:
     top_metric_cols = {
-        c for c in top_mpmas.columns if c.startswith("Inner") or c.startswith("Outer")
+        column
+        for column in analysis.top_mpmas.columns
+        if column.startswith("Inner") or column.startswith("Outer")
     }
-
-    strat_metric_cols = {c for c in strategy_html.columns if c != "Strategy"}
-
+    strategy_metric_cols = {
+        column for column in analysis.strategy_html.columns if column != "Strategy"
+    }
+    representation_figure = (
+        visuals.representation_figure
+        if visuals.representation_figure
+        else "<p>No representation-impact figure is available yet.</p>"
+    )
+    pairwise_html = (
+        _html_table(analysis.primary_pairwise)
+        if not analysis.primary_pairwise.empty
+        else f"<p>No matched pairwise comparisons were estimable for {html.escape(str(sweep.evaluation.optimize_metric))}. At least two displayed strategies with finite values on the same held-out outer units are required.</p>"
+    )
+    explainability_html = (
+        visuals.explainability_html
+        if visuals.explainability_html
+        else "<p>No explainability artefacts are available yet.</p>"
+    )
+    hardware_html = (
+        _html_table(tables.hardware_summary)
+        if not tables.hardware_summary.empty
+        else "<p>Hardware details are unavailable for this run.</p>"
+    )
     html_text = f"""<!doctype html>
 <html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
-<title>mllabiome report</title><link rel="icon" type="image/svg+xml" href="{_favicon_href()}"><style>{css}</style></head>
+<title>mllabiome report</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"{_favicon_href()}\"><style>{_report_css()}</style></head>
 <body>
 {_report_nav_html()}
-<div class="report-shell"><main id="top" class="report-content">
-<h2 id="performance-evaluation" class="first-section">Task definition and evaluation procedure</h2>
-{_procedure_grid_html(procedure)}
-{multimodal_inclusion_html}
-<h2 id="performance-summary">Task performance summary</h2>
+<div class=\"report-shell\"><main id=\"top\" class=\"report-content\">
+<h2 id=\"performance-evaluation\" class=\"first-section\">Task definition and evaluation procedure</h2>
+{_procedure_grid_html(analysis.procedure)}
+{analysis.multimodal_inclusion_html}
+<h2 id=\"performance-summary\">Task performance summary</h2>
 {_performance_methodology_html(sweep.evaluation.protocol, 2000)}
-{_html_table(strategy_html, raw_html_cols=strat_metric_cols)}
-<h2 id="representation-impact">Data representations and learner impact on performance</h2>
+{_html_table(analysis.strategy_html, raw_html_cols=strategy_metric_cols)}
+<h2 id=\"representation-impact\">Data representations and learner impact on performance</h2>
 {_representation_impact_note(str(sweep.evaluation.optimize_metric), bool(getattr(sweep, "uses_modalities", False)))}
-{representation_fig if representation_fig else "<p>No representation-impact figure is available yet.</p>"}
-<section id="mpma-e-specification">
-<h3 id="mpma-e">Final MPMA-E specification</h3>
-{mpma_e_fig}
-{_html_table(ensemble_summary)}
-{_html_table(ensemble_members)}
+{representation_figure}
+<section id=\"mpma-e-specification\">
+<h3 id=\"mpma-e\">Final MPMA-E specification</h3>
+{visuals.mpma_e_figure}
+{_html_table(analysis.ensemble_summary)}
+{_html_table(analysis.ensemble_members)}
 </section>
-<h2 id="top-mpmas">{_top_mpma_heading(top_mpmas)}</h2>
-{_html_table(top_mpmas, raw_html_cols=top_metric_cols)}
-<h3 id="statistics">Outer-unit strategy comparisons</h3>
+<h2 id=\"top-mpmas\">{_top_mpma_heading(analysis.top_mpmas)}</h2>
+{_html_table(analysis.top_mpmas, raw_html_cols=top_metric_cols)}
+<h3 id=\"statistics\">Outer-unit strategy comparisons</h3>
 {_inferential_layer_html(sweep.evaluation.protocol, sweep.evaluation.optimize_metric)}
-{_html_table(primary_pairwise) if not primary_pairwise.empty else f"<p>No matched pairwise comparisons were estimable for {html.escape(str(sweep.evaluation.optimize_metric))}. At least two displayed strategies with finite values on the same held-out outer units are required.</p>"}
+{pairwise_html}
 
-<h2 id="explainability">Explainability</h2>
+<h2 id=\"explainability\">Explainability</h2>
 <h3>Feature attribution</h3>
-{explainability_html if explainability_html else "<p>No explainability artefacts are available yet.</p>"}
+{explainability_html}
 
-<h2 id="compute">Computational resources</h2>
+<h2 id=\"compute\">Computational resources</h2>
 <p>Compute is summarized by additive CPU core-hours, model-fit count, and peak resident memory for the worker process tree. CPU time includes child processes and external R processes when used. MPMA-B and MPMA-E share the MPMA search pool, so their compute totals overlap.</p>
-{_html_table(compute_display)}
+{_html_table(analysis.compute_display)}
 <h4>Hardware and runtime environment</h4>
-{_html_table(hardware_summary) if not hardware_summary.empty else "<p>Hardware details are unavailable for this run.</p>"}
+{hardware_html}
 {_abbreviations_html()}
 {_report_footer_html()}
 </main></div></body></html>
 """
+    return _sanitize_report_html(html_text)
 
-    html_text = _sanitize_report_html(html_text)
 
-    (report_dir / "index.html").write_text(html_text, encoding="utf-8")
-
+def _write_report_manifest(
+    sweep: Sweep,
+    report_dir: Path,
+    visuals: _ReportVisuals,
+) -> None:
     dump_json_standard(
         {
             "report_dir": report_dir,
@@ -2681,51 +2706,78 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
             "report_template": REPORT_TEMPLATE_VERSION,
             "report_layers": list(REPORT_LAYERS),
             "target": str(_sweep_data_source(sweep).target_col),
-            "figures_embedded": len([f for f in [representation_fig, mpma_e_fig] if f]),
-            "explainability_targets": explainability_count,
+            "figures_embedded": len(
+                [
+                    figure
+                    for figure in [
+                        visuals.representation_figure,
+                        visuals.mpma_e_figure,
+                    ]
+                    if figure
+                ]
+            ),
+            "explainability_targets": visuals.explainability_count,
         },
         report_dir / "report_manifest.json",
     )
 
+
+def _report_outputs(
+    report_dir: Path,
+    tables_dir: Path,
+    analysis: _ReportAnalysis,
+    tables: _ReportTables,
+) -> dict[str, Path]:
+    return {
+        "html_report": report_dir / "index.html",
+        "strategy_outer_unit_metrics": analysis.statistics.get(
+            "unit_metrics_path", tables_dir / "strategy_outer_unit_metrics.parquet"
+        ),
+        "strategy_metrics_bootstrap": analysis.statistics.get(
+            "summary_path", tables_dir / "strategy_metrics_bootstrap.parquet"
+        ),
+        "strategy_pairwise_tests": analysis.statistics.get(
+            "pairwise_path", tables_dir / "strategy_pairwise_tests.parquet"
+        ),
+        "strategy_statistics_manifest": analysis.statistics.get(
+            "manifest_path", tables_dir / "strategy_statistics_manifest.json"
+        ),
+        "strategy_compute": analysis.compute_accounting.get(
+            "compute_path", tables_dir / "strategy_compute.parquet"
+        ),
+        "compute_accounting_manifest": analysis.compute_accounting.get(
+            "manifest_path", tables_dir / "compute_accounting_manifest.json"
+        ),
+        "important_features": tables.feature_summary_path,
+        "hardware_environment": tables.hardware_summary_path,
+    }
+
+
+def write_report(sweep: Sweep) -> dict[str, Path]:
+    root = sweep.root()
+    report_dir, tables_dir = _prepare_report_directories(root)
+    stage("Report", str(report_dir))
+    analysis = _analyze_report(sweep, root)
+    visuals = _build_report_visuals(sweep, root, report_dir)
+    tables = _write_report_tables(root, tables_dir, analysis)
+    (report_dir / "index.html").write_text(
+        _render_report_html(sweep, analysis, visuals, tables),
+        encoding="utf-8",
+    )
+    _write_report_manifest(sweep, report_dir, visuals)
     _print_report_summary(
         sweep,
         root,
-        procedure,
-        strategy_html,
-        top_mpmas,
-        ensemble_summary,
-        ensemble_members,
-        primary_pairwise=primary_pairwise,
-        compute_display=compute_display,
-        compute_environment=compute_environment,
+        analysis.procedure,
+        analysis.strategy_html,
+        analysis.top_mpmas,
+        analysis.ensemble_summary,
+        analysis.ensemble_members,
+        primary_pairwise=analysis.primary_pairwise,
+        compute_display=analysis.compute_display,
+        compute_environment=analysis.compute_environment,
     )
-
     success("Report completed")
-
-    outputs = {
-        "html_report": report_dir / "index.html",
-        "strategy_outer_unit_metrics": statistics.get(
-            "unit_metrics_path", tables_dir / "strategy_outer_unit_metrics.parquet"
-        ),
-        "strategy_metrics_bootstrap": statistics.get(
-            "summary_path", tables_dir / "strategy_metrics_bootstrap.parquet"
-        ),
-        "strategy_pairwise_tests": statistics.get(
-            "pairwise_path", tables_dir / "strategy_pairwise_tests.parquet"
-        ),
-        "strategy_statistics_manifest": statistics.get(
-            "manifest_path", tables_dir / "strategy_statistics_manifest.json"
-        ),
-        "strategy_compute": compute_accounting.get(
-            "compute_path", tables_dir / "strategy_compute.parquet"
-        ),
-        "compute_accounting_manifest": compute_accounting.get(
-            "manifest_path", tables_dir / "compute_accounting_manifest.json"
-        ),
-        "important_features": feature_summary_path,
-        "hardware_environment": hardware_summary_path,
-    }
-
+    outputs = _report_outputs(report_dir, tables_dir, analysis, tables)
     path_table("Report outputs", outputs)
-
     return outputs

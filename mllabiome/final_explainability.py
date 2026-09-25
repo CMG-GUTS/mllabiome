@@ -6,6 +6,7 @@ from pathlib import Path
 
 from . import explainability as _core
 from .console import info
+from .configs_sweep import Sweep
 from .final_models import build_final_models
 from .mpma_e_explainability import explain_mpma_e
 from .storage import read_table, table_exists
@@ -49,7 +50,7 @@ def _cleanup_explainability_cache(root: Path) -> None:
             dump_json_standard(payload, path)
 
 
-def _finalize_explainability(sweep, outputs):
+def _finalize_explainability(sweep: Sweep, outputs: dict[str, Path]) -> dict[str, Path]:
     if not bool(getattr(sweep.explainability, "keep_cache", False)):
         _cleanup_explainability_cache(Path(sweep.root()))
         if isinstance(outputs, dict):
@@ -119,7 +120,7 @@ def _invalidate_stale(root: Path, models: dict, explainability) -> None:
         shutil.rmtree(mpma_e_dir)
 
 
-def explain(sweep):
+def explain(sweep: Sweep) -> dict[str, Path]:
     source = sweep.samples if getattr(sweep, "uses_modalities", False) else sweep.data
     if (
         str(getattr(source, "task", "classification")).strip().casefold()
@@ -139,7 +140,7 @@ def explain(sweep):
     targets = _core._automatic_explainability_targets(sweep, rankings)
     mpma_e = models.get("MPMA-E")
 
-    outputs = {}
+    outputs: dict[str, Path] = {}
     for target_no, target in enumerate(targets, start=1):
         info(f"Explainability · target {target_no}/{len(targets)} · {target}")
         text = str(target)

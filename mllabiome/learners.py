@@ -514,14 +514,14 @@ def _learner_factory(
 class FLAMLClassifier(BaseEstimator):
     def __init__(
         self,
-        time_budget=600,
-        metric="roc_auc",
-        estimator_list=None,
-        n_jobs=1,
-        random_state=42,
-        verbose=0,
-        **kwargs,
-    ):
+        time_budget: float = 600,
+        metric: str = "roc_auc",
+        estimator_list: Any = None,
+        n_jobs: int = 1,
+        random_state: int = 42,
+        verbose: int = 0,
+        **kwargs: Any,
+    ) -> None:
         self.time_budget = time_budget
         self.metric = metric
         self.estimator_list = estimator_list
@@ -530,7 +530,7 @@ class FLAMLClassifier(BaseEstimator):
         self.verbose = verbose
         self.kwargs = kwargs
 
-    def fit(self, X, y, groups=None):
+    def fit(self, X: Any, y: Any, groups: Any = None) -> FLAMLClassifier:
         from flaml import AutoML
 
         self.feature_names_in_ = np.asarray(_feature_names_from_X(X), dtype=object)
@@ -575,11 +575,11 @@ class FLAMLClassifier(BaseEstimator):
             )
         return self
 
-    def predict(self, X):
+    def predict(self, X: Any) -> Any:
         X_frame = _as_named_frame(X, list(self.feature_names_in_))
         return self.model_.predict(X_frame)
 
-    def predict_proba(self, X):
+    def predict_proba(self, X: Any) -> Any:
         X_frame = _as_named_frame(X, list(self.feature_names_in_))
         return self.model_.predict_proba(X_frame)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from catboost import CatBoostClassifier
 from lightgbm import LGBMClassifier
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
@@ -63,7 +64,7 @@ COUNT_TRANSFORMATIONS = (
     # mll.Transformation("hellinger", composition_scope="rank-wise"),
     # mll.Transformation("hellinger", composition_scope="joint"),
     # # mll.Transformation("relative_abundance", composition_scope="rank-wise"),
-    mll.Transformation("relative_abundance", composition_scope="joint"),
+    # mll.Transformation("relative_abundance", composition_scope="joint"),
     mll.Transformation(
         "relative_abundance",
         composition_scope="joint",
@@ -88,6 +89,23 @@ MODELS = (
             random_state=42,
         ),
     ),
+    (
+        "CB_abundance_i300_d3",
+        CatBoostClassifier(
+            iterations=300,
+            learning_rate=0.04,
+            depth=3,
+            l2_leaf_reg=10,
+            random_strength=1.0,
+            rsm=0.60,
+            loss_function="Logloss",
+            eval_metric="Logloss",
+            random_seed=42,
+            thread_count=1,
+            verbose=False,
+            allow_writing_files=False,
+        ),
+    ),
     # (
     #     "SIAMCAT",
     #     mll.SIAMCATClassifier(
@@ -100,28 +118,28 @@ MODELS = (
     #         shrinkage="auto",
     #     ),
     # ),
-    (
-        "MLP_32_relu_lbfgs",
-        Pipeline(
-            steps=(
-                (
-                    "scaler",
-                    StandardScaler(),
-                ),
-                (
-                    "mlp",
-                    MLPClassifier(
-                        hidden_layer_sizes=(32,),
-                        activation="relu",
-                        solver="lbfgs",
-                        alpha=1e-3,
-                        max_iter=2000,
-                        random_state=42,
-                    ),
-                ),
-            ),
-        ),
-    ),
+    # (
+    #     "MLP_32_relu_lbfgs",
+    #     Pipeline(
+    #         steps=(
+    #             (
+    #                 "scaler",
+    #                 StandardScaler(),
+    #             ),
+    #             (
+    #                 "mlp",
+    #                 MLPClassifier(
+    #                     hidden_layer_sizes=(32,),
+    #                     activation="relu",
+    #                     solver="lbfgs",
+    #                     alpha=1e-3,
+    #                     max_iter=2000,
+    #                     random_state=42,
+    #                 ),
+    #             ),
+    #         ),
+    #     ),
+    # ),
     # (
     #     "LightGBM_100_lr0.1_msl20_md20_sub0.8_col0.8",
     #     LGBMClassifier(
@@ -220,8 +238,8 @@ ENSEMBLE = mll.Ensemble(
         "mean_proba",
         "weighted_mean_proba",
         "median_proba",
-        "rank_mean",
-        "majority_vote",
+        # "rank_mean",
+        # "majority_vote",
     ),
     optimize_metric="log_loss",
 )

@@ -83,7 +83,7 @@ class IntegratedCoordinate:
 
 
 class IntegrationModel:
-    def __init__(self, spec: Integration, random_state: int = 42):
+    def __init__(self, spec: Integration, random_state: int = 42) -> None:
         self.spec = spec
         self.random_state = int(random_state)
         self.models_: dict[str, PCA] = {}

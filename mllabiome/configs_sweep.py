@@ -11,10 +11,10 @@ import subprocess
 import sys
 import time
 import zlib
-from collections.abc import Mapping, Sequence
-from dataclasses import asdict
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 
 import numpy as np
 import pandas as pd
@@ -26,7 +26,7 @@ from ._version import __version__
 from .compute import ResourceTracker, machine_profile
 from .console import info, path_table, progress, stage, success, summary_table
 from .data import Dataset, dataset_fingerprint, load_dataset
-from .estimator_protocol import is_estimator_instance
+from .estimator_protocol import EstimatorLike, is_estimator_instance
 from .figures import _write_representation_impact_figure
 from .learners import (
     _learner_factory,
@@ -45,11 +45,13 @@ from .metrics import (
     metric_is_loss,
 )
 from .resolutions import (
+    FeatureBlocks,
     _parse_resolution,
     mask_feature_blocks,
     materialize_mpdr_with_blocks,
 )
 from .runtime import (
+    ExecutionPlan,
     configure_estimator_threads,
     iter_parallel_tasks,
     resolve_execution_plan,
@@ -648,6 +650,307 @@ def _prediction_rows_values(
     return rows
 
 
+@dataclass(frozen=True)
+class _ClassificationFoldOutput:
+    metric_row: dict[str, Any]
+    prediction_rows: list[dict[str, Any]]
+    gate_score: float
+
+
+def _fit_classification_split_fold(
+    X_base: np.ndarray,
+    feature_blocks: Any,
+    y: np.ndarray,
+    groups: np.ndarray | None,
+    classes: np.ndarray,
+    class_labels: Sequence[str],
+    sample_ids: Sequence[str],
+    subject_ids: Sequence[str],
+    fit_idx: np.ndarray,
+    eval_idx: np.ndarray,
+    protocol: str,
+    split_key: str,
+    prediction_key: str,
+    outer_split_key: str,
+    stage_name: str,
+    ct_item: Any,
+    transformation_factory_builder: Any,
+    learner_factory: Any,
+    mpdr: MPDR,
+    learner_name: str,
+    cid: str,
+    gate_metric: str,
+    requested_metrics: set[str],
+    random_state: int,
+    threads_per_worker: int,
+) -> _ClassificationFoldOutput:
+    X_fit, X_eval, feature_mask = _lodo_feature_pair(
+        X_base, fit_idx, eval_idx, protocol
+    )
+    fold_blocks = mask_feature_blocks(feature_blocks, feature_mask)
+    _, transformation_factory = transformation_factory_builder(
+        ct_item,
+        random_state=random_state,
+        feature_blocks=fold_blocks,
+    )
+    fitted = transformation_factory()
+    X_fit_transformed, X_eval_transformed = fitted.apply_pair(X_fit, X_eval)
+    estimator = configure_estimator_threads(learner_factory(), threads_per_worker)
+    fit_classifier(
+        estimator,
+        X_fit_transformed,
+        y[fit_idx],
+        None if groups is None else groups[fit_idx],
+    )
+    proba = _predict_proba_aligned(estimator, X_eval_transformed, classes)
+    pred = classes[proba.argmax(axis=1)]
+    metrics = compute_metrics(y[eval_idx], pred, proba, classes)
+    if "subject_macro_log_loss" in requested_metrics:
+        metrics["subject_macro_log_loss"] = grouped_log_loss(
+            y[eval_idx],
+            proba,
+            classes,
+            np.asarray(subject_ids, dtype=object)[eval_idx],
+        )
+    if "cohort_macro_log_loss" in requested_metrics and str(protocol).lower() in {
+        "lodo",
+        "leave_one_dataset_out",
+    }:
+        metrics["cohort_macro_log_loss"] = float(metrics["log_loss"])
+    metric_row = _metric_row(
+        metrics,
+        outer_split_key,
+        prediction_key if stage_name == "inner" else None,
+        cid,
+        mpdr,
+        learner_name,
+        stage_name,
+    )
+    metric_row.update(fitted.feature_filter_metadata())
+    metric_row["n_samples"] = len(eval_idx)
+    metric_row["n_subjects"] = len(
+        pd.unique(np.asarray(subject_ids, dtype=object)[eval_idx])
+    )
+    prediction_rows = _prediction_rows_values(
+        split_key,
+        cid,
+        eval_idx,
+        sample_ids,
+        subject_ids,
+        y,
+        class_labels,
+        pred,
+        proba,
+        stage_name,
+        outer_split_key,
+    )
+    return _ClassificationFoldOutput(
+        metric_row=metric_row,
+        prediction_rows=prediction_rows,
+        gate_score=float(metrics.get(gate_metric, np.nan)),
+    )
+
+
+def _evaluate_classification_inner_splits(
+    result: dict[str, Any],
+    score_rows: list[dict[str, Any]],
+    *,
+    X_base: np.ndarray,
+    feature_blocks: Any,
+    y: np.ndarray,
+    groups: np.ndarray | None,
+    classes: np.ndarray,
+    class_labels: Sequence[str],
+    sample_ids: Sequence[str],
+    subject_ids: Sequence[str],
+    train_idx: np.ndarray,
+    inner_splits: Sequence[tuple[np.ndarray, np.ndarray]],
+    split_key: str,
+    protocol: str,
+    ct_item: Any,
+    transformation_factory_builder: Any,
+    learner_factory: Any,
+    mpdr: MPDR,
+    learner_name: str,
+    cid: str,
+    gate_metric: str,
+    requested_metrics: set[str],
+    existing_inner_keys: set[str],
+    random_state: int,
+    threads_per_worker: int,
+) -> None:
+    for inner_no, (inner_train_local, inner_val_local) in enumerate(inner_splits):
+        inner_key = f"{split_key}__i{inner_no}"
+        if inner_key in existing_inner_keys:
+            continue
+        fit_idx = train_idx[np.asarray(inner_train_local, dtype=int)]
+        eval_idx = train_idx[np.asarray(inner_val_local, dtype=int)]
+        if len(np.unique(y[fit_idx])) < 2 or len(eval_idx) == 0:
+            continue
+        try:
+            output = _fit_classification_split_fold(
+                X_base,
+                feature_blocks,
+                y,
+                groups,
+                classes,
+                class_labels,
+                sample_ids,
+                subject_ids,
+                fit_idx,
+                eval_idx,
+                protocol,
+                inner_key,
+                inner_key,
+                split_key,
+                "inner",
+                ct_item,
+                transformation_factory_builder,
+                learner_factory,
+                mpdr,
+                learner_name,
+                cid,
+                gate_metric,
+                requested_metrics,
+                random_state,
+                threads_per_worker,
+            )
+            result["inner_metrics"].append(output.metric_row)
+            result["inner_predictions"].extend(output.prediction_rows)
+            if np.isfinite(output.gate_score):
+                score_rows.append(dict(output.metric_row))
+            result["fits"] += 1
+        except Exception as exc:
+            result["inner_metrics"].append(
+                _failed_metric_row(
+                    split_key,
+                    inner_key,
+                    cid,
+                    mpdr,
+                    learner_name,
+                    "inner",
+                    exc,
+                )
+            )
+
+
+def _classification_qualification(
+    result: dict[str, Any],
+    score_rows: Sequence[dict[str, Any]],
+    existing_qualification: dict[str, Any] | None,
+    *,
+    split_key: str,
+    cid: str,
+    ct_name: str,
+    res_name: str,
+    levels: Sequence[str],
+    learner_name: str,
+    gate_enabled: bool,
+    gate_metric_input: str,
+    gate_metric: str,
+    gate_threshold: float | None,
+) -> bool:
+    if not gate_enabled:
+        return True
+    if existing_qualification is not None:
+        return bool(int(existing_qualification.get("qualified", 0)))
+    gate_score, _ = aggregate_validation_metric(pd.DataFrame(score_rows), gate_metric)
+    gate = QualificationGate(
+        enabled=True,
+        metric=gate_metric_input,
+        threshold=gate_threshold,
+    )
+    qualified = gate.qualifies(gate_score)
+    result["qualification"].append(
+        {
+            "split_key": split_key,
+            "config_id": cid,
+            "mpdr_id": _mpdr_id(ct_name, res_name),
+            "count_transformation": str(ct_name),
+            "resolution": res_name,
+            "levels": ",".join(levels),
+            "learner": learner_name,
+            "gate_enabled": 1,
+            "gate_metric": gate_metric,
+            "gate_threshold": gate_threshold,
+            "inner_score": gate_score,
+            "qualified": int(qualified),
+        }
+    )
+    return qualified
+
+
+def _evaluate_classification_outer_split(
+    result: dict[str, Any],
+    *,
+    X_base: np.ndarray,
+    feature_blocks: Any,
+    y: np.ndarray,
+    groups: np.ndarray | None,
+    classes: np.ndarray,
+    class_labels: Sequence[str],
+    sample_ids: Sequence[str],
+    subject_ids: Sequence[str],
+    train_idx: np.ndarray,
+    test_idx: np.ndarray,
+    split_key: str,
+    protocol: str,
+    ct_item: Any,
+    transformation_factory_builder: Any,
+    learner_factory: Any,
+    mpdr: MPDR,
+    learner_name: str,
+    cid: str,
+    gate_metric: str,
+    requested_metrics: set[str],
+    random_state: int,
+    threads_per_worker: int,
+) -> None:
+    try:
+        output = _fit_classification_split_fold(
+            X_base,
+            feature_blocks,
+            y,
+            groups,
+            classes,
+            class_labels,
+            sample_ids,
+            subject_ids,
+            train_idx,
+            test_idx,
+            protocol,
+            split_key,
+            split_key,
+            split_key,
+            "outer",
+            ct_item,
+            transformation_factory_builder,
+            learner_factory,
+            mpdr,
+            learner_name,
+            cid,
+            gate_metric,
+            requested_metrics,
+            random_state,
+            threads_per_worker,
+        )
+        result["outer_metrics"].append(output.metric_row)
+        result["outer_predictions"].extend(output.prediction_rows)
+        result["fits"] += 1
+    except Exception as exc:
+        result["outer_metrics"].append(
+            _failed_metric_row(
+                split_key,
+                None,
+                cid,
+                mpdr,
+                learner_name,
+                "outer",
+                exc,
+            )
+        )
+
+
 def _evaluate_mpma_split_task(
     X_base: np.ndarray,
     feature_blocks: Any,
@@ -683,15 +986,17 @@ def _evaluate_mpma_split_task(
     resource_sample_interval_s: float,
 ) -> dict[str, Any]:
     gate_metric_input = str(gate_metric)
-    gate_metric = canonical_metric_name(gate_metric_input)
+    canonical_gate_metric = canonical_metric_name(gate_metric_input)
     requested_metrics = {canonical_metric_name(selection_metric)}
     if gate_enabled:
-        requested_metrics.add(gate_metric)
+        requested_metrics.add(canonical_gate_metric)
     tracker = ResourceTracker(sample_interval_s=resource_sample_interval_s).start()
     mpdr = MPDR(
-        resolution=res_name, levels=tuple(levels), count_transformation=str(ct_name)
+        resolution=res_name,
+        levels=tuple(levels),
+        count_transformation=str(ct_name),
     )
-    result = {
+    result: dict[str, Any] = {
         "split_key": split_key,
         "config_id": cid,
         "inner_metrics": [],
@@ -702,190 +1007,92 @@ def _evaluate_mpma_split_task(
         "job_resources": [],
         "fits": 0,
     }
-    score_rows = [dict(x) for x in existing_inner_scores if isinstance(x, dict)]
+    score_rows = [dict(row) for row in existing_inner_scores if isinstance(row, dict)]
     with (
         thread_environment(threads_per_worker),
         threadpool_limits(limits=max(1, int(threads_per_worker))),
     ):
-        for inner_no, (inner_train_local, inner_val_local) in enumerate(inner_splits):
-            inner_key = f"{split_key}__i{inner_no}"
-            if inner_key in existing_inner_keys:
-                continue
-            tr_idx = train_idx[np.asarray(inner_train_local, dtype=int)]
-            va_idx = train_idx[np.asarray(inner_val_local, dtype=int)]
-            if len(np.unique(y[tr_idx])) < 2 or len(va_idx) == 0:
-                continue
-            X_inner_train, X_inner_val, feature_mask = _lodo_feature_pair(
-                X_base, tr_idx, va_idx, protocol
-            )
-            inner_blocks = mask_feature_blocks(feature_blocks, feature_mask)
-            _, inner_ct_factory = transformation_factory_builder(
-                ct_item,
-                random_state=random_state,
-                feature_blocks=inner_blocks,
-            )
-            fitted = inner_ct_factory()
-            try:
-                X_tr, X_va = fitted.apply_pair(X_inner_train, X_inner_val)
-                clf = configure_estimator_threads(learner_factory(), threads_per_worker)
-                fit_classifier(
-                    clf, X_tr, y[tr_idx], None if groups is None else groups[tr_idx]
-                )
-                proba = _predict_proba_aligned(clf, X_va, classes)
-                pred = classes[proba.argmax(axis=1)]
-                metrics = compute_metrics(y[va_idx], pred, proba, classes)
-                if "subject_macro_log_loss" in requested_metrics:
-                    metrics["subject_macro_log_loss"] = grouped_log_loss(
-                        y[va_idx],
-                        proba,
-                        classes,
-                        np.asarray(subject_ids, dtype=object)[va_idx],
-                    )
-                if "cohort_macro_log_loss" in requested_metrics and str(
-                    protocol
-                ).lower() in {"lodo", "leave_one_dataset_out"}:
-                    metrics["cohort_macro_log_loss"] = float(metrics["log_loss"])
-                row = _metric_row(
-                    metrics, split_key, inner_key, cid, mpdr, learner_name, "inner"
-                )
-                row.update(fitted.feature_filter_metadata())
-                row["n_samples"] = len(va_idx)
-                row["n_subjects"] = len(
-                    pd.unique(np.asarray(subject_ids, dtype=object)[va_idx])
-                )
-                result["inner_metrics"].append(row)
-                result["inner_predictions"].extend(
-                    _prediction_rows_values(
-                        inner_key,
-                        cid,
-                        va_idx,
-                        sample_ids,
-                        subject_ids,
-                        y,
-                        class_labels,
-                        pred,
-                        proba,
-                        "inner",
-                        split_key,
-                    )
-                )
-                score = float(metrics.get(gate_metric, np.nan))
-                if np.isfinite(score):
-                    score_rows.append(dict(row))
-                result["fits"] += 1
-            except Exception as exc:
-                result["inner_metrics"].append(
-                    _failed_metric_row(
-                        split_key, inner_key, cid, mpdr, learner_name, "inner", exc
-                    )
-                )
-        qualified = True
-        gate_score = float("nan")
-        if gate_enabled:
-            if existing_qualification is not None:
-                qualified = bool(int(existing_qualification.get("qualified", 0)))
-                gate_score = float(existing_qualification.get("inner_score", np.nan))
-            else:
-                gate_score, _ = aggregate_validation_metric(
-                    pd.DataFrame(score_rows), gate_metric
-                )
-                gate = QualificationGate(
-                    enabled=True, metric=gate_metric_input, threshold=gate_threshold
-                )
-                qualified = gate.qualifies(gate_score)
-                result["qualification"].append(
-                    {
-                        "split_key": split_key,
-                        "config_id": cid,
-                        "mpdr_id": _mpdr_id(ct_name, res_name),
-                        "count_transformation": str(ct_name),
-                        "resolution": res_name,
-                        "levels": ",".join(levels),
-                        "learner": learner_name,
-                        "gate_enabled": 1,
-                        "gate_metric": gate_metric,
-                        "gate_threshold": gate_threshold,
-                        "inner_score": gate_score,
-                        "qualified": int(qualified),
-                    }
-                )
+        _evaluate_classification_inner_splits(
+            result,
+            score_rows,
+            X_base=X_base,
+            feature_blocks=feature_blocks,
+            y=y,
+            groups=groups,
+            classes=classes,
+            class_labels=class_labels,
+            sample_ids=sample_ids,
+            subject_ids=subject_ids,
+            train_idx=train_idx,
+            inner_splits=inner_splits,
+            split_key=split_key,
+            protocol=protocol,
+            ct_item=ct_item,
+            transformation_factory_builder=transformation_factory_builder,
+            learner_factory=learner_factory,
+            mpdr=mpdr,
+            learner_name=learner_name,
+            cid=cid,
+            gate_metric=canonical_gate_metric,
+            requested_metrics=requested_metrics,
+            existing_inner_keys=existing_inner_keys,
+            random_state=random_state,
+            threads_per_worker=threads_per_worker,
+        )
+        qualified = _classification_qualification(
+            result,
+            score_rows,
+            existing_qualification,
+            split_key=split_key,
+            cid=cid,
+            ct_name=ct_name,
+            res_name=res_name,
+            levels=levels,
+            learner_name=learner_name,
+            gate_enabled=gate_enabled,
+            gate_metric_input=gate_metric_input,
+            gate_metric=canonical_gate_metric,
+            gate_threshold=gate_threshold,
+        )
         if needs_outer and qualified:
-            X_outer_train, X_outer_test, feature_mask = _lodo_feature_pair(
-                X_base, train_idx, test_idx, protocol
-            )
-            outer_blocks = mask_feature_blocks(feature_blocks, feature_mask)
-            _, outer_ct_factory = transformation_factory_builder(
-                ct_item,
+            _evaluate_classification_outer_split(
+                result,
+                X_base=X_base,
+                feature_blocks=feature_blocks,
+                y=y,
+                groups=groups,
+                classes=classes,
+                class_labels=class_labels,
+                sample_ids=sample_ids,
+                subject_ids=subject_ids,
+                train_idx=train_idx,
+                test_idx=test_idx,
+                split_key=split_key,
+                protocol=protocol,
+                ct_item=ct_item,
+                transformation_factory_builder=transformation_factory_builder,
+                learner_factory=learner_factory,
+                mpdr=mpdr,
+                learner_name=learner_name,
+                cid=cid,
+                gate_metric=canonical_gate_metric,
+                requested_metrics=requested_metrics,
                 random_state=random_state,
-                feature_blocks=outer_blocks,
+                threads_per_worker=threads_per_worker,
             )
-            fitted_outer = outer_ct_factory()
-            try:
-                X_train, X_test = fitted_outer.apply_pair(X_outer_train, X_outer_test)
-                clf = configure_estimator_threads(learner_factory(), threads_per_worker)
-                fit_classifier(
-                    clf,
-                    X_train,
-                    y[train_idx],
-                    None if groups is None else groups[train_idx],
-                )
-                proba = _predict_proba_aligned(clf, X_test, classes)
-                pred = classes[proba.argmax(axis=1)]
-                metrics = compute_metrics(y[test_idx], pred, proba, classes)
-                if "subject_macro_log_loss" in requested_metrics:
-                    metrics["subject_macro_log_loss"] = grouped_log_loss(
-                        y[test_idx],
-                        proba,
-                        classes,
-                        np.asarray(subject_ids, dtype=object)[test_idx],
-                    )
-                if "cohort_macro_log_loss" in requested_metrics and str(
-                    protocol
-                ).lower() in {"lodo", "leave_one_dataset_out"}:
-                    metrics["cohort_macro_log_loss"] = float(metrics["log_loss"])
-                row = _metric_row(
-                    metrics, split_key, None, cid, mpdr, learner_name, "outer"
-                )
-                row.update(fitted_outer.feature_filter_metadata())
-                row["n_samples"] = len(test_idx)
-                row["n_subjects"] = len(
-                    pd.unique(np.asarray(subject_ids, dtype=object)[test_idx])
-                )
-                result["outer_metrics"].append(row)
-                result["outer_predictions"].extend(
-                    _prediction_rows_values(
-                        split_key,
-                        cid,
-                        test_idx,
-                        sample_ids,
-                        subject_ids,
-                        y,
-                        class_labels,
-                        pred,
-                        proba,
-                        "outer",
-                        split_key,
-                    )
-                )
-                result["fits"] += 1
-            except Exception as exc:
-                result["outer_metrics"].append(
-                    _failed_metric_row(
-                        split_key, None, cid, mpdr, learner_name, "outer", exc
-                    )
-                )
     measured = tracker.stop()
-    resource_row = {
-        "split_key": str(split_key),
-        "config_id": str(cid),
-        "resolution": str(res_name),
-        "count_transformation": str(ct_name),
-        "learner": str(learner_name),
-        "fits": int(result.get("fits", 0)),
-        "threads_per_worker": int(threads_per_worker),
-        **measured,
-    }
-    result["job_resources"] = [resource_row]
+    result["job_resources"] = [
+        {
+            "split_key": str(split_key),
+            "config_id": str(cid),
+            "resolution": str(res_name),
+            "count_transformation": str(ct_name),
+            "learner": str(learner_name),
+            "fits": int(result.get("fits", 0)),
+            "threads_per_worker": int(threads_per_worker),
+            **measured,
+        }
+    ]
     result["elapsed_s"] = float(measured.get("wall_time_s", 0.0))
     return result
 
@@ -1164,6 +1371,273 @@ def _regression_prediction_rows(
     return rows
 
 
+@dataclass(frozen=True)
+class _RegressionFoldOutput:
+    metric_row: dict[str, Any]
+    prediction_rows: list[dict[str, Any]]
+    gate_score: float
+
+
+def _fit_regression_split_fold(
+    X_base: np.ndarray,
+    feature_blocks: Any,
+    y: np.ndarray,
+    sample_ids: Sequence[str],
+    subject_ids: Sequence[str],
+    target_name: str,
+    fit_idx: np.ndarray,
+    eval_idx: np.ndarray,
+    protocol: str,
+    split_key: str,
+    prediction_key: str,
+    outer_split_key: str,
+    stage_name: str,
+    ct_item: Any,
+    transformation_factory_builder: Any,
+    learner_factory: Any,
+    mpdr: MPDR,
+    learner_name: str,
+    cid: str,
+    gate_metric: str,
+    random_state: int,
+    threads_per_worker: int,
+) -> _RegressionFoldOutput:
+    X_fit, X_eval, feature_mask = _lodo_feature_pair(
+        X_base, fit_idx, eval_idx, protocol
+    )
+    fold_blocks = mask_feature_blocks(feature_blocks, feature_mask)
+    _, transformation_factory = transformation_factory_builder(
+        ct_item,
+        random_state=random_state,
+        feature_blocks=fold_blocks,
+    )
+    fitted = transformation_factory()
+    X_fit_transformed, X_eval_transformed = fitted.apply_pair(X_fit, X_eval)
+    estimator = configure_estimator_threads(learner_factory(), threads_per_worker)
+    estimator.fit(X_fit_transformed, y[fit_idx])
+    pred = np.asarray(
+        _estimator_call(estimator, "predict", X_eval_transformed),
+        dtype=float,
+    ).reshape(-1)
+    metrics = compute_regression_metrics(y[eval_idx], pred)
+    metric_row = _regression_metric_row(
+        metrics,
+        outer_split_key,
+        prediction_key if stage_name == "inner" else None,
+        cid,
+        mpdr,
+        learner_name,
+        stage_name,
+    )
+    metric_row.update(fitted.feature_filter_metadata())
+    prediction_rows = _regression_prediction_rows(
+        split_key,
+        cid,
+        eval_idx,
+        sample_ids,
+        subject_ids,
+        y,
+        pred,
+        stage_name,
+        outer_split_key,
+        target_name,
+    )
+    return _RegressionFoldOutput(
+        metric_row=metric_row,
+        prediction_rows=prediction_rows,
+        gate_score=float(metrics.get(gate_metric, np.nan)),
+    )
+
+
+def _evaluate_regression_inner_splits(
+    result: dict[str, Any],
+    score_rows: list[dict[str, Any]],
+    *,
+    X_base: np.ndarray,
+    feature_blocks: Any,
+    y: np.ndarray,
+    sample_ids: Sequence[str],
+    subject_ids: Sequence[str],
+    target_name: str,
+    train_idx: np.ndarray,
+    inner_splits: Sequence[tuple[np.ndarray, np.ndarray]],
+    split_key: str,
+    protocol: str,
+    ct_item: Any,
+    transformation_factory_builder: Any,
+    learner_factory: Any,
+    mpdr: MPDR,
+    learner_name: str,
+    cid: str,
+    gate_metric: str,
+    existing_inner_keys: set[str],
+    random_state: int,
+    threads_per_worker: int,
+) -> None:
+    for inner_no, (inner_train_local, inner_val_local) in enumerate(inner_splits):
+        inner_key = f"{split_key}__i{inner_no}"
+        if inner_key in existing_inner_keys:
+            continue
+        fit_idx = train_idx[np.asarray(inner_train_local, dtype=int)]
+        eval_idx = train_idx[np.asarray(inner_val_local, dtype=int)]
+        if len(fit_idx) == 0 or len(eval_idx) == 0:
+            continue
+        try:
+            output = _fit_regression_split_fold(
+                X_base,
+                feature_blocks,
+                y,
+                sample_ids,
+                subject_ids,
+                target_name,
+                fit_idx,
+                eval_idx,
+                protocol,
+                inner_key,
+                inner_key,
+                split_key,
+                "inner",
+                ct_item,
+                transformation_factory_builder,
+                learner_factory,
+                mpdr,
+                learner_name,
+                cid,
+                gate_metric,
+                random_state,
+                threads_per_worker,
+            )
+            result["inner_metrics"].append(output.metric_row)
+            result["inner_predictions"].extend(output.prediction_rows)
+            if np.isfinite(output.gate_score):
+                score_rows.append(dict(output.metric_row))
+            result["fits"] += 1
+        except Exception as exc:
+            row = _failed_metric_row(
+                split_key,
+                inner_key,
+                cid,
+                mpdr,
+                learner_name,
+                "inner",
+                exc,
+            )
+            row["task"] = "regression"
+            result["inner_metrics"].append(row)
+
+
+def _regression_qualification(
+    result: dict[str, Any],
+    score_rows: Sequence[dict[str, Any]],
+    existing_qualification: dict[str, Any] | None,
+    *,
+    split_key: str,
+    cid: str,
+    ct_name: str,
+    res_name: str,
+    levels: Sequence[str],
+    learner_name: str,
+    gate_enabled: bool,
+    gate_metric_input: str,
+    gate_metric: str,
+    gate_threshold: float | None,
+) -> bool:
+    if not gate_enabled:
+        return True
+    if existing_qualification is not None:
+        return bool(int(existing_qualification.get("qualified", 0)))
+    gate_score, _ = aggregate_validation_metric(pd.DataFrame(score_rows), gate_metric)
+    gate = QualificationGate(
+        enabled=True,
+        metric=gate_metric_input,
+        threshold=gate_threshold,
+    )
+    qualified = gate.qualifies(gate_score)
+    result["qualification"].append(
+        {
+            "split_key": split_key,
+            "config_id": cid,
+            "mpdr_id": _mpdr_id(ct_name, res_name),
+            "count_transformation": str(ct_name),
+            "resolution": res_name,
+            "levels": ",".join(levels),
+            "learner": learner_name,
+            "gate_enabled": 1,
+            "gate_metric": gate_metric,
+            "gate_threshold": gate_threshold,
+            "inner_score": gate_score,
+            "qualified": int(qualified),
+            "task": "regression",
+        }
+    )
+    return qualified
+
+
+def _evaluate_regression_outer_split(
+    result: dict[str, Any],
+    *,
+    X_base: np.ndarray,
+    feature_blocks: Any,
+    y: np.ndarray,
+    sample_ids: Sequence[str],
+    subject_ids: Sequence[str],
+    target_name: str,
+    train_idx: np.ndarray,
+    test_idx: np.ndarray,
+    split_key: str,
+    protocol: str,
+    ct_item: Any,
+    transformation_factory_builder: Any,
+    learner_factory: Any,
+    mpdr: MPDR,
+    learner_name: str,
+    cid: str,
+    gate_metric: str,
+    random_state: int,
+    threads_per_worker: int,
+) -> None:
+    try:
+        output = _fit_regression_split_fold(
+            X_base,
+            feature_blocks,
+            y,
+            sample_ids,
+            subject_ids,
+            target_name,
+            train_idx,
+            test_idx,
+            protocol,
+            split_key,
+            split_key,
+            split_key,
+            "outer",
+            ct_item,
+            transformation_factory_builder,
+            learner_factory,
+            mpdr,
+            learner_name,
+            cid,
+            gate_metric,
+            random_state,
+            threads_per_worker,
+        )
+        result["outer_metrics"].append(output.metric_row)
+        result["outer_predictions"].extend(output.prediction_rows)
+        result["fits"] += 1
+    except Exception as exc:
+        row = _failed_metric_row(
+            split_key,
+            None,
+            cid,
+            mpdr,
+            learner_name,
+            "outer",
+            exc,
+        )
+        row["task"] = "regression"
+        result["outer_metrics"].append(row)
+
+
 def _evaluate_regression_split_task(
     X_base: np.ndarray,
     feature_blocks: Any,
@@ -1196,12 +1670,14 @@ def _evaluate_regression_split_task(
     resource_sample_interval_s: float,
 ) -> dict[str, Any]:
     gate_metric_input = str(gate_metric)
-    gate_metric = canonical_metric_name(gate_metric_input)
+    canonical_gate_metric = canonical_metric_name(gate_metric_input)
     tracker = ResourceTracker(sample_interval_s=resource_sample_interval_s).start()
     mpdr = MPDR(
-        resolution=res_name, levels=tuple(levels), count_transformation=str(ct_name)
+        resolution=res_name,
+        levels=tuple(levels),
+        count_transformation=str(ct_name),
     )
-    result = {
+    result: dict[str, Any] = {
         "split_key": split_key,
         "config_id": cid,
         "inner_metrics": [],
@@ -1212,142 +1688,73 @@ def _evaluate_regression_split_task(
         "job_resources": [],
         "fits": 0,
     }
-    score_rows = [dict(x) for x in existing_inner_scores if isinstance(x, dict)]
+    score_rows = [dict(row) for row in existing_inner_scores if isinstance(row, dict)]
     with (
         thread_environment(threads_per_worker),
         threadpool_limits(limits=max(1, int(threads_per_worker))),
     ):
-        for inner_no, (inner_train_local, inner_val_local) in enumerate(inner_splits):
-            inner_key = f"{split_key}__i{inner_no}"
-            if inner_key in existing_inner_keys:
-                continue
-            tr_idx = train_idx[np.asarray(inner_train_local, dtype=int)]
-            va_idx = train_idx[np.asarray(inner_val_local, dtype=int)]
-            if len(tr_idx) == 0 or len(va_idx) == 0:
-                continue
-            X_inner_train, X_inner_val, feature_mask = _lodo_feature_pair(
-                X_base, tr_idx, va_idx, protocol
-            )
-            inner_blocks = mask_feature_blocks(feature_blocks, feature_mask)
-            _, inner_ct_factory = transformation_factory_builder(
-                ct_item,
-                random_state=random_state,
-                feature_blocks=inner_blocks,
-            )
-            fitted = inner_ct_factory()
-            try:
-                X_tr, X_va = fitted.apply_pair(X_inner_train, X_inner_val)
-                reg = configure_estimator_threads(learner_factory(), threads_per_worker)
-                reg.fit(X_tr, y[tr_idx])
-                pred = np.asarray(
-                    _estimator_call(reg, "predict", X_va), dtype=float
-                ).reshape(-1)
-                metrics = compute_regression_metrics(y[va_idx], pred)
-                row = _regression_metric_row(
-                    metrics, split_key, inner_key, cid, mpdr, learner_name, "inner"
-                )
-                row.update(fitted.feature_filter_metadata())
-                result["inner_metrics"].append(row)
-                result["inner_predictions"].extend(
-                    _regression_prediction_rows(
-                        inner_key,
-                        cid,
-                        va_idx,
-                        sample_ids,
-                        subject_ids,
-                        y,
-                        pred,
-                        "inner",
-                        split_key,
-                        target_name,
-                    )
-                )
-                score = float(metrics.get(gate_metric, np.nan))
-                if np.isfinite(score):
-                    score_rows.append(dict(row))
-                result["fits"] += 1
-            except Exception as exc:
-                row = _failed_metric_row(
-                    split_key, inner_key, cid, mpdr, learner_name, "inner", exc
-                )
-                row["task"] = "regression"
-                result["inner_metrics"].append(row)
-        qualified = True
-        gate_score = float("nan")
-        if gate_enabled:
-            if existing_qualification is not None:
-                qualified = bool(int(existing_qualification.get("qualified", 0)))
-                gate_score = float(existing_qualification.get("inner_score", np.nan))
-            else:
-                gate_score, _ = aggregate_validation_metric(
-                    pd.DataFrame(score_rows), gate_metric
-                )
-                gate = QualificationGate(
-                    enabled=True, metric=gate_metric_input, threshold=gate_threshold
-                )
-                qualified = gate.qualifies(gate_score)
-                result["qualification"].append(
-                    {
-                        "split_key": split_key,
-                        "config_id": cid,
-                        "mpdr_id": _mpdr_id(ct_name, res_name),
-                        "count_transformation": str(ct_name),
-                        "resolution": res_name,
-                        "levels": ",".join(levels),
-                        "learner": learner_name,
-                        "gate_enabled": 1,
-                        "gate_metric": gate_metric,
-                        "gate_threshold": gate_threshold,
-                        "inner_score": gate_score,
-                        "qualified": int(qualified),
-                        "task": "regression",
-                    }
-                )
+        _evaluate_regression_inner_splits(
+            result,
+            score_rows,
+            X_base=X_base,
+            feature_blocks=feature_blocks,
+            y=y,
+            sample_ids=sample_ids,
+            subject_ids=subject_ids,
+            target_name=target_name,
+            train_idx=train_idx,
+            inner_splits=inner_splits,
+            split_key=split_key,
+            protocol=protocol,
+            ct_item=ct_item,
+            transformation_factory_builder=transformation_factory_builder,
+            learner_factory=learner_factory,
+            mpdr=mpdr,
+            learner_name=learner_name,
+            cid=cid,
+            gate_metric=canonical_gate_metric,
+            existing_inner_keys=existing_inner_keys,
+            random_state=random_state,
+            threads_per_worker=threads_per_worker,
+        )
+        qualified = _regression_qualification(
+            result,
+            score_rows,
+            existing_qualification,
+            split_key=split_key,
+            cid=cid,
+            ct_name=ct_name,
+            res_name=res_name,
+            levels=levels,
+            learner_name=learner_name,
+            gate_enabled=gate_enabled,
+            gate_metric_input=gate_metric_input,
+            gate_metric=canonical_gate_metric,
+            gate_threshold=gate_threshold,
+        )
         if needs_outer and qualified:
-            X_outer_train, X_outer_test, feature_mask = _lodo_feature_pair(
-                X_base, train_idx, test_idx, protocol
-            )
-            outer_blocks = mask_feature_blocks(feature_blocks, feature_mask)
-            _, outer_ct_factory = transformation_factory_builder(
-                ct_item,
+            _evaluate_regression_outer_split(
+                result,
+                X_base=X_base,
+                feature_blocks=feature_blocks,
+                y=y,
+                sample_ids=sample_ids,
+                subject_ids=subject_ids,
+                target_name=target_name,
+                train_idx=train_idx,
+                test_idx=test_idx,
+                split_key=split_key,
+                protocol=protocol,
+                ct_item=ct_item,
+                transformation_factory_builder=transformation_factory_builder,
+                learner_factory=learner_factory,
+                mpdr=mpdr,
+                learner_name=learner_name,
+                cid=cid,
+                gate_metric=canonical_gate_metric,
                 random_state=random_state,
-                feature_blocks=outer_blocks,
+                threads_per_worker=threads_per_worker,
             )
-            fitted_outer = outer_ct_factory()
-            try:
-                X_train, X_test = fitted_outer.apply_pair(X_outer_train, X_outer_test)
-                reg = configure_estimator_threads(learner_factory(), threads_per_worker)
-                reg.fit(X_train, y[train_idx])
-                pred = np.asarray(
-                    _estimator_call(reg, "predict", X_test), dtype=float
-                ).reshape(-1)
-                metrics = compute_regression_metrics(y[test_idx], pred)
-                row = _regression_metric_row(
-                    metrics, split_key, None, cid, mpdr, learner_name, "outer"
-                )
-                row.update(fitted_outer.feature_filter_metadata())
-                result["outer_metrics"].append(row)
-                result["outer_predictions"].extend(
-                    _regression_prediction_rows(
-                        split_key,
-                        cid,
-                        test_idx,
-                        sample_ids,
-                        subject_ids,
-                        y,
-                        pred,
-                        "outer",
-                        split_key,
-                        target_name,
-                    )
-                )
-                result["fits"] += 1
-            except Exception as exc:
-                row = _failed_metric_row(
-                    split_key, None, cid, mpdr, learner_name, "outer", exc
-                )
-                row["task"] = "regression"
-                result["outer_metrics"].append(row)
     measured = tracker.stop()
     result["job_resources"] = [
         {
@@ -1416,16 +1823,250 @@ def _backfill_regression_metrics_from_predictions(
     return out
 
 
-def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
+_EvaluationResult: TypeAlias = dict[str, Any]
+_EvaluationCallable: TypeAlias = Callable[..., _EvaluationResult]
+_DelayedEvaluationTask: TypeAlias = tuple[
+    _EvaluationCallable, tuple[Any, ...], dict[str, Any]
+]
+_ScheduledEvaluationTask: TypeAlias = tuple[str, str, _DelayedEvaluationTask]
+
+
+_ResolutionSpec: TypeAlias = tuple[str, tuple[str, ...]]
+_LearnerFactory: TypeAlias = Callable[[], EstimatorLike]
+_LearnerFactories: TypeAlias = list[tuple[str, _LearnerFactory]]
+_MpdrCache: TypeAlias = dict[str, tuple[np.ndarray, FeatureBlocks]]
+_TransformationSpecs: TypeAlias = dict[str, tuple[tuple[str, Any | None], ...]]
+_OuterSplits: TypeAlias = list[dict[str, Any]]
+_InnerSplitsByOuter: TypeAlias = dict[str, list[tuple[np.ndarray, np.ndarray]]]
+_EvaluationTables: TypeAlias = dict[str, pd.DataFrame]
+_QualificationMap: TypeAlias = dict[tuple[str, str], Any]
+
+
+@dataclass(frozen=True)
+class _SweepEvaluationContext:
+    root: Path
+    dataset: Dataset
+    resolutions: list[_ResolutionSpec]
+    learners: _LearnerFactories
+    learner_fingerprints: dict[str, str]
+    mpdr_cache: _MpdrCache
+    transformation_specs_by_resolution: _TransformationSpecs
+    configs: pd.DataFrame
+    groups: np.ndarray | None
+    outer_splits: _OuterSplits
+    inner_splits_by_outer: _InnerSplitsByOuter
+    existing: _EvaluationTables
+    current_config_ids: set[str]
+    inner_done: set[tuple[str, str]]
+    outer_done: set[tuple[str, str]]
+    qualification_map: _QualificationMap
+
+
+@dataclass(frozen=True)
+class _PreparedEvaluationTask:
+    split_key: str
+    config_id: str
+    fn: _EvaluationCallable
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+
+
+@dataclass
+class _EvaluationRows:
+    outer_metrics: list[dict[str, Any]]
+    inner_metrics: list[dict[str, Any]]
+    outer_predictions: list[dict[str, Any]]
+    inner_predictions: list[dict[str, Any]]
+    qualification: list[dict[str, Any]]
+    job_resources: list[dict[str, Any]]
+
+    @classmethod
+    def empty(cls) -> _EvaluationRows:
+        return cls([], [], [], [], [], [])
+
+    def extend(self, result: Mapping[str, Any]) -> None:
+        self.inner_metrics.extend(result.get("inner_metrics", []))
+        self.inner_predictions.extend(result.get("inner_predictions", []))
+        self.outer_metrics.extend(result.get("outer_metrics", []))
+        self.outer_predictions.extend(result.get("outer_predictions", []))
+        self.qualification.extend(result.get("qualification", []))
+        self.job_resources.extend(result.get("job_resources", []))
+
+
+def _prepare_evaluation_tasks(
+    tasks: Sequence[_ScheduledEvaluationTask], threads_per_worker: int
+) -> list[_PreparedEvaluationTask]:
+    prepared: list[_PreparedEvaluationTask] = []
+    for split_key, config_id, task in tasks:
+        fn, args, kwargs = task
+        call_args = list(args)
+        call_args[-2] = int(threads_per_worker)
+        prepared.append(
+            _PreparedEvaluationTask(
+                split_key=str(split_key),
+                config_id=str(config_id),
+                fn=fn,
+                args=tuple(call_args),
+                kwargs=dict(kwargs),
+            )
+        )
+    return prepared
+
+
+def _run_evaluation_tasks(
+    root: Path,
+    tasks: Sequence[_PreparedEvaluationTask],
+    split_task_counts: Mapping[str, int],
+    execution: ExecutionPlan,
+    job_label: str,
+) -> _EvaluationRows:
+    rows = _EvaluationRows.empty()
+    completed_by_split: dict[str, int] = {}
+    with progress() as prog:
+        job_task = prog.add_task(job_label, total=len(tasks))
+        split_task = prog.add_task(
+            "Outer splits completed", total=len(split_task_counts)
+        )
+        payloads = [(task.fn, task.args, task.kwargs) for task in tasks]
+        for result in iter_parallel_tasks(payloads, execution):
+            _checkpoint_result(root, result)
+            rows.extend(result)
+            split_key = str(result.get("split_key", ""))
+            config_id = str(result.get("config_id", ""))
+            completed_by_split[split_key] = completed_by_split.get(split_key, 0) + 1
+            if completed_by_split[split_key] == split_task_counts.get(split_key, 0):
+                prog.advance(split_task)
+            prog.update(
+                job_task,
+                advance=1,
+                description=f"{job_label} · {split_key} · {config_id}",
+            )
+    return rows
+
+
+def _persist_evaluation_rows(
+    root: Path,
+    rows: _EvaluationRows,
+    existing: Mapping[str, pd.DataFrame],
+    gate_enabled: bool,
+) -> None:
+    _write_tables(
+        root,
+        rows.outer_metrics,
+        rows.inner_metrics,
+        rows.outer_predictions,
+        rows.inner_predictions,
+        rows.qualification,
+        rows.job_resources,
+        existing=dict(existing),
+        gate_enabled=bool(gate_enabled),
+    )
+
+
+def _write_selection_artifacts(
+    root: Path,
+    sweep: Sweep,
+    class_labels: Sequence[str],
+) -> None:
+    metric = str(sweep.evaluation.optimize_metric)
+    tracker = ResourceTracker(
+        sample_interval_s=sweep.evaluation.resource_sample_interval_s
+    ).start()
+    write_mpma_b_selection_outputs(root, metric, plan=sweep.ensemble)
+    dump_json_standard(
+        tracker.stop(), root / "tables" / "mpma_b_selection_resources.json"
+    )
+    _write_rankings_and_figures(root, list(class_labels), metric)
+    _write_representation_impact_figure(root, metric_col=metric)
+
+
+def _evaluation_run_summary(
+    sweep: Sweep,
+    execution: ExecutionPlan,
+    rows: _EvaluationRows,
+    n_jobs_completed: int,
+    elapsed_s: float,
+    *,
+    task: str,
+    target: str | None = None,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "elapsed_s": float(elapsed_s),
+        "workers": execution.workers,
+        "threads_per_worker": execution.threads_per_worker,
+        "logical_cpus": execution.logical_cpus,
+        "physical_cpus": execution.physical_cpus,
+        "n_jobs_completed": int(n_jobs_completed),
+        "n_outer_rows_added": len(rows.outer_metrics),
+        "n_inner_rows_added": len(rows.inner_metrics),
+        "n_qualification_rows_added": len(rows.qualification),
+        "cpu_core_hours_added": float(
+            sum(float(row.get("cpu_core_hours", 0.0)) for row in rows.job_resources)
+        ),
+        "model_fits_added": int(
+            sum(int(row.get("fits", 0)) for row in rows.job_resources)
+        ),
+        "peak_job_rss_gib": float(
+            max(
+                [float(row.get("peak_rss_gib", 0.0)) for row in rows.job_resources]
+                or [0.0]
+            )
+        ),
+        "machine": machine_profile(execution.logical_cpus, execution.physical_cpus),
+    }
+    if task == "regression":
+        summary = {"task": task, "target": target or "", **summary}
+    return summary
+
+
+def _remove_qualification_cache(root: Path) -> None:
+    path = root / "tables" / "qualification_gate.parquet"
+    if table_exists(path):
+        remove_table(path)
+
+
+def _completed_evaluation_pairs(
+    outer_splits: Sequence[Mapping[str, Any]],
+    config_ids: set[str],
+    outer_done: set[tuple[str, str]],
+    qualification_map: Mapping[tuple[str, str], Any],
+) -> int:
+    return sum(
+        1
+        for split in outer_splits
+        for config_id in config_ids
+        if _outer_pair_complete(
+            str(split["split_key"]), config_id, outer_done, qualification_map
+        )
+    )
+
+
+def _evaluation_execution_plan(sweep: Sweep, task_count: int) -> ExecutionPlan:
+    return resolve_execution_plan(
+        sweep.evaluation.n_jobs,
+        task_count or 1,
+        backend=sweep.evaluation.parallel_backend,
+        memory_fraction=sweep.evaluation.memory_fraction,
+        min_worker_memory_gib=sweep.evaluation.min_worker_memory_gib,
+    )
+
+
+def _available_memory_label(execution: ExecutionPlan) -> str:
+    if execution.memory_bytes is None:
+        return "unknown"
+    return f"{execution.memory_bytes / (1024**3):.1f} GiB"
+
+
+def _prepare_regression_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
     root = sweep.root()
     _prepare_dirs(root)
-    resolutions = [_parse_resolution(r) for r in sweep.resolutions]
+    resolutions = [_parse_resolution(item) for item in sweep.resolutions]
     levels = tuple(
         dict.fromkeys(
-            lv
-            for _, values in resolutions
-            for lv in values
-            if lv not in {"all", "features", "asis", "raw"}
+            level
+            for _, resolution_levels in resolutions
+            for level in resolution_levels
+            if level not in {"all", "features", "asis", "raw"}
         )
     )
     dataset = load_dataset(sweep.data, levels or ("all",))
@@ -1434,14 +2075,14 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
     learner_fingerprints = {
         _learner_name(item): _learner_fingerprint(item) for item in sweep.learners
     }
-    mpdr_cache = {}
-    for name, lvls in resolutions:
-        matrix, _, blocks = materialize_mpdr_with_blocks(dataset, lvls)
+    mpdr_cache: _MpdrCache = {}
+    for name, resolution_levels in resolutions:
+        matrix, _, blocks = materialize_mpdr_with_blocks(dataset, resolution_levels)
         mpdr_cache[name] = (np.asarray(matrix, dtype=np.float32), blocks)
     feature_blocks_by_resolution = {
         name: blocks for name, (_, blocks) in mpdr_cache.items()
     }
-    transformation_specs_by_resolution = {
+    transformation_specs = {
         name: _count_transformation_specs_for_blocks(
             sweep.count_transformations, feature_blocks_by_resolution[name]
         )
@@ -1453,13 +2094,10 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
         sweep.learners,
         resolution_feature_blocks=feature_blocks_by_resolution,
     )
-    evaluation_cache_fingerprint = _evaluation_cache_fingerprint(sweep, dataset)
+    cache_fingerprint = _evaluation_cache_fingerprint(sweep, dataset)
     evaluation_fingerprint = _evaluation_fingerprint(sweep, dataset, configs)
     _validate_incremental_experiment_identity(
-        root,
-        sweep,
-        evaluation_cache_fingerprint,
-        redo=bool(sweep.evaluation.redo),
+        root, sweep, cache_fingerprint, redo=bool(sweep.evaluation.redo)
     )
     if sweep.evaluation.redo:
         _clear_evaluation_checkpoints(root)
@@ -1477,7 +2115,7 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
         sweep,
         dataset,
         evaluation_fingerprint=evaluation_fingerprint,
-        evaluation_cache_fingerprint=evaluation_cache_fingerprint,
+        evaluation_cache_fingerprint=cache_fingerprint,
     )
     current_config_ids = set(configs["config_id"].astype(str))
     current_outer_keys = {str(split["split_key"]) for split in outer_splits}
@@ -1495,50 +2133,197 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
     )
     if not sweep.gate.enabled:
         existing["qualification"] = pd.DataFrame()
-        qpath = root / "tables" / "qualification_gate.parquet"
-        if table_exists(qpath):
-            remove_table(qpath)
-    inner_done = _done_pairs(existing["inner_metrics"], "inner_key")
-    outer_done = _done_pairs(existing["outer_metrics"], "split_key")
-    qualification_map = (
-        _qualification_map(existing["qualification"]) if sweep.gate.enabled else {}
+        _remove_qualification_cache(root)
+    return _SweepEvaluationContext(
+        root=root,
+        dataset=dataset,
+        resolutions=resolutions,
+        learners=learners,
+        learner_fingerprints=learner_fingerprints,
+        mpdr_cache=mpdr_cache,
+        transformation_specs_by_resolution=transformation_specs,
+        configs=configs,
+        groups=groups,
+        outer_splits=outer_splits,
+        inner_splits_by_outer=inner_splits_by_outer,
+        existing=existing,
+        current_config_ids=current_config_ids,
+        inner_done=_done_pairs(existing["inner_metrics"], "inner_key"),
+        outer_done=_done_pairs(existing["outer_metrics"], "split_key"),
+        qualification_map=(
+            _qualification_map(existing["qualification"]) if sweep.gate.enabled else {}
+        ),
     )
-    tasks = []
+
+
+def _prepare_classification_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
+    root = sweep.root()
+    _prepare_dirs(root)
+    resolutions = [_parse_resolution(item) for item in sweep.resolutions]
+    levels = tuple(
+        dict.fromkeys(
+            level
+            for _, resolution_levels in resolutions
+            for level in resolution_levels
+            if level not in {"all", "features", "asis", "raw"}
+        )
+    )
+    dataset = load_dataset(sweep.data, levels or ("all",))
+    validate_sweep_class_count(sweep, len(dataset.class_labels))
+    _validate_dataset_identity(root, dataset)
+    learners = [_learner_factory(item) for item in sweep.learners]
+    learner_fingerprints = {
+        _learner_name(item): _learner_fingerprint(item) for item in sweep.learners
+    }
+    mpdr_cache: _MpdrCache = {}
+    for name, resolution_levels in resolutions:
+        matrix, _, blocks = materialize_mpdr_with_blocks(dataset, resolution_levels)
+        mpdr_cache[name] = (np.asarray(matrix, dtype=np.float32), blocks)
+    feature_blocks_by_resolution = {
+        name: blocks for name, (_, blocks) in mpdr_cache.items()
+    }
+    transformation_specs = {
+        name: _count_transformation_specs_for_blocks(
+            sweep.count_transformations, feature_blocks_by_resolution[name]
+        )
+        for name, _ in resolutions
+    }
+    configs = build_sweep_configs(
+        sweep.resolutions,
+        sweep.count_transformations,
+        sweep.learners,
+        resolution_feature_blocks=feature_blocks_by_resolution,
+    )
+    cache_fingerprint = _evaluation_cache_fingerprint(sweep, dataset)
+    evaluation_fingerprint = _evaluation_fingerprint(sweep, dataset, configs)
+    _validate_incremental_experiment_identity(
+        root, sweep, cache_fingerprint, redo=bool(sweep.evaluation.redo)
+    )
+    if sweep.evaluation.redo:
+        _clear_evaluation_checkpoints(root)
+    _write_config_table(root, configs)
+    groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
+    strata = _strata_from_metadata(dataset.metadata, dataset.y, sweep.data.stratify_col)
+    outer_splits, inner_splits_by_outer = _resolved_evaluation_splits(
+        root,
+        sweep.evaluation,
+        dataset,
+        groups,
+        strata,
+        sweep.data.stratify_col,
+        sweep.data.group_col,
+    )
+    _write_manifest(
+        root,
+        sweep,
+        dataset,
+        evaluation_fingerprint=evaluation_fingerprint,
+        evaluation_cache_fingerprint=cache_fingerprint,
+    )
+    current_config_ids = set(configs["config_id"].astype(str))
+    current_outer_keys = {str(split["split_key"]) for split in outer_splits}
+    existing = _load_existing_evaluation(
+        root,
+        current_config_ids,
+        current_outer_keys,
+        redo=sweep.evaluation.redo,
+    )
+    requested_metrics = [str(sweep.evaluation.optimize_metric)]
+    if sweep.gate.enabled:
+        requested_metrics.append(str(sweep.gate.metric))
+    existing["inner_metrics"] = _backfill_metrics_from_predictions(
+        existing["inner_metrics"],
+        existing["inner_predictions"],
+        dataset.classes,
+        dataset.class_labels,
+        "inner_key",
+        requested_metrics,
+    )
+    existing["outer_metrics"] = _backfill_metrics_from_predictions(
+        existing["outer_metrics"],
+        existing["outer_predictions"],
+        dataset.classes,
+        dataset.class_labels,
+        "split_key",
+        requested_metrics,
+    )
+    if not sweep.gate.enabled:
+        existing["qualification"] = pd.DataFrame()
+        _remove_qualification_cache(root)
+    return _SweepEvaluationContext(
+        root=root,
+        dataset=dataset,
+        resolutions=resolutions,
+        learners=learners,
+        learner_fingerprints=learner_fingerprints,
+        mpdr_cache=mpdr_cache,
+        transformation_specs_by_resolution=transformation_specs,
+        configs=configs,
+        groups=groups,
+        outer_splits=outer_splits,
+        inner_splits_by_outer=inner_splits_by_outer,
+        existing=existing,
+        current_config_ids=current_config_ids,
+        inner_done=_done_pairs(existing["inner_metrics"], "inner_key"),
+        outer_done=_done_pairs(existing["outer_metrics"], "split_key"),
+        qualification_map=(
+            _qualification_map(existing["qualification"]) if sweep.gate.enabled else {}
+        ),
+    )
+
+
+def _build_regression_tasks(
+    sweep: Sweep, context: _SweepEvaluationContext
+) -> tuple[list[_ScheduledEvaluationTask], dict[str, int]]:
+    tasks: list[_ScheduledEvaluationTask] = []
     split_task_counts: dict[str, int] = {}
-    for split in outer_splits:
+    dataset = context.dataset
+    for split in context.outer_splits:
         split_key = str(split["split_key"])
         train_idx = np.asarray(split["train_idx"], dtype=int)
         test_idx = np.asarray(split["test_idx"], dtype=int)
         if len(train_idx) == 0 or len(test_idx) == 0:
             continue
-        inner_splits = inner_splits_by_outer.get(split_key, [])
+        inner_splits = context.inner_splits_by_outer.get(split_key, [])
         inner_keys = [
             f"{split_key}__i{inner_no}" for inner_no in range(len(inner_splits))
         ]
-        for res_name, lvls in resolutions:
-            X_base, feature_blocks = mpdr_cache[res_name]
+        for resolution_name, levels in context.resolutions:
+            X_base, feature_blocks = context.mpdr_cache[resolution_name]
             resolution_fingerprint = _resolution_fingerprint(
-                res_name, lvls, feature_blocks
+                resolution_name, levels, feature_blocks
             )
-            for ct_name, ct_spec in transformation_specs_by_resolution[res_name]:
-                ct_item = (ct_name, ct_spec) if ct_spec is not None else ct_name
-                transformation_fingerprint = _transformation_fingerprint(
-                    str(ct_name), ct_spec
+            transformations = context.transformation_specs_by_resolution[
+                resolution_name
+            ]
+            for transformation_name, transformation_spec in transformations:
+                transformation = (
+                    (transformation_name, transformation_spec)
+                    if transformation_spec is not None
+                    else transformation_name
                 )
-                for learner_name, learner_factory in learners:
-                    cid = _config_id(
-                        str(ct_name),
-                        res_name,
+                transformation_fingerprint = _transformation_fingerprint(
+                    str(transformation_name), transformation_spec
+                )
+                for learner_name, learner_factory in context.learners:
+                    config_id = _config_id(
+                        str(transformation_name),
+                        resolution_name,
                         learner_name,
-                        learner_fingerprints[learner_name],
+                        context.learner_fingerprints[learner_name],
                         transformation_fingerprint,
                         resolution_fingerprint,
                     )
                     missing_inner = {
-                        key for key in inner_keys if (key, cid) not in inner_done
+                        key
+                        for key in inner_keys
+                        if (key, config_id) not in context.inner_done
                     }
                     needs_outer = not _outer_pair_complete(
-                        split_key, cid, outer_done, qualification_map
+                        split_key,
+                        config_id,
+                        context.outer_done,
+                        context.qualification_map,
                     )
                     if not missing_inner and not needs_outer:
                         continue
@@ -1554,219 +2339,329 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
                         tuple(inner_splits),
                         split_key,
                         sweep.evaluation.protocol,
-                        res_name,
-                        tuple(lvls),
-                        str(ct_name),
-                        ct_item,
+                        resolution_name,
+                        tuple(levels),
+                        str(transformation_name),
+                        transformation,
                         _count_transformation_factory,
                         learner_name,
                         learner_factory,
-                        cid,
+                        config_id,
                         bool(sweep.gate.enabled),
                         str(sweep.gate.metric),
                         sweep.gate.threshold,
                         set(inner_keys) - missing_inner,
                         _existing_inner_scores(
-                            existing["inner_metrics"],
+                            context.existing["inner_metrics"],
                             split_key,
-                            cid,
+                            config_id,
                             sweep.gate.metric,
                         ),
-                        qualification_map.get((split_key, cid)),
+                        context.qualification_map.get((split_key, config_id)),
                         bool(needs_outer),
                         int(sweep.evaluation.random_state),
                         1,
                         float(sweep.evaluation.resource_sample_interval_s),
                     )
-                    tasks.append((split_key, cid, task))
+                    tasks.append((split_key, config_id, task))
                     split_task_counts[split_key] = (
                         split_task_counts.get(split_key, 0) + 1
                     )
-    expected_pairs = len(outer_splits) * len(configs)
-    completed_pairs = sum(
-        1
-        for split in outer_splits
-        for cid in current_config_ids
-        if _outer_pair_complete(
-            str(split["split_key"]), cid, outer_done, qualification_map
-        )
+    return tasks, split_task_counts
+
+
+def _build_classification_tasks(
+    sweep: Sweep, context: _SweepEvaluationContext
+) -> tuple[list[_ScheduledEvaluationTask], dict[str, int]]:
+    tasks: list[_ScheduledEvaluationTask] = []
+    split_task_counts: dict[str, int] = {}
+    dataset = context.dataset
+    y = dataset.y
+    for split in context.outer_splits:
+        split_key = str(split["split_key"])
+        train_idx = np.asarray(split["train_idx"], dtype=int)
+        test_idx = np.asarray(split["test_idx"], dtype=int)
+        if len(np.unique(y[train_idx])) < 2 or len(test_idx) == 0:
+            continue
+        inner_splits = context.inner_splits_by_outer.get(split_key, [])
+        inner_keys = [
+            f"{split_key}__i{inner_no}" for inner_no in range(len(inner_splits))
+        ]
+        for resolution_name, levels in context.resolutions:
+            X_base, feature_blocks = context.mpdr_cache[resolution_name]
+            resolution_fingerprint = _resolution_fingerprint(
+                resolution_name, levels, feature_blocks
+            )
+            transformations = context.transformation_specs_by_resolution[
+                resolution_name
+            ]
+            for transformation_name, transformation_spec in transformations:
+                transformation = (
+                    (transformation_name, transformation_spec)
+                    if transformation_spec is not None
+                    else transformation_name
+                )
+                transformation_fingerprint = _transformation_fingerprint(
+                    str(transformation_name), transformation_spec
+                )
+                for learner_name, learner_factory in context.learners:
+                    config_id = _config_id(
+                        str(transformation_name),
+                        resolution_name,
+                        learner_name,
+                        context.learner_fingerprints[learner_name],
+                        transformation_fingerprint,
+                        resolution_fingerprint,
+                    )
+                    missing_inner = {
+                        key
+                        for key in inner_keys
+                        if (key, config_id) not in context.inner_done
+                    }
+                    needs_outer = not _outer_pair_complete(
+                        split_key,
+                        config_id,
+                        context.outer_done,
+                        context.qualification_map,
+                    )
+                    if not missing_inner and not needs_outer:
+                        continue
+                    task = delayed(_evaluate_mpma_split_task)(
+                        X_base,
+                        feature_blocks,
+                        y,
+                        context.groups,
+                        dataset.classes,
+                        tuple(dataset.class_labels),
+                        tuple(dataset.sample_ids),
+                        tuple(dataset.subject_ids),
+                        train_idx,
+                        test_idx,
+                        tuple(inner_splits),
+                        split_key,
+                        sweep.evaluation.protocol,
+                        resolution_name,
+                        tuple(levels),
+                        str(transformation_name),
+                        transformation,
+                        _count_transformation_factory,
+                        learner_name,
+                        learner_factory,
+                        config_id,
+                        bool(sweep.gate.enabled),
+                        str(sweep.gate.metric),
+                        sweep.gate.threshold,
+                        str(sweep.evaluation.optimize_metric),
+                        set(inner_keys) - missing_inner,
+                        _existing_inner_scores(
+                            context.existing["inner_metrics"],
+                            split_key,
+                            config_id,
+                            sweep.gate.metric,
+                        ),
+                        context.qualification_map.get((split_key, config_id)),
+                        bool(needs_outer),
+                        int(sweep.evaluation.random_state),
+                        1,
+                        float(sweep.evaluation.resource_sample_interval_s),
+                    )
+                    tasks.append((split_key, config_id, task))
+                    split_task_counts[split_key] = (
+                        split_task_counts.get(split_key, 0) + 1
+                    )
+    return tasks, split_task_counts
+
+
+def _evaluation_pair_counts(
+    context: _SweepEvaluationContext,
+) -> tuple[int, int]:
+    expected = len(context.outer_splits) * len(context.configs)
+    completed = _completed_evaluation_pairs(
+        context.outer_splits,
+        context.current_config_ids,
+        context.outer_done,
+        context.qualification_map,
     )
-    execution = resolve_execution_plan(
-        sweep.evaluation.n_jobs,
-        len(tasks) or 1,
-        backend=sweep.evaluation.parallel_backend,
-        memory_fraction=sweep.evaluation.memory_fraction,
-        min_worker_memory_gib=sweep.evaluation.min_worker_memory_gib,
-    )
-    prepared_tasks = []
-    for split_key, cid, task in tasks:
-        fn, args, kwargs = task
-        args = list(args)
-        args[-2] = execution.threads_per_worker
-        prepared_tasks.append((split_key, cid, fn, tuple(args), kwargs))
+    return expected, completed
+
+
+def _show_regression_evaluation_overview(
+    sweep: Sweep,
+    context: _SweepEvaluationContext,
+    execution: ExecutionPlan,
+    pending_jobs: int,
+    expected_pairs: int,
+    completed_pairs: int,
+) -> None:
     stage("Regression configuration sweep", sweep.title)
-    memory_gib = (
-        "unknown"
-        if execution.memory_bytes is None
-        else f"{execution.memory_bytes / (1024**3):.1f} GiB"
-    )
-    y = np.asarray(dataset.y, dtype=float)
+    y = np.asarray(context.dataset.y, dtype=float)
     summary_table(
         "Sweep overview",
         {
             "task": "regression",
-            "target": dataset.target_name,
+            "target": context.dataset.target_name,
             "samples": f"{len(y):,}",
             "target range": f"{float(np.min(y)):.4g} to {float(np.max(y)):.4g}",
-            "MPDRs": f"{configs['mpdr_id'].nunique():,}",
-            "MPMAs": f"{len(configs):,}",
+            "MPDRs": f"{context.configs['mpdr_id'].nunique():,}",
+            "MPMAs": f"{len(context.configs):,}",
             "protocol": sweep.evaluation.protocol,
-            "outer splits": f"{len(outer_splits):,}",
+            "outer splits": f"{len(context.outer_splits):,}",
             "inner folds": _inner_validation_label(sweep.evaluation),
             "selection metric": sweep.evaluation.optimize_metric,
             "gate": "on" if sweep.gate.enabled else "off",
             "completed MPMA/split pairs": f"{completed_pairs:,}/{expected_pairs:,}",
-            "pending jobs": f"{len(prepared_tasks):,}",
+            "pending jobs": f"{pending_jobs:,}",
             "CPU logical/physical": f"{execution.logical_cpus}/{execution.physical_cpus}",
-            "available memory": memory_gib,
+            "available memory": _available_memory_label(execution),
             "workers": execution.workers,
             "threads per worker": execution.threads_per_worker,
             "parallel backend": execution.backend,
-            "experiment dir": root,
+            "experiment dir": context.root,
         },
+    )
+
+
+def _show_classification_evaluation_overview(
+    sweep: Sweep,
+    context: _SweepEvaluationContext,
+    execution: ExecutionPlan,
+    pending_jobs: int,
+    expected_pairs: int,
+    completed_pairs: int,
+) -> None:
+    stage("Configuration sweep", sweep.title)
+    summary_table(
+        "Sweep overview",
+        {
+            "samples": f"{len(context.dataset.y):,}",
+            "classes": context.dataset.class_labels,
+            "MPDRs": f"{context.configs['mpdr_id'].nunique():,}",
+            "MPMAs": f"{len(context.configs):,}",
+            "protocol": sweep.evaluation.protocol,
+            "stratification": (
+                "target"
+                if not sweep.data.stratify_col
+                else f"target + {sweep.data.stratify_col}"
+            ),
+            "outer splits": f"{len(context.outer_splits):,}",
+            "inner folds": _inner_validation_label(sweep.evaluation),
+            "gate": "on" if sweep.gate.enabled else "off",
+            "completed MPMA/split pairs": f"{completed_pairs:,}/{expected_pairs:,}",
+            "pending jobs": f"{pending_jobs:,}",
+            "CPU logical/physical": f"{execution.logical_cpus}/{execution.physical_cpus}",
+            "available memory": _available_memory_label(execution),
+            "workers": execution.workers,
+            "threads per worker": execution.threads_per_worker,
+            "parallel backend": execution.backend,
+            "experiment dir": context.root,
+        },
+    )
+
+
+def _reuse_completed_evaluation(
+    sweep: Sweep,
+    context: _SweepEvaluationContext,
+    *,
+    class_labels: Sequence[str],
+    message: str,
+    output_label: str,
+) -> dict[str, Path]:
+    success(message)
+    _persist_evaluation_rows(
+        context.root,
+        _EvaluationRows.empty(),
+        context.existing,
+        sweep.gate.enabled,
+    )
+    _write_selection_artifacts(context.root, sweep, class_labels)
+    outputs = _existing_outputs(context.root)
+    path_table(output_label, outputs)
+    return outputs
+
+
+def _finish_evaluation(
+    sweep: Sweep,
+    context: _SweepEvaluationContext,
+    execution: ExecutionPlan,
+    prepared_tasks: Sequence[_PreparedEvaluationTask],
+    split_task_counts: Mapping[str, int],
+    *,
+    class_labels: Sequence[str],
+    job_label: str,
+    completion_label: str,
+    output_label: str,
+    task: str,
+) -> dict[str, Path]:
+    started = time.perf_counter()
+    rows = _run_evaluation_tasks(
+        context.root,
+        prepared_tasks,
+        split_task_counts,
+        execution,
+        job_label,
+    )
+    _persist_evaluation_rows(context.root, rows, context.existing, sweep.gate.enabled)
+    _write_selection_artifacts(context.root, sweep, class_labels)
+    elapsed = time.perf_counter() - started
+    dump_json_standard(
+        _evaluation_run_summary(
+            sweep,
+            execution,
+            rows,
+            len(prepared_tasks),
+            elapsed,
+            task=task,
+            target=context.dataset.target_name if task == "regression" else None,
+        ),
+        context.root / "run_summary.json",
+    )
+    success(
+        f"{completion_label} completed in {elapsed:.1f}s · workers={execution.workers} · "
+        f"added {len(rows.outer_metrics):,} outer rows and {len(rows.inner_metrics):,} inner rows"
+    )
+    outputs = _existing_outputs(context.root)
+    path_table(output_label, outputs)
+    return outputs
+
+
+def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
+    context = _prepare_regression_evaluation(sweep)
+    tasks, split_task_counts = _build_regression_tasks(sweep, context)
+    execution = _evaluation_execution_plan(sweep, len(tasks))
+    prepared_tasks = _prepare_evaluation_tasks(tasks, execution.threads_per_worker)
+    expected_pairs, completed_pairs = _evaluation_pair_counts(context)
+    _show_regression_evaluation_overview(
+        sweep,
+        context,
+        execution,
+        len(prepared_tasks),
+        expected_pairs,
+        completed_pairs,
     )
     if completed_pairs and completed_pairs < expected_pairs:
         info(
             "Resuming regression sweep: completed MPMA/split pairs are kept; only new or missing pairs will be evaluated."
         )
     if not prepared_tasks:
-        success(
-            "Current regression sweep is already complete; no evaluation jobs to run."
+        return _reuse_completed_evaluation(
+            sweep,
+            context,
+            class_labels=(),
+            message="Current regression sweep is already complete; no evaluation jobs to run.",
+            output_label="Regression sweep outputs",
         )
-        _write_tables(
-            root,
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            existing=existing,
-            gate_enabled=sweep.gate.enabled,
-        )
-        selection_tracker = ResourceTracker(
-            sample_interval_s=sweep.evaluation.resource_sample_interval_s
-        ).start()
-        write_mpma_b_selection_outputs(
-            root, str(sweep.evaluation.optimize_metric), plan=sweep.ensemble
-        )
-        dump_json_standard(
-            selection_tracker.stop(),
-            root / "tables" / "mpma_b_selection_resources.json",
-        )
-        _write_rankings_and_figures(root, [], str(sweep.evaluation.optimize_metric))
-        _write_representation_impact_figure(
-            root, metric_col=str(sweep.evaluation.optimize_metric)
-        )
-        outputs = _existing_outputs(root)
-        path_table("Regression sweep outputs", outputs)
-        return outputs
-    t0 = time.perf_counter()
-    outer_metric_rows: list[dict[str, Any]] = []
-    inner_metric_rows: list[dict[str, Any]] = []
-    outer_pred_rows: list[dict[str, Any]] = []
-    inner_pred_rows: list[dict[str, Any]] = []
-    qualification_rows: list[dict[str, Any]] = []
-    job_resource_rows: list[dict[str, Any]] = []
-    completed_by_split: dict[str, int] = {}
-    with progress() as prog:
-        job_task = prog.add_task(
-            "Regression MPMA/split jobs", total=len(prepared_tasks)
-        )
-        split_task = prog.add_task(
-            "Outer splits completed", total=len(split_task_counts)
-        )
-        task_payloads = [
-            (fn, args, kwargs) for _, _, fn, args, kwargs in prepared_tasks
-        ]
-        for result in iter_parallel_tasks(task_payloads, execution):
-            _checkpoint_result(root, result)
-            inner_metric_rows.extend(result.get("inner_metrics", []))
-            inner_pred_rows.extend(result.get("inner_predictions", []))
-            outer_metric_rows.extend(result.get("outer_metrics", []))
-            outer_pred_rows.extend(result.get("outer_predictions", []))
-            qualification_rows.extend(result.get("qualification", []))
-            job_resource_rows.extend(result.get("job_resources", []))
-            split_key = str(result.get("split_key", ""))
-            config_id = str(result.get("config_id", ""))
-            completed_by_split[split_key] = completed_by_split.get(split_key, 0) + 1
-            if completed_by_split[split_key] == split_task_counts.get(split_key, 0):
-                prog.advance(split_task)
-            prog.update(
-                job_task,
-                advance=1,
-                description=f"Regression MPMA/split jobs · {split_key} · {config_id}",
-            )
-    _write_tables(
-        root,
-        outer_metric_rows,
-        inner_metric_rows,
-        outer_pred_rows,
-        inner_pred_rows,
-        qualification_rows,
-        job_resource_rows,
-        existing=existing,
-        gate_enabled=sweep.gate.enabled,
+    return _finish_evaluation(
+        sweep,
+        context,
+        execution,
+        prepared_tasks,
+        split_task_counts,
+        class_labels=(),
+        job_label="Regression MPMA/split jobs",
+        completion_label="Regression sweep",
+        output_label="Regression sweep outputs",
+        task="regression",
     )
-    selection_tracker = ResourceTracker(
-        sample_interval_s=sweep.evaluation.resource_sample_interval_s
-    ).start()
-    write_mpma_b_selection_outputs(
-        root, str(sweep.evaluation.optimize_metric), plan=sweep.ensemble
-    )
-    dump_json_standard(
-        selection_tracker.stop(), root / "tables" / "mpma_b_selection_resources.json"
-    )
-    _write_rankings_and_figures(root, [], str(sweep.evaluation.optimize_metric))
-    _write_representation_impact_figure(
-        root, metric_col=str(sweep.evaluation.optimize_metric)
-    )
-    elapsed = time.perf_counter() - t0
-    dump_json_standard(
-        {
-            "task": "regression",
-            "target": dataset.target_name,
-            "elapsed_s": elapsed,
-            "workers": execution.workers,
-            "threads_per_worker": execution.threads_per_worker,
-            "logical_cpus": execution.logical_cpus,
-            "physical_cpus": execution.physical_cpus,
-            "n_jobs_completed": len(prepared_tasks),
-            "n_outer_rows_added": len(outer_metric_rows),
-            "n_inner_rows_added": len(inner_metric_rows),
-            "n_qualification_rows_added": len(qualification_rows),
-            "cpu_core_hours_added": float(
-                sum(float(r.get("cpu_core_hours", 0.0)) for r in job_resource_rows)
-            ),
-            "model_fits_added": int(
-                sum(int(r.get("fits", 0)) for r in job_resource_rows)
-            ),
-            "peak_job_rss_gib": float(
-                max(
-                    [float(r.get("peak_rss_gib", 0.0)) for r in job_resource_rows]
-                    or [0.0]
-                )
-            ),
-            "machine": machine_profile(execution.logical_cpus, execution.physical_cpus),
-        },
-        root / "run_summary.json",
-    )
-    success(
-        f"Regression sweep completed in {elapsed:.1f}s · workers={execution.workers} · added {len(outer_metric_rows):,} outer rows and {len(inner_metric_rows):,} inner rows"
-    )
-    outputs = _existing_outputs(root)
-    path_table("Regression sweep outputs", outputs)
-    return outputs
 
 
 def _write_multi_target_summary(
@@ -1819,372 +2714,43 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
 
 
 def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
-    root = sweep.root()
-    _prepare_dirs(root)
-    resolutions = [_parse_resolution(r) for r in sweep.resolutions]
-    all_levels = tuple(
-        dict.fromkeys(
-            lv
-            for _, levels in resolutions
-            for lv in levels
-            if lv not in {"all", "features", "asis", "raw"}
-        )
-    )
-    dataset = load_dataset(sweep.data, all_levels or ("all",))
-    validate_sweep_class_count(sweep, len(dataset.class_labels))
-    _validate_dataset_identity(root, dataset)
-    learner_factories = [_learner_factory(x) for x in sweep.learners]
-    learner_fingerprints = {
-        _learner_name(item): _learner_fingerprint(item) for item in sweep.learners
-    }
-    mpdr_cache = {}
-    for res_name, levels in resolutions:
-        matrix, _, blocks = materialize_mpdr_with_blocks(dataset, levels)
-        mpdr_cache[res_name] = (np.asarray(matrix, dtype=np.float32), blocks)
-    feature_blocks_by_resolution = {
-        name: blocks for name, (_, blocks) in mpdr_cache.items()
-    }
-    transformation_specs_by_resolution = {
-        name: _count_transformation_specs_for_blocks(
-            sweep.count_transformations, feature_blocks_by_resolution[name]
-        )
-        for name, _ in resolutions
-    }
-    configs = build_sweep_configs(
-        sweep.resolutions,
-        sweep.count_transformations,
-        sweep.learners,
-        resolution_feature_blocks=feature_blocks_by_resolution,
-    )
-    evaluation_cache_fingerprint = _evaluation_cache_fingerprint(sweep, dataset)
-    evaluation_fingerprint = _evaluation_fingerprint(sweep, dataset, configs)
-    _validate_incremental_experiment_identity(
-        root,
+    context = _prepare_classification_evaluation(sweep)
+    tasks, split_task_counts = _build_classification_tasks(sweep, context)
+    execution = _evaluation_execution_plan(sweep, len(tasks))
+    prepared_tasks = _prepare_evaluation_tasks(tasks, execution.threads_per_worker)
+    expected_pairs, completed_pairs = _evaluation_pair_counts(context)
+    _show_classification_evaluation_overview(
         sweep,
-        evaluation_cache_fingerprint,
-        redo=bool(sweep.evaluation.redo),
-    )
-    if sweep.evaluation.redo:
-        _clear_evaluation_checkpoints(root)
-    _write_config_table(root, configs)
-    y = dataset.y
-    groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
-    strata = _strata_from_metadata(dataset.metadata, y, sweep.data.stratify_col)
-    outer_splits, inner_splits_by_outer = _resolved_evaluation_splits(
-        root,
-        sweep.evaluation,
-        dataset,
-        groups,
-        strata,
-        sweep.data.stratify_col,
-        sweep.data.group_col,
-    )
-    _write_manifest(
-        root,
-        sweep,
-        dataset,
-        evaluation_fingerprint=evaluation_fingerprint,
-        evaluation_cache_fingerprint=evaluation_cache_fingerprint,
-    )
-    current_config_ids = set(configs["config_id"].astype(str))
-    current_outer_keys = {str(s["split_key"]) for s in outer_splits}
-    existing = _load_existing_evaluation(
-        root,
-        current_config_ids,
-        current_outer_keys,
-        redo=sweep.evaluation.redo,
-    )
-    requested_metrics = [sweep.evaluation.optimize_metric]
-    if sweep.gate.enabled:
-        requested_metrics.append(sweep.gate.metric)
-    existing["inner_metrics"] = _backfill_metrics_from_predictions(
-        existing["inner_metrics"],
-        existing["inner_predictions"],
-        dataset.classes,
-        dataset.class_labels,
-        "inner_key",
-        requested_metrics,
-    )
-    existing["outer_metrics"] = _backfill_metrics_from_predictions(
-        existing["outer_metrics"],
-        existing["outer_predictions"],
-        dataset.classes,
-        dataset.class_labels,
-        "split_key",
-        requested_metrics,
-    )
-    if not sweep.gate.enabled:
-        existing["qualification"] = pd.DataFrame()
-        qpath = root / "tables" / "qualification_gate.parquet"
-        if table_exists(qpath):
-            remove_table(qpath)
-    inner_done = _done_pairs(existing["inner_metrics"], "inner_key")
-    outer_done = _done_pairs(existing["outer_metrics"], "split_key")
-    qualification_map = (
-        _qualification_map(existing["qualification"]) if sweep.gate.enabled else {}
-    )
-    tasks = []
-    split_task_counts: dict[str, int] = {}
-    for split in outer_splits:
-        split_key = str(split["split_key"])
-        train_idx = np.asarray(split["train_idx"], dtype=int)
-        test_idx = np.asarray(split["test_idx"], dtype=int)
-        if len(np.unique(y[train_idx])) < 2 or len(test_idx) == 0:
-            continue
-        inner_splits = inner_splits_by_outer.get(split_key, [])
-        inner_keys = [
-            f"{split_key}__i{inner_no}" for inner_no in range(len(inner_splits))
-        ]
-        for res_name, levels in resolutions:
-            X_base, feature_blocks = mpdr_cache[res_name]
-            resolution_fingerprint = _resolution_fingerprint(
-                res_name, levels, feature_blocks
-            )
-            for ct_name, ct_spec in transformation_specs_by_resolution[res_name]:
-                ct_item = (ct_name, ct_spec) if ct_spec is not None else ct_name
-                transformation_fingerprint = _transformation_fingerprint(
-                    str(ct_name), ct_spec
-                )
-                for learner_name, learner_factory in learner_factories:
-                    cid = _config_id(
-                        str(ct_name),
-                        res_name,
-                        learner_name,
-                        learner_fingerprints[learner_name],
-                        transformation_fingerprint,
-                        resolution_fingerprint,
-                    )
-                    missing_inner = {
-                        key for key in inner_keys if (key, cid) not in inner_done
-                    }
-                    needs_outer = not _outer_pair_complete(
-                        split_key, cid, outer_done, qualification_map
-                    )
-                    if not missing_inner and not needs_outer:
-                        continue
-                    task = delayed(_evaluate_mpma_split_task)(
-                        X_base,
-                        feature_blocks,
-                        y,
-                        groups,
-                        dataset.classes,
-                        tuple(dataset.class_labels),
-                        tuple(dataset.sample_ids),
-                        tuple(dataset.subject_ids),
-                        train_idx,
-                        test_idx,
-                        tuple(inner_splits),
-                        split_key,
-                        sweep.evaluation.protocol,
-                        res_name,
-                        tuple(levels),
-                        str(ct_name),
-                        ct_item,
-                        _count_transformation_factory,
-                        learner_name,
-                        learner_factory,
-                        cid,
-                        bool(sweep.gate.enabled),
-                        str(sweep.gate.metric),
-                        sweep.gate.threshold,
-                        str(sweep.evaluation.optimize_metric),
-                        set(inner_keys) - missing_inner,
-                        _existing_inner_scores(
-                            existing["inner_metrics"], split_key, cid, sweep.gate.metric
-                        ),
-                        qualification_map.get((split_key, cid)),
-                        bool(needs_outer),
-                        int(sweep.evaluation.random_state),
-                        1,
-                        float(sweep.evaluation.resource_sample_interval_s),
-                    )
-                    tasks.append((split_key, cid, task))
-                    split_task_counts[split_key] = (
-                        split_task_counts.get(split_key, 0) + 1
-                    )
-    expected_pairs = len(outer_splits) * len(configs)
-    completed_pairs = sum(
-        1
-        for split in outer_splits
-        for cid in current_config_ids
-        if _outer_pair_complete(
-            str(split["split_key"]), cid, outer_done, qualification_map
-        )
-    )
-    execution = resolve_execution_plan(
-        sweep.evaluation.n_jobs,
-        len(tasks) or 1,
-        backend=sweep.evaluation.parallel_backend,
-        memory_fraction=sweep.evaluation.memory_fraction,
-        min_worker_memory_gib=sweep.evaluation.min_worker_memory_gib,
-    )
-    prepared_tasks = []
-    for split_key, cid, task in tasks:
-        fn, args, kwargs = task
-        args = list(args)
-        args[-2] = execution.threads_per_worker
-        prepared_tasks.append((split_key, cid, fn, tuple(args), kwargs))
-    stage("Configuration sweep", sweep.title)
-    memory_gib = (
-        "unknown"
-        if execution.memory_bytes is None
-        else f"{execution.memory_bytes / (1024**3):.1f} GiB"
-    )
-    summary_table(
-        "Sweep overview",
-        {
-            "samples": f"{len(y):,}",
-            "classes": dataset.class_labels,
-            "MPDRs": f"{configs['mpdr_id'].nunique():,}",
-            "MPMAs": f"{len(configs):,}",
-            "protocol": sweep.evaluation.protocol,
-            "stratification": "target"
-            if not sweep.data.stratify_col
-            else f"target + {sweep.data.stratify_col}",
-            "outer splits": f"{len(outer_splits):,}",
-            "inner folds": _inner_validation_label(sweep.evaluation),
-            "gate": "on" if sweep.gate.enabled else "off",
-            "completed MPMA/split pairs": f"{completed_pairs:,}/{expected_pairs:,}",
-            "pending jobs": f"{len(prepared_tasks):,}",
-            "CPU logical/physical": f"{execution.logical_cpus}/{execution.physical_cpus}",
-            "available memory": memory_gib,
-            "workers": execution.workers,
-            "threads per worker": execution.threads_per_worker,
-            "parallel backend": execution.backend,
-            "experiment dir": root,
-        },
+        context,
+        execution,
+        len(prepared_tasks),
+        expected_pairs,
+        completed_pairs,
     )
     if completed_pairs and completed_pairs < expected_pairs:
         info(
             "Resuming sweep: completed MPMA/split pairs are kept; only new or missing pairs will be evaluated."
         )
     if not prepared_tasks:
-        success(
-            "Current sweep configuration is already complete; no evaluation jobs to run."
+        return _reuse_completed_evaluation(
+            sweep,
+            context,
+            class_labels=context.dataset.class_labels,
+            message="Current sweep configuration is already complete; no evaluation jobs to run.",
+            output_label="Configuration sweep outputs",
         )
-        _write_tables(
-            root,
-            [],
-            [],
-            [],
-            [],
-            [],
-            [],
-            existing=existing,
-            gate_enabled=sweep.gate.enabled,
-        )
-        selection_tracker = ResourceTracker(
-            sample_interval_s=sweep.evaluation.resource_sample_interval_s
-        ).start()
-        write_mpma_b_selection_outputs(
-            root, sweep.evaluation.optimize_metric, plan=sweep.ensemble
-        )
-        dump_json_standard(
-            selection_tracker.stop(),
-            root / "tables" / "mpma_b_selection_resources.json",
-        )
-        _write_rankings_and_figures(
-            root, dataset.class_labels, sweep.evaluation.optimize_metric
-        )
-        _write_representation_impact_figure(
-            root, metric_col=sweep.evaluation.optimize_metric
-        )
-        path_table("Configuration sweep outputs", _existing_outputs(root))
-        return _existing_outputs(root)
-    t0 = time.perf_counter()
-    outer_metric_rows: list[dict[str, Any]] = []
-    inner_metric_rows: list[dict[str, Any]] = []
-    outer_pred_rows: list[dict[str, Any]] = []
-    inner_pred_rows: list[dict[str, Any]] = []
-    qualification_rows: list[dict[str, Any]] = []
-    job_resource_rows: list[dict[str, Any]] = []
-    completed_by_split: dict[str, int] = {}
-    with progress() as prog:
-        job_task = prog.add_task("MPMA/split jobs", total=len(prepared_tasks))
-        split_task = prog.add_task(
-            "Outer splits completed", total=len(split_task_counts)
-        )
-        task_payloads = [
-            (fn, args, kwargs) for _, _, fn, args, kwargs in prepared_tasks
-        ]
-        for result in iter_parallel_tasks(task_payloads, execution):
-            _checkpoint_result(root, result)
-            inner_metric_rows.extend(result.get("inner_metrics", []))
-            inner_pred_rows.extend(result.get("inner_predictions", []))
-            outer_metric_rows.extend(result.get("outer_metrics", []))
-            outer_pred_rows.extend(result.get("outer_predictions", []))
-            qualification_rows.extend(result.get("qualification", []))
-            job_resource_rows.extend(result.get("job_resources", []))
-            split_key = str(result.get("split_key", ""))
-            config_id = str(result.get("config_id", ""))
-            completed_by_split[split_key] = completed_by_split.get(split_key, 0) + 1
-            if completed_by_split[split_key] == split_task_counts.get(split_key, 0):
-                prog.advance(split_task)
-            prog.update(
-                job_task,
-                advance=1,
-                description=f"MPMA/split jobs · {split_key} · {config_id}",
-            )
-    _write_tables(
-        root,
-        outer_metric_rows,
-        inner_metric_rows,
-        outer_pred_rows,
-        inner_pred_rows,
-        qualification_rows,
-        job_resource_rows,
-        existing=existing,
-        gate_enabled=sweep.gate.enabled,
+    return _finish_evaluation(
+        sweep,
+        context,
+        execution,
+        prepared_tasks,
+        split_task_counts,
+        class_labels=context.dataset.class_labels,
+        job_label="MPMA/split jobs",
+        completion_label="Configuration sweep",
+        output_label="Configuration sweep outputs",
+        task="classification",
     )
-    selection_tracker = ResourceTracker(
-        sample_interval_s=sweep.evaluation.resource_sample_interval_s
-    ).start()
-    write_mpma_b_selection_outputs(
-        root, sweep.evaluation.optimize_metric, plan=sweep.ensemble
-    )
-    dump_json_standard(
-        selection_tracker.stop(), root / "tables" / "mpma_b_selection_resources.json"
-    )
-    _write_rankings_and_figures(
-        root, dataset.class_labels, sweep.evaluation.optimize_metric
-    )
-    _write_representation_impact_figure(
-        root, metric_col=sweep.evaluation.optimize_metric
-    )
-    elapsed = time.perf_counter() - t0
-    dump_json_standard(
-        {
-            "elapsed_s": elapsed,
-            "workers": execution.workers,
-            "threads_per_worker": execution.threads_per_worker,
-            "logical_cpus": execution.logical_cpus,
-            "physical_cpus": execution.physical_cpus,
-            "n_jobs_completed": len(prepared_tasks),
-            "n_outer_rows_added": len(outer_metric_rows),
-            "n_inner_rows_added": len(inner_metric_rows),
-            "n_qualification_rows_added": len(qualification_rows),
-            "cpu_core_hours_added": float(
-                sum(float(r.get("cpu_core_hours", 0.0)) for r in job_resource_rows)
-            ),
-            "model_fits_added": int(
-                sum(int(r.get("fits", 0)) for r in job_resource_rows)
-            ),
-            "peak_job_rss_gib": float(
-                max(
-                    [float(r.get("peak_rss_gib", 0.0)) for r in job_resource_rows]
-                    or [0.0]
-                )
-            ),
-            "machine": machine_profile(execution.logical_cpus, execution.physical_cpus),
-        },
-        root / "run_summary.json",
-    )
-    success(
-        f"Configuration sweep completed in {elapsed:.1f}s · workers={execution.workers} · added {len(outer_metric_rows):,} outer rows and {len(inner_metric_rows):,} inner rows"
-    )
-    outputs = _existing_outputs(root)
-    path_table("Configuration sweep outputs", outputs)
-    return outputs
 
 
 def _prepare_dirs(root: Path) -> None:
