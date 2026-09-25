@@ -66,7 +66,7 @@ from .sweep_types import Evaluation
 from .sweep_types import Explainability as Explainability
 from .sweep_types import LocalExplanationMode as LocalExplanationMode
 from .sweep_types import LocalExplanations as LocalExplanations
-from .sweep_types import QualificationGate, Sweep
+from .sweep_types import QualificationGate, Robustness, Sweep
 from .sweep_types import SweepTask as SweepTask
 from .sweep_types import (
     _effective_local_explanations_mode as _effective_local_explanations_mode,
@@ -1284,6 +1284,7 @@ def _backfill_metrics_from_predictions(
 
 
 from .data import Data as Data
+from .data import Metadata as Metadata
 from .evaluation_splits import _groups_from_metadata
 from .evaluation_splits import _inner_splits as _inner_splits
 from .evaluation_splits import _normalise_column_names as _normalise_column_names

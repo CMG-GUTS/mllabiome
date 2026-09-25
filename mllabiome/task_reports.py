@@ -1327,10 +1327,12 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
         else "<p>Pairwise strategy comparisons require at least two evaluated strategies.</p>"
     )
 
+    robustness_html = _report._robustness_report_html(root)
+
     html_text = f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>mllabiome report</title><link rel="icon" type="image/svg+xml" href="{_report._favicon_href()}"><style>{css}</style></head>
-<body>{_report._report_nav_html()}
+<body>{_report._report_nav_html(bool(robustness_html))}
 <div class="report-shell"><main id="top" class="report-content">
 <h2 id="performance-evaluation" class="first-section">Task definition and evaluation procedure</h2>{_report._procedure_grid_html(procedure)}
 <h2 id="performance-summary">Task performance summary</h2>{_regression_performance_note(sweep.evaluation.protocol, 2000)}{_report._html_table(performance, raw_html_cols=raw_metric_cols)}
@@ -1341,6 +1343,7 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
 <h3 id="statistics">Outer-unit strategy comparisons</h3>{_report._inferential_layer_html(sweep.evaluation.protocol, metric)}{pairwise_html}
 <h2 id="explainability">Explainability</h2>
 <h3>Feature attribution</h3>{explainability_html if explainability_html else "<p>No explainability artefacts are available yet.</p>"}
+{robustness_html}
 <h2 id="compute">Computational resources</h2><p>Compute is summarized by additive CPU core-hours, model-fit count, and peak resident memory for the worker process tree. CPU time includes child processes and external R processes when used. MPMA-B and MPMA-E share the MPMA search pool, so their compute totals overlap.</p>{_report._html_table(compute_display)}
 <h4>Hardware and runtime environment</h4>{_report._html_table(hardware_summary) if not hardware_summary.empty else "<p>Hardware details are unavailable for this run.</p>"}
 {_report._abbreviations_html()}
@@ -1567,6 +1570,8 @@ def _target_report_section(
         else "<h3>Explainability</h3>"
     )
 
+    robustness_html = _report._robustness_report_html(root)
+
     compute_heading = (
         '<h3 id="compute">Computational resources</h3>'
         if include_nav_landmarks
@@ -1602,6 +1607,7 @@ def _target_report_section(
 {oof}
 <h3>Outer-unit strategy comparisons</h3>{_report._inferential_layer_html(child.evaluation.protocol, metric)}{_report._html_table(pairwise)}
 {explainability_heading}<h4>Feature attribution</h4>{xai if xai else "<p>No explainability artefacts are available yet.</p>"}
+{robustness_html}
 {compute_heading}<p>Compute is summarized by additive CPU core-hours, model-fit count, and peak resident memory for the worker process tree. CPU time includes child processes and external R processes when used. MPMA-B and MPMA-E share the MPMA search pool, so their compute totals overlap.</p>{_report._html_table(compute)}
 <h4>Hardware and runtime environment</h4>{_report._html_table(hardware_summary) if not hardware_summary.empty else "<p>Hardware details are unavailable for this run.</p>"}</section>'''
 

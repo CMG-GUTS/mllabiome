@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("config", type=Path, help="Python sweep config.")
     parser.add_argument(
         "--stage",
-        choices=["all", "evaluate", "ensemble", "explain", "report"],
+        choices=["all", "evaluate", "ensemble", "explain", "robustness", "report"],
         default="all",
         help="Entry point for full execution or stage-level restart.",
     )

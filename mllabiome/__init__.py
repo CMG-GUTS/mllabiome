@@ -14,13 +14,14 @@ from .configs_sweep import (
     LocalExplanationMode,
     LocalExplanations,
     QualificationGate,
+    Robustness,
     Sweep,
     SweepTask,
     build_sweep_configs,
     build_sweep_from_module,
     evaluate,
 )
-from .data import Data, Dataset, load_dataset
+from .data import Data, Dataset, Metadata, load_dataset
 from .ensemble_sweep import sweep_ensemble
 from .explainability import (
     ExplainabilityConfigurationError,
@@ -38,7 +39,7 @@ from .modalities import (
     Samples,
     load_modalities,
 )
-from .pipeline import run_all
+from .pipeline import run_all, run_robustness
 from .report import write_report
 from .resolutions import materialize_mpdr
 from .siamcat import SIAMCATClassifier
@@ -77,6 +78,7 @@ __all__ = [
     "TRANSFORMATION_SPACE",
     "ALEInteractions",
     "Data",
+    "Metadata",
     "Dataset",
     "Ensemble",
     "Evaluation",
@@ -95,6 +97,7 @@ __all__ = [
     "Permutation",
     "PrevalenceFilter",
     "QualificationGate",
+    "Robustness",
     "SIAMCATClassifier",
     "Samples",
     "Sweep",
@@ -117,6 +120,7 @@ __all__ = [
     "materialize_mpdr",
     "mll",
     "run_all",
+    "run_robustness",
     "sweep_ensemble",
     "transformation_label",
     "transformation_space_table",

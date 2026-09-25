@@ -419,6 +419,23 @@ def _explainability_rows(sweep: Sweep) -> list[tuple[str, object]]:
     return rows
 
 
+def _robustness_rows(sweep: Sweep) -> list[tuple[str, object]]:
+    rows = []
+    for child in _children(sweep):
+        root = Path(child.root()) / "robustness"
+        target = _target_name(child)
+        for filename, label in (
+            ("covariate_balance.parquet", "covariates audited"),
+            ("subgroup_performance.parquet", "subgroup rows"),
+            ("important_feature_robustness.parquet", "feature-stability rows"),
+        ):
+            path = root / filename
+            if table_exists(path):
+                frame = read_table(path)
+                rows.append((f"{target} · {label}", int(len(frame))))
+    return rows
+
+
 def _report_rows(sweep: Sweep) -> list[tuple[str, object]]:
     index = Path(sweep.root()) / "report" / "index.html"
     return [("Status", "HTML report generated")] if index.exists() else []
@@ -435,6 +452,9 @@ def print_stage_results(sweep: Sweep, stage_name: str) -> None:
         elif stage_name == "explain":
             rows = _explainability_rows(sweep)
             title = "Explainability results ready"
+        elif stage_name == "robustness":
+            rows = _robustness_rows(sweep)
+            title = "Robustness results ready"
         elif stage_name == "report":
             rows = _report_rows(sweep)
             title = "Report results ready"

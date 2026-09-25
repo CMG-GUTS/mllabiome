@@ -12,10 +12,112 @@ import pandas as pd
 from .utils import TAXONOMIC_LEVELS
 
 
+@dataclass(frozen=True)
+class Metadata:
+    metadata_path: Path | str | None = None
+    age: str | None = None
+    biological_sex: str | None = None
+    gender: str | None = None
+    bmi: str | None = None
+    smoking: str | None = None
+    site: str | None = None
+    batch: str | None = None
+    covariates: tuple[str, ...] = ()
+    technical: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        covariates = tuple(str(value).strip() for value in self.covariates)
+        technical = tuple(str(value).strip() for value in self.technical)
+        if any(not value for value in covariates):
+            raise ValueError("Metadata.covariates cannot contain empty column names.")
+        if any(not value for value in technical):
+            raise ValueError("Metadata.technical cannot contain empty column names.")
+        object.__setattr__(self, "covariates", tuple(dict.fromkeys(covariates)))
+        object.__setattr__(self, "technical", tuple(dict.fromkeys(technical)))
+        for name in (
+            "age",
+            "biological_sex",
+            "gender",
+            "bmi",
+            "smoking",
+            "site",
+            "batch",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                token = str(value).strip()
+                if not token:
+                    raise ValueError(f"Metadata.{name} cannot be empty.")
+                object.__setattr__(self, name, token)
+
+    @property
+    def semantic_mapping(self) -> dict[str, str]:
+        values = {
+            "age": self.age,
+            "biological_sex": self.biological_sex,
+            "gender": self.gender,
+            "bmi": self.bmi,
+            "smoking": self.smoking,
+            "site": self.site,
+            "batch": self.batch,
+        }
+        return {
+            name: str(value)
+            for name, value in values.items()
+            if value is not None
+        }
+
+    @property
+    def semantic_columns(self) -> tuple[str, ...]:
+        values = (
+            self.age,
+            self.biological_sex,
+            self.gender,
+            self.bmi,
+            self.smoking,
+            self.site,
+            self.batch,
+            *self.covariates,
+            *self.technical,
+        )
+        return tuple(
+            dict.fromkeys(str(value) for value in values if value is not None)
+        )
+
+    @property
+    def covariate_columns(self) -> tuple[str, ...]:
+        values = (
+            self.age,
+            self.biological_sex,
+            self.gender,
+            self.bmi,
+            self.smoking,
+            *self.covariates,
+        )
+        return tuple(
+            dict.fromkeys(str(value) for value in values if value is not None)
+        )
+
+    @property
+    def technical_columns(self) -> tuple[str, ...]:
+        values = (self.site, self.batch, *self.technical)
+        return tuple(
+            dict.fromkeys(str(value) for value in values if value is not None)
+        )
+
+    @property
+    def categorical_subgroup_columns(self) -> tuple[str, ...]:
+        values = (self.biological_sex, self.gender, self.smoking, self.site, self.batch)
+        return tuple(
+            dict.fromkeys(str(value) for value in values if value is not None)
+        )
+
+
 @dataclass
 class Data:
     abundance_path: Path | str
     metadata_path: Path | str | None = None
+    metadata: Metadata | None = None
     format: str = "auto"
     sample_id_col: str = "sample_id"
     target_col: str | tuple[str, ...] = "label"
@@ -33,6 +135,46 @@ class Data:
     positive_class: int | str = 1
     target_class_labels: Mapping[str, tuple[str, ...]] | None = None
     target_positive_classes: Mapping[str, int | str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.metadata is not None and not isinstance(self.metadata, Metadata):
+            raise TypeError("Data.metadata must be an instance of Metadata.")
+        if self.metadata is not None and self.metadata_path is not None:
+            raise ValueError(
+                "Use Data.metadata=Metadata(...) or legacy Data.metadata_path=..., not both."
+            )
+
+
+def metadata_spec(spec: Data) -> Metadata | None:
+    if spec.metadata is not None:
+        return spec.metadata
+    if spec.metadata_path is not None:
+        return Metadata(metadata_path=spec.metadata_path)
+    return None
+
+
+def metadata_path(spec: Data) -> Path | None:
+    metadata = metadata_spec(spec)
+    if metadata is None or metadata.metadata_path is None:
+        return None
+    return Path(metadata.metadata_path)
+
+
+def metadata_columns(spec: Data) -> tuple[str, ...]:
+    metadata = metadata_spec(spec)
+    semantic = metadata.semantic_columns if metadata is not None else ()
+    return tuple(dict.fromkeys((*spec.metadata_cols, *semantic)))
+
+
+def _validate_declared_metadata(spec: Data, frame: pd.DataFrame) -> None:
+    metadata = metadata_spec(spec)
+    if metadata is None:
+        return
+    missing = [
+        column for column in metadata.semantic_columns if column not in frame.columns
+    ]
+    if missing:
+        raise ValueError(f"Declared metadata columns are missing: {missing!r}.")
 
 
 @dataclass
@@ -139,19 +281,20 @@ def load_dataset(spec: Data, levels_needed: Iterable[str] | None = None) -> Data
     _single_target_name(spec)
     fmt = str(spec.format).strip().casefold().replace("-", "_")
     abundance_path = Path(spec.abundance_path)
-    metadata_path = Path(spec.metadata_path) if spec.metadata_path is not None else None
+    resolved_metadata_path = metadata_path(spec)
     if fmt == "auto":
         fmt = (
             "mllab"
-            if abundance_path.suffix.lower() in {".tsv", ".txt"} and metadata_path
+            if abundance_path.suffix.lower() in {".tsv", ".txt"}
+            and resolved_metadata_path
             else "wide_csv"
         )
     if fmt in {"csv", "wide_csv"}:
         return _load_csv_dataset(spec, levels_needed)
     if fmt in {"mllab", "matrix_tsv", "metaphlan", "metaphlan_tsv", "profile_tsv"}:
-        if metadata_path is None:
+        if resolved_metadata_path is None:
             raise ValueError(
-                "Data.metadata_path is required for matrix-style TSV input."
+                "Data.metadata=Metadata(metadata_path=...) is required for matrix-style TSV input."
             )
         return _load_matrix_tsv_dataset(spec, levels_needed)
     raise ValueError(
@@ -396,7 +539,7 @@ def _encode_y(
 
 
 def _reserved_wide_csv_columns(spec: Data, target_col: str) -> set[str]:
-    reserved = {spec.sample_id_col, target_col, *(spec.metadata_cols or ())}
+    reserved = {spec.sample_id_col, target_col, *metadata_columns(spec)}
     if spec.subject_id_col:
         reserved.add(spec.subject_id_col)
     if spec.group_col:
@@ -511,8 +654,9 @@ def _subject_ids(
 def _load_csv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
     abundance_path = Path(spec.abundance_path)
     df = pd.read_csv(abundance_path)
-    if spec.metadata_path is not None:
-        meta = pd.read_csv(Path(spec.metadata_path), sep=None, engine="python")
+    resolved_metadata_path = metadata_path(spec)
+    if resolved_metadata_path is not None:
+        meta = pd.read_csv(resolved_metadata_path, sep=None, engine="python")
         if (
             spec.sample_id_col not in df.columns
             or spec.sample_id_col not in meta.columns
@@ -521,6 +665,7 @@ def _load_csv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
                 f"sample_id_col={spec.sample_id_col!r} must exist in both CSV files."
             )
         df = df.merge(meta, on=spec.sample_id_col, how="inner", suffixes=("", "__meta"))
+    _validate_declared_metadata(spec, df)
     target_col = _single_target_name(spec)
     if target_col not in df.columns:
         raise ValueError(f"Target column {target_col!r} not found.")
@@ -651,10 +796,15 @@ def _read_feature_by_sample_tsv(
 
 def _load_matrix_tsv_dataset(spec: Data, levels_needed: tuple[str, ...]) -> Dataset:
     abundance_path = Path(spec.abundance_path)
-    metadata_path = Path(spec.metadata_path)
-    meta = pd.read_csv(metadata_path, sep=None, engine="python", dtype=str)
+    resolved_metadata_path = metadata_path(spec)
+    if resolved_metadata_path is None:
+        raise ValueError(
+            "Data.metadata=Metadata(metadata_path=...) is required for matrix-style TSV input."
+        )
+    meta = pd.read_csv(resolved_metadata_path, sep=None, engine="python", dtype=str)
     if spec.sample_id_col not in meta.columns:
         raise ValueError(f"Metadata missing sample ID column {spec.sample_id_col!r}.")
+    _validate_declared_metadata(spec, meta)
     target_col = _single_target_name(spec)
     if target_col not in meta.columns:
         raise ValueError(f"Metadata missing target column {target_col!r}.")

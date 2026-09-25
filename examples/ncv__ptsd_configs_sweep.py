@@ -18,9 +18,14 @@ HERE = Path(__file__).resolve().parent
 TITLE = "PTSD within-dataset grouped MPMA sweep"
 EXPERIMENT_DIR = HERE / "runs" / "PTSD-NCV-grouped"
 
+METADATA = mll.Metadata(
+    metadata_path=HERE / "data" / "PTSD" / "PTSD_metadata.tsv",
+    biological_sex="host_sex",
+)
+
 DATA = mll.Data(
     abundance_path=HERE / "data" / "PTSD" / "PTSD_profiles.tsv",
-    metadata_path=HERE / "data" / "PTSD" / "PTSD_metadata.tsv",
+    metadata=METADATA,
     format="metaphlan_tsv",
     sample_id_col="sampleId",
     target_col="group",
@@ -35,7 +40,7 @@ RESOLUTIONS = (
     ("class", ("class",)),
     # ("order", ("order",)),
     # ("family", ("family",)),
-    # ("genus", ("genus",)),
+    ("genus", ("genus",)),
     # # ("domain-phylum", ("domain", "phylum")),
     # # ("domain-class", ("domain", "phylum", "class")),
     # # ("domain-order", ("domain", "phylum", "class", "order")),
@@ -43,7 +48,7 @@ RESOLUTIONS = (
     # # ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
     # # ("phylum-class", ("phylum", "class")),
     # # ("phylum-order", ("phylum", "class", "order")),
-    # # ("phylum-family", ("phylum", "class", "order", "family")),
+    # ("phylum-family", ("phylum", "class", "order", "family")),
     # # ("phylum-genus", ("phylum", "class", "order", "family", "genus")),
     ("class-order", ("class", "order")),
     # # ("class-family", ("class", "order", "family")),
@@ -55,7 +60,7 @@ RESOLUTIONS = (
 )
 
 COUNT_TRANSFORMATIONS = (
-    # mll.Transformation("presence_absence"),
+    mll.Transformation("presence_absence"),
     mll.Transformation("identity"),
     # mll.Transformation("arcsine_sqrt", composition_scope="rank-wise"),
     mll.Transformation("arcsine_sqrt", composition_scope="joint"),
@@ -257,6 +262,11 @@ EXPLAINABILITY = mll.Explainability(
     classes="auto",
 )
 
+ROBUSTNESS = mll.Robustness(
+    targets=("mpma_b",),
+    top_k=30,
+)
+
 SWEEP = mll.Sweep(
     data=DATA,
     experiment_dir=EXPERIMENT_DIR,
@@ -268,4 +278,5 @@ SWEEP = mll.Sweep(
     gate=GATE,
     ensemble=ENSEMBLE,
     explainability=EXPLAINABILITY,
+    robustness=ROBUSTNESS,
 )

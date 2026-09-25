@@ -596,6 +596,30 @@ def validate_sweep_class_count(sweep: Any, n_classes: int) -> None:
     )
 
 
+@dataclass(frozen=True)
+class Robustness:
+    covariates: tuple[str, ...] = ()
+    technical: tuple[str, ...] = ()
+    subgroups: tuple[str, ...] = ()
+    targets: tuple[str, ...] = ("mpma_b", "mpma_e")
+    top_k: int = 30
+    min_subgroup_size: int = 10
+
+    def __post_init__(self) -> None:
+        targets = tuple(str(value).strip().casefold().replace("-", "_") for value in self.targets)
+        invalid = sorted(set(targets) - {"mpma_b", "mpma_e"})
+        if invalid:
+            raise ValueError(f"Unsupported Robustness.targets: {invalid!r}.")
+        if int(self.top_k) < 1:
+            raise ValueError("Robustness.top_k must be at least 1.")
+        if int(self.min_subgroup_size) < 2:
+            raise ValueError("Robustness.min_subgroup_size must be at least 2.")
+        object.__setattr__(self, "targets", targets)
+        object.__setattr__(self, "covariates", tuple(str(value) for value in self.covariates))
+        object.__setattr__(self, "technical", tuple(str(value) for value in self.technical))
+        object.__setattr__(self, "subgroups", tuple(str(value) for value in self.subgroups))
+
+
 @dataclass
 class Sweep:
     data: Data | None
@@ -611,6 +635,7 @@ class Sweep:
     gate: QualificationGate = field(default_factory=QualificationGate)
     ensemble: Ensemble = field(default_factory=Ensemble)
     explainability: Explainability = field(default_factory=Explainability)
+    robustness: Robustness | None = None
     title: str = "mllabiome sweep"
     samples: Samples | None = None
     modalities: Sequence[Modality] = field(default_factory=tuple)
@@ -735,6 +760,7 @@ def build_sweep_from_module(mod: Any) -> Sweep:
             gate=getattr(mod, "GATE", QualificationGate()),
             ensemble=ensemble,
             explainability=getattr(mod, "EXPLAINABILITY", Explainability()),
+            robustness=getattr(mod, "ROBUSTNESS", None),
             samples=samples,
             modalities=modalities,
             representations=getattr(mod, "REPRESENTATIONS", {}),
@@ -793,6 +819,7 @@ def build_sweep_from_module(mod: Any) -> Sweep:
         gate=getattr(mod, "GATE", QualificationGate()),
         ensemble=getattr(mod, "ENSEMBLE", Ensemble()),
         explainability=getattr(mod, "EXPLAINABILITY", Explainability()),
+        robustness=getattr(mod, "ROBUSTNESS", None),
     )
 
 

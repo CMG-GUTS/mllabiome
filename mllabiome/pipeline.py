@@ -9,6 +9,7 @@ from .ensemble_sweep import sweep_ensemble
 from .final_explainability import explain
 from .final_models import build_final_models
 from .report import write_report
+from .robustness import run_robustness as execute_robustness
 from .stage_results import print_stage_results
 from .task_reports import write_regression_report, write_task_report
 from .utils import dump_json_standard
@@ -108,6 +109,30 @@ def run_explain(sweep: Sweep) -> dict[str, Any]:
     return result
 
 
+def run_robustness(sweep: Sweep) -> dict[str, Any]:
+    if getattr(sweep, "robustness", None) is None:
+        return {}
+    if getattr(sweep, "uses_modalities", False):
+        outputs = execute_robustness(sweep)
+        print_stage_results(sweep, "robustness")
+        return outputs
+    children = target_sweeps(sweep)
+    records: list[dict[str, Any]] = []
+    outputs: dict[str, Any] = {}
+    for index, child in enumerate(children, start=1):
+        if _is_multi_target(sweep, children):
+            info(f"Robustness · target {index}/{len(children)} · {child.data.target_col}")
+        child_outputs = execute_robustness(child)
+        target = str(child.data.target_col)
+        outputs[target] = child_outputs
+        records.append(_target_record(child, child_outputs))
+    if _is_multi_target(sweep, children):
+        outputs["manifest"] = _write_stage_manifest(sweep, "robustness", records)
+    result = outputs if _is_multi_target(sweep, children) else outputs[str(children[0].data.target_col)]
+    print_stage_results(sweep, "robustness")
+    return result
+
+
 def run_report(sweep: Sweep) -> dict[str, Any]:
     if getattr(sweep, "uses_modalities", False):
         task = sweep_task(sweep)
@@ -129,14 +154,21 @@ def run_all(sweep: Sweep) -> dict[str, Any]:
     ensemble_output = run_ensemble(sweep)
     info("Pipeline · explain")
     explain_output = run_explain(sweep)
+    robustness_output: dict[str, Any] = {}
+    if getattr(sweep, "robustness", None) is not None:
+        info("Pipeline · robustness")
+        robustness_output = run_robustness(sweep)
     info("Pipeline · report")
     report_output = run_report(sweep)
-    return {
+    outputs = {
         "evaluate": evaluate_output,
         "ensemble": ensemble_output,
         "explain": explain_output,
         "report": report_output,
     }
+    if getattr(sweep, "robustness", None) is not None:
+        outputs["robustness"] = robustness_output
+    return outputs
 
 
 def run_stage(sweep: Sweep, stage_name: str) -> dict[str, Any]:
@@ -148,6 +180,8 @@ def run_stage(sweep: Sweep, stage_name: str) -> dict[str, Any]:
         return run_ensemble(sweep)
     if stage_name == "explain":
         return run_explain(sweep)
+    if stage_name == "robustness":
+        return run_robustness(sweep)
     if stage_name == "report":
         return run_report(sweep)
     raise ValueError(f"Unsupported stage {stage_name!r}.")

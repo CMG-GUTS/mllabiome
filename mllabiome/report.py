@@ -508,15 +508,17 @@ def _report_footer_html() -> str:
     return f'<p class="report-footer">mllabiome · {html.escape(stamp)}</p>'
 
 
-def _report_nav_html() -> str:
+def _report_nav_html(has_robustness: bool = False) -> str:
 
+    robustness_link = '<a href="#robustness">Robustness</a>' if has_robustness else ""
     return (
         '<header class="report-nav"><div class="report-nav-inner">'
         '<a class="brand" href="#top" aria-label="mllabiome report"><span class="brand-mark">mll</span><span>mllabiome</span></a>'
         '<nav class="report-links" aria-label="Report navigation">'
         '<a href="#performance-evaluation">Performance evaluation</a>'
         '<a href="#explainability">Explainability</a>'
-        '<a href="#compute">Computational resources</a>'
+        + robustness_link
+        + '<a href="#compute">Computational resources</a>'
         '<a href="#abbreviations">Abbreviations</a>'
         "</nav></div></header>"
         '<script>document.addEventListener("click",function(e){const a=e.target.closest(".report-links a[href^=\'#\'],.brand[href^=\'#\']");if(!a)return;const id=decodeURIComponent(a.getAttribute("href").slice(1));const t=document.getElementById(id);if(!t)return;e.preventDefault();t.scrollIntoView({behavior:"smooth",block:"start"})})</script>'
@@ -591,6 +593,7 @@ REPORT_LAYERS = (
     "selected_specifications",
     "important_features",
     "explainability",
+    "robustness",
     "compute_hardware",
 )
 
@@ -2617,6 +2620,92 @@ def _write_report_tables(
     )
 
 
+
+def _robustness_report_html(root: Path) -> str:
+    directory = root / "robustness"
+    if not directory.exists():
+        return ""
+    parts = ['<h2 id="robustness">Robustness, confounding and generalization</h2>']
+    inventory_path = directory / "metadata_inventory.parquet"
+    if table_exists(inventory_path):
+        table = read_table(inventory_path)
+        if not table.empty:
+            display = table.rename(
+                columns={
+                    "role": "Semantic role",
+                    "category": "Role category",
+                    "column": "Metadata column",
+                    "kind": "Type",
+                    "n": "Observed",
+                    "missing": "Missing",
+                    "missing_fraction": "Missing fraction",
+                    "unique": "Unique values",
+                }
+            )
+            keep = [
+                column
+                for column in (
+                    "Semantic role",
+                    "Role category",
+                    "Metadata column",
+                    "Type",
+                    "Observed",
+                    "Missing",
+                    "Missing fraction",
+                    "Unique values",
+                )
+                if column in display.columns
+            ]
+            parts.extend(
+                [
+                    "<h3>Metadata specification</h3>",
+                    "<p>Declared metadata semantics are carried from the data specification into robustness analyses. Semantic declarations describe the variables available to the analysis; they do not by themselves imply causal adjustment.</p>",
+                    _html_table(display[keep]),
+                ]
+            )
+    balance_path = directory / "covariate_balance.parquet"
+    if table_exists(balance_path):
+        table = read_table(balance_path)
+        if not table.empty:
+            display = table.rename(columns={
+                "covariate": "Covariate",
+                "role": "Role",
+                "kind": "Type",
+                "n": "Observed",
+                "missing": "Missing",
+                "imbalance": "Imbalance",
+                "most_imbalanced_level": "Most imbalanced level",
+            })
+            keep = [column for column in ("Covariate", "Role", "Type", "Observed", "Missing", "Imbalance", "Most imbalanced level") if column in display.columns]
+            parts.extend(["<h3>Covariate and technical balance</h3>", "<p>Imbalance is descriptive. Numeric covariates use the largest standardized mean separation across outcome groups; categorical covariates use the largest absolute difference in level prevalence.</p>", _html_table(display[keep])])
+    subgroup_path = directory / "subgroup_performance.parquet"
+    if table_exists(subgroup_path):
+        table = read_table(subgroup_path)
+        if not table.empty:
+            display = table.rename(columns={"strategy": "Strategy", "subgroup": "Subgroup", "level": "Level", "n_samples": "Unique samples", "n_predictions": "OOF predictions"})
+            parts.extend(["<h3>Subgroup performance</h3>", "<p>Subgroup metrics are computed from the existing strategy-specific outer-held-out predictions; no subgroup-specific model selection or refitting is performed.</p>", _html_table(display)])
+    features_path = directory / "important_feature_robustness.parquet"
+    if table_exists(features_path):
+        table = read_table(features_path)
+        if not table.empty:
+            rename = {
+                "strategy": "Strategy",
+                "feature": "Feature",
+                "model_or_ensemble_id": "Model / ensemble",
+                "importance_mean": "Importance",
+                "rank_median": "Median rank",
+                "rank_iqr": "Rank IQR",
+                "top_k_frequency": "Top-k frequency",
+                "fold_coverage": "Fold coverage",
+                "sign_consistency": "Sign consistency",
+            }
+            display = table.rename(columns=rename)
+            keep = [column for column in ("Strategy", "Feature", "Model / ensemble", "Importance", "Median rank", "Rank IQR", "Top-k frequency", "Fold coverage", "Sign consistency") if column in display.columns]
+            parts.extend(["<h3>Important-feature stability</h3>", "<p>Feature robustness preserves model provenance: MPMA-B summaries use MPMA-B outer-test explanations and MPMA-E summaries use MPMA-E outer-test explanations. These are descriptive cross-fit stability measures, not independent-fold confidence intervals.</p>", _html_table(display[keep])])
+    if len(parts) == 1:
+        return ""
+    return "\n".join(parts)
+
 def _render_report_html(
     sweep: Sweep,
     analysis: _ReportAnalysis,
@@ -2646,6 +2735,7 @@ def _render_report_html(
         if visuals.explainability_html
         else "<p>No explainability artefacts are available yet.</p>"
     )
+    robustness_html = _robustness_report_html(sweep.root())
     hardware_html = (
         _html_table(tables.hardware_summary)
         if not tables.hardware_summary.empty
@@ -2655,7 +2745,7 @@ def _render_report_html(
 <html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
 <title>mllabiome report</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"{_favicon_href()}\"><style>{_report_css()}</style></head>
 <body>
-{_report_nav_html()}
+{_report_nav_html(bool(robustness_html))}
 <div class=\"report-shell\"><main id=\"top\" class=\"report-content\">
 <h2 id=\"performance-evaluation\" class=\"first-section\">Task definition and evaluation procedure</h2>
 {_procedure_grid_html(analysis.procedure)}
@@ -2681,6 +2771,8 @@ def _render_report_html(
 <h2 id=\"explainability\">Explainability</h2>
 <h3>Feature attribution</h3>
 {explainability_html}
+
+{robustness_html}
 
 <h2 id=\"compute\">Computational resources</h2>
 <p>Compute is summarized by additive CPU core-hours, model-fit count, and peak resident memory for the worker process tree. CPU time includes child processes and external R processes when used. MPMA-B and MPMA-E share the MPMA search pool, so their compute totals overlap.</p>

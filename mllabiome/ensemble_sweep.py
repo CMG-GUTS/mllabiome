@@ -12,7 +12,7 @@ from scipy.optimize import minimize
 from .compute import ResourceTracker
 from .configs_sweep import Ensemble, Sweep, sweep_task
 from .console import path_table, stage, success, summary_table
-from .data import _wide_csv_feature_columns, load_dataset
+from .data import _wide_csv_feature_columns, load_dataset, metadata_path
 from .ensemble_aggregation import (
     PROBABILITY_PRESERVING_AGGREGATIONS,
     SUPPORTED_AGGREGATIONS,
@@ -1424,18 +1424,21 @@ def _matrix_for_mpma_e_figure(sweep: Sweep) -> tuple[np.ndarray, list[str], str]
 def _raw_input_matrix_for_figure(sweep: Sweep) -> tuple[np.ndarray, list[str]]:
     spec = sweep.data
     abundance_path = Path(spec.abundance_path)
-    metadata_path = Path(spec.metadata_path) if spec.metadata_path is not None else None
+    resolved_metadata_path = metadata_path(spec)
     fmt = str(spec.format).strip().casefold().replace("-", "_")
     if fmt == "auto":
         fmt = (
             "mllab"
-            if abundance_path.suffix.lower() in {".tsv", ".txt"} and metadata_path
+            if abundance_path.suffix.lower() in {".tsv", ".txt"}
+            and resolved_metadata_path
             else "wide_csv"
         )
     if fmt in {"mllab", "matrix_tsv", "metaphlan", "metaphlan_tsv", "profile_tsv"}:
-        if metadata_path is None:
-            raise ValueError("Data.metadata_path is required for mllab TSV input.")
-        meta = pd.read_csv(metadata_path, sep=None, engine="python", dtype=str)
+        if resolved_metadata_path is None:
+            raise ValueError(
+                "Data.metadata=Metadata(metadata_path=...) is required for mllab TSV input."
+            )
+        meta = pd.read_csv(resolved_metadata_path, sep=None, engine="python", dtype=str)
         bio = pd.read_csv(abundance_path, sep="\t", index_col=0, low_memory=False)
         bio.index = bio.index.astype(str).str.strip()
         bio.columns = bio.columns.astype(str).str.strip()
@@ -1451,8 +1454,8 @@ def _raw_input_matrix_for_figure(sweep: Sweep) -> tuple[np.ndarray, list[str]]:
         return (X, bio.index.tolist())
     if fmt in {"csv", "wide_csv"}:
         df = pd.read_csv(abundance_path)
-        if metadata_path is not None:
-            meta = pd.read_csv(metadata_path, sep=None, engine="python")
+        if resolved_metadata_path is not None:
+            meta = pd.read_csv(resolved_metadata_path, sep=None, engine="python")
             if (
                 spec.sample_id_col not in df.columns
                 or spec.sample_id_col not in meta.columns
