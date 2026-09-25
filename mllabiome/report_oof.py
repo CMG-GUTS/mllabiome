@@ -14,12 +14,12 @@ from .final_models import load_final_models
 from .storage import read_table
 
 _PERCENT_METRICS = {
-    "AUC",
-    "AUC_macro",
-    "AUC_weighted",
-    "PR_AUC",
-    "PR_AUC_macro",
-    "PR_AUC_weighted",
+    "AUROC",
+    "AUROC_macro",
+    "AUROC_weighted",
+    "AUCPR",
+    "AUCPR_macro",
+    "AUCPR_weighted",
     "AP",
     "AP_macro",
     "Accuracy",
@@ -35,11 +35,10 @@ _PERCENT_METRICS = {
     "NPV",
 }
 _PRIMARY_METRIC_ORDER = (
-    "AUC",
-    "PR_AUC",
+    "AUROC",
+    "AUCPR",
     "AP",
     "MCC",
-    "nMCC",
     "F1w",
     "Precision",
     "Recall",
@@ -47,29 +46,28 @@ _PRIMARY_METRIC_ORDER = (
     "Accuracy",
 )
 _MULTICLASS_METRIC_ORDER = (
-    "AUC_macro",
-    "AUC_weighted",
-    "PR_AUC_macro",
-    "PR_AUC_weighted",
+    "AUROC_macro",
+    "AUROC_weighted",
+    "AUCPR_macro",
+    "AUCPR_weighted",
     "AP_macro",
     "F1_macro",
 )
 _PROBABILITY_METRIC_ORDER = (
-    "Brier",
-    "Brier_multiclass",
-    "LogLoss",
+    "brier",
+    "brier_multiclass",
+    "log_loss",
 )
 _CONTRAST_METRIC_ORDER = (
-    "AUC",
-    "AUC_macro",
-    "AUC_weighted",
-    "PR_AUC",
-    "PR_AUC_macro",
-    "PR_AUC_weighted",
+    "AUROC",
+    "AUROC_macro",
+    "AUROC_weighted",
+    "AUCPR",
+    "AUCPR_macro",
+    "AUCPR_weighted",
     "AP",
     "AP_macro",
     "MCC",
-    "nMCC",
     "F1w",
     "F1_macro",
     "Precision",
@@ -80,9 +78,9 @@ _CONTRAST_METRIC_ORDER = (
     "NPV",
     "BalAcc",
     "Accuracy",
-    "Brier",
-    "Brier_multiclass",
-    "LogLoss",
+    "brier",
+    "brier_multiclass",
+    "log_loss",
 )
 _CALIBRATION_METRIC_ORDER = (
     "CalibrationInTheLarge",
@@ -95,7 +93,6 @@ _OPERATING_DIAGNOSTIC_METRIC_ORDER = (
     "PPV",
     "NPV",
     "MCC",
-    "nMCC",
 )
 _DIAGNOSTIC_METRIC_ORDER = (
     "Sensitivity",
@@ -104,19 +101,17 @@ _DIAGNOSTIC_METRIC_ORDER = (
     "NPV",
     "Accuracy",
     "MCC",
-    "nMCC",
 )
 _METRIC_LABELS = {
-    "AUC": "ROC-AUC",
-    "AUC_macro": "ROC-AUC macro",
-    "AUC_weighted": "ROC-AUC weighted",
-    "PR_AUC": "PR-AUC",
-    "PR_AUC_macro": "PR-AUC macro",
-    "PR_AUC_weighted": "PR-AUC weighted",
+    "AUROC": "AUROC",
+    "AUROC_macro": "AUROC macro",
+    "AUROC_weighted": "AUROC weighted",
+    "AUCPR": "AUCPR",
+    "AUCPR_macro": "AUCPR macro",
+    "AUCPR_weighted": "AUCPR weighted",
     "AP": "Average precision",
     "AP_macro": "Average precision macro",
     "MCC": "MCC",
-    "nMCC": "nMCC",
     "Accuracy": "Accuracy",
     "BalAcc": "Balanced accuracy",
     "F1": "F1",
@@ -128,9 +123,9 @@ _METRIC_LABELS = {
     "Specificity": "Specificity",
     "PPV": "PPV",
     "NPV": "NPV",
-    "Brier": "Brier score",
-    "Brier_multiclass": "Multiclass Brier score",
-    "LogLoss": "Log loss",
+    "brier": "Brier score",
+    "brier_multiclass": "Multiclass Brier score",
+    "log_loss": "Log loss",
     "CalibrationInTheLarge": "Calibration-in-the-large",
     "CalibrationIntercept": "Calibration intercept",
     "CalibrationSlope": "Calibration slope",
@@ -282,7 +277,7 @@ def _wide_metric_table(
                 sub = sub[np.isfinite(sub["estimate"].to_numpy(dtype=float))]
                 if sub.empty:
                     continue
-                ascending = metric in {"Brier", "Brier_multiclass", "LogLoss"}
+                ascending = metric in {"brier", "brier_multiclass", "log_loss"}
                 sub = sub.sort_values("estimate", ascending=ascending, kind="mergesort")
                 best[(estimand, metric)] = str(sub.iloc[0]["Strategy"])
     rows: list[dict[str, Any]] = []
@@ -330,9 +325,9 @@ def _probability_display(
     performance: pd.DataFrame, n_classes: int | None
 ) -> pd.DataFrame:
     if n_classes is not None and int(n_classes) <= 2:
-        order = ("Brier", "LogLoss")
+        order = ("brier", "log_loss")
     elif n_classes is not None and int(n_classes) > 2:
-        order = ("Brier_multiclass", "LogLoss")
+        order = ("brier_multiclass", "log_loss")
     else:
         order = _PROBABILITY_METRIC_ORDER
     return _wide_metric_table(performance, order)
@@ -940,13 +935,13 @@ def _contrast_display(
     metric_order = list(_CONTRAST_METRIC_ORDER)
     if n_classes is not None and int(n_classes) <= 2:
         excluded = {
-            "AUC_macro",
-            "AUC_weighted",
-            "PR_AUC_macro",
-            "PR_AUC_weighted",
+            "AUROC_macro",
+            "AUROC_weighted",
+            "AUCPR_macro",
+            "AUCPR_weighted",
             "AP_macro",
             "F1_macro",
-            "Brier_multiclass",
+            "brier_multiclass",
         }
         metric_order = [metric for metric in metric_order if metric not in excluded]
     metric_rank = {metric: index for index, metric in enumerate(metric_order)}
@@ -1034,9 +1029,9 @@ def _design_display(manifest: dict[str, Any]) -> pd.DataFrame:
 
 def _classification_metric_note(manifest: dict[str, Any], n_classes: int | None) -> str:
     return (
-        "<p>ROC-AUC measures how well predicted scores rank classes across decision thresholds. "
-        "PR-AUC is trapezoidal area under the empirical precision-recall curve, while average precision (AP) is the recall-increment-weighted precision summary. "
-        "MCC is reported on its conventional [-1, 1] scale, while nMCC rescales MCC to [0, 1]. "
+        "<p>AUROC measures how well predicted scores rank classes across decision thresholds. "
+        "AUCPR is trapezoidal area under the empirical precision-recall curve, while average precision (AP) is the recall-increment-weighted precision summary. "
+        "MCC is reported on its conventional [-1, 1] scale. "
         "F1w is support-weighted F1. Precision and recall are macro-averaged across classes. "
         "Balanced accuracy is the mean class-specific recall, whereas accuracy is the overall fraction of correct predictions. Higher values are better for all metrics in this table.</p>"
     )
@@ -1049,7 +1044,7 @@ def _diagnostic_operating_note(manifest: dict[str, Any]) -> str:
     return (
         f"<p>Sensitivity, specificity, PPV, and NPV use {html.escape(positive)} as the positive class at the model's ordinary held-out prediction operating point. "
         "PPV and NPV depend on outcome prevalence and therefore describe the observed evaluation population rather than transport unchanged to populations with different prevalence. "
-        "MCC is shown on [-1, 1] and nMCC on [0, 1]. Confidence intervals use the same protocol-aware subject/cohort bootstrap as the other pooled out-of-fold estimates.</p>"
+        "MCC is shown on its conventional [-1, 1] scale. Confidence intervals use the same protocol-aware subject/cohort bootstrap as the other pooled out-of-fold estimates.</p>"
     )
 
 
@@ -1060,7 +1055,7 @@ def _diagnostic_threshold_note(manifest: dict[str, Any]) -> str:
     return (
         f"<p>Configured probability thresholds are applied to held-out out-of-fold probabilities for the {html.escape(positive)} class only after model fitting and selection. "
         "They do not alter training, hyperparameter selection, or the ordinary model-prediction operating point. "
-        "Sensitivity, specificity, PPV, NPV, accuracy, MCC, and nMCC are recomputed at each configured threshold with protocol-aware 95% bootstrap confidence intervals. "
+        "Sensitivity, specificity, PPV, NPV, accuracy and MCC are recomputed at each configured threshold with protocol-aware 95% bootstrap confidence intervals. "
         "PPV and NPV are prevalence-dependent. PPV or NPV is reported as NA when its denominator is zero in the corresponding estimate or bootstrap replicate.</p>"
     )
 
@@ -1546,11 +1541,10 @@ def _terminal_oof_summary(report_dir: Path) -> None:
     preferred = [
         "Strategy",
         "Estimand",
-        "ROC-AUC",
-        "PR-AUC",
+        "AUROC",
+        "AUCPR",
         "Average precision",
         "MCC",
-        "nMCC",
         "Sensitivity",
         "Specificity",
         "PPV",

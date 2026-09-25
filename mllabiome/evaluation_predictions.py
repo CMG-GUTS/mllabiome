@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .metrics import canonical_metric_name
 from .selection import select_mpma_b_by_outer_fold, selected_mpma_b_outer_predictions
 from .storage import read_table, table_exists
 
@@ -26,10 +27,14 @@ def _outer_split_key(frame: pd.DataFrame) -> pd.DataFrame:
     out = frame.copy()
     if "outer_split_key" not in out.columns:
         if "split_key" not in out.columns:
-            raise ValueError("Evaluation predictions must contain outer_split_key or split_key.")
+            raise ValueError(
+                "Evaluation predictions must contain outer_split_key or split_key."
+            )
         out["outer_split_key"] = out["split_key"]
     if out["outer_split_key"].isna().any():
-        raise ValueError("Evaluation predictions contain missing outer_split_key values.")
+        raise ValueError(
+            "Evaluation predictions contain missing outer_split_key values."
+        )
     out["outer_split_key"] = out["outer_split_key"].astype(str)
     return out
 
@@ -38,7 +43,9 @@ def _selection_outer_split_key(frame: pd.DataFrame) -> pd.DataFrame:
     out = frame.copy()
     if "outer_split_key" not in out.columns:
         if "split_key" not in out.columns:
-            raise ValueError("Selection artifact must contain outer_split_key or split_key.")
+            raise ValueError(
+                "Selection artifact must contain outer_split_key or split_key."
+            )
         out["outer_split_key"] = out["split_key"]
     if out["outer_split_key"].isna().any():
         raise ValueError("Selection artifact contains missing outer_split_key values.")
@@ -55,8 +62,7 @@ def _expected_outer_splits(root: Path) -> set[str]:
     if frame.empty or not required.issubset(frame.columns):
         return set()
     frame = frame[
-        frame["stage"].astype(str).eq("outer")
-        & frame["role"].astype(str).eq("test")
+        frame["stage"].astype(str).eq("outer") & frame["role"].astype(str).eq("test")
     ]
     return set(frame["split_key"].dropna().astype(str))
 
@@ -82,8 +88,7 @@ def _expected_outer_samples(root: Path) -> dict[str, set[str]]:
     if frame.empty or not required.issubset(frame.columns):
         return {}
     frame = frame[
-        frame["stage"].astype(str).eq("outer")
-        & frame["role"].astype(str).eq("test")
+        frame["stage"].astype(str).eq("outer") & frame["role"].astype(str).eq("test")
     ].copy()
     if frame.empty:
         return {}
@@ -128,7 +133,9 @@ def _validate_prediction_values(frame: pd.DataFrame, strategy: str) -> None:
     y_true = pd.to_numeric(frame["y_true"], errors="coerce").to_numpy(dtype=float)
     y_pred = pd.to_numeric(frame["y_pred"], errors="coerce").to_numpy(dtype=float)
     if not np.isfinite(y_true).all() or not np.isfinite(y_pred).all():
-        raise ValueError(f"{strategy} evaluation predictions contain non-finite labels.")
+        raise ValueError(
+            f"{strategy} evaluation predictions contain non-finite labels."
+        )
     pcols = [column for column in frame.columns if str(column).startswith("proba_")]
     if not pcols:
         raise ValueError(
@@ -207,18 +214,14 @@ def _validate_selected_predictions(
     required = {"outer_split_key", selection_id}
     missing = sorted(required - set(sel.columns))
     if missing:
-        raise ValueError(
-            f"{strategy} selection artifact is missing columns: {missing}"
-        )
+        raise ValueError(f"{strategy} selection artifact is missing columns: {missing}")
     if prediction_id not in pred.columns:
         raise ValueError(
             f"{strategy} evaluation predictions are missing identifier column "
             f"{prediction_id!r}."
         )
     if sel.duplicated("outer_split_key").any():
-        raise ValueError(
-            f"{strategy} must have exactly one selection per outer split."
-        )
+        raise ValueError(f"{strategy} must have exactly one selection per outer split.")
     sel[selection_id] = sel[selection_id].astype(str)
     pred[prediction_id] = pred[prediction_id].astype(str)
     _validate_selection_basis(sel, allowed_basis, strategy)
@@ -231,9 +234,7 @@ def _validate_selected_predictions(
             f"{strategy} prediction and selection outer splits differ; "
             f"missing={missing}, extra={extra}."
         )
-    selected_ids = (
-        sel.set_index("outer_split_key")[selection_id].astype(str).to_dict()
-    )
+    selected_ids = sel.set_index("outer_split_key")[selection_id].astype(str).to_dict()
     for split_key, group in pred.groupby("outer_split_key", sort=False):
         observed_ids = set(group[prediction_id].astype(str))
         expected_id = str(selected_ids[str(split_key)])
@@ -312,35 +313,14 @@ def _comparator_configs(configs: pd.DataFrame, strategy: str) -> pd.DataFrame:
 
 
 def _metric_column(frame: pd.DataFrame, metric: str) -> str:
-    text = str(metric).strip()
-    if text in frame.columns:
-        return text
-    key = text.casefold().replace("-", "_").replace(" ", "_")
-    aliases = {
-        "roc_auc": "AUC",
-        "auc": "AUC",
-        "pr_auc": "PR_AUC",
-        "average_precision": "AP",
-        "ap": "AP",
-        "mcc": "MCC",
-        "nmcc": "nMCC",
-        "f1w": "F1w",
-        "precision": "Precision",
-        "recall": "Recall",
-        "logloss": "log_loss",
-        "brier_loss": "brier",
-    }
-    target = aliases.get(key, text)
+    target = canonical_metric_name(metric)
     if target in frame.columns:
         return target
     normalized = {
-        str(column).casefold().replace("-", "_").replace(" ", "_"): str(column)
+        canonical_metric_name(str(column)).casefold(): str(column)
         for column in frame.columns
     }
-    normalized_target = (
-        str(target).casefold().replace("-", "_").replace(" ", "_")
-    )
-    resolved = normalized.get(normalized_target)
+    resolved = normalized.get(target.casefold())
     if resolved is None:
         raise ValueError(
             f"Inner-results table does not contain selection metric {metric!r}."
@@ -352,9 +332,7 @@ def _load_mpma_b(root: Path) -> pd.DataFrame:
     predictions = _read_required_table(
         root / "predictions" / "mpma_b_outer_predictions.parquet"
     )
-    selection = _read_required_table(
-        root / "tables" / "mpma_b_outer_selection.parquet"
-    )
+    selection = _read_required_table(root / "tables" / "mpma_b_outer_selection.parquet")
     return _validate_selected_predictions(
         root,
         "MPMA-B",

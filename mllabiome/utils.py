@@ -20,16 +20,15 @@ TAXONOMIC_LEVELS: tuple[str, ...] = (
 )
 
 CLASSIFICATION_METRIC_COLUMNS = [
-    "AUC",
-    "AUC_macro",
-    "AUC_weighted",
-    "PR_AUC",
-    "PR_AUC_macro",
-    "PR_AUC_weighted",
+    "AUROC",
+    "AUROC_macro",
+    "AUROC_weighted",
+    "AUCPR",
+    "AUCPR_macro",
+    "AUCPR_weighted",
     "AP",
     "AP_macro",
     "MCC",
-    "nMCC",
     "F1w",
     "F1_macro",
     "Precision",
@@ -41,6 +40,8 @@ CLASSIFICATION_METRIC_COLUMNS = [
     "BalAcc",
     "Accuracy",
     "log_loss",
+    "subject_macro_log_loss",
+    "cohort_macro_log_loss",
     "brier",
 ]
 

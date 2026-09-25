@@ -204,23 +204,23 @@ def _proper_metrics(y_true: np.ndarray, proba: np.ndarray) -> dict[str, float]:
     n_classes = p.shape[1]
     clipped = np.clip(p, 1e-15, 1.0)
     out: dict[str, float] = {
-        "Brier": float("nan"),
-        "Brier_multiclass": float("nan"),
-        "LogLoss": float(-np.mean(np.log(clipped[np.arange(len(y)), y]))),
+        "brier": float("nan"),
+        "brier_multiclass": float("nan"),
+        "log_loss": float(-np.mean(np.log(clipped[np.arange(len(y)), y]))),
         "CalibrationInTheLarge": float("nan"),
         "CalibrationIntercept": float("nan"),
         "CalibrationSlope": float("nan"),
     }
     if n_classes == 2:
         target = (y == 1).astype(float)
-        out["Brier"] = float(np.mean((p[:, 1] - target) ** 2))
+        out["brier"] = float(np.mean((p[:, 1] - target) ** 2))
         citl, intercept, slope = _calibration_binary(target, p[:, 1])
         out["CalibrationInTheLarge"] = citl
         out["CalibrationIntercept"] = intercept
         out["CalibrationSlope"] = slope
     else:
         one_hot = np.eye(n_classes, dtype=float)[y]
-        out["Brier_multiclass"] = float(np.mean(np.sum((p - one_hot) ** 2, axis=1)))
+        out["brier_multiclass"] = float(np.mean(np.sum((p - one_hot) ** 2, axis=1)))
         values = []
         for class_index in range(n_classes):
             target = (y == class_index).astype(float)
@@ -297,16 +297,15 @@ def _fast_classification_metrics(
     values = np.asarray(score, dtype=float)
     n_classes = int(values.shape[1])
     out = {
-        "AUC": float("nan"),
-        "AUC_macro": float("nan"),
-        "AUC_weighted": float("nan"),
-        "PR_AUC": float("nan"),
-        "PR_AUC_macro": float("nan"),
-        "PR_AUC_weighted": float("nan"),
+        "AUROC": float("nan"),
+        "AUROC_macro": float("nan"),
+        "AUROC_weighted": float("nan"),
+        "AUCPR": float("nan"),
+        "AUCPR_macro": float("nan"),
+        "AUCPR_weighted": float("nan"),
         "AP": float("nan"),
         "AP_macro": float("nan"),
         "MCC": float("nan"),
-        "nMCC": float("nan"),
         "F1w": float("nan"),
         "F1_macro": float("nan"),
         "Precision": float("nan"),
@@ -362,7 +361,6 @@ def _fast_classification_metrics(
     )
     mcc = numerator / denominator if denominator > 0 else 0.0
     out["MCC"] = float(mcc)
-    out["nMCC"] = float((mcc + 1.0) / 2.0)
     if n_classes == 2:
         tn = float(matrix[0, 0])
         fp = float(matrix[0, 1])
@@ -373,8 +371,8 @@ def _fast_classification_metrics(
         out["PPV"] = tp / (tp + fp) if tp + fp > 0 else float("nan")
         out["NPV"] = tn / (tn + fn) if tn + fn > 0 else float("nan")
         roc_auc, pr_auc, ap = _binary_auc_pr_auc_ap((y == 1).astype(int), values[:, 1])
-        out["AUC"] = roc_auc
-        out["PR_AUC"] = pr_auc
+        out["AUROC"] = roc_auc
+        out["AUCPR"] = pr_auc
         out["AP"] = ap
     else:
         auc_values = []
@@ -394,15 +392,15 @@ def _fast_classification_metrics(
             if np.isfinite(ap):
                 ap_values.append(ap)
         if auc_values:
-            out["AUC_macro"] = float(np.mean(auc_values))
-            out["AUC_weighted"] = float(np.average(auc_values, weights=auc_weights))
-            out["AUC"] = out["AUC_macro"]
+            out["AUROC_macro"] = float(np.mean(auc_values))
+            out["AUROC_weighted"] = float(np.average(auc_values, weights=auc_weights))
+            out["AUROC"] = out["AUROC_macro"]
         if pr_auc_values:
-            out["PR_AUC_macro"] = float(np.mean(pr_auc_values))
-            out["PR_AUC_weighted"] = float(
+            out["AUCPR_macro"] = float(np.mean(pr_auc_values))
+            out["AUCPR_weighted"] = float(
                 np.average(pr_auc_values, weights=pr_auc_weights)
             )
-            out["PR_AUC"] = out["PR_AUC_macro"]
+            out["AUCPR"] = out["AUCPR_macro"]
         if ap_values:
             out["AP_macro"] = float(np.mean(ap_values))
     return out

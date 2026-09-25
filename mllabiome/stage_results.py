@@ -255,7 +255,8 @@ def _ensemble_rows(sweep: Sweep) -> list[tuple[str, object]]:
         candidate = _read_json(root / "ensembling" / "mpma_e_final_candidate.json")
         metric = str(
             candidate.get(
-                "selection_metric", getattr(child.ensemble, "optimize_metric", "nMCC")
+                "selection_metric",
+                getattr(child.ensemble, "optimize_metric", "log_loss"),
             )
         )
         rows.extend(

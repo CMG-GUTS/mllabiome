@@ -92,7 +92,7 @@ class MPMA:
 @dataclass
 class QualificationGate:
     enabled: bool = False
-    metric: str = "nMCC"
+    metric: str = "MCC"
     threshold: float | None = None
 
     def qualifies(self, score: float) -> bool:
@@ -114,7 +114,7 @@ class Evaluation:
     inner_folds: int = 3
     repeats: int = 2
     random_state: int = 42
-    optimize_metric: Any = "nMCC"
+    optimize_metric: Any = "log_loss"
     n_jobs: int | str = 1
     parallel_backend: str = "loky"
     memory_fraction: float = 0.80
@@ -145,7 +145,7 @@ class Ensemble:
         "rank_mean",
         "majority_vote",
     )
-    optimize_metric: Any = "nMCC"
+    optimize_metric: Any = "log_loss"
 
     include_inactive: bool = True
 

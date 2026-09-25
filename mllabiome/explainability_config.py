@@ -166,7 +166,9 @@ def _configured_count_transformation_factory(
     resolution_feature_blocks: Any = None,
 ) -> Callable[[], CountTransformationAdapter]:
     reference_blocks = (
-        feature_blocks if resolution_feature_blocks is None else resolution_feature_blocks
+        feature_blocks
+        if resolution_feature_blocks is None
+        else resolution_feature_blocks
     )
     specifications = _count_transformation_specs_for_blocks(
         sweep.count_transformations, reference_blocks

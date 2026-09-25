@@ -16,7 +16,12 @@ from .evaluation_predictions import (
     evaluation_prediction_metadata,
     load_evaluation_predictions,
 )
-from .metrics import _renormalize_proba, compute_metrics, metric_is_loss
+from .metrics import (
+    _renormalize_proba,
+    canonical_metric_name,
+    compute_metrics,
+    metric_is_loss,
+)
 from .storage import read_table, resolve_table_path, table_exists, write_table
 from .utils import dump_json_standard
 
@@ -83,18 +88,17 @@ from .statistics_common import (
     _stable_seed,
 )
 
-DISPLAY_METRICS = ("AUC", "PR_AUC", "AP", "MCC", "nMCC", "F1w", "Precision", "Recall")
+DISPLAY_METRICS = ("AUROC", "AUCPR", "AP", "MCC", "F1w", "Precision", "Recall")
 METRIC_LABELS = {
-    "AUC": "ROC-AUC",
-    "AUC_macro": "ROC-AUC macro",
-    "AUC_weighted": "ROC-AUC weighted",
-    "PR_AUC": "PR-AUC",
-    "PR_AUC_macro": "PR-AUC macro",
-    "PR_AUC_weighted": "PR-AUC weighted",
+    "AUROC": "AUROC",
+    "AUROC_macro": "AUROC macro",
+    "AUROC_weighted": "AUROC weighted",
+    "AUCPR": "AUCPR",
+    "AUCPR_macro": "AUCPR macro",
+    "AUCPR_weighted": "AUCPR weighted",
     "AP": "Average precision",
     "AP_macro": "Average precision macro",
     "MCC": "MCC",
-    "nMCC": "nMCC",
     "F1w": "F1w",
     "Precision": "Precision",
     "Recall": "Recall",
@@ -122,8 +126,6 @@ def _read_json(path: Path) -> dict[str, Any]:
         return value if isinstance(value, dict) else {}
     except Exception:
         return {}
-
-
 
 
 def _strategy_prediction_frames(
@@ -228,8 +230,6 @@ def _metric_frame(
     return out.merge(sizes, on="outer_split_key", how="left", validate="many_to_one")
 
 
-
-
 def _bootstrap_unit_mean(
     values: pd.DataFrame,
     metric: str,
@@ -328,11 +328,6 @@ from .statistical_tests import (
     _exact_sign_flip_test,
     _paired_bootstrap_difference,
 )
-
-
-
-
-
 
 
 def _holm_adjust(frame: pd.DataFrame) -> pd.DataFrame:
@@ -445,100 +440,6 @@ def _pairwise_rows(
                 }
             )
     return _holm_adjust(pd.DataFrame(rows)) if rows else pd.DataFrame()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _run_oof_statistics(
@@ -655,8 +556,6 @@ def _run_oof_statistics(
     }
 
 
-
-
 def _selection_metric_from_run(
     root: Path,
     strategy_rows: list[dict[str, Any]],
@@ -679,7 +578,7 @@ def _selection_metric_from_run(
             ).strip()
             if metric:
                 return metric
-    return "nMCC"
+    return "log_loss"
 
 
 def _file_signature(path: Path) -> dict[str, Any]:
@@ -707,11 +606,7 @@ def _statistics_fingerprint(
     decision_curve_thresholds: np.ndarray,
 ) -> str:
     relevant_rows = [
-        {
-            key: row.get(key)
-            for key in ("Strategy", "source")
-            if key in row
-        }
+        {key: row.get(key) for key in ("Strategy", "source") if key in row}
         for row in strategy_rows
     ]
     paths = [
@@ -805,7 +700,7 @@ def _cached_result(
         "oof_coverage_path": oof_coverage_path,
         "oof_pairwise_coverage_path": oof_pairwise_coverage_path,
         "manifest_path": manifest_path,
-        "selection_metric": str(manifest.get("selection_metric", "nMCC")),
+        "selection_metric": str(manifest.get("selection_metric")),
         "cache_hit": True,
     }
 
@@ -872,17 +767,8 @@ def run_report_statistics(
     metric_lookup = {
         str(column).casefold(): str(column) for column in unit_metrics.columns
     }
-    requested_metric = str(resolved_selection).strip()
-    selection_key = requested_metric.casefold().replace("-", "_").replace(" ", "_")
-    aliases = {
-        "logloss": "log_loss",
-        "brier_loss": "brier",
-        "average_precision": "AP",
-        "ap": "AP",
-        "pr_auc": "PR_AUC",
-    }
-    selection_key = aliases.get(selection_key, selection_key)
-    selected_metric = metric_lookup.get(selection_key.casefold(), selection_key)
+    requested_metric = canonical_metric_name(str(resolved_selection).strip())
+    selected_metric = metric_lookup.get(requested_metric.casefold(), requested_metric)
     inference_metrics = tuple(
         dict.fromkeys(
             metric

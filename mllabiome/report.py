@@ -15,18 +15,17 @@ import pandas as pd
 from .configs_sweep import Sweep
 from .console import console, path_table, phase_progress, stage, success
 from .explainability_visuals import plot_feature_support, plot_local_attributions
-from .metrics import compute_metrics, metric_is_loss
+from .metrics import canonical_metric_name, compute_metrics, metric_is_loss
 from .report_compute import run_compute_accounting
 from .report_statistics import run_report_statistics
 from .storage import glob_tables, read_table, table_exists, write_table
 from .utils import TAXONOMIC_LEVELS, dump_json_standard, feature_tail_ellipsis
 
 _METRICS = [
-    ("AUC", "ROC-AUC"),
-    ("PR_AUC", "PR-AUC"),
+    ("AUROC", "AUROC"),
+    ("AUCPR", "AUCPR"),
     ("AP", "Average precision"),
     ("MCC", "MCC"),
-    ("nMCC", "nMCC"),
     ("F1w", "F1$_{w}$"),
     ("Precision", "Precision"),
     ("Recall", "Recall"),
@@ -37,53 +36,29 @@ _BASELINE_RANK_PRIORITY = ("strain", "species", "genus")
 
 
 def _canonical_metric_name(metric: Any) -> str:
-
-    text = str(metric).strip()
-
-    key = text.casefold().replace("-", "_").replace(" ", "_")
-
-    aliases = {
-        "roc_auc": "AUC",
-        "auc": "AUC",
-        "pr_auc": "PR_AUC",
-        "average_precision": "AP",
-        "ap": "AP",
-        "mcc": "MCC",
-        "nmcc": "nMCC",
-        "f1w": "F1w",
-        "precision": "Precision",
-        "recall": "Recall",
-        "logloss": "log_loss",
-        "log_loss": "log_loss",
-        "brier_loss": "brier",
-        "brier": "brier",
-    }
-
-    return aliases.get(key, text)
+    return canonical_metric_name(str(metric))
 
 
 def _metric_display_label(metric: Any) -> str:
-
     key = _canonical_metric_name(metric)
-
     labels = {
-        "AUC": "ROC-AUC",
-        "AUC_macro": "ROC-AUC macro",
-        "AUC_weighted": "ROC-AUC weighted",
-        "PR_AUC": "PR-AUC",
-        "PR_AUC_macro": "PR-AUC macro",
-        "PR_AUC_weighted": "PR-AUC weighted",
+        "AUROC": "AUROC",
+        "AUROC_macro": "AUROC macro",
+        "AUROC_weighted": "AUROC weighted",
+        "AUCPR": "AUCPR",
+        "AUCPR_macro": "AUCPR macro",
+        "AUCPR_weighted": "AUCPR weighted",
         "AP": "Average precision",
         "AP_macro": "Average precision macro",
         "MCC": "MCC",
-        "nMCC": "nMCC",
         "F1w": "F1w",
         "Precision": "Precision",
         "Recall": "Recall",
         "log_loss": "Log loss",
+        "subject_macro_log_loss": "Subject-macro log loss",
+        "cohort_macro_log_loss": "Cohort-macro log loss",
         "brier": "Brier score",
     }
-
     return labels.get(key, str(metric))
 
 
@@ -443,7 +418,7 @@ def _abbreviations_html(heading_level: int = 2) -> str:
 
     return (
         f'<h{level} id="abbreviations">Abbreviations</h{level}>'
-        "<p>AP = average precision. PR-AUC = trapezoidal area under the precision-recall curve. nMCC = normalized Matthews correlation coefficient. RA = relative abundance. "
+        "<p>AP = average precision. AUCPR = trapezoidal area under the precision-recall curve. RA = relative abundance. "
         "P/A = presence/absence. CLR = centered log-ratio. ALR = additive log-ratio. "
         "ILR = isometric log-ratio. YJ = Yeo–Johnson. QN = quantile normalization. "
         "ECDF = empirical cumulative distribution function. rank-wise = transformation applied independently within each taxonomic-rank block. "
@@ -565,8 +540,8 @@ def _performance_methodology_html(protocol: Any, n_bootstrap: int = 2000) -> str
         )
 
     metrics = (
-        " ROC-AUC measures ranking discrimination across thresholds. PR-AUC is the trapezoidal area under the empirical precision-recall curve. Average precision summarizes precision weighted by recall increments and is reported separately. "
-        "MCC is reported on its conventional [-1, 1] scale, while nMCC rescales MCC to [0, 1]. F1w is support-weighted F1. "
+        " AUROC measures ranking discrimination across thresholds. AUCPR is the trapezoidal area under the empirical precision-recall curve. Average precision summarizes precision weighted by recall increments and is reported separately. "
+        "MCC is reported on its conventional [-1, 1] scale. F1w is support-weighted F1. "
         "Precision and recall are macro-averaged across classes."
     )
 
@@ -960,7 +935,7 @@ def _agg_metrics(
 
 
 def _top_mpma_raw(
-    root: Path, n: int = 5, selection_metric: str = "nMCC"
+    root: Path, n: int = 5, selection_metric: str = "log_loss"
 ) -> pd.DataFrame:
 
     metric = _canonical_metric_name(selection_metric)
@@ -994,15 +969,19 @@ def _top_mpma_raw(
             f"outer_{metric}_mean"
             if f"outer_{metric}_mean" in base.columns
             else (
-                "inner_nMCC_mean"
-                if "inner_nMCC_mean" in base.columns
-                else ("outer_nMCC_mean" if "outer_nMCC_mean" in base.columns else None)
+                "inner_log_loss_mean"
+                if "inner_log_loss_mean" in base.columns
+                else (
+                    "outer_log_loss_mean"
+                    if "outer_log_loss_mean" in base.columns
+                    else None
+                )
             )
         )
     )
 
     if sort_col:
-        sort_metric = metric if metric in sort_col else "nMCC"
+        sort_metric = metric if metric in sort_col else "log_loss"
 
         base = base.sort_values(sort_col, ascending=metric_is_loss(sort_metric))
 
@@ -1022,7 +1001,12 @@ def _metric_mean_std_cell(
     html_mode: bool = False,
 ) -> str:
 
-    if _canonical_metric_name(metric) in {"log_loss", "brier"}:
+    if _canonical_metric_name(metric) in {
+        "log_loss",
+        "subject_macro_log_loss",
+        "cohort_macro_log_loss",
+        "brier",
+    }:
         m = _safe_float(mean)
 
         sd = _safe_float(std)
@@ -1054,7 +1038,12 @@ def _metric_ci_cell(
     html_mode: bool = False,
 ) -> str:
 
-    if _canonical_metric_name(metric) in {"log_loss", "brier"}:
+    if _canonical_metric_name(metric) in {
+        "log_loss",
+        "subject_macro_log_loss",
+        "cohort_macro_log_loss",
+        "brier",
+    }:
         e = _safe_float(estimate)
 
         sd = _safe_float(std)
@@ -1085,7 +1074,7 @@ def _metric_ci_cell(
 def _top_mpma_display(
     df: pd.DataFrame,
     *,
-    selection_metric: str = "nMCC",
+    selection_metric: str = "log_loss",
     html_mode: bool = False,
     learner_labels: dict[str, str] | None = None,
 ) -> pd.DataFrame:
@@ -1096,7 +1085,7 @@ def _top_mpma_display(
     primary = _canonical_metric_name(selection_metric)
 
     metric_order = [primary] + [
-        metric for metric in ("nMCC", "AUC", "F1w") if metric != primary
+        metric for metric in ("AUROC", "F1w") if metric != primary
     ]
 
     rows: list[dict[str, Any]] = []
@@ -1286,7 +1275,9 @@ def _ensemble_final_candidate(root: Path) -> dict[str, Any]:
     return ens if isinstance(ens, dict) else {}
 
 
-def _strategy_rows(root: Path, selection_metric: str = "nMCC") -> list[dict[str, Any]]:
+def _strategy_rows(
+    root: Path, selection_metric: str = "log_loss"
+) -> list[dict[str, Any]]:
 
     by_strategy: dict[str, dict[str, Any]] = {}
 
@@ -1332,15 +1323,15 @@ def _strategy_rows(root: Path, selection_metric: str = "nMCC") -> list[dict[str,
                     f"outer_{metric}_mean"
                     if f"outer_{metric}_mean" in sub.columns
                     else (
-                        "inner_nMCC_mean"
-                        if "inner_nMCC_mean" in sub.columns
-                        else "outer_nMCC_mean"
+                        "inner_log_loss_mean"
+                        if "inner_log_loss_mean" in sub.columns
+                        else "outer_log_loss_mean"
                     )
                 )
             )
 
             if sort_col in sub.columns:
-                sort_metric = metric if metric in sort_col else "nMCC"
+                sort_metric = metric if metric in sort_col else "log_loss"
 
                 sub = sub.sort_values(sort_col, ascending=metric_is_loss(sort_metric))
 
@@ -1353,14 +1344,14 @@ def _strategy_rows(root: Path, selection_metric: str = "nMCC") -> list[dict[str,
                 f"outer_{metric}_mean"
                 if f"outer_{metric}_mean" in base.columns
                 else (
-                    "inner_nMCC_mean"
-                    if "inner_nMCC_mean" in base.columns
-                    else "outer_nMCC_mean"
+                    "inner_log_loss_mean"
+                    if "inner_log_loss_mean" in base.columns
+                    else "outer_log_loss_mean"
                 )
             )
         )
 
-        sort_metric = metric if metric in sort_col else "nMCC"
+        sort_metric = metric if metric in sort_col else "log_loss"
 
         sort_ascending = metric_is_loss(sort_metric)
 
@@ -1429,7 +1420,7 @@ def _strategy_rows(root: Path, selection_metric: str = "nMCC") -> list[dict[str,
 
 
 def _strategy_performance_display(
-    root: Path, *, selection_metric: str = "nMCC", html_mode: bool = False
+    root: Path, *, selection_metric: str = "log_loss", html_mode: bool = False
 ) -> pd.DataFrame:
 
     rows = _strategy_rows(root, selection_metric)

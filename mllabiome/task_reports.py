@@ -1619,11 +1619,10 @@ def _multilabel_summary(children: list[Sweep]) -> pd.DataFrame:
         row: dict[str, Any] = {"target": str(child.data.target_col)}
 
         for metric in (
-            "AUC",
-            "PR_AUC",
+            "AUROC",
+            "AUCPR",
             "AP",
             "MCC",
-            "nMCC",
             "F1w",
             "BalAcc",
             "Accuracy",

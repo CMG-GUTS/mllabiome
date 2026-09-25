@@ -119,7 +119,6 @@ def _diagnostic_values_from_counts(
         "NPV": _safe_ratio_array(tn, tn + fn),
         "Accuracy": _safe_ratio_array(tp + tn, total),
         "MCC": mcc,
-        "nMCC": (mcc + 1.0) / 2.0,
     }
 
 

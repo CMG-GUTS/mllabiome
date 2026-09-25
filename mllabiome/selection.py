@@ -6,7 +6,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .metrics import compute_metrics, compute_regression_metrics, metric_is_loss
+from .metrics import (
+    canonical_metric_name,
+    compute_metrics,
+    compute_regression_metrics,
+    metric_is_loss,
+)
 from .storage import read_table, table_exists, write_table
 from .transformations import _count_transformation_name
 from .utils import dump_json_standard
@@ -64,12 +69,34 @@ def _config_metadata(configs: pd.DataFrame) -> dict[str, dict[str, Any]]:
     return {str(row["config_id"]): row for row in frame.to_dict(orient="records")}
 
 
+def _inner_score(group: pd.DataFrame, metric: str) -> tuple[float, float]:
+    values = group[metric].to_numpy(dtype=float)
+    weight_column = {
+        "log_loss": "n_samples",
+        "subject_macro_log_loss": "n_subjects",
+    }.get(metric)
+    if weight_column is not None and weight_column in group.columns:
+        weights = pd.to_numeric(group[weight_column], errors="coerce").to_numpy(
+            dtype=float
+        )
+        valid = np.isfinite(values) & np.isfinite(weights) & (weights > 0.0)
+        if np.any(valid):
+            score = float(np.average(values[valid], weights=weights[valid]))
+        else:
+            score = float(np.mean(values))
+    else:
+        score = float(np.mean(values))
+    spread = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
+    return score, spread
+
+
 def _complete_config_scores(
     inner: pd.DataFrame,
     metric: str,
     eligible_ids: set[str],
     qualification: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
+    metric = canonical_metric_name(metric)
     required = {"split_key", "inner_key", "config_id", metric}
     missing = required - set(inner.columns)
     if missing:
@@ -107,15 +134,14 @@ def _complete_config_scores(
             valid_keys = set(valid["inner_key"].astype(str))
             if valid_keys != expected_set:
                 continue
+            score, spread = _inner_score(valid, metric)
             rows.append(
                 {
                     "outer_split_key": str(split_key),
                     "config_id": str(config_id),
                     "selection_metric": str(metric),
-                    "inner_score": float(valid[metric].mean()),
-                    "inner_score_std": float(valid[metric].std(ddof=1))
-                    if len(valid) > 1
-                    else 0.0,
+                    "inner_score": score,
+                    "inner_score_std": spread,
                     "n_inner_folds": int(len(valid)),
                 }
             )
@@ -129,6 +155,7 @@ def select_mpma_b_by_outer_fold(
     plan: Any | None = None,
     qualification: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
+    metric = canonical_metric_name(metric)
     eligible_ids = _eligible_config_ids(configs, plan)
     if not eligible_ids:
         return pd.DataFrame()
@@ -180,6 +207,7 @@ def select_final_mpma_candidate(
     metric: str,
     plan: Any | None = None,
 ) -> dict[str, Any]:
+    metric = canonical_metric_name(metric)
     eligible_ids = _eligible_config_ids(configs, plan)
     if not eligible_ids:
         return {}
@@ -205,13 +233,12 @@ def select_final_mpma_candidate(
         group = group.drop_duplicates("inner_key", keep="last")
         if set(group["inner_key"].astype(str)) != expected_keys:
             continue
+        score, spread = _inner_score(group, metric)
         rows.append(
             {
                 "config_id": str(config_id),
-                "inner_score": float(group[metric].mean()),
-                "inner_score_std": float(group[metric].std(ddof=1))
-                if len(group) > 1
-                else 0.0,
+                "inner_score": score,
+                "inner_score_std": spread,
                 "n_inner_folds": int(len(group)),
             }
         )
@@ -382,6 +409,7 @@ def write_mpma_b_selection_outputs(
     plan: Any | None = None,
 ) -> dict[str, Path]:
     root = Path(root)
+    metric = canonical_metric_name(metric)
     inner_path = root / "inner_results" / "inner_results.parquet"
     outer_pred_path = root / "predictions" / "outer_predictions.parquet"
     configs_path = root / "configs.parquet"

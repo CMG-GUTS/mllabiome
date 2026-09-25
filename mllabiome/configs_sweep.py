@@ -51,8 +51,10 @@ from .learners import (
 from .metrics import _estimator_call
 from .metrics import _predict_proba_aligned as _metrics_predict_proba_aligned
 from .metrics import (
+    canonical_metric_name,
     compute_metrics,
     compute_regression_metrics,
+    grouped_log_loss,
     metric_is_loss,
     metric_passes_threshold,
 )
@@ -487,6 +489,16 @@ def _validate_incremental_experiment_identity(
         )
 
 
+def _scientifically_compatible_config(
+    count_transformation: str, learner_payload: Mapping[str, Any]
+) -> bool:
+    learner_class = str(learner_payload.get("class", "")).rsplit(".", 1)[-1]
+    if learner_class != "SIAMCATClassifier":
+        return True
+    transformation = str(count_transformation).split("@", 1)[0].strip().casefold()
+    return transformation == "identity"
+
+
 def build_sweep_configs(
     resolutions: Sequence[Any],
     count_transformations: Sequence[Any],
@@ -548,6 +560,8 @@ def build_sweep_configs(
                 learner_fingerprint,
                 learner_payload,
             ) in learner_specs:
+                if not _scientifically_compatible_config(ct_name, learner_payload):
+                    continue
                 rows.append(
                     {
                         "config_id": _config_id(
@@ -663,6 +677,7 @@ def _evaluate_mpma_split_task(
     gate_enabled: bool,
     gate_metric: str,
     gate_threshold: float | None,
+    selection_metric: str,
     existing_inner_keys: set[str],
     existing_inner_scores: Sequence[float],
     existing_qualification: dict[str, Any] | None,
@@ -671,6 +686,11 @@ def _evaluate_mpma_split_task(
     threads_per_worker: int,
     resource_sample_interval_s: float,
 ) -> dict[str, Any]:
+    gate_metric_input = str(gate_metric)
+    gate_metric = canonical_metric_name(gate_metric_input)
+    requested_metrics = {canonical_metric_name(selection_metric)}
+    if gate_enabled:
+        requested_metrics.add(gate_metric)
     tracker = ResourceTracker(sample_interval_s=resource_sample_interval_s).start()
     mpdr = MPDR(
         resolution=res_name, levels=tuple(levels), count_transformation=str(ct_name)
@@ -718,8 +738,23 @@ def _evaluate_mpma_split_task(
                 proba = _predict_proba_aligned(clf, X_va, classes)
                 pred = classes[proba.argmax(axis=1)]
                 metrics = compute_metrics(y[va_idx], pred, proba, classes)
+                if "subject_macro_log_loss" in requested_metrics:
+                    metrics["subject_macro_log_loss"] = grouped_log_loss(
+                        y[va_idx],
+                        proba,
+                        classes,
+                        np.asarray(subject_ids, dtype=object)[va_idx],
+                    )
+                if "cohort_macro_log_loss" in requested_metrics and str(
+                    protocol
+                ).lower() in {"lodo", "leave_one_dataset_out"}:
+                    metrics["cohort_macro_log_loss"] = float(metrics["log_loss"])
                 row = _metric_row(
                     metrics, split_key, inner_key, cid, mpdr, learner_name, "inner"
+                )
+                row["n_samples"] = int(len(va_idx))
+                row["n_subjects"] = int(
+                    len(pd.unique(np.asarray(subject_ids, dtype=object)[va_idx]))
                 )
                 result["inner_metrics"].append(row)
                 result["inner_predictions"].extend(
@@ -756,7 +791,7 @@ def _evaluate_mpma_split_task(
             else:
                 gate_score = float(np.mean(scores)) if scores else float("nan")
                 gate = QualificationGate(
-                    enabled=True, metric=gate_metric, threshold=gate_threshold
+                    enabled=True, metric=gate_metric_input, threshold=gate_threshold
                 )
                 qualified = gate.qualifies(gate_score)
                 result["qualification"].append(
@@ -798,8 +833,23 @@ def _evaluate_mpma_split_task(
                 proba = _predict_proba_aligned(clf, X_test, classes)
                 pred = classes[proba.argmax(axis=1)]
                 metrics = compute_metrics(y[test_idx], pred, proba, classes)
+                if "subject_macro_log_loss" in requested_metrics:
+                    metrics["subject_macro_log_loss"] = grouped_log_loss(
+                        y[test_idx],
+                        proba,
+                        classes,
+                        np.asarray(subject_ids, dtype=object)[test_idx],
+                    )
+                if "cohort_macro_log_loss" in requested_metrics and str(
+                    protocol
+                ).lower() in {"lodo", "leave_one_dataset_out"}:
+                    metrics["cohort_macro_log_loss"] = float(metrics["log_loss"])
                 row = _metric_row(
                     metrics, split_key, None, cid, mpdr, learner_name, "outer"
+                )
+                row["n_samples"] = int(len(test_idx))
+                row["n_subjects"] = int(
+                    len(pd.unique(np.asarray(subject_ids, dtype=object)[test_idx]))
                 )
                 result["outer_metrics"].append(row)
                 result["outer_predictions"].extend(
@@ -944,6 +994,7 @@ def _backfill_metrics_from_predictions(
     classes: np.ndarray,
     class_labels: Sequence[str],
     metric_key: str,
+    requested_metrics: Sequence[str] = (),
 ) -> pd.DataFrame:
     if metrics.empty or predictions.empty:
         return metrics
@@ -955,6 +1006,7 @@ def _backfill_metrics_from_predictions(
         predictions.columns
     ):
         return metrics
+    requested = {canonical_metric_name(metric) for metric in requested_metrics}
     out = metrics.copy()
     for metric in METRIC_COLUMNS:
         if metric not in out.columns:
@@ -977,9 +1029,17 @@ def _backfill_metrics_from_predictions(
             or not np.all(np.isfinite(proba))
         ):
             continue
-        lookup[(str(split_key), str(config_id))] = compute_metrics(
-            y_true.astype(int), y_pred.astype(int), proba, classes
-        )
+        values = compute_metrics(y_true.astype(int), y_pred.astype(int), proba, classes)
+        if "subject_macro_log_loss" in requested and "subject_id" in group.columns:
+            values["subject_macro_log_loss"] = grouped_log_loss(
+                y_true.astype(int),
+                proba,
+                classes,
+                group["subject_id"].astype(str).to_numpy(dtype=object),
+            )
+        if "cohort_macro_log_loss" in requested and str(split_key).startswith("lodo_"):
+            values["cohort_macro_log_loss"] = float(values["log_loss"])
+        lookup[(str(split_key), str(config_id))] = values
     ok = (
         pd.to_numeric(out["ok"], errors="coerce").fillna(0).astype(int).eq(1)
         if "ok" in out.columns
@@ -1103,6 +1163,8 @@ def _evaluate_regression_split_task(
     threads_per_worker: int,
     resource_sample_interval_s: float,
 ) -> dict[str, Any]:
+    gate_metric_input = str(gate_metric)
+    gate_metric = canonical_metric_name(gate_metric_input)
     tracker = ResourceTracker(sample_interval_s=resource_sample_interval_s).start()
     mpdr = MPDR(
         resolution=res_name, levels=tuple(levels), count_transformation=str(ct_name)
@@ -1186,7 +1248,7 @@ def _evaluate_regression_split_task(
             else:
                 gate_score = float(np.mean(scores)) if scores else float("nan")
                 gate = QualificationGate(
-                    enabled=True, metric=gate_metric, threshold=gate_threshold
+                    enabled=True, metric=gate_metric_input, threshold=gate_threshold
                 )
                 qualified = gate.qualifies(gate_score)
                 result["qualification"].append(
@@ -1795,12 +1857,16 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
         current_outer_keys,
         redo=sweep.evaluation.redo,
     )
+    requested_metrics = [sweep.evaluation.optimize_metric]
+    if sweep.gate.enabled:
+        requested_metrics.append(sweep.gate.metric)
     existing["inner_metrics"] = _backfill_metrics_from_predictions(
         existing["inner_metrics"],
         existing["inner_predictions"],
         dataset.classes,
         dataset.class_labels,
         "inner_key",
+        requested_metrics,
     )
     existing["outer_metrics"] = _backfill_metrics_from_predictions(
         existing["outer_metrics"],
@@ -1808,6 +1874,7 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
         dataset.classes,
         dataset.class_labels,
         "split_key",
+        requested_metrics,
     )
     if not sweep.gate.enabled:
         existing["qualification"] = pd.DataFrame()
@@ -1883,6 +1950,7 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
                         bool(sweep.gate.enabled),
                         str(sweep.gate.metric),
                         sweep.gate.threshold,
+                        str(sweep.evaluation.optimize_metric),
                         set(inner_keys) - missing_inner,
                         _existing_inner_scores(
                             existing["inner_metrics"], split_key, cid, sweep.gate.metric
@@ -2697,8 +2765,9 @@ def _write_rankings_and_figures(
     )
     agg.columns = [f"{m}_{stat}" for m, stat in agg.columns]
     rank = agg.reset_index()
+    requested_metric = canonical_metric_name(optimize_metric)
     sort_metric = (
-        optimize_metric if f"{optimize_metric}_mean" in rank.columns else "nMCC"
+        requested_metric if f"{requested_metric}_mean" in rank.columns else "log_loss"
     )
     sort_col = f"{sort_metric}_mean"
     rank = rank.sort_values(sort_col, ascending=metric_is_loss(sort_metric))

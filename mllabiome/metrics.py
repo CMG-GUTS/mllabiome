@@ -23,16 +23,57 @@ from sklearn.metrics import (
 from .utils import METRIC_COLUMNS, REGRESSION_METRIC_COLUMNS
 
 
+def canonical_metric_name(metric: str) -> str:
+    text = str(metric).strip()
+    key = text.casefold().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "auc": "AUROC",
+        "roc_auc": "AUROC",
+        "auroc": "AUROC",
+        "auc_macro": "AUROC_macro",
+        "roc_auc_macro": "AUROC_macro",
+        "auroc_macro": "AUROC_macro",
+        "auc_weighted": "AUROC_weighted",
+        "roc_auc_weighted": "AUROC_weighted",
+        "auroc_weighted": "AUROC_weighted",
+        "pr_auc": "AUCPR",
+        "prauc": "AUCPR",
+        "aucpr": "AUCPR",
+        "pr_auc_macro": "AUCPR_macro",
+        "prauc_macro": "AUCPR_macro",
+        "aucpr_macro": "AUCPR_macro",
+        "pr_auc_weighted": "AUCPR_weighted",
+        "prauc_weighted": "AUCPR_weighted",
+        "aucpr_weighted": "AUCPR_weighted",
+        "average_precision": "AP",
+        "ap": "AP",
+        "mcc": "MCC",
+        "nmcc": "MCC",
+        "f1w": "F1w",
+        "precision": "Precision",
+        "recall": "Recall",
+        "logloss": "log_loss",
+        "log_loss": "log_loss",
+        "subject_macro_logloss": "subject_macro_log_loss",
+        "subject_macro_log_loss": "subject_macro_log_loss",
+        "cohort_macro_logloss": "cohort_macro_log_loss",
+        "cohort_macro_log_loss": "cohort_macro_log_loss",
+        "brier_loss": "brier",
+        "brier": "brier",
+    }
+    return aliases.get(key, text)
+
+
 def _metric_key(metric: str) -> str:
-    return str(metric).strip().casefold().replace("-", "_").replace(" ", "_")
+    return canonical_metric_name(metric).casefold().replace("-", "_").replace(" ", "_")
 
 
 def metric_is_loss(metric: str) -> bool:
     return _metric_key(metric) in {
         "log_loss",
-        "logloss",
+        "subject_macro_log_loss",
+        "cohort_macro_log_loss",
         "brier",
-        "brier_loss",
         "brier_multiclass",
         "mae",
         "mse",
@@ -52,9 +93,13 @@ def metric_better(
 def metric_passes_threshold(score: float, threshold: float, metric: str) -> bool:
     if not np.isfinite(score) or not np.isfinite(threshold):
         return False
+    raw = str(metric).strip().casefold().replace("-", "_").replace(" ", "_")
+    boundary = float(threshold)
+    if raw == "nmcc":
+        boundary = 2.0 * boundary - 1.0
     if metric_is_loss(metric):
-        return float(score) <= float(threshold)
-    return float(score) >= float(threshold)
+        return float(score) <= boundary
+    return float(score) >= boundary
 
 
 def _coerce_X_for_estimator(clf: BaseEstimator, X):
@@ -157,6 +202,64 @@ def _renormalize_proba(p: np.ndarray, n_classes: int) -> np.ndarray:
     if np.any(row_sums <= 0.0):
         raise ValueError("Probability matrix contains a row with zero total mass.")
     return values / row_sums
+
+
+def log_loss_score(
+    y_true: np.ndarray, y_proba: np.ndarray, classes: np.ndarray
+) -> float:
+    truth = np.asarray(y_true, dtype=int).reshape(-1)
+    labels = np.asarray(classes, dtype=int).reshape(-1)
+    probability = _renormalize_proba(np.asarray(y_proba, dtype=float), len(labels))
+    if len(truth) != len(probability):
+        raise ValueError("y_true and y_proba must contain the same number of rows.")
+    mapping = {int(label): index for index, label in enumerate(labels)}
+    try:
+        columns = np.asarray([mapping[int(value)] for value in truth], dtype=int)
+    except KeyError as exc:
+        raise ValueError(
+            "y_true contains classes outside the declared class set."
+        ) from exc
+    eps = np.finfo(float).eps
+    picked = np.clip(probability[np.arange(len(truth)), columns], eps, 1.0)
+    return float(-np.mean(np.log(picked))) if len(picked) else float("nan")
+
+
+def grouped_log_loss(
+    y_true: np.ndarray,
+    y_proba: np.ndarray,
+    classes: np.ndarray,
+    groups: np.ndarray,
+) -> float:
+    truth = np.asarray(y_true, dtype=int).reshape(-1)
+    labels = np.asarray(classes, dtype=int).reshape(-1)
+    group_values = np.asarray(groups, dtype=object).reshape(-1)
+    probability = _renormalize_proba(np.asarray(y_proba, dtype=float), len(labels))
+    if len(truth) != len(group_values) or len(truth) != len(probability):
+        raise ValueError(
+            "y_true, y_proba, and groups must contain the same number of rows."
+        )
+    if not len(truth):
+        return float("nan")
+    mapping = {int(label): index for index, label in enumerate(labels)}
+    try:
+        columns = np.asarray([mapping[int(value)] for value in truth], dtype=int)
+    except KeyError as exc:
+        raise ValueError(
+            "y_true contains classes outside the declared class set."
+        ) from exc
+    eps = np.finfo(float).eps
+    losses = -np.log(np.clip(probability[np.arange(len(truth)), columns], eps, 1.0))
+    codes, uniques = pd.factorize(
+        pd.Series(group_values, dtype="object").astype(str), sort=False
+    )
+    if len(uniques) == 0:
+        return float("nan")
+    counts = np.bincount(codes, minlength=len(uniques)).astype(float)
+    totals = np.bincount(codes, weights=losses, minlength=len(uniques))
+    valid = counts > 0.0
+    means = totals[valid] / counts[valid]
+    finite = means[np.isfinite(means)]
+    return float(np.mean(finite)) if len(finite) else float("nan")
 
 
 def _balanced_accuracy(
@@ -290,14 +393,11 @@ def compute_metrics(
     out.update(_binary_diagnostic_metrics(y_true, y_pred, classes, positive_class))
     mcc = _matthews_corrcoef(y_true, y_pred, classes)
     out["MCC"] = float(mcc) if np.isfinite(mcc) else float("nan")
-    out["nMCC"] = float((mcc + 1.0) / 2.0) if np.isfinite(mcc) else float("nan")
 
     class_to_col = {int(klass): j for j, klass in enumerate(classes)}
     true_cols = np.asarray([class_to_col[int(value)] for value in y_true], dtype=int)
     probability = _renormalize_proba(score, len(classes))
-    eps = np.finfo(float).eps
-    picked = np.clip(probability[np.arange(len(y_true)), true_cols], eps, 1.0)
-    out["log_loss"] = float(-np.mean(np.log(picked)))
+    out["log_loss"] = log_loss_score(y_true, probability, classes)
     target = np.zeros_like(probability)
     target[np.arange(len(y_true)), true_cols] = 1.0
     if len(classes) == 2:
@@ -325,8 +425,8 @@ def compute_metrics(
         if len(np.unique(binary)) == 2:
             binary_score = score[:, pos_col]
             precision, recall, _ = precision_recall_curve(binary, binary_score)
-            out["AUC"] = float(roc_auc_score(binary, binary_score))
-            out["PR_AUC"] = float(auc(recall, precision))
+            out["AUROC"] = float(roc_auc_score(binary, binary_score))
+            out["AUCPR"] = float(auc(recall, precision))
             out["AP"] = float(average_precision_score(binary, binary_score))
     else:
         auc_values = []
@@ -348,14 +448,14 @@ def compute_metrics(
             pr_auc_weights.append(float(positives))
             ap_values.append(float(average_precision_score(binary, class_score)))
         if auc_values:
-            out["AUC_macro"] = float(np.mean(auc_values))
-            out["AUC_weighted"] = float(np.average(auc_values, weights=auc_weights))
-            out["AUC"] = out["AUC_macro"]
-            out["PR_AUC_macro"] = float(np.mean(pr_auc_values))
-            out["PR_AUC_weighted"] = float(
+            out["AUROC_macro"] = float(np.mean(auc_values))
+            out["AUROC_weighted"] = float(np.average(auc_values, weights=auc_weights))
+            out["AUROC"] = out["AUROC_macro"]
+            out["AUCPR_macro"] = float(np.mean(pr_auc_values))
+            out["AUCPR_weighted"] = float(
                 np.average(pr_auc_values, weights=pr_auc_weights)
             )
-            out["PR_AUC"] = out["PR_AUC_macro"]
+            out["AUCPR"] = out["AUCPR_macro"]
             out["AP_macro"] = float(np.mean(ap_values))
 
     return {

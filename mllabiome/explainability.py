@@ -117,7 +117,6 @@ from .explainability_values import (
 )
 
 
-
 from .explainability_config import (
     ExplainabilityConfigurationError,
     ExplainabilityDependencyError,
@@ -131,19 +130,6 @@ from .explainability_config import (
     _preflight_explainability_dependencies,
     _resolve_explainability_classes,
 )
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 from .explainability_reporting import (
@@ -162,75 +148,6 @@ from .explainability_reporting import (
     _terminal_taxon_label,
     _write_unavailable_interaction_network,
 )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 from .explainability_cache import (
@@ -258,51 +175,6 @@ from .explainability_cache import (
     _visual_class_labels,
     refresh_explainability_visuals,
 )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _ensure_mpma_member_explanations(
@@ -363,14 +235,6 @@ def _single_configured_explainability_target(explainability: Any) -> str:
             "Use explain(sweep) to process multiple targets."
         )
     return values[0]
-
-
-
-
-
-
-
-
 
 
 def _explainability_outer_splits(sweep: Sweep, dataset: Any) -> list[dict[str, Any]]:
@@ -813,7 +677,9 @@ def _mpma_e_reference_and_folds(
         X_ref_member, _ = ct_ref.apply_pair(X_base_member, X_base_member)
         transformed_names = ct_ref.get_feature_names_out(list(names_member))
         transformed_metadata = ct_ref.coordinate_metadata(list(names_member))
-        if X_ref_member.shape[1] != len(transformed_names) or len(transformed_metadata) != len(transformed_names):
+        if X_ref_member.shape[1] != len(transformed_names) or len(
+            transformed_metadata
+        ) != len(transformed_names):
             raise ExplainabilityConfigurationError(
                 f"Transformation {transformation_key!r} produced feature metadata inconsistent with its transformed matrix."
             )
@@ -921,7 +787,14 @@ def _mpma_e_reference_and_folds(
             "learner": "MPMA-E",
         }
     )
-    return dataset, X_reference, feature_names, folds, row, reference_coordinate_metadata
+    return (
+        dataset,
+        X_reference,
+        feature_names,
+        folds,
+        row,
+        reference_coordinate_metadata,
+    )
 
 
 def _aggregate_oof_predictions(
@@ -2922,10 +2795,10 @@ def _explain_one(
 def _score_sort_column(df: pd.DataFrame) -> str | None:
     for col in (
         "inner_validation_score",
-        "nMCC_inner_mean",
-        "nMCC_mean",
+        "inner_log_loss_mean",
+        "log_loss_mean",
         "score",
-        "ROC_AUC_mean",
+        "AUROC_mean",
         "MCC_mean",
     ):
         if col in df.columns:
@@ -3084,25 +2957,3 @@ def explain(sweep: Sweep) -> dict[str, Path]:
         for name, path in out.items():
             outputs[f"{key}_{name}"] = path
     return outputs
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

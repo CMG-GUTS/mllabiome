@@ -61,7 +61,7 @@ def _representation_metric_name(metric_col: str, df: pd.DataFrame) -> str:
     if f"{metric_col}_mean" in df.columns:
         return f"{metric_col}_mean"
 
-    for candidate in ("nMCC", "AUC", "AUC_macro", "BalAcc", "Accuracy"):
+    for candidate in ("log_loss", "AUROC", "AUROC_macro", "MCC", "BalAcc", "Accuracy"):
         if candidate in df.columns:
             return candidate
 
@@ -504,7 +504,9 @@ def _heat_table(
     return pivot, rows, labels
 
 
-def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") -> None:
+def _write_representation_impact_figure(
+    root: Path, metric_col: str = "log_loss"
+) -> None:
 
     result_path = root / "results" / "outer_results.parquet"
 
@@ -856,15 +858,6 @@ def _write_representation_impact_figure(root: Path, metric_col: str = "nMCC") ->
             alpha=0.62,
             linewidths=0,
             zorder=3,
-        )
-
-    if metric.lower() == "nmcc":
-        ax_a.axhline(
-            0.5,
-            color="#94a3b8",
-            linewidth=0.55,
-            linestyle=(0, (3, 2)),
-            zorder=1,
         )
 
     ax_a.set_xticks(xs)

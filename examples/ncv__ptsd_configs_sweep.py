@@ -55,12 +55,12 @@ RESOLUTIONS = (
 
 COUNT_TRANSFORMATIONS = (
     # mll.Transformation("presence_absence"),
-    # mll.Transformation("identity"),
+    mll.Transformation("identity"),
     # mll.Transformation("arcsine_sqrt", composition_scope="rank-wise"),
     # mll.Transformation("arcsine_sqrt", composition_scope="joint"),
     # # mll.Transformation("yeo_johnson", composition_scope="rank-wise"),
-    # # mll.Transformation("yeo_johnson", composition_scope="joint"),
-    # # mll.Transformation("hellinger", composition_scope="rank-wise"),
+    mll.Transformation("yeo_johnson", composition_scope="joint"),
+    # mll.Transformation("hellinger", composition_scope="rank-wise"),
     # mll.Transformation("hellinger", composition_scope="joint"),
     # # mll.Transformation("relative_abundance", composition_scope="rank-wise"),
     mll.Transformation("relative_abundance", composition_scope="joint"),
@@ -189,15 +189,15 @@ EVALUATION = mll.Evaluation(
     outer_folds=5,
     inner_folds=3,
     repeats=2,
-    optimize_metric="nMCC",
+    optimize_metric="log_loss",
     random_state=42,
     n_jobs="auto",
 )
 
 GATE = mll.QualificationGate(
     enabled=False,
-    metric="nMCC",
-    threshold=0.51,
+    metric="MCC",
+    threshold=0.02,
 )
 
 ENSEMBLE = mll.Ensemble(
@@ -216,7 +216,7 @@ ENSEMBLE = mll.Ensemble(
         "rank_mean",
         "majority_vote",
     ),
-    optimize_metric="nMCC",
+    optimize_metric="log_loss",
 )
 
 EXPLAINABILITY = mll.Explainability(

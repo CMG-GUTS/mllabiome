@@ -195,8 +195,10 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
         )
     selection_strategy = str(unit.get("selection_strategy", "")).strip()
     selection_metric = (
-        str(unit.get("selection_metric", unit.get("optimize_metric", "nMCC"))).strip()
-        or "nMCC"
+        str(
+            unit.get("selection_metric", unit.get("optimize_metric", "log_loss"))
+        ).strip()
+        or "log_loss"
     )
     member_score_metric = (
         str(

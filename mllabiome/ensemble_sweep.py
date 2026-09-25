@@ -19,7 +19,7 @@ from .ensemble_aggregation import (
     effective_aggregation_weights,
 )
 from .ensemble_progress import EnsembleSearchProgress
-from .metrics import _renormalize_proba, compute_metrics
+from .metrics import _renormalize_proba, canonical_metric_name, compute_metrics
 from .metrics import metric_better as _metric_better
 from .metrics import metric_is_loss as _metric_is_loss
 from .mpma_e_figure import write_single_task_mpma_e_figure
@@ -100,7 +100,7 @@ def _plan_max_sizes(plan: Ensemble) -> tuple[int, ...]:
 
 
 def _resolved_super_learner_loss(plan: Ensemble) -> str:
-    metric = str(plan.optimize_metric).strip().casefold()
+    metric = canonical_metric_name(str(plan.optimize_metric)).casefold()
     if metric in {"brier", "brier_loss"}:
         return "brier"
     return "log_loss"
@@ -349,6 +349,11 @@ def _missing_members(
 
 
 def _metric_value(y_true: np.ndarray, proba: np.ndarray, metric: str) -> float:
+    metric = canonical_metric_name(metric)
+    if metric in {"subject_macro_log_loss", "cohort_macro_log_loss"}:
+        raise ValueError(
+            f"Ensemble optimize_metric={metric!r} requires grouping information and is not supported for ensemble search; use log_loss for probability-ensemble optimization."
+        )
     proba = _renormalize_proba(
         np.asarray(proba, dtype=float), np.asarray(proba).shape[1]
     )
@@ -1228,7 +1233,7 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
     inner_results = read_table(inner_result_path)
     inner_predictions = read_table(inner_prediction_path)
     configs = read_table(config_path)
-    metric = str(sweep.ensemble.optimize_metric)
+    metric = canonical_metric_name(str(sweep.ensemble.optimize_metric))
     stage("Ensemble sweep", str(root))
     summary_table(
         "Ensemble search",
@@ -1270,7 +1275,9 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
         )
         if selection.empty or selected_outer_predictions.empty or fold_metrics.empty:
             raise RuntimeError("No valid nested ensemble selections were produced.")
-        member_score_metric = str(sweep.evaluation.optimize_metric)
+        member_score_metric = canonical_metric_name(
+            str(sweep.evaluation.optimize_metric)
+        )
         if member_score_metric not in inner_results.columns:
             raise ValueError(
                 f"inner_results.parquet must contain the base evaluation metric {member_score_metric!r} required for final-model member metadata."
@@ -1292,7 +1299,7 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
     final_mpma = select_final_mpma_candidate(
         inner_results,
         configs,
-        str(sweep.evaluation.optimize_metric),
+        canonical_metric_name(str(sweep.evaluation.optimize_metric)),
         plan=sweep.ensemble,
     )
     selection_path = ensemble_dir / "mpma_e_outer_selection.parquet"
