@@ -45,6 +45,110 @@ class TransformationCoordinate:
     exact_feature_identity: bool
 
 
+def _canonical_float(value: float) -> str:
+    return format(float(value), ".12g")
+
+
+class PrevalenceFilter:
+    __slots__ = (
+        "threshold",
+        "detection_threshold",
+        "identity",
+        "feature_mask_",
+        "prevalence_",
+        "n_samples_fit_",
+        "minimum_samples_",
+        "n_features_in_",
+        "n_features_out_",
+    )
+
+    def __init__(self, threshold: float, detection_threshold: float = 0.0):
+        threshold = float(threshold)
+        detection_threshold = float(detection_threshold)
+        if not np.isfinite(threshold) or threshold <= 0.0 or threshold > 1.0:
+            raise ValueError("threshold must be finite and in the interval (0, 1].")
+        if not np.isfinite(detection_threshold) or detection_threshold < 0.0:
+            raise ValueError("detection_threshold must be finite and non-negative.")
+        self.threshold = threshold
+        self.detection_threshold = detection_threshold
+        self.identity = (
+            f"prevalence={_canonical_float(threshold)},"
+            f"detection={_canonical_float(detection_threshold)}"
+        )
+        self.feature_mask_: np.ndarray | None = None
+        self.prevalence_: np.ndarray | None = None
+        self.n_samples_fit_: int | None = None
+        self.minimum_samples_: int | None = None
+        self.n_features_in_: int | None = None
+        self.n_features_out_: int | None = None
+
+    def fresh(self) -> "PrevalenceFilter":
+        return PrevalenceFilter(self.threshold, self.detection_threshold)
+
+    def fit(self, X: np.ndarray) -> "PrevalenceFilter":
+        raw = _matrix(X, nonnegative=True)
+        n_samples, n_features = raw.shape
+        if n_samples < 1:
+            raise ValueError(
+                "Prevalence filtering requires at least one training sample."
+            )
+        if n_features < 1:
+            raise ValueError("Prevalence filtering requires at least one feature.")
+        present = raw > self.detection_threshold
+        counts = present.sum(axis=0, dtype=np.int64)
+        required = int(np.ceil(np.nextafter(self.threshold * n_samples, -np.inf)))
+        required = max(1, min(required, n_samples))
+        mask = counts >= required
+        if not np.any(mask):
+            raise ValueError(
+                "Prevalence filtering removed every feature in the training partition."
+            )
+        self.feature_mask_ = np.asarray(mask, dtype=bool)
+        self.prevalence_ = counts.astype(np.float64) / float(n_samples)
+        self.n_samples_fit_ = int(n_samples)
+        self.minimum_samples_ = int(required)
+        self.n_features_in_ = int(n_features)
+        self.n_features_out_ = int(mask.sum())
+        return self
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        raw = _matrix(X, nonnegative=True)
+        if self.feature_mask_ is None or self.n_features_in_ is None:
+            raise RuntimeError("PrevalenceFilter has not been fitted.")
+        if raw.shape[1] != self.n_features_in_:
+            raise ValueError(
+                f"Feature count differs from the fitted prevalence filter: expected {self.n_features_in_}, got {raw.shape[1]}."
+            )
+        return np.asarray(raw[:, self.feature_mask_], dtype=np.float64)
+
+    def apply(self, X: np.ndarray) -> np.ndarray:
+        return self.transform(X)
+
+    def fit_apply(self, X: np.ndarray) -> np.ndarray:
+        self.fit(X)
+        return self.transform(X)
+
+    def get_feature_names_out(
+        self, input_features: list[str] | tuple[str, ...] | np.ndarray | None = None
+    ) -> list[str]:
+        if self.feature_mask_ is None or self.n_features_in_ is None:
+            raise RuntimeError("PrevalenceFilter has not been fitted.")
+        features = (
+            _default_feature_names(self.n_features_in_)
+            if input_features is None
+            else [str(x) for x in list(input_features)]
+        )
+        if len(features) != self.n_features_in_:
+            raise ValueError(
+                f"Input feature-name count differs from the fitted prevalence filter: expected {self.n_features_in_}, got {len(features)}."
+            )
+        return [
+            feature
+            for feature, keep in zip(features, self.feature_mask_, strict=False)
+            if bool(keep)
+        ]
+
+
 TRANSFORMATION_LABELS: tuple[TransformationLabel, ...] = (
     TransformationLabel("identity", ("raw", "unchanged", "identity")),
     TransformationLabel(
@@ -896,8 +1000,21 @@ def _normalise_composition_scope(name: str, scope: str | None) -> str:
     return value
 
 
-def _parse_transformation_identity(value: Any) -> tuple[str, str]:
+def _split_transformation_filter_identity(value: Any) -> tuple[str, str | None]:
     text = str(value).strip()
+    marker = "|filter="
+    if marker not in text:
+        return text, None
+    transformation, filter_identity = text.split(marker, 1)
+    transformation = transformation.strip()
+    filter_identity = filter_identity.strip()
+    if not transformation or not filter_identity:
+        raise ValueError(f"Invalid filtered transformation identity {value!r}.")
+    return transformation, filter_identity
+
+
+def _parse_transformation_identity(value: Any) -> tuple[str, str]:
+    text, _ = _split_transformation_filter_identity(value)
     if "@" in text:
         raw_name, raw_scope = text.rsplit("@", 1)
         if raw_scope.strip().lower() in _COMPOSITION_SCOPES:
@@ -907,16 +1024,37 @@ def _parse_transformation_identity(value: Any) -> tuple[str, str]:
     return base, _normalise_composition_scope(base, None)
 
 
-def _transformation_identity(name: str, scope: str | None = None) -> str:
+def _feature_filter_identity(feature_filter: Any | None) -> str | None:
+    if feature_filter is None:
+        return None
+    if not isinstance(feature_filter, PrevalenceFilter):
+        raise TypeError("feature_filter must be a PrevalenceFilter or None.")
+    return str(feature_filter.identity)
+
+
+def _transformation_identity(
+    name: str,
+    scope: str | None = None,
+    feature_filter: PrevalenceFilter | None = None,
+) -> str:
     base = transformation_label(str(name)).key
     resolved = _normalise_composition_scope(base, scope)
-    if base in _COMPOSITION_SENSITIVE:
-        return f"{base}@{resolved}"
-    return base
+    identity = f"{base}@{resolved}" if base in _COMPOSITION_SENSITIVE else base
+    filter_identity = _feature_filter_identity(feature_filter)
+    if filter_identity is not None:
+        identity = f"{identity}|filter={filter_identity}"
+    return identity
 
 
 class Transform:
-    __slots__ = ("name", "composition_scope", "identity", "_fn", "_is_bw")
+    __slots__ = (
+        "name",
+        "composition_scope",
+        "feature_filter",
+        "identity",
+        "_fn",
+        "_is_bw",
+    )
 
     def __init__(
         self,
@@ -925,6 +1063,7 @@ class Transform:
         is_bw: bool = False,
         abbreviation: str | None = None,
         composition_scope: str | None = None,
+        feature_filter: PrevalenceFilter | None = None,
     ):
         requested = str(name).strip()
         info = transformation_label(requested)
@@ -940,31 +1079,22 @@ class Transform:
         self.composition_scope = _normalise_composition_scope(
             self.name, composition_scope
         )
-        self.identity = _transformation_identity(self.name, self.composition_scope)
+        if feature_filter is not None and not isinstance(
+            feature_filter, PrevalenceFilter
+        ):
+            raise TypeError("feature_filter must be a PrevalenceFilter or None.")
+        self.feature_filter = None if feature_filter is None else feature_filter.fresh()
+        self.identity = _transformation_identity(
+            self.name, self.composition_scope, self.feature_filter
+        )
         self._fn = fn
         self._is_bw = False
 
     def apply(
         self, X_tr: np.ndarray, X_te: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        if self._fn is None:
-            return _BuiltinTransformer(self.name, random_state=42).apply_pair(
-                X_tr, X_te
-            )
-        a = self._fn(X_tr)
-        b = self._fn(X_te)
-        return (
-            _finite_output(
-                a,
-                expected_shape=_matrix(X_tr).shape,
-                context=f"Custom transformation {self.name!r}",
-            ),
-            _finite_output(
-                b,
-                expected_shape=_matrix(X_te).shape,
-                context=f"Custom transformation {self.name!r}",
-            ),
-        )
+        adapter = CountTransformationAdapter(self.identity, self, random_state=42)
+        return adapter.apply_pair(X_tr, X_te)
 
 
 Transformation = Transform
@@ -1069,7 +1199,8 @@ def _count_transformation_name(item: Any) -> str:
     if hasattr(item, "name") and hasattr(item, "apply"):
         name = str(getattr(item, "name"))
         scope = getattr(item, "composition_scope", None)
-        return _transformation_identity(name, scope)
+        feature_filter = getattr(item, "feature_filter", None)
+        return _transformation_identity(name, scope, feature_filter)
     if isinstance(item, tuple):
         return _count_transformation_name(item[0])
     text = str(item).strip()
@@ -1084,12 +1215,22 @@ def _count_transformation_name(item: Any) -> str:
                 if not modality or not transformation:
                     qualified = []
                     break
-                base, scope = _parse_transformation_identity(transformation)
-                qualified.append(f"{modality}:{_transformation_identity(base, scope)}")
+                raw_identity, filter_identity = _split_transformation_filter_identity(
+                    transformation
+                )
+                base, scope = _parse_transformation_identity(raw_identity)
+                identity = _transformation_identity(base, scope)
+                if filter_identity is not None:
+                    identity = f"{identity}|filter={filter_identity}"
+                qualified.append(f"{modality}:{identity}")
             if qualified:
                 return "+".join(qualified)
-    base, scope = _parse_transformation_identity(text)
-    return _transformation_identity(base, scope)
+    raw_identity, filter_identity = _split_transformation_filter_identity(text)
+    base, scope = _parse_transformation_identity(raw_identity)
+    identity = _transformation_identity(base, scope)
+    if filter_identity is not None:
+        identity = f"{identity}|filter={filter_identity}"
+    return identity
 
 
 def _count_transformation_spec(item: Any) -> tuple[str, Any | None]:
@@ -1113,12 +1254,15 @@ def _effective_count_transformation_spec(
     if base in _COMPOSITION_SENSITIVE and feature_blocks is not None:
         block_count = sum(1 for _, indices in feature_blocks if tuple(indices))
         if block_count <= 1:
-            name = _transformation_identity(base, "rank-wise")
+            name = _transformation_identity(
+                base, "rank-wise", getattr(spec, "feature_filter", None)
+            )
             if isinstance(spec, Transform) and spec.composition_scope != "rank-wise":
                 spec = Transform(
                     spec.name,
                     fn=spec._fn,
                     composition_scope="rank-wise",
+                    feature_filter=spec.feature_filter,
                 )
     return name, spec
 
@@ -1165,6 +1309,26 @@ def _normalise_feature_blocks(
     return tuple(out)
 
 
+def _mask_feature_blocks(
+    blocks: Any, mask: np.ndarray
+) -> tuple[tuple[str, tuple[int, ...]], ...] | None:
+    if blocks is None:
+        return None
+    keep = np.asarray(mask, dtype=bool).reshape(-1)
+    positions = np.full(keep.shape[0], -1, dtype=int)
+    positions[np.flatnonzero(keep)] = np.arange(int(keep.sum()), dtype=int)
+    out: list[tuple[str, tuple[int, ...]]] = []
+    for raw_name, raw_indices in blocks:
+        mapped = tuple(
+            int(positions[int(index)])
+            for index in raw_indices
+            if 0 <= int(index) < len(positions) and positions[int(index)] >= 0
+        )
+        if mapped:
+            out.append((str(raw_name), mapped))
+    return tuple(out)
+
+
 class CountTransformationAdapter:
     def __init__(
         self,
@@ -1175,7 +1339,10 @@ class CountTransformationAdapter:
         feature_blocks: Any = None,
         composition_scope: str | None = None,
     ):
-        base, parsed_scope = _parse_transformation_identity(name)
+        raw_identity, encoded_filter_identity = _split_transformation_filter_identity(
+            name
+        )
+        base, parsed_scope = _parse_transformation_identity(raw_identity)
         spec_scope = getattr(spec, "composition_scope", None)
         requested_scope = (
             composition_scope
@@ -1184,15 +1351,33 @@ class CountTransformationAdapter:
             if spec_scope is not None
             else parsed_scope
         )
+        spec_filter = getattr(spec, "feature_filter", None)
+        if spec_filter is not None and not isinstance(spec_filter, PrevalenceFilter):
+            raise TypeError("feature_filter must be a PrevalenceFilter or None.")
+        if encoded_filter_identity is not None:
+            if spec_filter is None:
+                raise ValueError(
+                    "A filtered transformation identity cannot be reconstructed without its PrevalenceFilter specification."
+                )
+            if str(spec_filter.identity) != str(encoded_filter_identity):
+                raise ValueError(
+                    "The filtered transformation identity does not match its PrevalenceFilter specification."
+                )
         self.name = base
         self.composition_scope = _normalise_composition_scope(base, requested_scope)
-        self.identity = _transformation_identity(base, self.composition_scope)
+        self.feature_filter = spec_filter
+        self.identity = _transformation_identity(
+            base, self.composition_scope, self.feature_filter
+        )
         self.spec = spec
         self.random_state = int(random_state)
         self.feature_blocks = feature_blocks
         self.obj: Any | None = None
         self.block_objects_: list[tuple[str, tuple[int, ...], Any]] | None = None
+        self.feature_filter_: PrevalenceFilter | None = None
+        self.feature_mask_: np.ndarray | None = None
         self.n_features_in_: int | None = None
+        self.n_features_after_filter_: int | None = None
         self.n_features_out_: int | None = None
 
     def _make(self) -> Any:
@@ -1229,15 +1414,43 @@ class CountTransformationAdapter:
         return obj
 
     def fit(self, X: np.ndarray) -> "CountTransformationAdapter":
-        X_float = _as_float_matrix(X)
-        n_features = int(np.asarray(X_float).shape[1])
+        X_float = np.asarray(_as_float_matrix(X), dtype=np.float64)
+        n_features = int(X_float.shape[1])
         self.n_features_in_ = n_features
+        filtered = X_float
+        filtered_blocks = self.feature_blocks
+        if self.feature_filter is not None:
+            fitted_filter = self.feature_filter.fresh().fit(X_float)
+            if fitted_filter.feature_mask_ is None:
+                raise RuntimeError("PrevalenceFilter did not produce a feature mask.")
+            self.feature_filter_ = fitted_filter
+            self.feature_mask_ = np.asarray(
+                fitted_filter.feature_mask_, dtype=bool
+            ).copy()
+            filtered = fitted_filter.transform(X_float)
+            filtered_blocks = _mask_feature_blocks(
+                self.feature_blocks, self.feature_mask_
+            )
+        else:
+            self.feature_filter_ = None
+            self.feature_mask_ = np.ones(n_features, dtype=bool)
+        self.n_features_after_filter_ = int(filtered.shape[1])
         use_blocks = (
             self.name in _COMPOSITION_SENSITIVE
             and self.composition_scope == "rank-wise"
         )
+        if (
+            not use_blocks
+            and self.name in _LOG_RATIO_BLOCK_TRANSFORMS
+            and self.n_features_after_filter_ < 2
+        ):
+            raise ValueError(
+                f"Transformation {self.identity!r} requires at least two retained features."
+            )
         if use_blocks:
-            blocks = _normalise_feature_blocks(self.feature_blocks, n_features)
+            blocks = _normalise_feature_blocks(
+                filtered_blocks, self.n_features_after_filter_
+            )
             unresolved = [name for name, _ in blocks if name == "unresolved"]
             if unresolved:
                 raise ValueError(
@@ -1248,32 +1461,41 @@ class CountTransformationAdapter:
             for block_name, indices in blocks:
                 if self.name in _LOG_RATIO_BLOCK_TRANSFORMS and len(indices) < 2:
                     continue
-                block = np.asarray(X_float)[:, np.asarray(indices, dtype=int)]
+                block = filtered[:, np.asarray(indices, dtype=int)]
                 obj = self._fit_single(block)
                 n_out = getattr(obj, "n_features_out_", None)
                 total_out += int(n_out) if n_out is not None else len(indices)
                 fitted_blocks.append((block_name, indices, obj))
             if not fitted_blocks:
                 raise ValueError(
-                    f"Transformation {self.identity!r} produced no coordinates because every taxonomic block contains fewer than two features."
+                    f"Transformation {self.identity!r} produced no coordinates because every taxonomic block contains fewer than two retained features."
                 )
             self.block_objects_ = fitted_blocks
             self.obj = None
             self.n_features_out_ = int(total_out)
             return self
-        obj = self._fit_single(np.asarray(X_float))
+        obj = self._fit_single(filtered)
         self.obj = obj
         self.block_objects_ = None
         n_features_out = getattr(obj, "n_features_out_", None)
         self.n_features_out_ = (
-            int(n_features_out) if n_features_out is not None else self.n_features_in_
+            int(n_features_out)
+            if n_features_out is not None
+            else self.n_features_after_filter_
         )
         return self
 
     def _apply_object(self, obj: Any, X: np.ndarray) -> np.ndarray:
         if isinstance(obj, Transform):
-            raise RuntimeError(
-                "Callable Transformation objects must be applied to a train/test pair."
+            if obj._fn is None:
+                raise RuntimeError(
+                    "Built-in Transformation was not materialized correctly."
+                )
+            result = obj._fn(X)
+            return _finite_output(
+                result,
+                expected_shape=np.asarray(X).shape,
+                context=f"Custom transformation {obj.name!r}",
             )
         if hasattr(obj, "apply"):
             result = obj.apply(X)
@@ -1288,8 +1510,8 @@ class CountTransformationAdapter:
         return np.asarray(result, dtype=np.float64)
 
     def apply(self, X: np.ndarray) -> np.ndarray:
-        X_float = _as_float_matrix(X)
-        input_shape = np.asarray(X_float).shape
+        X_float = np.asarray(_as_float_matrix(X), dtype=np.float64)
+        input_shape = X_float.shape
         if self.n_features_in_ is None or self.n_features_out_ is None:
             raise RuntimeError(
                 f"Count transformation {self.identity!r} has not been fitted."
@@ -1298,10 +1520,15 @@ class CountTransformationAdapter:
             raise ValueError(
                 f"Feature count differs from the fitted abundance transformation: expected {self.n_features_in_}, got {input_shape[1]}."
             )
+        filtered = (
+            self.feature_filter_.transform(X_float)
+            if self.feature_filter_ is not None
+            else X_float
+        )
         if self.block_objects_ is not None:
             pieces = []
             for _, indices, obj in self.block_objects_:
-                block = np.asarray(X_float)[:, np.asarray(indices, dtype=int)]
+                block = filtered[:, np.asarray(indices, dtype=int)]
                 pieces.append(self._apply_object(obj, block))
             result = np.concatenate(pieces, axis=1)
         else:
@@ -1309,7 +1536,7 @@ class CountTransformationAdapter:
                 raise RuntimeError(
                     f"Count transformation {self.identity!r} has not been fitted."
                 )
-            result = self._apply_object(self.obj, np.asarray(X_float))
+            result = self._apply_object(self.obj, filtered)
         return _finite_output(
             result,
             expected_shape=(int(input_shape[0]), int(self.n_features_out_)),
@@ -1332,6 +1559,8 @@ class CountTransformationAdapter:
             raise ValueError(
                 f"Input feature-name count differs from the fitted abundance transformation: expected {self.n_features_in_}, got {len(features)}."
             )
+        if self.feature_filter_ is not None:
+            features = self.feature_filter_.get_feature_names_out(features)
         return features
 
     def get_feature_names_out(
@@ -1477,40 +1706,35 @@ class CountTransformationAdapter:
     def apply_pair(
         self, X_tr: np.ndarray, X_te: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        if isinstance(self.spec, Transform) and self.spec._fn is not None:
-            blocks = _normalise_feature_blocks(
-                self.feature_blocks, np.asarray(_as_float_matrix(X_tr)).shape[1]
-            )
-            if (
-                self.composition_scope == "rank-wise"
-                and self.name in _COMPOSITION_SENSITIVE
-            ):
-                tr_parts = []
-                te_parts = []
-                for _, indices in blocks:
-                    if self.name in _LOG_RATIO_BLOCK_TRANSFORMS and len(indices) < 2:
-                        continue
-                    cols = np.asarray(indices, dtype=int)
-                    tr_part, te_part = self.spec.apply(
-                        np.asarray(_as_float_matrix(X_tr))[:, cols],
-                        np.asarray(_as_float_matrix(X_te))[:, cols],
-                    )
-                    tr_parts.append(tr_part)
-                    te_parts.append(te_part)
-                if not tr_parts:
-                    raise ValueError(
-                        f"Transformation {self.identity!r} produced no coordinates."
-                    )
-                return np.concatenate(tr_parts, axis=1), np.concatenate(
-                    te_parts, axis=1
-                )
-            return self.spec.apply(_as_float_matrix(X_tr), _as_float_matrix(X_te))
         if callable(self.spec) and _callable_accepts_two_required(self.spec):
             raise TypeError(
                 "Two-array custom transformation callables are not supported because they can inspect held-out data while fitting."
             )
         self.fit(X_tr)
         return (self.apply(X_tr), self.apply(X_te))
+
+    def feature_filter_metadata(self) -> dict[str, Any]:
+        if self.n_features_in_ is None or self.n_features_after_filter_ is None:
+            raise RuntimeError(
+                f"Count transformation {self.identity!r} has not been fitted."
+            )
+        if self.feature_filter_ is None:
+            return {
+                "feature_filter": "none",
+                "prevalence_threshold": float("nan"),
+                "detection_threshold": float("nan"),
+                "prevalence_min_samples": 0,
+                "n_features_before_filter": int(self.n_features_in_),
+                "n_features_after_filter": int(self.n_features_after_filter_),
+            }
+        return {
+            "feature_filter": str(self.feature_filter_.identity),
+            "prevalence_threshold": float(self.feature_filter_.threshold),
+            "detection_threshold": float(self.feature_filter_.detection_threshold),
+            "prevalence_min_samples": int(self.feature_filter_.minimum_samples_ or 0),
+            "n_features_before_filter": int(self.n_features_in_),
+            "n_features_after_filter": int(self.n_features_after_filter_),
+        }
 
     def fit_apply(self, X: np.ndarray) -> np.ndarray:
         self.fit(X)

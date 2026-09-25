@@ -53,6 +53,13 @@ TRANSFORMATIONS = (
     # mll.Transformation("clr", composition_scope="joint"),
     # mll.Transformation("log10", composition_scope="rank-wise"),
     # mll.Transformation("log10", composition_scope="joint"),
+    mll.Transformation(
+        "relative_abundance",
+        composition_scope="joint",
+        feature_filter=mll.PrevalenceFilter(
+            threshold=0.05,
+        ),
+    ),
 )
 
 

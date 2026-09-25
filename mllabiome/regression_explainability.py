@@ -36,6 +36,7 @@ from .explainability import (
     _quiet_pyale_info,
     _require_pyale,
 )
+from .explainability_config import _configured_count_transformation_factory
 from .explainability_context import (
     build_feature_relative_abundance_summary,
     build_local_relative_abundance_context,
@@ -62,7 +63,6 @@ from .regression_ensemble import aggregate_regression_predictions
 from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
 from .runtime import configure_estimator_threads
 from .storage import read_table, table_exists, write_table
-from .transformations import _count_transformation_factory
 from .utils import dump_json_standard
 
 _REGRESSION_METRICS = {
@@ -142,19 +142,8 @@ def _row_levels(row: pd.Series) -> tuple[str, ...]:
     return (resolution,) if resolution else ("all",)
 
 
-def _factories(
-    sweep: Sweep, feature_blocks: Any = None
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    transforms = dict(
-        _count_transformation_factory(
-            x,
-            random_state=sweep.explainability.random_state,
-            feature_blocks=feature_blocks,
-        )
-        for x in sweep.count_transformations
-    )
-    learners = dict(_learner_factory(x, task="regression") for x in sweep.learners)
-    return transforms, learners
+def _learner_factories(sweep: Sweep) -> dict[str, Any]:
+    return dict(_learner_factory(x, task="regression") for x in sweep.learners)
 
 
 def _config_row(configs: pd.DataFrame, config_id: str) -> pd.Series:
@@ -270,7 +259,7 @@ def _fit_individual_folds(
         groups,
         group_col=sweep.data.group_col,
     )
-    _, learners = _factories(sweep)
+    learners = _learner_factories(sweep)
     transform_key = str(row["count_transformation"])
     learner_key = str(row["learner"])
     if learner_key not in learners:
@@ -286,12 +275,13 @@ def _fit_individual_folds(
         )
         names = [str(name) for name, keep in zip(base_names, mask) if bool(keep)]
         fold_blocks = mask_feature_blocks(feature_blocks, mask)
-        transforms, _ = _factories(sweep, fold_blocks)
-        if transform_key not in transforms:
-            raise ValueError(
-                f"Configured transformation {transform_key!r} is unavailable for explainability."
-            )
-        transform = transforms[transform_key]()
+        transform_factory = _configured_count_transformation_factory(
+            sweep,
+            transform_key,
+            fold_blocks,
+            resolution_feature_blocks=feature_blocks,
+        )
+        transform = transform_factory()
         X_train, X_test = transform.apply_pair(X_train0, X_test0)
         coordinate_metadata = _coordinate_metadata_rows(transform, names)
         names = transform.get_feature_names_out(names)
@@ -359,7 +349,7 @@ def _fit_ensemble_folds(
         groups,
         group_col=sweep.data.group_col,
     )
-    _, learners = _factories(sweep)
+    learners = _learner_factories(sweep)
     materialized: list[tuple[pd.Series, np.ndarray, list[str], Any]] = []
     for row in member_rows:
         levels = _row_levels(row)
@@ -396,8 +386,13 @@ def _fit_ensemble_folds(
             transform_key = str(row["count_transformation"])
             learner_key = str(row["learner"])
             fold_blocks = mask_feature_blocks(feature_blocks, mask)
-            transforms, _ = _factories(sweep, fold_blocks)
-            transform = transforms[transform_key]()
+            transform_factory = _configured_count_transformation_factory(
+                sweep,
+                transform_key,
+                fold_blocks,
+                resolution_feature_blocks=feature_blocks,
+            )
+            transform = transform_factory()
             X_train_member, X_test_member = transform.apply_pair(X_train0, X_test0)
             transformed_names = transform.get_feature_names_out(kept_names)
             model = configure_estimator_threads(learners[learner_key](), 1)

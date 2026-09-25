@@ -17,7 +17,7 @@ from .ensemble_aggregation import (
 from .ensemble_aggregation import effective_aggregation_weights
 from .storage import read_table, table_exists
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _PROBABILITY_PRESERVING = set(PROBABILITY_PRESERVING_AGGREGATIONS)
 _SUPPORTED_ENSEMBLES = set(SUPPORTED_AGGREGATIONS) | {
     "mean_prediction",
@@ -89,9 +89,19 @@ def _core_config(row: pd.Series) -> dict[str, Any]:
         "count_transformation",
         "transformation_abbreviation",
         "learner",
+        "feature_filter",
     ):
         if key in row.index and pd.notna(row[key]) and str(row[key]).strip():
             result[key] = str(row[key])
+    for key in ("prevalence_threshold", "detection_threshold"):
+        if key not in row.index or pd.isna(row[key]):
+            continue
+        try:
+            value = float(row[key])
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value):
+            result[key] = value
     return result
 
 

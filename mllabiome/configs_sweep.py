@@ -495,7 +495,13 @@ def _scientifically_compatible_config(
     learner_class = str(learner_payload.get("class", "")).rsplit(".", 1)[-1]
     if learner_class != "SIAMCATClassifier":
         return True
-    transformation = str(count_transformation).split("@", 1)[0].strip().casefold()
+    transformation = (
+        str(count_transformation)
+        .split("|filter=", 1)[0]
+        .split("@", 1)[0]
+        .strip()
+        .casefold()
+    )
     return transformation == "identity"
 
 
@@ -554,6 +560,20 @@ def build_sweep_configs(
         )
         for ct_name, ct_spec in transformation_specs:
             transformation_fingerprint = _transformation_fingerprint(ct_name, ct_spec)
+            feature_filter = getattr(ct_spec, "feature_filter", None)
+            feature_filter_identity = (
+                "none" if feature_filter is None else str(feature_filter.identity)
+            )
+            prevalence_threshold = (
+                float("nan")
+                if feature_filter is None
+                else float(feature_filter.threshold)
+            )
+            detection_threshold = (
+                float("nan")
+                if feature_filter is None
+                else float(feature_filter.detection_threshold)
+            )
             for (
                 lname,
                 learner_display,
@@ -576,6 +596,9 @@ def build_sweep_configs(
                         "transformation_fingerprint": transformation_fingerprint,
                         "resolution_fingerprint": resolution_fingerprint,
                         "count_transformation": ct_name,
+                        "feature_filter": feature_filter_identity,
+                        "prevalence_threshold": prevalence_threshold,
+                        "detection_threshold": detection_threshold,
                         "resolution": res_name,
                         "levels": ",".join(levels),
                         "taxonomic_blocks": ",".join(taxonomic_blocks),
@@ -752,6 +775,7 @@ def _evaluate_mpma_split_task(
                 row = _metric_row(
                     metrics, split_key, inner_key, cid, mpdr, learner_name, "inner"
                 )
+                row.update(fitted.feature_filter_metadata())
                 row["n_samples"] = int(len(va_idx))
                 row["n_subjects"] = int(
                     len(pd.unique(np.asarray(subject_ids, dtype=object)[va_idx]))
@@ -847,6 +871,7 @@ def _evaluate_mpma_split_task(
                 row = _metric_row(
                     metrics, split_key, None, cid, mpdr, learner_name, "outer"
                 )
+                row.update(fitted_outer.feature_filter_metadata())
                 row["n_samples"] = int(len(test_idx))
                 row["n_subjects"] = int(
                     len(pd.unique(np.asarray(subject_ids, dtype=object)[test_idx]))
@@ -1214,6 +1239,7 @@ def _evaluate_regression_split_task(
                 row = _regression_metric_row(
                     metrics, split_key, inner_key, cid, mpdr, learner_name, "inner"
                 )
+                row.update(fitted.feature_filter_metadata())
                 result["inner_metrics"].append(row)
                 result["inner_predictions"].extend(
                     _regression_prediction_rows(
@@ -1290,6 +1316,7 @@ def _evaluate_regression_split_task(
                 row = _regression_metric_row(
                     metrics, split_key, None, cid, mpdr, learner_name, "outer"
                 )
+                row.update(fitted_outer.feature_filter_metadata())
                 result["outer_metrics"].append(row)
                 result["outer_predictions"].extend(
                     _regression_prediction_rows(
@@ -2505,6 +2532,9 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
         "taxonomic_blocks": "TEXT",
         "taxonomic_block_count": "INTEGER",
         "representation_scope": "TEXT",
+        "feature_filter": "TEXT",
+        "prevalence_threshold": "REAL",
+        "detection_threshold": "REAL",
         "learner_display": "TEXT",
         "transformation_fingerprint": "TEXT",
         "resolution_fingerprint": "TEXT",
@@ -2549,15 +2579,15 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
         for r in configs.to_dict(orient="records"):
             conn.execute(
                 """INSERT INTO configs
-                   (config_id, mpdr_id, count_transformation, resolution, levels, learner, active, candidate_family, modalities, integration, integration_n_components, taxonomic_blocks, taxonomic_block_count, representation_scope, learner_display, transformation_fingerprint, resolution_fingerprint, learner_fingerprint, learner_class, learner_params)
-                   VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   (config_id, mpdr_id, count_transformation, resolution, levels, learner, active, candidate_family, modalities, integration, integration_n_components, taxonomic_blocks, taxonomic_block_count, representation_scope, feature_filter, prevalence_threshold, detection_threshold, learner_display, transformation_fingerprint, resolution_fingerprint, learner_fingerprint, learner_class, learner_params)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(config_id) DO UPDATE SET
                      mpdr_id=excluded.mpdr_id, count_transformation=excluded.count_transformation,
                      resolution=excluded.resolution, levels=excluded.levels, learner=excluded.learner,
                      active=1, candidate_family=excluded.candidate_family, modalities=excluded.modalities,
                      integration=excluded.integration, integration_n_components=excluded.integration_n_components,
                      taxonomic_blocks=excluded.taxonomic_blocks, taxonomic_block_count=excluded.taxonomic_block_count,
-                     representation_scope=excluded.representation_scope, learner_display=excluded.learner_display,
+                     representation_scope=excluded.representation_scope, feature_filter=excluded.feature_filter, prevalence_threshold=excluded.prevalence_threshold, detection_threshold=excluded.detection_threshold, learner_display=excluded.learner_display,
                      transformation_fingerprint=excluded.transformation_fingerprint, resolution_fingerprint=excluded.resolution_fingerprint, learner_fingerprint=excluded.learner_fingerprint, learner_class=excluded.learner_class,
                      learner_params=excluded.learner_params""",
                 (
@@ -2586,6 +2616,15 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
                     None
                     if pd.isna(r.get("representation_scope"))
                     else str(r.get("representation_scope")),
+                    None
+                    if pd.isna(r.get("feature_filter"))
+                    else str(r.get("feature_filter")),
+                    None
+                    if pd.isna(r.get("prevalence_threshold"))
+                    else float(r.get("prevalence_threshold")),
+                    None
+                    if pd.isna(r.get("detection_threshold"))
+                    else float(r.get("detection_threshold")),
                     None
                     if pd.isna(r.get("learner_display"))
                     else str(r.get("learner_display")),

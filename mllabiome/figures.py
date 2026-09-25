@@ -177,9 +177,23 @@ def _taxonomic_block_count(levels: Any, resolution: Any, inferred: Any = None) -
     return 0
 
 
-def _parse_transform_identity(value: Any) -> tuple[str, str | None]:
+def _split_transform_filter_identity(value: Any) -> tuple[str, str | None]:
 
     text = str(value).strip()
+
+    marker = "|filter="
+
+    if marker not in text:
+        return text, None
+
+    transformation, feature_filter = text.split(marker, 1)
+
+    return transformation.strip(), feature_filter.strip() or None
+
+
+def _parse_transform_identity(value: Any) -> tuple[str, str | None]:
+
+    text, _ = _split_transform_filter_identity(value)
 
     if "@" in text:
         raw, scope = text.rsplit("@", 1)
@@ -196,16 +210,49 @@ def _canonical_representation_transform(value: Any, multirank: bool) -> str:
 
     base, scope = _parse_transform_identity(value)
 
-    if base not in _COMPOSITION_BASES:
-        return base
+    _, feature_filter = _split_transform_filter_identity(value)
 
-    if not multirank:
-        return base
+    if base in _COMPOSITION_BASES and multirank:
+        identity = f"{base}@{scope or 'rank-wise'}"
 
-    return f"{base}@{scope or 'rank-wise'}"
+    else:
+        identity = base
+
+    if feature_filter is not None:
+        identity = f"{identity}|filter={feature_filter}"
+
+    return identity
 
 
-def _transform_sort_key(value: Any) -> tuple[int, int, str]:
+def _filter_sort_key(value: Any) -> tuple[int, float, float, str]:
+
+    _, feature_filter = _split_transform_filter_identity(value)
+
+    if feature_filter is None:
+        return (0, 0.0, 0.0, "")
+
+    values = {}
+
+    for token in feature_filter.split(","):
+        if "=" not in token:
+            continue
+        key, raw = token.split("=", 1)
+        try:
+            values[key.strip()] = float(raw)
+        except ValueError:
+            continue
+
+    return (
+        1,
+        float(values.get("prevalence", float("inf"))),
+        float(values.get("detection", float("inf"))),
+        feature_filter,
+    )
+
+
+def _transform_sort_key(
+    value: Any,
+) -> tuple[int, int, tuple[int, float, float, str], str]:
 
     base, scope = _parse_transform_identity(value)
 
@@ -213,19 +260,76 @@ def _transform_sort_key(value: Any) -> tuple[int, int, str]:
 
     scope_order = {None: 0, "rank-wise": 1, "joint": 2}
 
-    return (order.get(base, len(order)), scope_order.get(scope, 3), str(value))
+    return (
+        order.get(base, len(order)),
+        scope_order.get(scope, 3),
+        _filter_sort_key(value),
+        str(value),
+    )
+
+
+def _filter_display(value: Any) -> str | None:
+
+    _, feature_filter = _split_transform_filter_identity(value)
+
+    if feature_filter is None:
+        return None
+
+    values = {}
+
+    for token in feature_filter.split(","):
+        if "=" not in token:
+            continue
+        key, raw = token.split("=", 1)
+        try:
+            values[key.strip()] = float(raw)
+        except ValueError:
+            continue
+
+    prevalence = values.get("prevalence")
+
+    detection = values.get("detection")
+
+    if prevalence is None:
+        return feature_filter
+
+    label = f"prev≥{prevalence * 100:g}%"
+
+    if detection is not None and detection > 0.0:
+        label = f"{label}, d>{detection:g}"
+
+    return label
 
 
 def _transform_display(value: Any, include_scope: bool) -> str:
+
+    text = str(value).strip()
+
+    modality_parts = text.split("+")
+
+    if len(modality_parts) > 1 and all(":" in part for part in modality_parts):
+        rendered = []
+        for part in modality_parts:
+            modality, transformation = part.split(":", 1)
+            label = _transform_display(transformation, include_scope).replace("\n", " ")
+            rendered.append(f"{modality.strip()}: {label}")
+        return "\n".join(rendered)
 
     base, scope = _parse_transform_identity(value)
 
     label = _TRANSFORM_DISPLAY.get(base, base.replace("_", " ").strip().title())
 
-    if include_scope and scope in {"rank-wise", "joint"}:
-        return f"{label}\n({scope})"
+    parts = [label]
 
-    return label
+    if include_scope and scope in {"rank-wise", "joint"}:
+        parts.append(f"({scope})")
+
+    feature_filter = _filter_display(value)
+
+    if feature_filter is not None:
+        parts.append(feature_filter)
+
+    return "\n".join(parts)
 
 
 def _semantic_outer_results(df: pd.DataFrame, metric: str) -> pd.DataFrame:
@@ -479,7 +583,7 @@ def _heat_table(
 
     else:
         d["_heat_transform"] = d["_canonical_transform"].map(
-            lambda value: _parse_transform_identity(value)[0]
+            lambda value: _canonical_representation_transform(value, False)
         )
 
     heat = (

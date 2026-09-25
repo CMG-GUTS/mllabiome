@@ -64,6 +64,13 @@ COUNT_TRANSFORMATIONS = (
     # mll.Transformation("hellinger", composition_scope="joint"),
     # # mll.Transformation("relative_abundance", composition_scope="rank-wise"),
     mll.Transformation("relative_abundance", composition_scope="joint"),
+    mll.Transformation(
+        "relative_abundance",
+        composition_scope="joint",
+        feature_filter=mll.PrevalenceFilter(
+            threshold=0.20,
+        ),
+    ),
     # mll.Transformation("clr", composition_scope="rank-wise"),
     # mll.Transformation("clr", composition_scope="joint"),
     mll.Transformation("log10", composition_scope="rank-wise"),
