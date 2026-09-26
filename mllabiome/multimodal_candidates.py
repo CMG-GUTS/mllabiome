@@ -211,9 +211,35 @@ def build_modality_candidates(
         for item in learners
     ]
     specs: list[CandidateSpec] = []
-    for integration in integrations:
-        if integration.stage == "late":
-            continue
+    candidate_integrations = [item for item in integrations if item.stage != "late"]
+    late_integrations = [item for item in integrations if item.stage == "late"]
+    required_late_modalities = {
+        modality
+        for integration in late_integrations
+        for modality_set in integration_modality_sets(integration, modality_names)
+        for modality in modality_set
+    }
+    covered_unimodal_modalities = {
+        modality_set[0]
+        for integration in candidate_integrations
+        if integration.key == "unimodal"
+        for modality_set in integration_modality_sets(integration, modality_names)
+        if len(modality_set) == 1
+    }
+    missing_late_modalities = tuple(
+        name
+        for name in modality_names
+        if name in required_late_modalities and name not in covered_unimodal_modalities
+    )
+    if missing_late_modalities:
+        candidate_integrations.insert(
+            0,
+            Integration(
+                "unimodal",
+                modality_sets=tuple((name,) for name in missing_late_modalities),
+            ),
+        )
+    for integration in candidate_integrations:
         for modality_set in integration_modality_sets(integration, modality_names):
             path_lists = [paths[name] for name in modality_set]
             for selected in itertools.product(*path_lists):

@@ -12,6 +12,7 @@ from . import report as _report_module
 from .console import console, path_table, phase_progress, stage, success
 from .final_models import load_final_models
 from .storage import read_table
+from .utils import report_html_path
 
 _PERCENT_METRICS = {
     "AUROC",
@@ -1459,7 +1460,9 @@ def _remove_mpma_b_section(text: str) -> str:
         return text
     end = text.find(_MPMA_B_SECTION_END, start)
     if end == -1:
-        raise RuntimeError("Malformed MPMA-B composition section in report/index.html")
+        raise RuntimeError(
+            "Malformed MPMA-B composition section in the canonical HTML report"
+        )
     end += len(_MPMA_B_SECTION_END)
     return text[:start] + text[end:]
 
@@ -1486,7 +1489,7 @@ def _replace_procedure_layout(text: str, report_dir: Path) -> str:
     table_end = text.find("</div>", table_start)
     if table_end == -1:
         raise RuntimeError(
-            "Malformed task-definition and evaluation-procedure table in report/index.html"
+            "Malformed task-definition and evaluation-procedure table in the canonical HTML report"
         )
     table_end += len("</div>")
     return text[:table_start] + grid + text[table_end:]
@@ -1511,7 +1514,9 @@ def _insert_mpma_b_composition(
         return text
     table_end = text.find("</div>", table_start)
     if table_end == -1:
-        raise RuntimeError("Malformed Task performance table in report/index.html")
+        raise RuntimeError(
+            "Malformed Task performance table in the canonical HTML report"
+        )
     table_end += len("</div>")
     section = "\n".join(
         [
@@ -1740,7 +1745,9 @@ def _remove_existing_section(text: str) -> str:
         return text
     end = text.find(_SECTION_END, start + len(_SECTION_START))
     if end == -1:
-        raise RuntimeError("Malformed existing pooled-OOF section in report/index.html")
+        raise RuntimeError(
+            "Malformed existing pooled-OOF section in the canonical HTML report"
+        )
     end += len(_SECTION_END)
     return text[:start] + text[end:]
 
@@ -1786,7 +1793,7 @@ def enhance_html_report(
     learner_labels: dict[str, str] | None = None,
 ) -> bool:
     report_dir = Path(report_dir)
-    index_path = report_dir / "index.html"
+    index_path = report_html_path(report_dir.parent)
     if not index_path.exists():
         raise FileNotFoundError(f"Report HTML does not exist: {index_path}")
     section = _section_html(report_dir, n_classes=n_classes)
@@ -1869,7 +1876,7 @@ def _procedure_table_publication(table: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def write_report(sweep: Any) -> dict[str, Path]:
+def write_report(sweep: Any, emit_html: bool = True) -> dict[str, Path]:
     root = Path(sweep.root())
     original_summary = _report_module._ensemble_summary_table
     original_procedure = _report_module._procedure_table
@@ -1897,7 +1904,7 @@ def write_report(sweep: Any) -> dict[str, Path]:
     _report_module._procedure_table = procedure_table
     _report_module._terminal_table = terminal_table
     try:
-        outputs = dict(_report_module.write_report(sweep))
+        outputs = dict(_report_module.write_report(sweep, emit_html=emit_html))
     finally:
         _report_module._ensemble_summary_table = original_summary
         _report_module._procedure_table = original_procedure
@@ -1909,16 +1916,18 @@ def write_report(sweep: Any) -> dict[str, Path]:
         raise RuntimeError(
             "Report statistics did not produce strategy_oof_performance.parquet."
         )
-    with phase_progress("Out-of-fold report integration", 2) as phase:
-        phase.phase("HTML inference section")
-        inserted = enhance_html_report(
-            report_dir,
-            n_classes=_task_class_count(sweep),
-            learner_labels=_report_module._learner_display_map(sweep),
-        )
-        phase.phase("terminal inference summary")
-        if inserted:
-            _terminal_oof_summary(report_dir)
+    inserted = False
+    if emit_html:
+        with phase_progress("Out-of-fold report integration", 2) as phase:
+            phase.phase("HTML inference section")
+            inserted = enhance_html_report(
+                report_dir,
+                n_classes=_task_class_count(sweep),
+                learner_labels=_report_module._learner_display_map(sweep),
+            )
+            phase.phase("terminal inference summary")
+            if inserted:
+                _terminal_oof_summary(report_dir)
     new_outputs = {
         "strategy_oof_performance": tables_dir / "strategy_oof_performance.parquet",
         "strategy_oof_calibration": tables_dir / "strategy_oof_calibration.parquet",
@@ -1943,5 +1952,5 @@ def write_report(sweep: Any) -> dict[str, Path]:
         stage("Out-of-fold inference", str(report_dir))
         path_table("Out-of-fold report outputs", existing)
     if inserted:
-        success("Out-of-fold inference added to index.html")
+        success(f"Out-of-fold inference added to {report_html_path(root).name}")
     return outputs

@@ -50,17 +50,37 @@ def _eligible_config_ids(configs: pd.DataFrame, plan: Any | None = None) -> set[
 
 
 def _qualified_pairs(qualification: pd.DataFrame | None) -> set[tuple[str, str]] | None:
-    if qualification is None or qualification.empty:
+    if qualification is None:
         return None
     required = {"split_key", "config_id", "qualified"}
-    if not required.issubset(qualification.columns):
-        return None
+    missing = required - set(qualification.columns)
+    if missing:
+        raise ValueError(
+            f"Qualification table is missing required columns: {sorted(missing)}"
+        )
     q = qualification.copy()
     q["qualified"] = (
         pd.to_numeric(q["qualified"], errors="coerce").fillna(0).astype(int)
     )
     q = q[q["qualified"].eq(1)]
     return set(zip(q["split_key"].astype(str), q["config_id"].astype(str)))
+
+
+def _qualified_config_ids_for_splits(
+    qualification: pd.DataFrame | None, split_keys: set[str]
+) -> set[str] | None:
+    pairs = _qualified_pairs(qualification)
+    if pairs is None:
+        return None
+    keys = {str(value) for value in split_keys}
+    if not keys:
+        return set()
+    candidates = {config_id for _, config_id in pairs}
+    return {
+        config_id
+        for config_id in candidates
+        if all((split_key, config_id) in pairs for split_key in keys)
+    }
 
 
 def _config_metadata(configs: pd.DataFrame) -> dict[str, dict[str, Any]]:
@@ -190,6 +210,7 @@ def select_final_mpma_candidate(
     configs: pd.DataFrame,
     metric: str,
     plan: Any | None = None,
+    qualification: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     metric = canonical_metric_name(metric)
     eligible_ids = _eligible_config_ids(configs, plan)
@@ -207,6 +228,15 @@ def select_final_mpma_candidate(
     frame[metric] = pd.to_numeric(frame[metric], errors="coerce")
     if eligible_ids:
         frame = frame[frame["config_id"].isin(eligible_ids)]
+    if qualification is not None:
+        if "split_key" not in inner.columns:
+            raise ValueError(
+                "Inner-results table must contain split_key when qualification filtering is enabled."
+            )
+        qualified_ids = _qualified_config_ids_for_splits(
+            qualification, set(inner["split_key"].astype(str).unique())
+        )
+        frame = frame[frame["config_id"].isin(qualified_ids or set())]
     if "ok" in frame.columns:
         ok = pd.to_numeric(frame["ok"], errors="coerce").fillna(0).astype(int)
         frame = frame[ok.eq(1)]
@@ -422,7 +452,9 @@ def write_mpma_b_selection_outputs(
     )
     fold_metrics = mpma_b_fold_metrics(selected_predictions)
     summary = summarize_mpma_b_strategy(fold_metrics)
-    final_candidate = select_final_mpma_candidate(inner, configs, metric, plan=plan)
+    final_candidate = select_final_mpma_candidate(
+        inner, configs, metric, plan=plan, qualification=qualification
+    )
     tables_dir = root / "tables"
     predictions_dir = root / "predictions"
     results_dir = root / "results"

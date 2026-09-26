@@ -29,12 +29,13 @@ from .metrics import (
 from .metrics import metric_better as _metric_better
 from .metrics import metric_is_loss as _metric_is_loss
 from .metrics import metric_requires_probability_semantics
+from .integrations import integration_modality_sets
 from .mpma_e_figure import write_single_task_mpma_e_figure
-from .selection import select_final_mpma_candidate
+from .selection import _qualified_config_ids_for_splits, select_final_mpma_candidate
 from .storage import read_table, table_exists, write_table
 from .utils import TAXONOMIC_LEVELS, dump_json_standard
 
-_ENSEMBLE_SEARCH_SCHEMA = "mpmae_search_v4"
+_ENSEMBLE_SEARCH_SCHEMA = "mpmae_search_v5"
 _SUPER_LEARNER_WEIGHT_TOL = 1e-8
 _SUPER_LEARNER_OPT_MAXITER = 1000
 _SUPER_LEARNER_OPT_FTOL = 1e-12
@@ -127,6 +128,45 @@ def _caruana_controls(max_members: int) -> dict[str, int | float]:
     }
 
 
+def _late_integrations(plan: Ensemble) -> tuple[Any, ...]:
+    return tuple(getattr(plan, "late_integrations", ()))
+
+
+def _unimodal_config_modalities(configs: pd.DataFrame) -> dict[str, str]:
+    required = {"config_id", "modalities"}
+    missing = required - set(configs.columns)
+    if missing:
+        raise ValueError(
+            f"Late fusion requires config metadata columns: {sorted(missing)}"
+        )
+    frame = configs.drop_duplicates("config_id", keep="last").copy()
+    if "candidate_family" in frame.columns:
+        frame = frame[frame["candidate_family"].astype(str).eq("unimodal")]
+    elif "integration" in frame.columns:
+        frame = frame[frame["integration"].astype(str).eq("unimodal")]
+    else:
+        raise ValueError(
+            "Late fusion requires candidate_family or integration metadata to identify unimodal base models."
+        )
+    out: dict[str, str] = {}
+    for row in frame[["config_id", "modalities"]].to_dict(orient="records"):
+        parts = tuple(
+            value.strip()
+            for value in str(row["modalities"]).split(",")
+            if value.strip()
+        )
+        if len(parts) == 1:
+            out[str(row["config_id"])] = parts[0]
+    return out
+
+
+def _late_modality_names(configs: pd.DataFrame) -> tuple[str, ...]:
+    names = tuple(sorted(set(_unimodal_config_modalities(configs).values())))
+    if len(names) < 2:
+        raise ValueError("Late fusion requires at least two unimodal modalities.")
+    return names
+
+
 def _validate_plan(plan: Ensemble) -> None:
     supported_selection = {
         "top_k",
@@ -135,82 +175,148 @@ def _validate_plan(plan: Ensemble) -> None:
         "caruana",
         "super_learner",
     }
-    methods = _plan_methods(plan)
-    if not methods:
+    include_model_ensembles = bool(getattr(plan, "include_model_ensembles", True))
+    late_integrations = _late_integrations(plan)
+    if not include_model_ensembles and not late_integrations:
         raise ValueError(
-            "Ensemble.selection_strategies must contain at least one supported method."
+            "Ensemble search has neither model ensembles nor late integrations enabled."
         )
-    unknown = sorted(set(methods) - supported_selection)
-    if unknown:
-        raise ValueError(
-            f"Unknown ensemble selection strategy(s): {unknown}. "
-            f"Supported strategies: {sorted(supported_selection)}."
-        )
-
-    aggregations = _plan_aggregations(plan)
-    if not aggregations:
-        raise ValueError("Ensemble.aggregation_strategies must be non-empty.")
-    unknown_aggregations = sorted(set(aggregations) - set(SUPPORTED_AGGREGATIONS))
-    if unknown_aggregations:
-        raise ValueError(
-            f"Unknown ensemble aggregation strategy(s): {unknown_aggregations}. "
-            f"Supported strategies: {list(SUPPORTED_AGGREGATIONS)}."
-        )
-
-    metric = canonical_metric_name(str(plan.optimize_metric))
-    if metric_requires_probability_semantics(metric):
-        invalid = sorted(set(aggregations) - set(PROBABILITY_PRESERVING_AGGREGATIONS))
-        if invalid:
+    if include_model_ensembles:
+        methods = _plan_methods(plan)
+        if not methods:
             raise ValueError(
-                f"Ensemble.optimize_metric={metric!r} requires probability-valued aggregation. "
-                f"Remove incompatible aggregation strategy(s) {invalid}; allowed strategies are "
-                f"{sorted(PROBABILITY_PRESERVING_AGGREGATIONS)}."
+                "Ensemble.selection_strategies must contain at least one supported method."
             )
-
-    max_sizes = _plan_max_sizes(plan)
-    if not max_sizes:
-        raise ValueError("Ensemble.max_sizes must be non-empty.")
-    if any(int(x) < 2 for x in max_sizes):
-        raise ValueError("Every Ensemble.max_sizes entry must be at least 2.")
-
-    learned = set(methods) & {"caruana", "super_learner"}
-    simple = set(methods) - {"caruana", "super_learner"}
-    if learned and "weighted_mean_proba" not in aggregations:
+        unknown = sorted(set(methods) - supported_selection)
+        if unknown:
+            raise ValueError(
+                f"Unknown ensemble selection strategy(s): {unknown}. "
+                f"Supported strategies: {sorted(supported_selection)}."
+            )
+        aggregations = _plan_aggregations(plan)
+        if not aggregations:
+            raise ValueError("Ensemble.aggregation_strategies must be non-empty.")
+        unknown_aggregations = sorted(set(aggregations) - set(SUPPORTED_AGGREGATIONS))
+        if unknown_aggregations:
+            raise ValueError(
+                f"Unknown ensemble aggregation strategy(s): {unknown_aggregations}. "
+                f"Supported strategies: {list(SUPPORTED_AGGREGATIONS)}."
+            )
+        metric = canonical_metric_name(str(plan.optimize_metric))
+        if metric_requires_probability_semantics(metric):
+            invalid = sorted(
+                set(aggregations) - set(PROBABILITY_PRESERVING_AGGREGATIONS)
+            )
+            if invalid:
+                raise ValueError(
+                    f"Ensemble.optimize_metric={metric!r} requires probability-valued aggregation. "
+                    f"Remove incompatible aggregation strategy(s) {invalid}; allowed strategies are "
+                    f"{sorted(PROBABILITY_PRESERVING_AGGREGATIONS)}."
+                )
+        max_sizes = _plan_max_sizes(plan)
+        if not max_sizes:
+            raise ValueError("Ensemble.max_sizes must be non-empty.")
+        if any(int(x) < 2 for x in max_sizes):
+            raise ValueError("Every Ensemble.max_sizes entry must be at least 2.")
+        learned = set(methods) & {"caruana", "super_learner"}
+        simple = set(methods) - {"caruana", "super_learner"}
+        if learned and "weighted_mean_proba" not in aggregations:
+            raise ValueError(
+                "Caruana and Super Learner are learned-weight ensemble selectors and require "
+                "aggregation_strategies to include 'weighted_mean_proba'. Add that aggregation "
+                "or remove those selection strategies."
+            )
+        nonweighted = [x for x in aggregations if x != "weighted_mean_proba"]
+        if simple and not nonweighted:
+            raise ValueError(
+                "Simple ensemble selectors do not learn member weights, so they require at least "
+                "one non-weighted aggregation strategy (for example 'mean_proba')."
+            )
+    allowed_late = {
+        "late_mean_proba",
+        "late_weighted_mean_proba",
+        "late_super_learner",
+    }
+    invalid_late = sorted({item.key for item in late_integrations} - allowed_late)
+    if invalid_late:
         raise ValueError(
-            "Caruana and Super Learner are learned-weight ensemble selectors and require "
-            "aggregation_strategies to include 'weighted_mean_proba'. Add that aggregation "
-            "or remove those selection strategies."
-        )
-    nonweighted = [x for x in aggregations if x != "weighted_mean_proba"]
-    if simple and not nonweighted:
-        raise ValueError(
-            "Simple ensemble selectors do not learn member weights, so they require at least "
-            "one non-weighted aggregation strategy (for example 'mean_proba')."
+            f"Unsupported classification late integration(s): {invalid_late}."
         )
 
 
-def _ensemble_configs(plan: Ensemble) -> list[dict[str, Any]]:
+def _ensemble_configs(
+    plan: Ensemble, configs: pd.DataFrame | None = None
+) -> list[dict[str, Any]]:
     _validate_plan(plan)
     rows: list[dict[str, Any]] = []
-    learned_weight_selectors = {"caruana", "super_learner"}
-    for method in _plan_methods(plan):
-        for max_size in _plan_max_sizes(plan):
-            for aggregation in _plan_aggregations(plan):
-                if method in learned_weight_selectors:
-                    if aggregation != "weighted_mean_proba":
+    if bool(getattr(plan, "include_model_ensembles", True)):
+        learned_weight_selectors = {"caruana", "super_learner"}
+        for method in _plan_methods(plan):
+            for max_size in _plan_max_sizes(plan):
+                for aggregation in _plan_aggregations(plan):
+                    if method in learned_weight_selectors:
+                        if aggregation != "weighted_mean_proba":
+                            continue
+                    elif aggregation == "weighted_mean_proba":
                         continue
-                elif aggregation == "weighted_mean_proba":
-                    continue
+                    uid = "__".join(
+                        [
+                            _ENSEMBLE_SEARCH_SCHEMA,
+                            "model_ensemble",
+                            str(plan.optimize_metric),
+                            method,
+                            aggregation,
+                            str(max_size),
+                            _resolved_super_learner_loss(plan)
+                            if method == "super_learner"
+                            else "na",
+                        ]
+                    )
+                    rows.append(
+                        {
+                            "ensemble_config_id": hashlib.sha1(
+                                uid.encode()
+                            ).hexdigest()[:12],
+                            "search_schema": _ENSEMBLE_SEARCH_SCHEMA,
+                            "ensemble_kind": "model_ensemble",
+                            "optimize_metric": str(plan.optimize_metric),
+                            "selection_strategy": method,
+                            "aggregation_strategy": aggregation,
+                            "max_size": int(max_size),
+                        }
+                    )
+    late_integrations = _late_integrations(plan)
+    if late_integrations:
+        if configs is None:
+            raise ValueError(
+                "Late-fusion ensemble configuration requires config metadata."
+            )
+        modality_names = _late_modality_names(configs)
+        aggregation_by_key = {
+            "late_mean_proba": "mean_proba",
+            "late_weighted_mean_proba": "weighted_mean_proba",
+            "late_super_learner": "weighted_mean_proba",
+        }
+        for integration in late_integrations:
+            for modality_set in integration_modality_sets(integration, modality_names):
+                if len(modality_set) < 2:
+                    raise ValueError(
+                        "Late fusion modality sets must contain at least two modalities."
+                    )
+                if len(set(modality_set)) != len(modality_set):
+                    raise ValueError(
+                        "Late fusion modality sets cannot contain duplicate modalities."
+                    )
+                modalities = tuple(str(value) for value in modality_set)
+                aggregation = aggregation_by_key[integration.key]
                 uid = "__".join(
                     [
                         _ENSEMBLE_SEARCH_SCHEMA,
+                        "late_fusion",
                         str(plan.optimize_metric),
-                        method,
+                        integration.key,
                         aggregation,
-                        str(max_size),
-                        _resolved_super_learner_loss(plan)
-                        if method == "super_learner"
-                        else "na",
+                        ",".join(modalities),
                     ]
                 )
                 rows.append(
@@ -219,15 +325,20 @@ def _ensemble_configs(plan: Ensemble) -> list[dict[str, Any]]:
                             :12
                         ],
                         "search_schema": _ENSEMBLE_SEARCH_SCHEMA,
+                        "ensemble_kind": "late_fusion",
                         "optimize_metric": str(plan.optimize_metric),
-                        "selection_strategy": method,
+                        "selection_strategy": integration.key,
                         "aggregation_strategy": aggregation,
-                        "max_size": int(max_size),
+                        "max_size": len(modalities),
+                        "integration": integration.key,
+                        "modalities": json.dumps(list(modalities)),
                     }
                 )
+    unique = {str(row["ensemble_config_id"]): row for row in rows}
+    rows = [unique[key] for key in sorted(unique)]
     if not rows:
         raise ValueError(
-            "The requested selection × aggregation search space has no valid combinations."
+            "The requested ensemble search space has no valid combinations."
         )
     return rows
 
@@ -255,6 +366,7 @@ def _complete_inner_scores(
     outer_split_key: str | None,
     metric: str,
     eligible_ids: set[str],
+    qualification: pd.DataFrame | None = None,
 ) -> pd.Series:
     required = {"inner_key", "config_id"}
     missing = required - set(inner.columns)
@@ -263,14 +375,26 @@ def _complete_inner_scores(
             f"Inner-results table is missing required columns: {sorted(missing)}"
         )
     frame = inner.copy()
+    if qualification is not None and "split_key" not in frame.columns:
+        raise ValueError(
+            "Inner-results table must contain split_key when qualification filtering is enabled."
+        )
     if outer_split_key is not None:
         if "split_key" not in frame.columns:
             raise ValueError("Inner-results table must contain split_key.")
         frame = frame[frame["split_key"].astype(str).eq(str(outer_split_key))]
     frame["config_id"] = frame["config_id"].astype(str)
     frame["inner_key"] = frame["inner_key"].astype(str)
-    frame = frame[frame["config_id"].isin(eligible_ids)]
     expected = set(frame["inner_key"].dropna().astype(str))
+    scope_split_keys = (
+        set(frame["split_key"].astype(str).unique())
+        if "split_key" in frame.columns
+        else ({str(outer_split_key)} if outer_split_key is not None else set())
+    )
+    qualified_ids = _qualified_config_ids_for_splits(qualification, scope_split_keys)
+    if qualified_ids is not None:
+        eligible_ids = set(eligible_ids) & set(qualified_ids)
+    frame = frame[frame["config_id"].isin(eligible_ids)]
     if "ok" in frame.columns:
         ok = pd.to_numeric(frame["ok"], errors="coerce").fillna(0).astype(int)
         frame = frame[ok.eq(1)]
@@ -675,6 +799,43 @@ def _super_learner_loss(
     raise ValueError(f"Unknown Super Learner loss: {loss!r}.")
 
 
+def _fit_convex_probability_weights(
+    stack: np.ndarray,
+    y_true: np.ndarray,
+    loss: str,
+    start: np.ndarray | None = None,
+) -> np.ndarray:
+    n_members = int(stack.shape[0])
+    if n_members < 2:
+        raise ValueError("Convex probability weighting requires at least two members.")
+    x0 = (
+        _uniform_weights(n_members) if start is None else np.asarray(start, dtype=float)
+    )
+    x0 = np.clip(x0, 0.0, None)
+    if not np.isfinite(x0).all() or float(x0.sum()) <= 0.0:
+        raise ValueError("Initial convex ensemble weights are invalid.")
+    x0 /= float(x0.sum())
+    result = minimize(
+        _super_learner_loss,
+        x0,
+        args=(stack, y_true, str(loss)),
+        method="SLSQP",
+        bounds=[(0.0, 1.0)] * n_members,
+        constraints=[{"type": "eq", "fun": lambda w: float(np.sum(w) - 1.0)}],
+        options={
+            "maxiter": _SUPER_LEARNER_OPT_MAXITER,
+            "ftol": _SUPER_LEARNER_OPT_FTOL,
+            "disp": False,
+        },
+    )
+    if not bool(result.success):
+        raise RuntimeError(f"Super Learner optimization failed: {result.message}")
+    values = np.clip(np.asarray(result.x, dtype=float), 0.0, None)
+    if not np.all(np.isfinite(values)) or float(values.sum()) <= 0.0:
+        raise RuntimeError("Super Learner returned invalid ensemble weights.")
+    return values / float(values.sum())
+
+
 def _fit_super_learner(
     member_ids: list[str],
     stack: np.ndarray,
@@ -686,37 +847,8 @@ def _fit_super_learner(
         raise ValueError("Super Learner library and prediction stack are inconsistent.")
     if max_members < 2:
         raise ValueError("Super Learner max_members must be at least 2.")
-
-    def optimise(local_stack: np.ndarray, x0: np.ndarray | None = None) -> np.ndarray:
-        n_members = local_stack.shape[0]
-        start = (
-            _uniform_weights(n_members) if x0 is None else np.asarray(x0, dtype=float)
-        )
-        start = np.clip(start, 0.0, None)
-        start /= start.sum()
-        result = minimize(
-            _super_learner_loss,
-            start,
-            args=(local_stack, y_true, str(loss)),
-            method="SLSQP",
-            bounds=[(0.0, 1.0)] * n_members,
-            constraints=[{"type": "eq", "fun": lambda w: float(np.sum(w) - 1.0)}],
-            options={
-                "maxiter": _SUPER_LEARNER_OPT_MAXITER,
-                "ftol": _SUPER_LEARNER_OPT_FTOL,
-                "disp": False,
-            },
-        )
-        if not bool(result.success):
-            raise RuntimeError(f"Super Learner optimization failed: {result.message}")
-        values = np.clip(np.asarray(result.x, dtype=float), 0.0, None)
-        if not np.all(np.isfinite(values)) or values.sum() <= 0.0:
-            raise RuntimeError("Super Learner returned invalid ensemble weights.")
-        return values / values.sum()
-
-    full_weights = optimise(stack)
+    full_weights = _fit_convex_probability_weights(stack, y_true, loss)
     keep = np.flatnonzero(full_weights > _SUPER_LEARNER_WEIGHT_TOL).tolist()
-
     if len(keep) < 2:
         order = sorted(
             range(len(member_ids)),
@@ -731,7 +863,7 @@ def _fit_super_learner(
     keep = sorted(keep)
     kept_stack = stack[keep]
     initial = full_weights[keep]
-    kept_weights = optimise(kept_stack, initial)
+    kept_weights = _fit_convex_probability_weights(kept_stack, y_true, loss, initial)
     kept_ids = [member_ids[i] for i in keep]
     final_loss = _super_learner_loss(kept_weights, kept_stack, y_true, str(loss))
     return (kept_ids, kept_weights, float(final_loss))
@@ -770,6 +902,164 @@ def _candidate_from_simple_selector(
         metric,
         extra={"inner_oof_rows": len(ordered), "selection_weight_source": "none"},
     )
+
+
+def _late_fusion_members(
+    spec: dict[str, Any], scores: pd.Series, configs: pd.DataFrame
+) -> tuple[list[str], list[str]]:
+    modalities = [str(value) for value in json.loads(str(spec["modalities"]))]
+    config_modalities = _unimodal_config_modalities(configs)
+    ordered = [str(value) for value in scores.index.tolist()]
+    members: list[str] = []
+    for modality in modalities:
+        member = next(
+            (
+                config_id
+                for config_id in ordered
+                if config_modalities.get(config_id) == modality
+            ),
+            None,
+        )
+        if member is None:
+            return [], modalities
+        members.append(member)
+    return members, modalities
+
+
+def _fit_late_weighted_mean(
+    stack: np.ndarray, y_true: np.ndarray, metric: str
+) -> tuple[np.ndarray, list[float], dict[str, Any]]:
+    n_members = int(stack.shape[0])
+    if n_members < 2:
+        raise ValueError("Late weighted fusion requires at least two modalities.")
+    counts = np.ones(n_members, dtype=float)
+    running = np.sum(stack, axis=0)
+    current_size = n_members
+    best_score = _metric_value(y_true, running / float(current_size), metric)
+    best_counts = counts.copy()
+    trajectory = [float(best_score)]
+    controls = _caruana_controls(n_members)
+    stale = 0
+    stop_reason = "iteration_ceiling"
+    max_iterations = max(n_members, int(controls["max_iterations"]))
+    min_iterations = max(n_members, int(controls["min_iterations"]))
+    patience = int(controls["patience"])
+    improvement_tol = float(controls["improvement_tol"])
+    while current_size < max_iterations:
+        candidates: list[tuple[float, int]] = []
+        for index in range(n_members):
+            proba = (running + stack[index]) / float(current_size + 1)
+            candidates.append((_metric_value(y_true, proba, metric), index))
+        candidates.sort(
+            key=lambda item: (
+                (item[0], item[1]) if _metric_is_loss(metric) else (-item[0], item[1])
+            )
+        )
+        score, selected = candidates[0]
+        counts[selected] += 1.0
+        running += stack[selected]
+        current_size += 1
+        trajectory.append(float(score))
+        if _metric_better(score, best_score, metric, tol=improvement_tol):
+            best_score = float(score)
+            best_counts = counts.copy()
+            stale = 0
+        else:
+            stale += 1
+        if current_size >= min_iterations and stale >= patience:
+            stop_reason = "converged"
+            break
+    weights = best_counts / float(best_counts.sum())
+    diagnostics = {
+        "late_weight_iterations_executed": int(current_size),
+        "late_weight_stop_reason": stop_reason,
+        "late_weight_internal_iteration_ceiling": int(max_iterations),
+        "late_weight_internal_patience": int(patience),
+        "late_weight_internal_min_iterations": int(min_iterations),
+        "late_weight_internal_improvement_tol": float(improvement_tol),
+    }
+    return weights, trajectory, diagnostics
+
+
+def _candidate_from_late_fusion(
+    spec: dict[str, Any],
+    scores: pd.Series,
+    predictions: pd.DataFrame,
+    configs: pd.DataFrame,
+    pcols: list[str],
+    plan: Ensemble,
+    metric: str,
+) -> dict[str, Any] | None:
+    members, modalities = _late_fusion_members(spec, scores, configs)
+    if len(members) != len(modalities) or len(members) < 2:
+        return None
+    ordered, stack = _aligned_stack(predictions, members, pcols, inner=True)
+    if ordered is None or stack is None:
+        return None
+    y_true = ordered["y_true"].to_numpy(dtype=int)
+    integration = str(spec["integration"])
+    extra: dict[str, Any] = {
+        "inner_oof_rows": len(ordered),
+        "candidate_library_policy": "best_complete_unimodal_mpma_per_modality",
+        "candidate_library_size": len(members),
+        "late_modalities": json.dumps(modalities),
+    }
+    if integration == "late_mean_proba":
+        return _evaluate_selected_members(
+            spec, members, stack, y_true, metric, extra=extra
+        )
+    if integration == "late_weighted_mean_proba":
+        weights, trajectory, diagnostics = _fit_late_weighted_mean(
+            stack, y_true, metric
+        )
+        extra.update(
+            {
+                "selection_weight_source": "late_caruana_selection_frequency",
+                "late_weight_trajectory": json.dumps(
+                    [float(value) for value in trajectory]
+                ),
+                **diagnostics,
+            }
+        )
+        return _evaluate_selected_members(
+            spec,
+            members,
+            stack,
+            y_true,
+            metric,
+            native_weights=weights,
+            native_weight_source="late_caruana_selection_frequency",
+            extra=extra,
+        )
+    if integration == "late_super_learner":
+        loss = _resolved_super_learner_loss(plan)
+        weights = _fit_convex_probability_weights(stack, y_true, loss)
+        if int(np.count_nonzero(weights > _SUPER_LEARNER_WEIGHT_TOL)) < 2:
+            return None
+        loss_value = _super_learner_loss(weights, stack, y_true, loss)
+        extra.update(
+            {
+                "selection_weight_source": f"late_convex_{loss}",
+                "super_learner_loss": loss,
+                "super_learner_loss_rule": "brier_if_optimize_metric_is_brier_else_log_loss",
+                "super_learner_loss_value": float(loss_value),
+                "super_learner_internal_weight_tol": float(_SUPER_LEARNER_WEIGHT_TOL),
+                "super_learner_internal_optimizer": "SLSQP",
+                "super_learner_internal_maxiter": int(_SUPER_LEARNER_OPT_MAXITER),
+                "super_learner_internal_ftol": float(_SUPER_LEARNER_OPT_FTOL),
+            }
+        )
+        return _evaluate_selected_members(
+            spec,
+            members,
+            stack,
+            y_true,
+            metric,
+            native_weights=weights,
+            native_weight_source=f"late_convex_{loss}",
+            extra=extra,
+        )
+    raise ValueError(f"Unsupported late integration {integration!r}.")
 
 
 def _candidate_from_caruana(
@@ -900,13 +1190,19 @@ def _candidate_table_for_inner(
     plan: Ensemble,
     metric: str,
     outer_split_key: str | None,
+    qualification: pd.DataFrame | None = None,
     progress_callback=None,
     progress_scope: str | None = None,
 ) -> pd.DataFrame:
     _validate_plan(plan)
     eligible = _eligible_config_ids(configs, plan)
     scores = _complete_inner_scores(
-        inner_results, inner_predictions, outer_split_key, metric, eligible
+        inner_results,
+        inner_predictions,
+        outer_split_key,
+        metric,
+        eligible,
+        qualification,
     )
     if scores.empty:
         return pd.DataFrame()
@@ -916,7 +1212,7 @@ def _candidate_table_for_inner(
     if not pcols:
         raise ValueError("Inner predictions do not contain probability columns.")
     rows: list[dict[str, Any]] = []
-    specs = _ensemble_configs(plan)
+    specs = _ensemble_configs(plan, configs)
     scope = str(progress_scope or outer_split_key or "__final__")
     for index, spec in enumerate(specs, start=1):
         if progress_callback is not None:
@@ -925,7 +1221,11 @@ def _candidate_table_for_inner(
         failed = False
         try:
             method = str(spec["selection_strategy"])
-            if method in {"top_k", "best_per_resolution", "best_per_learner_type"}:
+            if str(spec.get("ensemble_kind", "model_ensemble")) == "late_fusion":
+                row = _candidate_from_late_fusion(
+                    spec, scores, pred, configs, pcols, plan, metric
+                )
+            elif method in {"top_k", "best_per_resolution", "best_per_learner_type"}:
                 row = _candidate_from_simple_selector(
                     spec, scores, pred, configs, pcols, metric
                 )
@@ -1013,6 +1313,7 @@ def select_mpma_e_by_outer_fold(
     configs: pd.DataFrame,
     plan: Ensemble,
     metric: str,
+    qualification: pd.DataFrame | None = None,
     progress_callback=None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     _validate_plan(plan)
@@ -1034,6 +1335,7 @@ def select_mpma_e_by_outer_fold(
             plan,
             metric,
             outer_key,
+            qualification=qualification,
             progress_callback=progress_callback,
             progress_scope=outer_key,
         )
@@ -1048,8 +1350,8 @@ def select_mpma_e_by_outer_fold(
                 outer_key,
                 "selected",
                 winner,
-                len(_ensemble_configs(plan)),
-                len(_ensemble_configs(plan)),
+                len(_ensemble_configs(plan, configs)),
+                len(_ensemble_configs(plan, configs)),
                 f"inner {metric}={float(winner[score_col]):.4f}",
             )
         members = [str(x) for x in _parse_json_list(winner["members"], "members")]
@@ -1166,6 +1468,7 @@ def select_final_mpma_e_candidate(
     plan: Ensemble,
     metric: str,
     member_score_metric: str | None = None,
+    qualification: pd.DataFrame | None = None,
     progress_callback=None,
 ) -> tuple[dict[str, Any], pd.DataFrame]:
     candidates = _candidate_table_for_inner(
@@ -1175,6 +1478,7 @@ def select_final_mpma_e_candidate(
         plan,
         metric,
         None,
+        qualification=qualification,
         progress_callback=progress_callback,
         progress_scope="__final__",
     )
@@ -1188,8 +1492,8 @@ def select_final_mpma_e_candidate(
             "__final__",
             "selected",
             first,
-            len(_ensemble_configs(plan)),
-            len(_ensemble_configs(plan)),
+            len(_ensemble_configs(plan, configs)),
+            len(_ensemble_configs(plan, configs)),
             f"inner {metric}={float(first['inner_score']):.4f}"
             if "inner_score" in first
             else f"inner {metric}={float(first[f'{metric}_mean']):.4f}",
@@ -1251,12 +1555,20 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
     inner_results = read_table(inner_result_path)
     inner_predictions = read_table(inner_prediction_path)
     configs = read_table(config_path)
+    qualification = None
+    if sweep.gate.enabled:
+        qualification_path = root / "tables" / "qualification_gate.parquet"
+        if not table_exists(qualification_path):
+            raise FileNotFoundError(
+                "Qualification gate is enabled but qualification_gate.parquet is missing. Rerun evaluate(sweep)."
+            )
+        qualification = read_table(qualification_path)
     metric = canonical_metric_name(str(sweep.ensemble.optimize_metric))
     stage("Ensemble sweep", str(root))
     summary_table(
         "Ensemble search",
         {
-            "candidate ensemble configurations": f"{len(_ensemble_configs(sweep.ensemble)):,}",
+            "candidate ensemble configurations": f"{len(_ensemble_configs(sweep.ensemble, configs)):,}",
             "selection strategies": _plan_methods(sweep.ensemble),
             "aggregation strategies": _plan_aggregations(sweep.ensemble),
             "max sizes": _plan_max_sizes(sweep.ensemble),
@@ -1276,7 +1588,7 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
         )
     ).start()
     outer_keys = sorted(set(inner_results["split_key"].astype(str)))
-    ensemble_specs = _ensemble_configs(sweep.ensemble)
+    ensemble_specs = _ensemble_configs(sweep.ensemble, configs)
     with EnsembleSearchProgress(
         outer_keys + ["__final__"], len(ensemble_specs)
     ) as live:
@@ -1288,6 +1600,7 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
                 configs,
                 sweep.ensemble,
                 metric,
+                qualification=qualification,
                 progress_callback=live.update,
             )
         )
@@ -1307,6 +1620,7 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
             sweep.ensemble,
             metric,
             member_score_metric,
+            qualification=qualification,
             progress_callback=live.update,
         )
     if not final_ensemble:
@@ -1319,6 +1633,7 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
         configs,
         canonical_metric_name(str(sweep.evaluation.optimize_metric)),
         plan=sweep.ensemble,
+        qualification=qualification,
     )
     selection_path = ensemble_dir / "mpma_e_outer_selection.parquet"
     prediction_path = ensemble_dir / "ensemble_predictions.parquet"

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mllabiome"
 dynamic = ["version"]
-description = "Machine learning, ensemble learning, multimodal modeling, and explainable AI for microbiome data with rigorously leakage-controlled machine learning evaluation."
+description = "Machine learning, ensemble learning, multimodal modeling, and explainable AI for microbiome data with end to end evaluation."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"

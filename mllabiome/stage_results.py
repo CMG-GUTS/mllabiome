@@ -10,7 +10,7 @@ import pandas as pd
 from .configs_sweep import Sweep, target_sweeps
 from .console import summary_table, warn
 from .storage import read_table, table_exists
-from .utils import tail_ellipsis
+from .utils import report_html_path, tail_ellipsis
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -445,8 +445,6 @@ def _explore_rows(sweep: Sweep) -> list[tuple[str, object]]:
                         ),
                     )
                 )
-        if (root / "index.html").exists():
-            rows.append((f"{target} · report", str(root / "index.html")))
     return rows
 
 
@@ -496,8 +494,8 @@ def _inference_rows(sweep: Sweep) -> list[tuple[str, object]]:
 
 
 def _report_rows(sweep: Sweep) -> list[tuple[str, object]]:
-    index = Path(sweep.root()) / "report" / "index.html"
-    return [("Status", "HTML report generated")] if index.exists() else []
+    path = report_html_path(sweep.root())
+    return [("Report", str(path))] if path.exists() else []
 
 
 def print_stage_results(sweep: Sweep, stage_name: str) -> None:

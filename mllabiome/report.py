@@ -20,7 +20,12 @@ from .metrics import canonical_metric_name, compute_metrics, metric_is_loss
 from .report_compute import run_compute_accounting
 from .report_statistics import run_report_statistics
 from .storage import read_table, table_exists, write_table
-from .utils import TAXONOMIC_LEVELS, dump_json_standard
+from .utils import (
+    TAXONOMIC_LEVELS,
+    dump_json_standard,
+    prepare_report_html_path,
+    report_html_path,
+)
 
 _METRICS = [
     ("AUROC", "AUROC"),
@@ -3378,9 +3383,9 @@ def _report_outputs(
     tables_dir: Path,
     analysis: _ReportAnalysis,
     tables: _ReportTables,
+    emit_html: bool,
 ) -> dict[str, Path]:
-    return {
-        "html_report": report_dir / "index.html",
+    outputs = {
         "strategy_outer_unit_metrics": analysis.statistics.get(
             "unit_metrics_path", tables_dir / "strategy_outer_unit_metrics.parquet"
         ),
@@ -3402,19 +3407,24 @@ def _report_outputs(
         "important_features": tables.feature_summary_path,
         "hardware_environment": tables.hardware_summary_path,
     }
+    if emit_html:
+        outputs = {"html_report": report_html_path(report_dir.parent), **outputs}
+    return outputs
 
 
-def write_report(sweep: Sweep) -> dict[str, Path]:
+def write_report(sweep: Sweep, emit_html: bool = True) -> dict[str, Path]:
     root = sweep.root()
     report_dir, tables_dir = _prepare_report_directories(root)
     stage("Report", str(report_dir))
     analysis = _analyze_report(sweep, root)
     visuals = _build_report_visuals(sweep, root, report_dir)
     tables = _write_report_tables(root, tables_dir, analysis)
-    (report_dir / "index.html").write_text(
-        _render_report_html(sweep, analysis, visuals, tables),
-        encoding="utf-8",
-    )
+    html_path = prepare_report_html_path(root, emit_html=emit_html)
+    if emit_html:
+        html_path.write_text(
+            _render_report_html(sweep, analysis, visuals, tables),
+            encoding="utf-8",
+        )
     _write_report_manifest(sweep, report_dir, visuals)
     _print_report_summary(
         sweep,
@@ -3429,6 +3439,6 @@ def write_report(sweep: Sweep) -> dict[str, Path]:
         compute_environment=analysis.compute_environment,
     )
     success("Report completed")
-    outputs = _report_outputs(report_dir, tables_dir, analysis, tables)
+    outputs = _report_outputs(report_dir, tables_dir, analysis, tables, emit_html)
     path_table("Report outputs", outputs)
     return outputs

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import inspect
 from collections.abc import Callable
@@ -1393,13 +1394,22 @@ class CountTransformationAdapter:
                     random_state=self.random_state,
                     composition_scope="joint",
                 )
-            return self.spec
+            return _fresh_custom_transformer(self.spec)
         if isinstance(self.spec, BaseEstimator):
             return clone(self.spec)
-        if hasattr(self.spec, "fit") or hasattr(self.spec, "apply"):
-            return self.spec
+        if (
+            hasattr(self.spec, "fit")
+            or hasattr(self.spec, "apply")
+            or hasattr(self.spec, "transform")
+        ):
+            return _fresh_custom_transformer(self.spec)
         if callable(self.spec) and _callable_looks_like_factory(self.spec):
-            return self.spec()
+            obj = self.spec()
+            if obj is self.spec:
+                raise TypeError(
+                    "Custom transformation factories must return a fresh object for every fit."
+                )
+            return obj
         if callable(self.spec) and _callable_accepts_two_required(self.spec):
             raise TypeError(
                 "Two-array custom transformation callables are not supported. Use an estimator-like object with fit(X_train) and transform/apply(X), or a stateless one-array callable."
@@ -1738,6 +1748,28 @@ class CountTransformationAdapter:
     def fit_apply(self, X: np.ndarray) -> np.ndarray:
         self.fit(X)
         return self.apply(X)
+
+
+def _fresh_custom_transformer(spec: Any) -> Any:
+    fresh = getattr(spec, "fresh", None)
+    if callable(fresh):
+        obj = fresh()
+        if obj is spec:
+            raise TypeError(
+                "Custom transformation fresh() must return a distinct object for every fit."
+            )
+        return obj
+    try:
+        obj = copy.deepcopy(spec)
+    except Exception as exc:
+        raise TypeError(
+            "Stateful custom transformations must support fresh(), sklearn clone(), deepcopy(), or be provided as a zero-argument factory."
+        ) from exc
+    if obj is spec:
+        raise TypeError(
+            "Stateful custom transformations must produce a distinct object for every fit."
+        )
+    return obj
 
 
 def _callable_looks_like_factory(fn: Callable[..., Any]) -> bool:

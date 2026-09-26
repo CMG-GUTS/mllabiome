@@ -22,7 +22,12 @@ from .report_statistics import (
     _paired_bootstrap_difference,
 )
 from .storage import read_table, table_exists, write_table
-from .utils import REGRESSION_METRIC_COLUMNS, dump_json_standard
+from .utils import (
+    REGRESSION_METRIC_COLUMNS,
+    dump_json_standard,
+    prepare_report_html_path,
+    report_html_path,
+)
 
 _REGRESSION_DISPLAY_METRICS = (
     "RMSE",
@@ -1179,7 +1184,7 @@ def _regression_explainability_blocks(
     return "".join(parts), count
 
 
-def write_regression_report(sweep: Sweep) -> dict[str, Path]:
+def write_regression_report(sweep: Sweep, emit_html: bool = True) -> dict[str, Path]:
 
     root = Path(sweep.root())
 
@@ -1351,9 +1356,10 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
 
     html_text = _report._sanitize_report_html(html_text)
 
-    html_path = report_dir / "index.html"
+    html_path = prepare_report_html_path(root, emit_html=emit_html)
 
-    html_path.write_text(html_text, encoding="utf-8")
+    if emit_html:
+        html_path.write_text(html_text, encoding="utf-8")
 
     manifest_path = report_dir / "report_manifest.json"
 
@@ -1375,7 +1381,6 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
     )
 
     outputs = {
-        "html_report": html_path,
         "strategy_outer_unit_metrics": outer_units_path,
         "strategy_metrics_bootstrap": statistics_path,
         "strategy_pairwise_tests": pairwise_path,
@@ -1389,6 +1394,8 @@ def write_regression_report(sweep: Sweep) -> dict[str, Path]:
         "important_features": feature_summary_path,
         "hardware_environment": hardware_summary_path,
     }
+    if emit_html:
+        outputs = {"html_report": html_path, **outputs}
 
     _report._print_report_summary(
         sweep,
@@ -1741,7 +1748,7 @@ def write_multi_target_report(
 
     html_text = _report._sanitize_report_html(html_text)
 
-    html_path = report_dir / "index.html"
+    html_path = prepare_report_html_path(root)
 
     html_path.write_text(html_text, encoding="utf-8")
 
@@ -1810,7 +1817,6 @@ def write_multi_target_report(
                 {
                     "target": str(child.data.target_col),
                     "task": _target_task(child.data, str(child.data.target_col)),
-                    "report": child.root() / "report" / "index.html",
                 }
                 for child in children
             ],
@@ -1885,9 +1891,9 @@ def write_task_report(sweep: Sweep) -> dict[str, Any]:
             task = _target_task(child.data, str(child.data.target_col))
 
             target_outputs[str(child.data.target_col)] = (
-                write_regression_report(child)
+                write_regression_report(child, emit_html=False)
                 if task == "regression"
-                else write_report(child)
+                else write_report(child, emit_html=False)
             )
 
         combined = write_multi_target_report(sweep, children)

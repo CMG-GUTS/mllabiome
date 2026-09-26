@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import html
 import math
 from pathlib import Path
 from typing import Any
@@ -2518,29 +2517,6 @@ def _plot_da_volcano(frame: pd.DataFrame, path: Path, explore: Any) -> Path | No
     return path
 
 
-def _summary_cards(
-    dataset: Dataset, scale: str, rank: str, names: list[str], clusters: np.ndarray
-) -> list[tuple[str, str]]:
-    return [
-        ("Samples", f"{len(dataset.sample_ids):,}"),
-        ("Dependence clusters", f"{pd.Series(clusters).nunique():,}"),
-        ("Taxonomic rank", rank),
-        ("Features", f"{len(names):,}"),
-        ("Input scale", scale.replace("_", " ")),
-    ]
-
-
-def _html_table(frame: pd.DataFrame, limit: int = 25) -> str:
-    if frame.empty:
-        return '<p class="muted">No estimable rows.</p>'
-    display = frame.head(int(limit)).copy()
-    for column in display.select_dtypes(include=["float"]).columns:
-        display[column] = display[column].map(
-            lambda value: "" if pd.isna(value) else f"{float(value):.4g}"
-        )
-    return display.to_html(index=False, border=0, classes="dataframe")
-
-
 def _metric_label(value: Any) -> str:
     labels = {
         "observed_richness": "Observed richness",
@@ -2882,97 +2858,6 @@ def _da_display_table(frame: pd.DataFrame, confidence_level: float) -> pd.DataFr
     return pd.DataFrame(rows)
 
 
-def _write_html(
-    path: Path,
-    title: str,
-    dataset: Dataset,
-    rank_outputs: list[dict[str, Any]],
-    cards: list[tuple[str, str]],
-    cluster_source: str,
-    confidence_level: float,
-) -> Path:
-    card_html = "".join(
-        f'<div class="card"><div class="card-value">{html.escape(value)}</div><div class="card-label">{html.escape(label)}</div></div>'
-        for label, value in cards
-    )
-    sections = []
-    captions = {
-        "Alpha diversity": "Sample-level alpha-diversity distributions. Exact dependence-aware effect estimates and multiplicity-adjusted P values are reported immediately below.",
-        "Aitchison PCoA": "Aitchison principal coordinates analysis of centered-log-ratio (CLR) community profiles. For classification tasks, outlines are descriptive 80% covariance ellipses showing within-group concentration; they are not confidence regions. PERMANOVA tests whether community composition differs with the target, while PERMDISP checks whether apparent separation could reflect unequal within-group dispersion. Exact results are reported immediately below.",
-        "CLR abundance structure": "Standardized CLR abundance structure for prevalent, high-variance taxa. Slate denotes lower standardized CLR abundance, near-white denotes values near the taxon-specific mean and blue denotes higher standardized CLR abundance. This panel is descriptive and is intended to expose sample- and taxon-level structure rather than provide taxon-wise inference.",
-        "Differential abundance and taxon associations": "Differential-abundance or taxon-association volcano. Straight dashed leaders connect selected feature labels to their points. Exact estimates, confidence intervals, prevalence and FDR-adjusted P values are reported immediately below.",
-    }
-    for output in rank_outputs:
-        rank = str(output["rank"])
-        figures = output["figures"]
-        beta = _beta_display_table(output["beta_statistics"])
-        alpha = _alpha_display_table(output["alpha_statistics"], confidence_level)
-        alpha_context = _alpha_inference_context(
-            output["alpha_statistics"], confidence_level
-        )
-        da = output["differential_abundance"]
-        da_results = _da_display_table(
-            da.get("results", pd.DataFrame()), confidence_level
-        )
-        da_method = str(da.get("method", ""))
-        da_model = str(da.get("model", ""))
-        da_note = f"Primary taxon-level analysis: {da_method}. {da_model}".strip()
-        blocks = []
-        for label in (
-            "Alpha diversity",
-            "Aitchison PCoA",
-            "CLR abundance structure",
-            "Differential abundance and taxon associations",
-        ):
-            figure = figures.get(label)
-            if figure is None:
-                continue
-            rel = Path(figure).relative_to(path.parent).as_posix()
-            wide = label in {
-                "Alpha diversity",
-                "CLR abundance structure",
-                "Differential abundance and taxon associations",
-            }
-            caption = captions[label]
-            if label == "Alpha diversity" and alpha_context:
-                caption = f"{caption} {alpha_context}"
-            blocks.append(
-                f'<figure class="{"figure-wide" if wide else ""}"><img src="{html.escape(rel)}" alt="{html.escape(label)}"><figcaption>{html.escape(caption)}</figcaption></figure>'
-            )
-            if label == "Alpha diversity" and not alpha.empty:
-                blocks.append(
-                    '<div class="table-block"><h3>Alpha-diversity inference</h3>'
-                    + _html_table(alpha)
-                    + "</div>"
-                )
-            elif label == "Aitchison PCoA" and not beta.empty:
-                blocks.append(
-                    '<div class="table-block"><h3>Beta-diversity inference</h3>'
-                    + _html_table(beta)
-                    + "</div>"
-                )
-            elif label == "Differential abundance and taxon associations":
-                method_html = (
-                    f'<p class="muted">{html.escape(da_note)}</p>' if da_note else ""
-                )
-                blocks.append(
-                    '<div class="table-block"><h3>Differential abundance and taxon associations</h3>'
-                    + method_html
-                    + _html_table(da_results)
-                    + "</div>"
-                )
-        sections.append(
-            f'<section><div class="section-kicker">{html.escape(rank)}</div><h2>{html.escape(rank.title())} ecological structure and inference</h2>{"".join(blocks)}</section>'
-        )
-    css = """
-:root{--ink:#0f172a;--muted:#64748b;--line:#e2e8f0;--panel:#f8fafc;--accent:#1565A8}*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font-family:Arial,Helvetica,sans-serif;line-height:1.45}.wrap{max-width:1180px;margin:0 auto;padding:48px 40px 80px}.eyebrow{font-size:12px;text-transform:uppercase;letter-spacing:.13em;color:var(--accent);font-weight:700}h1{font-size:34px;line-height:1.08;margin:8px 0 10px;letter-spacing:-.025em}h2{font-size:24px;margin:4px 0 22px;letter-spacing:-.015em}h3{font-size:15px;margin:0 0 10px}.lede{color:var(--muted);max-width:850px;font-size:15px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin:28px 0 36px}.card{border:1px solid var(--line);border-radius:10px;padding:16px;background:#fff}.card-value{font-size:21px;font-weight:700}.card-label{font-size:11px;color:var(--muted);margin-top:3px}.note{border-left:2px solid var(--accent);padding:10px 14px;background:#f8fbff;color:#334155;font-size:13px;margin:22px 0 38px}.section-kicker{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--accent);font-weight:700}section{padding:34px 0;border-top:1px solid var(--line)}figure{margin:28px 0 8px;border-top:1px solid var(--line);padding:16px 0 0;background:#fff}figure img{width:auto;max-width:100%;height:auto;display:block;max-height:760px;object-fit:contain}figcaption{font-size:11px;color:var(--muted);padding:9px 3px 2px;max-width:960px}.table-block{margin:10px 0 34px}.dataframe{border-collapse:collapse;width:100%;font-size:11px;display:block;overflow:auto;font-variant-numeric:tabular-nums}.dataframe th,.dataframe td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}.dataframe th{font-weight:700;background:var(--panel);position:sticky;top:0}.dataframe tbody tr:hover{background:#fbfdff}.muted{color:var(--muted);font-size:12px}@media(max-width:760px){.wrap{padding:28px 18px 56px}h1{font-size:28px}}
-"""
-    content = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)} · Explore</title><style>{css}</style></head><body><main class="wrap"><div class="eyebrow">mllabiome data exploration</div><h1>{html.escape(title)}</h1><p class="lede">Exploration is organized around non-redundant scientific questions: within-sample diversity, between-sample community geometry, multivariate abundance structure, and taxon-level association. Exact inferential values are shown in tables rather than duplicated as decorative plots.</p><div class="cards">{card_html}</div><div class="note">Dependence unit: <strong>{html.escape(cluster_source)}</strong>. Metadata declarations identify available variables but do not imply causal adjustment; differential-abundance covariates are included only when explicitly specified.</div>{"".join(sections)}</main></body></html>"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    return path
-
-
 def _available_ranks(dataset: Dataset, requested: tuple[str, ...]) -> tuple[str, ...]:
     available = tuple(
         level
@@ -3008,10 +2893,12 @@ def run_explore(sweep: Any) -> dict[str, Any]:
     clusters, cluster_source = _cluster_ids(sweep, dataset)
     root = Path(sweep.root()) / "explore"
     root.mkdir(parents=True, exist_ok=True)
+    legacy_report = root / "index.html"
+    if legacy_report.exists():
+        legacy_report.unlink()
     rank_outputs = []
     manifest_ranks = []
-    cards = []
-    for rank_index, rank in enumerate(ranks):
+    for rank in ranks:
         X = np.asarray(dataset.X_by_level[rank], dtype=float)
         names = list(dataset.feature_names_by_level[rank])
         relative, totals = _relative_abundance(X)
@@ -3116,8 +3003,6 @@ def run_explore(sweep: Any) -> dict[str, Any]:
             }
         )
         manifest_ranks.append(payload)
-        if rank_index == 0:
-            cards = _summary_cards(dataset, scale, rank, names, clusters)
     manifest = {
         "stage": "explore",
         "target": dataset.target_name,
@@ -3140,17 +3025,7 @@ def run_explore(sweep: Any) -> dict[str, Any]:
     }
     manifest_path = root / "manifest.json"
     dump_json_standard(manifest, manifest_path)
-    report_path = _write_html(
-        root / "index.html",
-        sweep.title,
-        dataset,
-        rank_outputs,
-        cards,
-        cluster_source,
-        float(explore.confidence_level),
-    )
     return {
         "manifest": manifest_path,
-        "report": report_path,
         "ranks": manifest_ranks,
     }

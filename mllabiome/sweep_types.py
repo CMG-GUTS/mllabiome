@@ -189,6 +189,8 @@ class Ensemble:
         "median_proba",
     )
     optimize_metric: Any = "auto"
+    include_model_ensembles: bool = True
+    late_integrations: tuple[Integration, ...] = ()
 
     include_inactive: bool = True
 
@@ -211,6 +213,15 @@ class Ensemble:
         self.aggregation_strategies = tuple(
             str(value) for value in self.aggregation_strategies
         )
+        self.include_model_ensembles = bool(self.include_model_ensembles)
+        self.late_integrations = tuple(self.late_integrations)
+        if not all(
+            isinstance(value, Integration) and value.stage == "late"
+            for value in self.late_integrations
+        ):
+            raise TypeError(
+                "Ensemble.late_integrations must contain only late-stage Integration instances."
+            )
         if not self.max_sizes or any(value < 2 for value in self.max_sizes):
             raise ValueError("Every Ensemble.max_sizes entry must be at least 2.")
         if not self.selection_strategies:
@@ -516,15 +527,22 @@ def _validate_sweep_configuration(sweep: Any) -> None:
         "caruana",
         "super_learner",
     }
-    unknown_selection = sorted(
-        set(sweep.ensemble.selection_strategies) - supported_selection
-    )
-    if unknown_selection:
-        raise ValueError(
-            f"Unsupported ensemble selection strategy(s): {unknown_selection}."
+    if sweep.ensemble.include_model_ensembles:
+        unknown_selection = sorted(
+            set(sweep.ensemble.selection_strategies) - supported_selection
         )
-    learned = set(sweep.ensemble.selection_strategies) & {"caruana", "super_learner"}
-    simple = set(sweep.ensemble.selection_strategies) - learned
+        if unknown_selection:
+            raise ValueError(
+                f"Unsupported ensemble selection strategy(s): {unknown_selection}."
+            )
+        learned = set(sweep.ensemble.selection_strategies) & {
+            "caruana",
+            "super_learner",
+        }
+        simple = set(sweep.ensemble.selection_strategies) - learned
+    else:
+        learned = set()
+        simple = set()
     if task == "classification":
         grouped_metrics = {"subject_macro_log_loss", "cohort_macro_log_loss"}
         if sweep.ensemble.optimize_metric in grouped_metrics:
@@ -538,37 +556,66 @@ def _validate_sweep_configuration(sweep: Any) -> None:
             raise ValueError(
                 "subject_macro_log_loss requires an explicit subject_id_col so repeated observations are aggregated by biological subject."
             )
-        unknown = sorted(
-            set(sweep.ensemble.aggregation_strategies) - set(SUPPORTED_AGGREGATIONS)
-        )
-        if unknown:
-            raise ValueError(
-                f"Unsupported classification ensemble aggregation strategy(s): {unknown}."
+        if sweep.ensemble.include_model_ensembles:
+            unknown = sorted(
+                set(sweep.ensemble.aggregation_strategies) - set(SUPPORTED_AGGREGATIONS)
             )
-        if metric_requires_probability_semantics(sweep.ensemble.optimize_metric):
-            invalid = sorted(
-                set(sweep.ensemble.aggregation_strategies)
-                - set(PROBABILITY_PRESERVING_AGGREGATIONS)
-            )
-            if invalid:
+            if unknown:
                 raise ValueError(
-                    f"Ensemble.optimize_metric={sweep.ensemble.optimize_metric!r} requires probability-valued aggregation. "
-                    f"Remove incompatible aggregation strategy(s) {invalid}; allowed strategies are "
-                    f"{sorted(PROBABILITY_PRESERVING_AGGREGATIONS)}."
+                    f"Unsupported classification ensemble aggregation strategy(s): {unknown}."
                 )
-        if (
-            learned
-            and "weighted_mean_proba" not in sweep.ensemble.aggregation_strategies
-        ):
+            if metric_requires_probability_semantics(sweep.ensemble.optimize_metric):
+                invalid = sorted(
+                    set(sweep.ensemble.aggregation_strategies)
+                    - set(PROBABILITY_PRESERVING_AGGREGATIONS)
+                )
+                if invalid:
+                    raise ValueError(
+                        f"Ensemble.optimize_metric={sweep.ensemble.optimize_metric!r} requires probability-valued aggregation. "
+                        f"Remove incompatible aggregation strategy(s) {invalid}; allowed strategies are "
+                        f"{sorted(PROBABILITY_PRESERVING_AGGREGATIONS)}."
+                    )
+            if (
+                learned
+                and "weighted_mean_proba" not in sweep.ensemble.aggregation_strategies
+            ):
+                raise ValueError(
+                    "Caruana and Super Learner require 'weighted_mean_proba' in Ensemble.aggregation_strategies."
+                )
+            if simple and not any(
+                aggregation != "weighted_mean_proba"
+                for aggregation in sweep.ensemble.aggregation_strategies
+            ):
+                raise ValueError(
+                    "Simple ensemble selectors require at least one non-weighted aggregation strategy."
+                )
+        allowed_late = {
+            "late_mean_proba",
+            "late_weighted_mean_proba",
+            "late_super_learner",
+        }
+        invalid_late = sorted(
+            {item.key for item in sweep.ensemble.late_integrations} - allowed_late
+        )
+        if invalid_late:
             raise ValueError(
-                "Caruana and Super Learner require 'weighted_mean_proba' in Ensemble.aggregation_strategies."
+                f"Unsupported classification late integration(s): {invalid_late}."
             )
-        if simple and not any(
-            aggregation != "weighted_mean_proba"
-            for aggregation in sweep.ensemble.aggregation_strategies
-        ):
+    else:
+        allowed_late = {
+            "late_mean_prediction",
+            "late_weighted_mean_prediction",
+            "late_median_prediction",
+            "late_mean_proba",
+            "late_weighted_mean_proba",
+            "late_super_learner",
+        }
+        invalid_late = sorted(
+            {item.key for item in sweep.ensemble.late_integrations} - allowed_late
+        )
+        if invalid_late:
             raise ValueError(
-                "Simple ensemble selectors require at least one non-weighted aggregation strategy."
+                f"Unsupported regression late integration(s): {invalid_late}."
             )
 
 
@@ -868,6 +915,13 @@ class Sweep:
 
     def __post_init__(self) -> None:
         validate_model_specs(self.learners, context="Sweep.learners / MODELS")
+        late_integrations = tuple(
+            item
+            for item in self.integrations
+            if isinstance(item, Integration) and item.stage == "late"
+        )
+        if late_integrations != self.ensemble.late_integrations:
+            self.ensemble = replace(self.ensemble, late_integrations=late_integrations)
         _validate_sweep_configuration(self)
 
     def root(self) -> Path:
@@ -935,42 +989,12 @@ def build_sweep_from_module(mod: Any) -> Sweep:
             )
         ensemble_explicit = hasattr(mod, "ENSEMBLE")
         ensemble = getattr(mod, "ENSEMBLE", Ensemble())
-        late = {item.key for item in integrations if item.stage == "late"}
-        if late:
-            task = _normalise_sweep_task(samples.task)
-            if task == "regression":
-                mapping = {
-                    "late_mean_prediction": "mean_prediction",
-                    "late_weighted_mean_prediction": "weighted_mean_prediction",
-                    "late_median_prediction": "median_prediction",
-                    "late_mean_proba": "mean_prediction",
-                    "late_weighted_mean_proba": "weighted_mean_prediction",
-                }
-                learned_aggregation = "weighted_mean_prediction"
-            else:
-                mapping = {
-                    "late_mean_proba": "mean_proba",
-                    "late_weighted_mean_proba": "weighted_mean_proba",
-                }
-                learned_aggregation = "weighted_mean_proba"
-            if ensemble_explicit:
-                aggregations = list(ensemble.aggregation_strategies)
-                selections = list(ensemble.selection_strategies)
-            else:
-                aggregations = []
-                selections = ["top_k"]
-            for key in sorted(late):
-                if key in mapping and mapping[key] not in aggregations:
-                    aggregations.append(mapping[key])
-                if key == "late_super_learner":
-                    if "super_learner" not in selections:
-                        selections.append("super_learner")
-                    if learned_aggregation not in aggregations:
-                        aggregations.append(learned_aggregation)
+        late_integrations = tuple(item for item in integrations if item.stage == "late")
+        if late_integrations:
             ensemble = replace(
                 ensemble,
-                aggregation_strategies=tuple(aggregations),
-                selection_strategies=tuple(selections),
+                include_model_ensembles=bool(ensemble_explicit),
+                late_integrations=late_integrations,
             )
         return Sweep(
             data=None,

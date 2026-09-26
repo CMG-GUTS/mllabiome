@@ -59,6 +59,22 @@ REGRESSION_METRIC_COLUMNS = [
 METRIC_COLUMNS = CLASSIFICATION_METRIC_COLUMNS + REGRESSION_METRIC_COLUMNS
 
 
+def report_html_path(root: Path | str) -> Path:
+    path = Path(root)
+    return path / f"{path.name}__report.html"
+
+
+def prepare_report_html_path(root: Path | str, emit_html: bool = True) -> Path:
+    path = Path(root)
+    canonical = report_html_path(path)
+    for obsolete in (path / "report" / "index.html", path / "explore" / "index.html"):
+        if obsolete.exists():
+            obsolete.unlink()
+    if not emit_html and canonical.exists():
+        canonical.unlink()
+    return canonical
+
+
 def tail_ellipsis(value: Any, max_len: int, *, ellipsis: str = "...") -> str:
     text = str(value)
     limit = max(1, int(max_len))

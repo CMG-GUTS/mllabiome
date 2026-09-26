@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import html
 from pathlib import Path
 from typing import Any
 
@@ -42,25 +41,10 @@ def _write_stage_manifest(
     return path
 
 
-def _write_explore_index(sweep: Sweep, children: list[Sweep]) -> Path:
-    root = Path(sweep.root())
-    path = root / "explore" / "index.html"
-    items = []
-    for child in children:
-        target = str(child.data.target_col)
-        report = Path(child.root()) / "explore" / "index.html"
-        rel = report.relative_to(root).as_posix()
-        items.append(
-            f'<a class="item" href="../{html.escape(rel)}"><strong>{html.escape(target)}</strong><span>Open exploratory microbiome report</span></a>'
-        )
-    css = "body{font-family:Arial,Helvetica,sans-serif;color:#0f172a;margin:0;background:#fff}main{max-width:860px;margin:0 auto;padding:48px 32px}h1{font-size:32px;letter-spacing:-.02em;margin:8px 0 28px}.k{font-size:12px;color:#1565A8;text-transform:uppercase;letter-spacing:.12em;font-weight:700}.grid{display:grid;gap:12px}.item{display:flex;justify-content:space-between;gap:24px;text-decoration:none;color:#0f172a;border:1px solid #e2e8f0;border-radius:13px;padding:18px;background:#f8fafc}.item span{color:#64748b;font-size:13px}"
-    content = f'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(sweep.title)} · Explore</title><style>{css}</style></head><body><main><div class="k">mllabiome exploratory microbiome analysis</div><h1>{html.escape(sweep.title)}</h1><div class="grid">{"".join(items)}</div></main></body></html>'
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    return path
-
-
 def run_explore(sweep: Sweep) -> dict[str, Any]:
+    legacy_report = Path(sweep.root()) / "explore" / "index.html"
+    if legacy_report.exists():
+        legacy_report.unlink()
     if getattr(sweep, "uses_modalities", False):
         outputs = execute_explore(sweep)
         print_stage_results(sweep, "explore")
@@ -77,7 +61,6 @@ def run_explore(sweep: Sweep) -> dict[str, Any]:
         records.append(_target_record(child, child_outputs))
     if _is_multi_target(sweep, children):
         outputs["manifest"] = _write_stage_manifest(sweep, "explore", records)
-        outputs["report"] = _write_explore_index(sweep, children)
     result = (
         outputs
         if _is_multi_target(sweep, children)

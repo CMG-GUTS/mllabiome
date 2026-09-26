@@ -13,6 +13,7 @@ from .console import error, progress, stage, success, warn
 from .figure_export import export_svg_tree
 from .pipeline import run_stage
 from .storage import export_tsv_tree
+from .utils import report_html_path
 
 
 def _load_sweep(path: Path) -> Sweep:
@@ -27,9 +28,9 @@ def _load_sweep(path: Path) -> Sweep:
 
 
 def _open_report(root: Path) -> None:
-    path = (Path(root) / "report" / "index.html").resolve()
+    path = report_html_path(root).resolve()
     if not path.exists():
-        warn(f"Report browser · index not found: {path}")
+        warn(f"Report browser · report not found: {path}")
         return
     target = path.as_uri()
     if webbrowser.open(target, new=2, autoraise=True):
@@ -157,14 +158,6 @@ def main(argv: list[str] | None = None) -> None:
         stage("Figure export", str(sweep.root() / "exports"))
     if args.stage in {"report", "all"}:
         _open_report(sweep.root())
-    elif args.stage == "explore":
-        explore_report = (Path(sweep.root()) / "explore" / "index.html").resolve()
-        if explore_report.exists():
-            target = explore_report.as_uri()
-            if webbrowser.open(target, new=2, autoraise=True):
-                success(f"Explore report opened · {target}")
-            else:
-                warn(f"Explore report browser · could not open automatically: {target}")
 
 
 if __name__ == "__main__":

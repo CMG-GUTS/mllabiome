@@ -307,8 +307,6 @@ def integration_modality_sets(
         return out
     if spec.stage == "unimodal":
         return tuple((name,) for name in names)
-    if spec.stage == "late":
-        return ()
     minimum = max(2, int(spec.min_modalities))
     maximum = (
         len(names)
