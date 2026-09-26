@@ -1,15 +1,17 @@
 <p>
   <img
     src="https://raw.githubusercontent.com/CMG-GUTS/mllabiome/main/assets/favicon.svg"
-    width="80"
-    height="80"
+    width="82"
+    height="82"
     alt="mllabiome icon"
   >
+  &nbsp;&nbsp;&nbsp;
   <a href="https://cmg-guts.github.io/mllabiome/">
     <img
-      src="https://raw.githubusercontent.com/CMG-GUTS/mllabiome/main/assets/mllabiome-readme-flow.svg"
-      width="900"
-      alt="Microbiome abundance data flowing through machine learning to learned patterns and interactions"
+      src="https://raw.githubusercontent.com/CMG-GUTS/mllabiome/main/assets/mllabiome-readme-flow-symbols.svg"
+      width="350"
+      align="right"
+      alt="From microbiome abundance data through machine learning to learned patterns and interactions"
     >
   </a>
 </p>
