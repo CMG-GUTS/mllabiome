@@ -1,0 +1,43 @@
+cff-version: 1.2.0
+message: "If you use mllabiome in research, please cite this software release using these metadata."
+title: "mllabiome"
+type: software
+version: "0.1.0rc123"
+authors:
+  - name: "Agata Polejowska"
+abstract: >-
+  mllabiome is a Python library for leakage-controlled machine learning on
+  microbiome data. It supports nested and subject-aware cross-validation,
+  leave-one-dataset-out evaluation, microbiota profile data representation
+  (MPDR) analysis, base and ensemble microbiota profile modelling algorithms
+  (MPMA-B and MPMA-E), multimodal modelling, explainable AI, robustness
+  analysis, statistical comparison, and research reporting. The software was
+  developed as a research prototype in the European Union-funded HEREDITARY
+  project (grant agreement No 101137074). It is intended for research use only
+  and is not a medical device or clinical decision-support system.
+license: Apache-2.0
+repository-code: "https://github.com/CMG-GUTS/mllabiome"
+url: "https://github.com/CMG-GUTS/mllabiome"
+keywords:
+  - microbiome
+  - microbiota
+  - metagenomics
+  - machine learning
+  - microbiome machine learning
+  - nested cross-validation
+  - grouped cross-validation
+  - leave-one-dataset-out
+  - cross-cohort validation
+  - compositional data
+  - ensemble learning
+  - multimodal learning
+  - explainable AI
+  - SHAP
+  - LIME
+  - bioinformatics
+references:
+  - type: grant
+    title: "HEREDITARY"
+    doi: "10.3030/101137074"
+    url: "https://cordis.europa.eu/project/id/101137074"
+    scope: "European Union-funded project under which mllabiome was developed."
