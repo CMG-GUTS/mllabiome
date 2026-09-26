@@ -1,0 +1,105 @@
+# Evaluation and comparison
+
+`mllabiome` is designed around one constraint: **information from a held-out observation must not influence the workflow used to predict that observation**.
+
+## Repeated nested cross-validation
+
+```python
+EVALUATION = mll.Evaluation(
+    protocol="repeated_nested_cv",
+    outer_folds=5,
+    inner_folds=3,
+    repeats=2,
+    optimize_metric="log_loss",
+    random_state=42,
+    n_jobs="auto",
+)
+```
+
+The outer split estimates performance. Inner splits provide training-side evidence for model and workflow selection.
+
+```text
+outer training data
+  ├─ inner training → fit preprocessing + learner
+  ├─ inner validation → score candidate
+  └─ select candidate using inner evidence
+
+outer test data
+  └─ evaluate the selected workflow
+```
+
+## Does a new algorithm actually outperform another?
+
+This is a central use case for `mllabiome`. A new or external scikit-learn-compatible estimator can be entered alongside established baselines and evaluated under the **same MPDR search space, splits, preprocessing rules, and held-out observations**.
+
+The comparison is deliberately separated into two questions:
+
+1. **Which candidate should be selected?** Selection and tuning use only training-side inner-fold evidence.
+2. **Does the selected candidate generalize better?** The comparison uses held-out outer predictions that were not used to choose the candidate.
+
+For repeated nested cross-validation, `mllabiome` reports paired contrasts across matched outer-test units and supports corrected resampled inference. For LODO, comparisons are made on the same held-out cohorts and can use paired cohort-level randomization. Held-out OOF predictions are also available for subject- and cohort-aware bootstrap summaries.
+
+This allows a proposed algorithm to be benchmarked against baselines without giving it a different validation protocol or allowing outer-test performance to drive selection.
+
+```python
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+
+MODELS = (
+    ("logistic", LogisticRegression(max_iter=5000)),
+    ("random_forest", RandomForestClassifier(n_estimators=1000, random_state=42)),
+    ("new_algorithm", MyEstimator(...)),
+)
+```
+
+The estimator must follow the scikit-learn estimator interface. For classification, candidates used with probability-based metrics must provide valid class probabilities.
+
+## Grouped subjects
+
+When repeated measurements exist, declare a grouping variable. The splitter keeps observations from the same subject or group together and checks for overlap between train and held-out partitions.
+
+```python
+DATA = mll.Data(
+    ...,
+    group_col="participant_id",
+)
+```
+
+Do not encode repeated subjects only as an ordinary stratification variable.
+
+## Fold-local preprocessing
+
+Feature filtering, empirical transforms, scaling, dimensionality reduction, or other operations that estimate parameters from data must be fitted on the training partition and then applied to held-out data.
+
+Built-in stateful transformations follow this fit/transform pattern. Custom transformations should do the same.
+
+## LODO / cross-cohort evaluation
+
+```python
+EVALUATION = mll.Evaluation(
+    protocol="lodo",
+    inner_folds=3,
+    optimize_metric="nMCC",
+    random_state=42,
+)
+```
+
+For LODO, set a dataset or cohort identifier as `group_col`. Each group is held out in turn, while model selection remains within the remaining data.
+
+## Qualification and optimization
+
+A qualification gate can restrict which candidates are eligible for downstream ensemble construction:
+
+```python
+GATE = mll.QualificationGate(
+    enabled=True,
+    metric="MCC",
+    threshold=0.02,
+)
+```
+
+The optimization metric should be chosen before inspecting held-out results. For classification, probability-based metrics such as log loss require learners that produce valid probability estimates.
+
+## Interpretation
+
+Cross-validation folds are not independent biological replications. Report held-out predictions, uncertainty, cohort-level behavior, and external validation where possible rather than treating fold counts as independent sample size.

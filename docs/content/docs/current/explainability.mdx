@@ -1,0 +1,52 @@
+# Explainability
+
+The standard explainability workflow is out-of-fold: **an observation is explained using a model that was not fitted on that observation**.
+
+## Configure methods
+
+```python
+EXPLAINABILITY = mll.Explainability(
+    targets=("mpma_b", "mpma_e"),
+    profile="standard",
+    methods=(
+        mll.Permutation(),
+        mll.SHAP(),
+        mll.ALE(),
+        mll.LIME(),
+        mll.ALEInteractions(),
+    ),
+    classes="auto",
+    top_k=30,
+)
+```
+
+`targets="auto"` can be used when the standard selected targets should be determined from available run artefacts.
+
+## OOF principle
+
+For an individual MPMA:
+
+```text
+outer train → fit transformation → fit learner
+outer test  → transform using training-fitted state → explain
+```
+
+For MPMA-E, the selected member models are fitted on the outer training partition and their predictions or explanations are aggregated for the outer test observations.
+
+## Methods
+
+| Method | Interpretation |
+|---|---|
+| Permutation importance | Change in held-out performance when a feature is disrupted |
+| SHAP | Model-specific additive attribution under the selected explainer |
+| ALE | Average local response over observed feature ranges |
+| LIME | Local surrogate explanation around selected observations |
+| ALE interactions | Pairwise interaction structure estimated from the fitted model |
+
+Local explanation behavior can be configured with `mll.LocalExplanations`.
+
+## Scientific interpretation
+
+Feature importance is evidence about **model behavior**, not proof that a taxon or variable is causal. Microbiome features are compositional, sparse, and correlated; attribution can therefore be redistributed across related features.
+
+For biological claims, prioritize stability across outer folds and cohorts, agreement across complementary methods, and independent replication.

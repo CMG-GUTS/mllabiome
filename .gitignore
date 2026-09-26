@@ -16,6 +16,34 @@ venv/
 env/
 ENV/
 
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.ipynb_checkpoints/
+.DS_Store
+
+docs/node_modules/
+docs/.next/
+docs/out/
+docs/_pagefind/
+docs/.vercel/
+docs/next-env.d.ts
+*.tsbuildinfo
+
 # Test and coverage artifacts
 .pytest_cache/
 .coverage

@@ -1,0 +1,23 @@
+{
+  "name": "mllabiome-docs",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 8888",
+    "build": "next build"
+  },
+  "dependencies": {
+    "next": "^16.2.4",
+    "nextra": "^4.6.1",
+    "nextra-theme-docs": "^4.6.1",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "pagefind": "^1.5.2",
+    "typescript": "^5.3.3"
+  }
+}

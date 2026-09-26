@@ -1,0 +1,50 @@
+# Overview
+
+`mllabiome` is a Python library for **building, comparing, combining and explaining machine-learning models from microbiome abundance data**. It supports phenotype prediction, model benchmarking, ensemble learning, multimodal integration, cross-cohort validation, explainable AI, robustness analysis, and reproducible reporting.
+
+Use it when the scientific question is not only *which model predicts well?*, but also *does the full microbiome modelling workflow generalize to observations that were not used to construct it?*
+
+## Workflow
+
+```text
+explore → evaluate → ensemble → inference → explain → robustness → report
+```
+
+Each stage can be run independently after the required upstream artefacts exist. The complete pipeline is launched with:
+
+```bash
+mllabiome path/to/config.py
+```
+
+## Core terms
+
+| Term | Meaning |
+|---|---|
+| MPDR | **Microbiota profile data representation**: a microbiome representation defined by taxonomic resolution and abundance transformation |
+| MPMA | **Microbiota profile modelling algorithm**: an MPDR paired with a learner |
+| MPMA-B | **Base MPMA**: the selected individual modelling algorithm |
+| MPMA-E | **Ensemble MPMA**: a selected ensemble of eligible base algorithms |
+| OOF | Out-of-fold: predictions or explanations generated for observations not used to fit the corresponding model |
+| LODO | Leave-one-dataset-out: each dataset or cohort is held out in turn for evaluation |
+
+## What the package controls
+
+- fold-local preprocessing and feature filtering;
+- grouped splitting for repeated subjects;
+- nested model and MPMA selection;
+- LODO / cross-cohort evaluation;
+- classification and regression;
+- ensemble selection from inner out-of-fold evidence;
+- multimodal feature and prediction integration;
+- held-out explainability with SHAP, permutation importance, ALE, LIME, and ALE interactions;
+- robustness, statistical summaries, figures, tables, and HTML reporting.
+
+## What it does not do
+
+`mllabiome` is not a raw sequencing pipeline. Read QC, assembly, taxonomic profiling, and generation of abundance or feature tables happen upstream.
+
+It is also not a clinical decision-support system. Predictions and feature attributions are research outputs and require independent validation before any translational interpretation.
+
+## Start
+
+Continue with the [Quickstart](./quickstart), then read [Core concepts](./concepts) and [Evaluation and comparison](./evaluation).

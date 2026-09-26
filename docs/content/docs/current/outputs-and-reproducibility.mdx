@@ -1,0 +1,54 @@
+# Outputs and reproducibility
+
+Each analysis writes to its configured `experiment_dir`. The exact set of files depends on the stages and task, but the run contains machine-readable evaluation artefacts together with figures and an HTML report.
+
+## Typical outputs
+
+```text
+EXPERIMENT_DIR/
+  configs.tsv
+  configs.db
+  tables/
+  figures/
+  ensembling/
+  explainability/
+  robustness/
+  inference/
+  report.html
+```
+
+Important artefacts include candidate metrics, out-of-fold predictions, MPMA-B selection outputs, ensemble selection metadata, method-specific explainability tables, robustness summaries, and report figures.
+
+## Re-running stages
+
+Runs are designed to be restartable. To regenerate only the report:
+
+```bash
+mllabiome config.py --stage report
+```
+
+To regenerate explainability from existing upstream results:
+
+```bash
+mllabiome config.py --stage explain
+```
+
+A changed scientific configuration can alter run identity and should be treated as a new analysis unless the package explicitly recognizes the change as compatible with incremental evaluation.
+
+## Reproducible release record
+
+For a manuscript or archived analysis, retain:
+
+- the exact `mllabiome` release or Git commit;
+- the complete Python configuration used for the run;
+- input dataset versions and acquisition dates where relevant;
+- random seeds and evaluation protocol;
+- the environment lockfile or equivalent dependency record;
+- generated manifests, selected-unit metadata, and out-of-fold predictions;
+- the final tables and figures derived from that frozen run.
+
+The package records software and experiment provenance in run artefacts. For archival publication, pair those artefacts with a tagged software release and an external archive such as Zenodo.
+
+## Version used by these docs
+
+These pages describe the `0.1.0rc123` release candidate. The repository examples should be treated as the canonical source for the exact current configuration syntax.

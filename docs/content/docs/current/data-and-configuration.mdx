@@ -1,0 +1,100 @@
+# Data and configuration
+
+A `mllabiome` analysis is configured in Python. The configuration describes the data, representation space, learners, validation design, ensemble search, explainability, and optional robustness or inference stages.
+
+## Single-modality data
+
+The standard input is `mll.Data`.
+
+```python
+DATA = mll.Data(
+    abundance_path="profiles.tsv",
+    metadata=mll.Metadata(
+        metadata_path="metadata.tsv",
+        biological_sex="host_sex",
+        site="site",
+        batch="batch",
+    ),
+    format="metaphlan_tsv",
+    sample_id_col="sample_id",
+    target_col="label",
+    task="classification",
+    group_col="participant_id",
+    class_labels=("control", "case"),
+    positive_class="case",
+)
+```
+
+Use `group_col` or `subject_id_col` when multiple rows belong to the same independent subject or grouping unit. `stratify_col` can additionally balance declared metadata strata when the sample counts permit it.
+
+## Input formats
+
+The package accepts MetaPhlAn-style feature-by-sample tables and wide tabular CSV input. Use explicit feature declarations for generic tabular input when metadata and features share a file.
+
+For microbiome profiles, upstream sequence processing is outside the scope of the package.
+
+## Representations
+
+Taxonomic resolutions are declared explicitly:
+
+```python
+RESOLUTIONS = (
+    ("class", ("class",)),
+    ("genus", ("genus",)),
+    ("class-order", ("class", "order")),
+)
+```
+
+Transformations are first-class objects:
+
+```python
+COUNT_TRANSFORMATIONS = (
+    mll.Transformation("identity"),
+    mll.Transformation("presence_absence"),
+    mll.Transformation("arcsine_sqrt", composition_scope="joint"),
+    mll.Transformation("relative_abundance", composition_scope="joint"),
+    mll.Transformation(
+        "relative_abundance",
+        composition_scope="joint",
+        feature_filter=mll.PrevalenceFilter(threshold=0.20),
+    ),
+)
+```
+
+Supported transformations also include Hellinger, CLR/log-ratio, log, rank-based, and other representations exposed by `mll.Transformation`.
+
+## Learners
+
+Learners are explicit `(name, estimator)` pairs:
+
+```python
+MODELS = (
+    ("RF_500", RandomForestClassifier(
+        n_estimators=500,
+        min_samples_leaf=5,
+        n_jobs=1,
+        random_state=42,
+    )),
+)
+```
+
+Compatible scikit-learn estimators and pipelines can be used. The package also exposes integrations for supported backends such as XGBoost, LightGBM, CatBoost, FLAML, and SIAMCAT.
+
+## Sweep
+
+The configuration can expose a `SWEEP` object directly:
+
+```python
+SWEEP = mll.Sweep(
+    data=DATA,
+    experiment_dir="runs/example",
+    resolutions=RESOLUTIONS,
+    count_transformations=COUNT_TRANSFORMATIONS,
+    learners=MODELS,
+    evaluation=EVALUATION,
+    ensemble=ENSEMBLE,
+    explainability=EXPLAINABILITY,
+)
+```
+
+The repository examples are the preferred templates for complete analyses because they track the current configuration API.

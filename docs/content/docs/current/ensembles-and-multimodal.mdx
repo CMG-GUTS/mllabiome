@@ -1,0 +1,83 @@
+# Ensembles and multimodal analysis
+
+## Ensemble search
+
+`mll.Ensemble` controls candidate construction and aggregation.
+
+```python
+ENSEMBLE = mll.Ensemble(
+    max_sizes=(3,),
+    selection_strategies=(
+        "top_k",
+        "best_per_resolution",
+        "best_per_learner_type",
+        "caruana",
+        "super_learner",
+    ),
+    aggregation_strategies=(
+        "mean_proba",
+        "weighted_mean_proba",
+        "median_proba",
+    ),
+    optimize_metric="log_loss",
+)
+```
+
+Selection is based on inner or training-side out-of-fold evidence. Outer-test performance does not choose MPMA-E.
+
+## Multimodal data
+
+For multimodal analyses, define one sample table and one or more modalities.
+
+```python
+SAMPLES = mll.Samples(
+    path="samples.tsv",
+    sample_id_col="sample_id",
+    target_col="label",
+    group_col="participant_id",
+)
+
+MODALITIES = (
+    mll.Modality(
+        name="microbiome",
+        path="microbiome.tsv",
+        format="table",
+        primary=True,
+        sample_id_col="sample_id",
+        feature_prefixes=("g__", "s__"),
+    ),
+    mll.Modality(
+        name="clinical",
+        path="clinical.tsv",
+        format="table",
+        sample_id_col="sample_id",
+        feature_cols=("age", "bmi"),
+    ),
+)
+```
+
+Feature columns should be declared explicitly for general tabular modalities unless the table has been verified to contain only features.
+
+## Integration strategies
+
+`mll.Integration` supports several stages of multimodal integration:
+
+| Stage | Examples |
+|---|---|
+| Unimodal | evaluate one modality independently |
+| Early | concatenate modality features |
+| Intermediate | modality-specific PCA or joint PCA before modelling |
+| Late | combine modality predictions, including weighted or Super Learner strategies |
+
+Example:
+
+```python
+INTEGRATIONS = (
+    mll.Integration("unimodal"),
+    mll.Integration("early_concat"),
+    mll.Integration("intermediate_modality_pca", n_components=(5, 10)),
+    mll.Integration("late_weighted_mean_proba"),
+)
+```
+
+Integration models that learn a representation are fitted within the corresponding training partition.
