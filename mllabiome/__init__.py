@@ -10,7 +10,9 @@ from .configs_sweep import (
     MPMA,
     Ensemble,
     Evaluation,
+    Explore,
     Explainability,
+    Inference,
     LocalExplanationMode,
     LocalExplanations,
     QualificationGate,
@@ -39,7 +41,7 @@ from .modalities import (
     Samples,
     load_modalities,
 )
-from .pipeline import run_all, run_robustness
+from .pipeline import run_all, run_explore, run_inference, run_robustness
 from .report import write_report
 from .resolutions import materialize_mpdr
 from .siamcat import SIAMCATClassifier
@@ -82,9 +84,11 @@ __all__ = [
     "Dataset",
     "Ensemble",
     "Evaluation",
+    "Explore",
     "Explainability",
     "ExplainabilityConfigurationError",
     "ExplainabilityDependencyError",
+    "Inference",
     "FLAMLClassifier",
     "IntegratedCoordinate",
     "Integration",
@@ -120,6 +124,8 @@ __all__ = [
     "materialize_mpdr",
     "mll",
     "run_all",
+    "run_explore",
+    "run_inference",
     "run_robustness",
     "sweep_ensemble",
     "transformation_label",

@@ -9,6 +9,7 @@ from typing import Any
 
 import pandas as pd
 
+from .baseline_rf import resolve_baseline_rf_config_id
 from .explainability_visuals import plot_feature_support, plot_local_attributions
 from .storage import glob_tables, read_table, table_exists
 from .utils import feature_tail_ellipsis as feature_tail_ellipsis
@@ -106,6 +107,83 @@ def _read_json(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _compact_table(frame: pd.DataFrame) -> str:
+    if frame.empty:
+        return ""
+    columns = list(frame.columns)
+    parts = ['<div class="table-wrap"><table><thead><tr>']
+    parts.extend(
+        f'<th scope="col">{html.escape(str(column))}</th>' for column in columns
+    )
+    parts.append("</tr></thead><tbody>")
+    for _, row in frame.iterrows():
+        parts.append("<tr>")
+        for column in columns:
+            value = row.get(column, "")
+            text = "" if pd.isna(value) else str(value)
+            parts.append(f"<td>{html.escape(text)}</td>")
+        parts.append("</tr>")
+    parts.append("</tbody></table></div>")
+    return "".join(parts)
+
+
+def _mpma_e_member_influence_block(target_dir: Path) -> str:
+    summary = _read_table(target_dir / "member_aggregation_influence_summary.parquet")
+    manifest = _read_json(target_dir / "member_native" / "manifest.json")
+    members = manifest.get("members", []) if isinstance(manifest, dict) else []
+    if summary.empty or not isinstance(members, list):
+        return ""
+    metadata = {}
+    for item in members:
+        if isinstance(item, dict):
+            try:
+                metadata[int(item.get("member_no"))] = item
+            except Exception:
+                continue
+    rows = []
+    for _, row in summary.sort_values("mean_abs_influence", ascending=False).iterrows():
+        try:
+            member_no = int(row.get("member_no"))
+        except Exception:
+            continue
+        meta = metadata.get(member_no, {})
+        mean_abs = pd.to_numeric(
+            pd.Series([row.get("mean_abs_influence")]), errors="coerce"
+        ).iloc[0]
+        mean_signed = pd.to_numeric(
+            pd.Series([row.get("mean_signed_influence")]), errors="coerce"
+        ).iloc[0]
+        n_rows = pd.to_numeric(
+            pd.Series([row.get("n_oof_rows")]), errors="coerce"
+        ).iloc[0]
+        rows.append(
+            {
+                "Member": f"Member {member_no}",
+                "Representation": str(meta.get("representation", "")).replace("_", " "),
+                "Transformation": str(meta.get("transformation", "")).replace("_", " "),
+                "Learner": str(meta.get("learner", "")).replace("_", " "),
+                "Class": str(row.get("class_label", "")),
+                "Mean |Δ probability| when omitted": f"{float(mean_abs):.4f}"
+                if pd.notna(mean_abs)
+                else "",
+                "Mean signed Δ probability": f"{float(mean_signed):.4f}"
+                if pd.notna(mean_signed)
+                else "",
+                "Held-out rows": str(int(n_rows)) if pd.notna(n_rows) else "",
+            }
+        )
+    if not rows:
+        return ""
+    table = pd.DataFrame(rows)
+    return "".join(
+        [
+            "<h4>Ensemble-member influence</h4>",
+            "<p>Leave-one-member-out influence measures how much the final MPMA-E predicted probability changes when one constituent is omitted and the remaining ensemble is recomputed. Larger mean absolute changes indicate greater predictive influence within the fitted ensemble; this is a predictive decomposition, not a causal effect.</p>",
+            _compact_table(table),
+        ]
+    )
+
+
 def _target_dirs_by_label(root: Path) -> dict[str, Path]:
 
     exp_root = root / "explainability"
@@ -120,15 +198,28 @@ def _target_dirs_by_label(root: Path) -> dict[str, Path]:
     )
 
     out: dict[str, Path] = {}
+    configs = _read_table(root / "configs.parquet")
+    expected_baseline = (
+        resolve_baseline_rf_config_id(configs) if not configs.empty else None
+    )
 
     for label, slugs in aliases:
         for slug in slugs:
             d = exp_root / slug
 
-            if d.exists() and d.is_dir():
-                out[label] = d
-
-                break
+            if not (d.exists() and d.is_dir()):
+                continue
+            if label == "Baseline RF":
+                if expected_baseline is None:
+                    continue
+                meta = _read_json(d / "explained_unit.json")
+                config = meta.get("config") if isinstance(meta, dict) else None
+                if not isinstance(config, dict) or str(
+                    config.get("config_id", "")
+                ) != str(expected_baseline):
+                    continue
+            out[label] = d
+            break
 
     return out
 
@@ -361,6 +452,74 @@ def _xai_method_global_text(method: str) -> str:
     }.get(str(method).strip().lower(), "Global out-of-fold feature explanation.")
 
 
+def _xai_importance_grid(
+    target_dir: Path,
+    methods: list[str],
+    class_label: str,
+    report_dir: Path,
+    caption_prefix: str,
+) -> tuple[str, list[str]]:
+
+    cells = []
+    available = []
+
+    for method in ("permutation", "shap", "lime", "ale"):
+        if method not in methods:
+            continue
+
+        display = _xai_method_display(method)
+        figure = _xai_figure_for_class(
+            target_dir,
+            f"feature_importance_{method}",
+            class_label,
+            report_dir,
+            f"{caption_prefix}: global {display} explanation",
+        )
+
+        if not figure:
+            continue
+
+        available.append(method)
+        cells.append(
+            f'<div class="xai-importance-cell"><h6>{html.escape(display)}</h6>{figure}</div>'
+        )
+
+    if not cells:
+        return "", []
+
+    classes = (
+        "xai-importance-grid xai-importance-grid-single"
+        if len(cells) == 1
+        else "xai-importance-grid"
+    )
+    grid = (
+        f'<div class="{classes}" style="--xai-importance-columns:{len(cells)}">'
+        + "".join(cells)
+        + "</div>"
+    )
+
+    return grid, available
+
+
+def _xai_importance_definitions(methods: list[str]) -> str:
+
+    entries = []
+
+    for method in ("permutation", "shap", "lime", "ale"):
+        if method not in methods:
+            continue
+
+        entries.append(
+            f"<strong>{html.escape(_xai_method_display(method))}.</strong> "
+            f"{html.escape(_xai_method_global_text(method))}"
+        )
+
+    if not entries:
+        return ""
+
+    return '<p class="xai-importance-definitions">' + " ".join(entries) + "</p>"
+
+
 def _xai_local_mode(target_dir: Path) -> str:
 
     meta = _read_json(target_dir / "explained_unit.json")
@@ -442,6 +601,121 @@ def _xai_local_figure(target_dir: Path, report_dir: Path, label: str, task: str)
     return _fig(stem, report_dir, caption)
 
 
+def _member_native_explainability_blocks(
+    target_dir: Path, report_dir: Path, top_n: int
+) -> str:
+    manifest = _read_json(target_dir / "member_native" / "manifest.json")
+    members = manifest.get("members", []) if isinstance(manifest, dict) else []
+    if not isinstance(members, list) or not members:
+        return ""
+    parts = [
+        "<h4>Member-native explanations</h4>",
+        "<p>MPMA-E can combine members that use different taxonomic representations, transformations and model coordinates. SHAP can be propagated exactly through fixed linear probability aggregation when its additivity conditions are satisfied. Permutation importance, ALE, LIME and ALE interactions are therefore reported in each member's own fitted coordinate system rather than averaged across incompatible feature spaces.</p>",
+    ]
+    base = target_dir / "member_native"
+    for member in members:
+        if not isinstance(member, dict):
+            continue
+        directory = str(member.get("directory", "")).strip()
+        member_dir = base / directory
+        if not directory or not member_dir.exists():
+            continue
+        methods, classes = _xai_target_metadata(member_dir)
+        if not methods and not classes:
+            continue
+        _refresh_xai_support_figures(member_dir, top_n)
+        number = member.get("member_no", "")
+        representation = str(member.get("representation", "")).replace("_", " ")
+        transformation = str(member.get("transformation", "")).replace("_", " ")
+        learner = str(member.get("learner", "")).replace("_", " ")
+        descriptor = " · ".join(
+            value
+            for value in (f"Member {number}", representation, transformation, learner)
+            if value
+        )
+        parts.append(f'<section class="xai-class"><h5>{html.escape(descriptor)}</h5>')
+        parts.append(
+            "<p>These are outer-held-out explanations of this ensemble constituent. They describe the member's contribution space and should not be interpreted as a separate fitted final strategy.</p>"
+        )
+        for class_index, class_label in classes:
+            if len(classes) > 1:
+                parts.append(f"<h6>Target class: {html.escape(class_label)}</h6>")
+            support_methods = [x for x in methods if x != "interactions"]
+            support_name = (
+                _xai_method_display(support_methods[0])
+                if len(support_methods) == 1
+                else "cross-method"
+            )
+            support = _xai_figure_for_class(
+                member_dir,
+                "feature_support",
+                class_label,
+                report_dir,
+                f"MPMA-E {descriptor} · {class_label}: {support_name} top-k support and fold top-k frequency",
+            )
+            if support:
+                parts.append(support)
+            suppress_single = bool(support and len(support_methods) == 1)
+            if suppress_single:
+                definitions = _xai_importance_definitions(support_methods)
+                if definitions:
+                    parts.append(definitions)
+            else:
+                importance_grid, importance_methods = _xai_importance_grid(
+                    member_dir,
+                    methods,
+                    class_label,
+                    report_dir,
+                    f"MPMA-E {descriptor} · {class_label}",
+                )
+                if importance_grid:
+                    parts.append(importance_grid)
+                    definitions = _xai_importance_definitions(importance_methods)
+                    if definitions:
+                        parts.append(definitions)
+            if "ale" in methods:
+                curve = _xai_figure_for_class(
+                    member_dir,
+                    "ale_curves",
+                    class_label,
+                    report_dir,
+                    f"MPMA-E {descriptor} · {class_label}: ALE effect curves",
+                )
+                if curve:
+                    parts.append("<h6>ALE effect curves</h6>")
+                    parts.append(
+                        "<p>Thin pale lines show outer-fold ALE curves. The thick line and shaded band summarize the common-support region when multiple folds are available. ALE describes model behavior and should not be interpreted as a causal effect.</p>"
+                    )
+                    parts.append(curve)
+            if "interactions" in methods:
+                interaction = _xai_figure_for_class(
+                    member_dir,
+                    "interaction_network_current",
+                    class_label,
+                    report_dir,
+                    f"MPMA-E {descriptor} · {class_label}: 2D ALE interaction network",
+                )
+                if interaction:
+                    parts.append("<h6>ALE interactions</h6>")
+                    parts.append(
+                        "<p>Exploratory member-native 2D ALE interaction strengths. They remain in this member's fitted coordinate system and are not pooled across heterogeneous ensemble members.</p>"
+                    )
+                    parts.append(interaction)
+        local_mode = _xai_local_mode(member_dir)
+        if local_mode != "none":
+            local = _xai_local_figure(
+                member_dir, report_dir, f"MPMA-E {descriptor}", "classification"
+            )
+            if local:
+                parts.append("<h6>Local explanations</h6>")
+                parts.append(
+                    "<p>Representative held-out samples are explained only by outer-fold models that did not train on those samples. SHAP and LIME remain member-native here; their raw magnitudes are not averaged across incompatible member coordinate systems.</p>"
+                )
+                parts.append(local)
+        parts.append("</section>")
+    return "".join(parts)
+
+
 def _explainability_report_blocks(
     root: Path, report_dir: Path, top_n: int = 15
 ) -> tuple[str, int]:
@@ -486,9 +760,30 @@ def _explainability_report_blocks(
 
         parts.append(f'<section class="xai-target"><h3>{html.escape(label)}</h3>')
 
-        parts.append(
-            f"<p>Cross-fitted out-of-fold explanations of the final selected specification. Methods: {html.escape(method_text)}. Global explanation with fold stability and local sample explanation are reported as distinct layers.</p>"
-        )
+        if label == "MPMA-E":
+            meta = _read_json(target_dir / "explained_unit.json")
+            member_methods = [
+                str(value).strip().lower()
+                for value in meta.get("member_native_methods", [])
+                if str(value).strip()
+            ]
+            member_text = (
+                ", ".join(_xai_method_display(value) for value in member_methods)
+                if member_methods
+                else "none"
+            )
+            parts.append(
+                f"<p>Cross-fitted out-of-fold explanations of the final ensemble. Ensemble-level additive attribution: {html.escape(method_text)}. Member-native requested methods: {html.escape(member_text)}. Methods that are not mathematically comparable across heterogeneous member coordinate systems are shown per constituent rather than silently omitted or naively averaged.</p>"
+            )
+        else:
+            parts.append(
+                f"<p>Cross-fitted out-of-fold explanations of the final selected specification. Methods: {html.escape(method_text)}. Global explanation with fold stability and local sample explanation are reported as distinct layers.</p>"
+            )
+
+        if label == "MPMA-E":
+            influence_block = _mpma_e_member_influence_block(target_dir)
+            if influence_block:
+                parts.append(influence_block)
 
         parts.append("<h4>Global explanations</h4>")
 
@@ -513,76 +808,69 @@ def _explainability_report_blocks(
                     f'<section class="xai-class"><h5>Target class: {html.escape(class_label)}</h5>'
                 )
 
+            support_methods = [x for x in methods if x != "interactions"]
+            support_name = (
+                _xai_method_display(support_methods[0])
+                if len(support_methods) == 1
+                else "cross-method"
+            )
             consensus_fig = _xai_figure_for_class(
                 target_dir,
                 "feature_support",
                 class_label,
                 report_dir,
-                f"{label} · {class_label}: cross-method top-k support and fold top-k frequency",
+                f"{label} · {class_label}: {support_name} top-k support and fold top-k frequency",
             )
 
             if consensus_fig:
-                support_methods = [x for x in methods if x != "interactions"]
-
-                if len(support_methods) <= 1:
-                    parts.append("<h6>Top-k support and fold top-k frequency</h6>")
-
+                if len(support_methods) == 1:
+                    display = html.escape(_xai_method_display(support_methods[0]))
+                    parts.append(f"<h6>{display} rank support and fold stability</h6>")
                     parts.append(
-                        f"<p>Top-k support is a within-method rank score for each {html.escape(unit_singular)}. Rank 1 scores 1, rank k scores 1/k, and ranks below k score 0. Fold top-k frequency is the fraction of estimable outer folds in which that {html.escape(unit_singular)} ranks within the method-specific top k. Both quantities are scale-free from 0 to 1.</p>"
+                        f"<p>The displayed {display} ranking summarizes held-out feature attribution without repeating a second method-specific figure. Top-k support is a within-method rank score for each {html.escape(unit_singular)}: rank 1 scores 1, rank k scores 1/k, and ranks below k score 0. Fold top-k frequency is the fraction of estimable outer folds in which that {html.escape(unit_singular)} ranks within the method-specific top k.</p>"
                     )
-
                 else:
                     parts.append(
                         "<h6>Cross-method support and fold top-k frequency</h6>"
                     )
-
                     parts.append(
                         f"<p>Top-k support is a within-method rank score for each {html.escape(unit_singular)}. Rank 1 scores 1, rank k scores 1/k, and ranks below k score 0. Mean support is the arithmetic mean of the available method-specific top-k support scores. Fold top-k frequency is the fraction of estimable outer folds in which that {html.escape(unit_singular)} ranks within the method-specific top k. These are scale-free 0 to 1 summaries. Method-specific effect magnitudes are not compared across methods.</p>"
                     )
-
                 parts.append(consensus_fig)
 
-            for method in methods:
-                if method == "interactions":
-                    continue
-
-                display = _xai_method_display(method)
-
-                global_fig = _xai_figure_for_class(
+            suppress_single = bool(consensus_fig and len(support_methods) == 1)
+            if suppress_single:
+                definitions = _xai_importance_definitions(support_methods)
+                if definitions:
+                    parts.append(definitions)
+            else:
+                importance_grid, importance_methods = _xai_importance_grid(
                     target_dir,
-                    f"feature_importance_{method}",
+                    methods,
                     class_label,
                     report_dir,
-                    f"{label} · {class_label}: global {display} explanation",
+                    f"{label} · {class_label}",
                 )
+                if importance_grid:
+                    parts.append(importance_grid)
+                    definitions = _xai_importance_definitions(importance_methods)
+                    if definitions:
+                        parts.append(definitions)
 
-                ale_curve = (
-                    _xai_figure_for_class(
-                        target_dir,
-                        "ale_curves",
-                        class_label,
-                        report_dir,
-                        f"{label} · {class_label}: ALE effect curves",
-                    )
-                    if method == "ale"
-                    else ""
+            if "ale" in methods:
+                ale_curve = _xai_figure_for_class(
+                    target_dir,
+                    "ale_curves",
+                    class_label,
+                    report_dir,
+                    f"{label} · {class_label}: ALE effect curves",
                 )
-
-                if not global_fig and not ale_curve:
-                    continue
-
-                parts.append(f"<h6>{html.escape(display)}</h6>")
-
-                parts.append(f"<p>{html.escape(_xai_method_global_text(method))}</p>")
-
-                if global_fig:
-                    parts.append(global_fig)
 
                 if ale_curve:
+                    parts.append("<h6>ALE effect curves</h6>")
                     parts.append(
                         f"<p>Thin pale lines show the outer-fold ALE curves. When multiple displayed outer-fold curves have a shared feature-value range, the thick blue line shows their pointwise median only over that common-support range and the shaded band shows the corresponding interquartile range across folds. Individual fold curves may extend beyond the common-support range. If no shared range exists, no cross-fold median or interquartile band is drawn. If only one ALE curve is available, it is shown without an interquartile band. The dashed horizontal line marks zero centered ALE effect: values above or below it indicate feature regions associated with higher or lower predicted P({html.escape(class_label)}), respectively. ALE describes model behavior and should not be interpreted as a causal effect.</p>"
                     )
-
                     parts.append(ale_curve)
 
             if "interactions" in methods:
@@ -658,9 +946,21 @@ def _explainability_report_blocks(
                 )
 
             else:
-                parts.append(
-                    "<p>No representative local SHAP/LIME visualization is available for this explained unit.</p>"
-                )
+                if label == "MPMA-E":
+                    parts.append(
+                        "<p>No ensemble-combined local SHAP/LIME panel is shown because heterogeneous member coordinate systems are not naively merged. Member-native held-out local explanations are reported below.</p>"
+                    )
+                else:
+                    parts.append(
+                        "<p>No representative local SHAP/LIME visualization is available for this explained unit.</p>"
+                    )
+
+        if label == "MPMA-E":
+            member_blocks = _member_native_explainability_blocks(
+                target_dir, report_dir, top_n
+            )
+            if member_blocks:
+                parts.append(member_blocks)
 
         parts.append("</section>")
 

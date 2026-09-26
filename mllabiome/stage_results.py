@@ -419,6 +419,37 @@ def _explainability_rows(sweep: Sweep) -> list[tuple[str, object]]:
     return rows
 
 
+def _explore_rows(sweep: Sweep) -> list[tuple[str, object]]:
+    rows = []
+    for child in _children(sweep):
+        root = Path(child.root()) / "explore"
+        target = _target_name(child)
+        manifest = _read_json(root / "manifest.json")
+        if manifest:
+            rows.append((f"{target} · samples", int(manifest.get("n_samples", 0))))
+            rows.append(
+                (
+                    f"{target} · dependence clusters",
+                    int(manifest.get("n_dependence_clusters", 0)),
+                )
+            )
+            ranks = manifest.get("ranks", [])
+            if isinstance(ranks, list):
+                rows.append(
+                    (
+                        f"{target} · taxonomic ranks",
+                        ", ".join(
+                            str(item.get("rank", ""))
+                            for item in ranks
+                            if isinstance(item, dict)
+                        ),
+                    )
+                )
+        if (root / "index.html").exists():
+            rows.append((f"{target} · report", str(root / "index.html")))
+    return rows
+
+
 def _robustness_rows(sweep: Sweep) -> list[tuple[str, object]]:
     rows = []
     for child in _children(sweep):
@@ -438,6 +469,32 @@ def _robustness_rows(sweep: Sweep) -> list[tuple[str, object]]:
     return rows
 
 
+def _inference_rows(sweep: Sweep) -> list[tuple[str, object]]:
+    rows = []
+    for child in _children(sweep):
+        root = Path(child.root()) / "inference"
+        target = _target_name(child)
+        manifest = _read_json(root / "manifest.json")
+        if manifest:
+            rows.append(
+                (
+                    f"{target} · external samples",
+                    int(manifest.get("inference_samples", 0)),
+                )
+            )
+            strategies = manifest.get("targets", [])
+            if isinstance(strategies, list):
+                rows.append(
+                    (
+                        f"{target} · deployed strategies",
+                        ", ".join(str(value) for value in strategies),
+                    )
+                )
+        if (root / "predictions.tsv").exists():
+            rows.append((f"{target} · predictions", str(root / "predictions.tsv")))
+    return rows
+
+
 def _report_rows(sweep: Sweep) -> list[tuple[str, object]]:
     index = Path(sweep.root()) / "report" / "index.html"
     return [("Status", "HTML report generated")] if index.exists() else []
@@ -445,12 +502,18 @@ def _report_rows(sweep: Sweep) -> list[tuple[str, object]]:
 
 def print_stage_results(sweep: Sweep, stage_name: str) -> None:
     try:
-        if stage_name == "evaluate":
+        if stage_name == "explore":
+            rows = _explore_rows(sweep)
+            title = "Exploration results ready"
+        elif stage_name == "evaluate":
             rows = _evaluation_rows(sweep)
             title = "Evaluation results ready"
         elif stage_name == "ensemble":
             rows = _ensemble_rows(sweep)
             title = "Ensemble results ready"
+        elif stage_name == "inference":
+            rows = _inference_rows(sweep)
+            title = "Inference results ready"
         elif stage_name == "explain":
             rows = _explainability_rows(sweep)
             title = "Explainability results ready"

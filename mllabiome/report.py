@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .baseline_rf import resolve_baseline_rf_configs
 from .configs_sweep import Sweep
 from .console import path_table, phase_progress, stage, success
 from .metrics import canonical_metric_name, compute_metrics, metric_is_loss
@@ -32,7 +33,16 @@ _METRICS = [
 ]
 
 
-_BASELINE_RANK_PRIORITY = ("strain", "species", "genus")
+_SINGLE_RANK_PRIORITY = (
+    "strain",
+    "species",
+    "genus",
+    "family",
+    "order",
+    "class",
+    "phylum",
+    "domain",
+)
 
 
 def _canonical_metric_name(metric: Any) -> str:
@@ -58,8 +68,36 @@ def _metric_display_label(metric: Any) -> str:
         "subject_macro_log_loss": "Subject-macro log loss",
         "cohort_macro_log_loss": "Cohort-macro log loss",
         "brier": "Brier score",
+        "BalAcc": "Balanced accuracy",
+        "Accuracy": "Accuracy",
+        "CalibrationIntercept": "Calibration intercept",
+        "CalibrationSlope": "Calibration slope",
+        "CalibrationIntercept_macro_OvR": "Calibration intercept macro (OvR)",
+        "CalibrationSlope_macro_OvR": "Calibration slope macro (OvR)",
+        "R2": "R²",
+        "MAE": "Mean absolute error",
+        "MSE": "Mean squared error",
+        "RMSE": "Root mean squared error",
+        "MedAE": "Median absolute error",
+        "ExplainedVariance": "Explained variance",
+        "PearsonR": "Pearson r",
+        "SpearmanR": "Spearman ρ",
     }
     return labels.get(key, str(metric))
+
+
+def _humanize_identifier(value: Any) -> str:
+    text = str(value).strip()
+    if not text:
+        return ""
+    return " ".join(text.replace("_", " ").split()).capitalize()
+
+
+def _humanize_level(value: Any) -> str:
+    text = str(value).strip()
+    if text.islower() and text.replace(" ", "").isalpha():
+        return text.capitalize()
+    return text
 
 
 def _classification_display_metrics(selection_metric: Any) -> list[tuple[str, str]]:
@@ -508,15 +546,22 @@ def _report_footer_html() -> str:
     return f'<p class="report-footer">mllabiome · {html.escape(stamp)}</p>'
 
 
-def _report_nav_html(has_robustness: bool = False) -> str:
+def _report_nav_html(
+    has_robustness: bool = False, has_exploration: bool = False
+) -> str:
 
+    exploration_link = (
+        '<a href="#data-exploration">Data exploration</a>' if has_exploration else ""
+    )
     robustness_link = '<a href="#robustness">Robustness</a>' if has_robustness else ""
     return (
         '<header class="report-nav"><div class="report-nav-inner">'
         '<a class="brand" href="#top" aria-label="mllabiome report"><span class="brand-mark">mll</span><span>mllabiome</span></a>'
         '<nav class="report-links" aria-label="Report navigation">'
-        '<a href="#performance-evaluation">Performance evaluation</a>'
-        '<a href="#explainability">Explainability</a>'
+        '<a href="#performance-evaluation">Task and evaluation</a>'
+        + exploration_link
+        + '<a href="#performance-summary">Machine learning performance evaluation</a>'
+        + '<a href="#explainability">Explainability</a>'
         + robustness_link
         + '<a href="#compute">Computational resources</a>'
         '<a href="#abbreviations">Abbreviations</a>'
@@ -588,6 +633,7 @@ REPORT_TEMPLATE_VERSION = "standard-v3"
 
 REPORT_LAYERS = (
     "evaluation_procedure",
+    "data_exploration",
     "descriptive_performance_uncertainty",
     "inferential_comparisons",
     "selected_specifications",
@@ -614,7 +660,7 @@ def _single_rank_label(row: pd.Series | dict[str, Any]) -> str | None:
 
     levels = str(row.get("levels", "")).strip().lower().replace(" ", "")
 
-    for rank in _BASELINE_RANK_PRIORITY:
+    for rank in _SINGLE_RANK_PRIORITY:
         if res == rank or levels == rank:
             return rank
 
@@ -630,7 +676,7 @@ def _pick_deepest_single_rank(
 
     candidates = []
 
-    for rank in _BASELINE_RANK_PRIORITY:
+    for rank in _SINGLE_RANK_PRIORITY:
         rr = sub[
             sub.apply(lambda r, rank=rank: _single_rank_label(r) == rank, axis=1)
         ].copy()
@@ -1376,16 +1422,18 @@ def _strategy_rows(
         if automl:
             by_strategy["AutoML"] = {"Strategy": "AutoML", "source": "mpma", **automl}
 
-        baseline_pool = base[
-            learner.str.fullmatch("RF_1000_msl5", case=False).fillna(False)
-            & transform.str.fullmatch(
-                r"arcsine_sqrt(?:@(rank-wise|joint))?", case=False
-            ).fillna(False)
-        ].copy()
-
-        baseline = _pick_deepest_single_rank(
-            baseline_pool, sort_col=sort_col, ascending=sort_ascending
-        )
+        configs = _read_table(root / "configs.parquet")
+        baseline_configs = resolve_baseline_rf_configs(configs)
+        baseline = {}
+        if not baseline_configs.empty and "config_id" in baseline_configs.columns:
+            baseline_id = str(baseline_configs.iloc[0]["config_id"])
+            baseline_rows = base[base["config_id"].astype(str).eq(baseline_id)].copy()
+            if not baseline_rows.empty:
+                if sort_col in baseline_rows.columns:
+                    baseline_rows = baseline_rows.sort_values(
+                        sort_col, ascending=sort_ascending
+                    )
+                baseline = baseline_rows.iloc[0].to_dict()
 
         if baseline:
             by_strategy["Baseline RF"] = {
@@ -1414,6 +1462,17 @@ def _strategy_rows(
         for k in ("MPMA-E", "MPMA-B", "AutoML", "Baseline RF", "SIAMCAT")
         if k in by_strategy
     ]
+
+
+def _baseline_rf_report_note(rows: list[dict[str, Any]]) -> str:
+    if not any(str(row.get("Strategy", "")) == "Baseline RF" for row in rows):
+        return ""
+    return (
+        "<p><strong>Baseline RF protocol.</strong> Deepest active eligible single taxonomic rank (strain, species, or genus); "
+        "within-rank relative abundance followed by arcsine-square-root transformation; no prevalence filtering; "
+        "RandomForestClassifier with 1,000 trees and minimum leaf size 5. All remaining random-forest "
+        "hyperparameters use scikit-learn defaults; no dataset-specific random-forest hyperparameter tuning is performed.</p>"
+    )
 
 
 def _strategy_performance_display(
@@ -2260,13 +2319,26 @@ def _html_table(df: pd.DataFrame, *, raw_html_cols: set[str] | None = None) -> s
 
     raw_html_cols = raw_html_cols or set()
 
-    hidden_cols = {"Config ID", "config_id"}
+    hidden_cols = {
+        "Config ID",
+        "config_id",
+        "Model / ensemble",
+        "model_or_ensemble_id",
+        "Ensemble ID",
+        "ensemble_config_id",
+        "Model ID",
+        "model_id",
+        "MPDR ID",
+        "mpdr_id",
+        "Candidate ID",
+        "candidate_id",
+    }
 
     cols = [c for c in df.columns if str(c) not in hidden_cols]
 
     parts = ['<div class="table-wrap"><table><thead><tr>']
 
-    parts.extend(f"<th>{html.escape(str(c))}</th>" for c in cols)
+    parts.extend(f'<th scope="col">{html.escape(str(c))}</th>' for c in cols)
 
     parts.append("</tr></thead><tbody>")
 
@@ -2361,9 +2433,19 @@ def _publication_layout_css() -> str:
 .procedure-field { color:var(--mid); font-size:var(--font-table); font-weight:700; }
 .procedure-value { color:var(--ink); font-size:var(--font-table); min-width:0; overflow-wrap:anywhere; }
 .procedure-wide { grid-column:1 / -1; margin-top:2px; }
+.explore-rank { margin:18px 0 34px; }
+.explore-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:20px 26px; align-items:start; margin:12px 0 24px; }
+.explore-figure { min-width:0; }
+.explore-figure-wide { grid-column:1 / -1; }
+.explore-figure figure { width:max-content; max-width:100%; margin:0; overflow:visible; }
+.explore-figure .embedded-svg { display:inline-block; width:max-content; max-width:100%; }
+.explore-figure .embedded-svg svg { width:auto; max-width:100%; height:auto; display:block; }
+.explore-detail-link { margin:6px 0 26px; }
 @media (max-width: 760px) {
   .procedure-grid { grid-template-columns:1fr; column-gap:0; }
   .procedure-wide { grid-column:auto; }
+  .explore-grid { grid-template-columns:1fr; }
+  .explore-figure-wide { grid-column:auto; }
 }
 """
 
@@ -2416,6 +2498,16 @@ h6 { font-size:12px; font-weight:650; margin:16px 0 7px; color:var(--mid); }
 .xai-target { margin:0 0 34px; }
 .xai-class { border-top:1px solid var(--track); margin-top:18px; padding-top:2px; }
 .xai-class figure { margin:10px 0 16px; }
+.xai-importance-grid { display:grid; grid-template-columns:repeat(var(--xai-importance-columns), minmax(0,1fr)); gap:12px; align-items:start; margin:12px 0 12px; }
+.xai-importance-grid-single { width:min(100%, 360px); }
+.xai-importance-cell { min-width:0; }
+.xai-importance-cell h6 { margin:0 0 6px; color:var(--ink); }
+.xai-importance-cell figure { width:100%; max-width:100%; margin:0; overflow:visible; }
+.xai-importance-cell .embedded-svg { width:100%; max-width:100%; }
+.xai-importance-cell .embedded-svg svg { width:100%; max-width:100%; height:auto; }
+.xai-importance-cell img { width:100%; max-width:100%; height:auto; }
+.xai-importance-cell figcaption { display:none; }
+.xai-importance-definitions { margin:6px 0 18px; font-size:var(--font-small); }
 p, li { font-size:var(--font-body); color:var(--mid); line-height:1.56; }
 .report-path { margin-top:0; }
 figure { margin:14px 0 22px; overflow-x:auto; width:max-content; max-width:100%; }
@@ -2434,8 +2526,11 @@ figcaption { font-size:var(--font-small); color:var(--mid); margin-top:7px; }
 .missing-figure { border:1px solid var(--track); color:var(--mid); font-size:12px; padding:36px 12px; text-align:center; background:#fff; border-radius:10px; }
 .table-wrap { overflow-x:auto; margin:12px 0 24px; }
 table { border-collapse:collapse; width:100%; font-size:var(--font-table); }
-th, td { border-bottom:1px solid var(--track); padding:7px 7px; text-align:left; vertical-align:top; line-height:1.38; }
-th { color:var(--mid); font-weight:700; background:#fff; }
+th, td { border-bottom:1px solid var(--track); padding:8px 9px; text-align:left; vertical-align:top; line-height:1.38; }
+th { color:var(--ink); font-weight:700; background:#f8fafc; border-top:1px solid var(--track); }
+tbody tr:last-child td { border-bottom:1px solid #cbd5e1; }
+td { font-variant-numeric:tabular-nums; }
+tbody tr:hover td { background:#fafcff; }
 code { font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:12px; }
 .report-footer { border-top:1px solid var(--track); margin-top:42px; padding-top:16px; color:var(--dim); font-size:12px; }
 @media (max-width: 860px) {
@@ -2446,6 +2541,10 @@ code { font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monosp
   h1 { font-size:22px; }
   .compare-grid { grid-template-columns:repeat(var(--compare-columns), minmax(360px, 1fr)); }
   .compare-cell img, .compare-cell .embedded-svg svg { min-width:0; }
+  .xai-importance-grid { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
+}
+@media (max-width: 620px) {
+  .xai-importance-grid { grid-template-columns:1fr !important; }
 }
 """ + _publication_layout_css()
 
@@ -2620,7 +2719,6 @@ def _write_report_tables(
     )
 
 
-
 def _robustness_report_html(root: Path) -> str:
     directory = root / "robustness"
     if not directory.exists():
@@ -2638,11 +2736,17 @@ def _robustness_report_html(root: Path) -> str:
     confidence = float(manifest.get("confidence_level", 0.95))
     confidence_label = f"{100.0 * confidence:.0f}% CI"
     resampling_unit = str(manifest.get("robustness_resampling_unit", "subject_id"))
+    subgroup_labels: dict[str, str] = {}
     parts = ['<h2 id="robustness">Robustness, confounding and generalization</h2>']
     inventory_path = directory / "metadata_inventory.parquet"
     if table_exists(inventory_path):
         table = read_table(inventory_path)
         if not table.empty:
+            for _, row in table.iterrows():
+                column = str(row.get("column", "")).strip()
+                role = str(row.get("role", "")).strip()
+                if column and role:
+                    subgroup_labels[column] = _humanize_identifier(role)
             display = table.rename(
                 columns={
                     "role": "Semantic role",
@@ -2737,15 +2841,28 @@ def _robustness_report_html(root: Path) -> str:
     if table_exists(support_path):
         table = read_table(support_path)
         if not table.empty:
-            display = table.rename(
+            display = table.copy()
+            if "subgroup" in display.columns:
+                display["subgroup"] = display["subgroup"].map(
+                    lambda value: subgroup_labels.get(
+                        str(value), _humanize_identifier(value)
+                    )
+                )
+            if "level" in display.columns:
+                display["level"] = display["level"].map(_humanize_level)
+            if "support_status" in display.columns:
+                display["support_status"] = display["support_status"].map(
+                    _humanize_identifier
+                )
+            display = display.rename(
                 columns={
                     "strategy": "Strategy",
-                    "subgroup": "Subgroup",
-                    "level": "Level",
-                    "n_samples": "Unique samples",
-                    "n_subjects": "Declared subjects",
-                    "n_resampling_clusters": "Resampling clusters",
-                    "n_repeats": "CV repeats",
+                    "subgroup": "Subgroup variable",
+                    "level": "Subgroup level",
+                    "n_samples": "Unique samples, n",
+                    "n_subjects": "Declared subjects, n",
+                    "n_resampling_clusters": "Dependence clusters, n",
+                    "n_repeats": "CV repeats, n",
                     "class_counts_samples": "Class counts by sample",
                     "class_counts_clusters": "Class counts by cluster",
                     "support_status": "Support",
@@ -2756,12 +2873,12 @@ def _robustness_report_html(root: Path) -> str:
                 column
                 for column in (
                     "Strategy",
-                    "Subgroup",
-                    "Level",
-                    "Unique samples",
-                    "Declared subjects",
-                    "Resampling clusters",
-                    "CV repeats",
+                    "Subgroup variable",
+                    "Subgroup level",
+                    "Unique samples, n",
+                    "Declared subjects, n",
+                    "Dependence clusters, n",
+                    "CV repeats, n",
                     "Class counts by sample",
                     "Class counts by cluster",
                     "Support",
@@ -2780,35 +2897,63 @@ def _robustness_report_html(root: Path) -> str:
     if table_exists(subgroup_path):
         table = read_table(subgroup_path)
         if not table.empty:
-            binary_metrics = ("AUROC", "AP", "log_loss", "brier", "CalibrationSlope", "MCC", "BalAcc")
-            multiclass_metrics = ("AUROC_macro", "AP_macro", "log_loss", "brier", "CalibrationSlope_macro_OvR", "MCC", "BalAcc")
+            binary_metrics = (
+                "AUROC",
+                "AP",
+                "log_loss",
+                "brier",
+                "CalibrationSlope",
+                "MCC",
+                "BalAcc",
+            )
+            multiclass_metrics = (
+                "AUROC_macro",
+                "AP_macro",
+                "log_loss",
+                "brier",
+                "CalibrationSlope_macro_OvR",
+                "MCC",
+                "BalAcc",
+            )
             regression_metrics = ("R2", "MAE", "RMSE", "SpearmanR")
             labels = manifest.get("class_labels", [])
-            preferred = regression_metrics if task == "regression" else (binary_metrics if len(labels) == 2 else multiclass_metrics)
+            preferred = (
+                regression_metrics
+                if task == "regression"
+                else (binary_metrics if len(labels) == 2 else multiclass_metrics)
+            )
             selected = table[table["metric"].astype(str).isin(preferred)].copy()
             if not selected.empty:
+                selected["subgroup"] = selected["subgroup"].map(
+                    lambda value: subgroup_labels.get(
+                        str(value), _humanize_identifier(value)
+                    )
+                )
+                selected["level"] = selected["level"].map(_humanize_level)
+
                 def interval_text(row: pd.Series) -> str:
-                    estimate = pd.to_numeric(pd.Series([row.get("estimate")]), errors="coerce").iloc[0]
-                    low = pd.to_numeric(pd.Series([row.get("ci_low")]), errors="coerce").iloc[0]
-                    high = pd.to_numeric(pd.Series([row.get("ci_high")]), errors="coerce").iloc[0]
+                    estimate = pd.to_numeric(
+                        pd.Series([row.get("estimate")]), errors="coerce"
+                    ).iloc[0]
+                    low = pd.to_numeric(
+                        pd.Series([row.get("ci_low")]), errors="coerce"
+                    ).iloc[0]
+                    high = pd.to_numeric(
+                        pd.Series([row.get("ci_high")]), errors="coerce"
+                    ).iloc[0]
                     if not np.isfinite(estimate):
                         return ""
                     if np.isfinite(low) and np.isfinite(high):
-                        return f"{float(estimate):.3f} [{float(low):.3f}, {float(high):.3f}]"
-                    return f"{float(estimate):.3f} [CI unavailable]"
+                        return f"{float(estimate):.3f} ({float(low):.3f}–{float(high):.3f})"
+                    return f"{float(estimate):.3f} (CI unavailable)"
+
                 selected["value"] = selected.apply(interval_text, axis=1)
-                selected["declared_subjects"] = selected["n_subjects"].map(
-                    lambda value: str(int(value)) if pd.notna(value) else "not declared"
-                )
                 index_columns = [
                     "strategy",
                     "subgroup",
                     "level",
-                    "estimand",
                     "n_samples",
-                    "declared_subjects",
                     "n_resampling_clusters",
-                    "support_status",
                 ]
                 wide = selected.pivot_table(
                     index=index_columns,
@@ -2817,37 +2962,52 @@ def _robustness_report_html(root: Path) -> str:
                     aggfunc="first",
                 ).reset_index()
                 wide.columns.name = None
+                metric_renames = {
+                    metric: f"{_metric_display_label(metric)} ({confidence_label})"
+                    for metric in preferred
+                }
                 wide = wide.rename(
                     columns={
                         "strategy": "Strategy",
-                        "subgroup": "Subgroup",
-                        "level": "Level",
-                        "estimand": "Estimand",
-                        "n_samples": "Samples",
-                        "declared_subjects": "Declared subjects",
-                        "n_resampling_clusters": "Clusters",
-                        "support_status": "Support",
+                        "subgroup": "Subgroup variable",
+                        "level": "Subgroup level",
+                        "n_samples": "Samples, n",
+                        "n_resampling_clusters": "Dependence clusters, n",
+                        **metric_renames,
                     }
                 )
+                metric_columns = [
+                    metric_renames[metric]
+                    for metric in preferred
+                    if metric_renames[metric] in wide.columns
+                ]
                 ordered = [
                     column
                     for column in (
                         "Strategy",
-                        "Subgroup",
-                        "Level",
-                        "Estimand",
-                        "Samples",
-                        "Declared subjects",
-                        "Clusters",
-                        "Support",
-                        *preferred,
+                        "Subgroup variable",
+                        "Subgroup level",
+                        "Samples, n",
+                        "Dependence clusters, n",
+                        *metric_columns,
                     )
                     if column in wide.columns
                 ]
+                estimands = [
+                    str(value)
+                    for value in selected.get("estimand", pd.Series(dtype=str))
+                    .dropna()
+                    .unique()
+                ]
+                estimand_text = (
+                    "mean of repeat-specific pooled OOF estimates"
+                    if estimands == ["mean_repeat_pooled_oof"]
+                    else ", ".join(estimands)
+                )
                 parts.extend(
                     [
                         "<h3>Subgroup performance</h3>",
-                        f"<p>Subgroup performance is evaluated only from strategy-specific outer-held-out predictions, without subgroup-specific model selection or refitting. Repeated cross-validation is summarized as the mean of repeat-specific pooled OOF metrics rather than by treating repeated predictions as independent observations. Values are estimates [{confidence_label}] from a nonparametric dependence-cluster bootstrap that preserves all repeated observations within each resampled cluster. Calibration and proper scoring metrics are reported alongside discrimination only when the selected strategy outputs valid probabilities; score-only ensemble outputs retain discrimination and threshold metrics without pseudo-probability calibration. Intervals are conditional on the existing outer-held-out predictions and do not rerun model fitting or model selection inside bootstrap replicates.</p>",
+                        f"<p>Subgroup performance is evaluated only from strategy-specific outer-held-out predictions, without subgroup-specific model selection or refitting. The estimand is the {html.escape(estimand_text)}. Values are point estimates with {confidence_label} from a nonparametric dependence-cluster bootstrap that preserves all repeated observations within each resampled cluster. Calibration and proper scoring metrics are shown only for strategies that produce valid probabilities. Intervals are conditional on the existing outer-held-out predictions and do not rerun model fitting or model selection.</p>",
                         _html_table(wide[ordered]),
                     ]
                 )
@@ -2855,28 +3015,56 @@ def _robustness_report_html(root: Path) -> str:
     if table_exists(contrasts_path):
         table = read_table(contrasts_path)
         if not table.empty:
+
             def contrast_interval(row: pd.Series) -> str:
-                estimate = pd.to_numeric(pd.Series([row.get("difference_a_minus_b")]), errors="coerce").iloc[0]
-                low = pd.to_numeric(pd.Series([row.get("ci_low")]), errors="coerce").iloc[0]
-                high = pd.to_numeric(pd.Series([row.get("ci_high")]), errors="coerce").iloc[0]
+                estimate = pd.to_numeric(
+                    pd.Series([row.get("difference_a_minus_b")]), errors="coerce"
+                ).iloc[0]
+                low = pd.to_numeric(
+                    pd.Series([row.get("ci_low")]), errors="coerce"
+                ).iloc[0]
+                high = pd.to_numeric(
+                    pd.Series([row.get("ci_high")]), errors="coerce"
+                ).iloc[0]
                 if not np.isfinite(estimate):
                     return ""
                 if np.isfinite(low) and np.isfinite(high):
-                    return f"{float(estimate):.3f} [{float(low):.3f}, {float(high):.3f}]"
-                return f"{float(estimate):.3f} [CI unavailable]"
+                    return f"{float(estimate):.3f} ({float(low):.3f}–{float(high):.3f})"
+                return f"{float(estimate):.3f} (CI unavailable)"
+
             display = table.copy()
+            display["subgroup"] = display["subgroup"].map(
+                lambda value: subgroup_labels.get(
+                    str(value), _humanize_identifier(value)
+                )
+            )
+            display["level_a"] = display["level_a"].map(_humanize_level)
+            display["level_b"] = display["level_b"].map(_humanize_level)
             display["Difference"] = display.apply(contrast_interval, axis=1)
+            display["metric"] = display["metric"].map(_metric_display_label)
             display = display.rename(
                 columns={
                     "strategy": "Strategy",
-                    "subgroup": "Subgroup",
+                    "subgroup": "Subgroup variable",
                     "level_a": "Level A",
                     "level_b": "Level B",
                     "estimand": "Estimand",
                     "metric": "Metric",
                 }
             )
-            keep = [column for column in ("Strategy", "Subgroup", "Level A", "Level B", "Estimand", "Metric", "Difference") if column in display.columns]
+            keep = [
+                column
+                for column in (
+                    "Strategy",
+                    "Subgroup variable",
+                    "Level A",
+                    "Level B",
+                    "Estimand",
+                    "Metric",
+                    "Difference",
+                )
+                if column in display.columns
+            ]
             parts.extend(
                 [
                     "<h3>Subgroup performance contrasts</h3>",
@@ -2890,9 +3078,11 @@ def _robustness_report_html(root: Path) -> str:
         if not table.empty:
             rename = {
                 "strategy": "Strategy",
+                "method": "Method",
+                "class_label": "Class",
                 "feature": "Feature",
-                "model_or_ensemble_id": "Model / ensemble",
-                "importance_mean": "Importance",
+                "importance_mean": "Mean importance",
+                "median_rank": "Median rank",
                 "rank_median": "Median rank",
                 "rank_iqr": "Rank IQR",
                 "top_k_frequency": "Top-k frequency",
@@ -2900,17 +3090,175 @@ def _robustness_report_html(root: Path) -> str:
                 "sign_consistency": "Sign consistency",
             }
             display = table.rename(columns=rename)
-            keep = [column for column in ("Strategy", "Feature", "Model / ensemble", "Importance", "Median rank", "Rank IQR", "Top-k frequency", "Fold coverage", "Sign consistency") if column in display.columns]
+            if "Method" in display.columns:
+                display["Method"] = display["Method"].map(
+                    lambda value: (
+                        str(value).upper()
+                        if str(value).strip().lower() in {"shap", "lime", "ale"}
+                        else _humanize_identifier(value)
+                    )
+                )
+            if "Class" in display.columns:
+                display["Class"] = display["Class"].map(_humanize_level)
+            for column in ("Top-k frequency", "Fold coverage", "Sign consistency"):
+                if column in display.columns:
+                    numeric = pd.to_numeric(display[column], errors="coerce")
+                    display[column] = [
+                        f"{100.0 * float(value):.0f}%" if pd.notna(value) else ""
+                        for value in numeric
+                    ]
+            for column in ("Median rank", "Rank IQR"):
+                if column in display.columns:
+                    numeric = pd.to_numeric(display[column], errors="coerce")
+                    display[column] = [
+                        f"{float(value):.2f}" if pd.notna(value) else ""
+                        for value in numeric
+                    ]
+            keep = [
+                column
+                for column in (
+                    "Strategy",
+                    "Method",
+                    "Class",
+                    "Feature",
+                    "Mean importance",
+                    "Median rank",
+                    "Rank IQR",
+                    "Top-k frequency",
+                    "Fold coverage",
+                    "Sign consistency",
+                )
+                if column in display.columns
+            ]
             parts.extend(
                 [
                     "<h3>Important-feature stability</h3>",
-                    "<p>Feature robustness preserves model provenance: MPMA-B summaries use MPMA-B outer-test explanations and MPMA-E summaries use MPMA-E outer-test explanations. These are descriptive cross-fit stability measures and not independent-fold confidence intervals.</p>",
+                    "<p>Feature robustness is summarized separately for MPMA-B and MPMA-E from their outer-test explanations. Method and class are shown explicitly when applicable. These are descriptive cross-fit stability measures and not independent-fold confidence intervals.</p>",
                     _html_table(display[keep]),
                 ]
             )
     if len(parts) == 1:
         return ""
     return "\n".join(parts)
+
+
+def _exploration_report_html(root: Path, report_dir: Path) -> str:
+    manifest_path = root / "explore" / "manifest.json"
+    if not manifest_path.exists():
+        return ""
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    ranks = manifest.get("ranks", [])
+    if not isinstance(ranks, list) or not ranks:
+        return ""
+    from .explore import (
+        _alpha_display_table,
+        _alpha_inference_context,
+        _beta_display_table,
+        _da_display_table,
+    )
+
+    confidence_level = float(manifest.get("confidence_level", 0.95))
+    parts = [
+        '<h2 id="data-exploration">Data exploration</h2>',
+        "<p>Exploration follows the task definition and evaluation procedure and is organized around non-redundant scientific questions. Figures are used for distributions, multivariate geometry and feature-level patterns; exact inferential quantities are reported in adjacent tables. Community-level analyses use compositional geometry where appropriate, and all inferential summaries preserve the declared dependence structure.</p>",
+    ]
+    for rank_payload in ranks:
+        rank = str(rank_payload.get("rank", "")).strip()
+        if not rank:
+            continue
+        rank_dir = root / "explore" / rank
+        table_dir = rank_dir / "tables"
+        figure_dir = rank_dir / "figures"
+        alpha = _read_table(table_dir / "alpha_statistics.parquet")
+        beta = _read_table(table_dir / "beta_statistics.parquet")
+        da = _read_table(table_dir / "differential_abundance.parquet")
+        da_meta = (
+            rank_payload.get("differential_abundance", {})
+            if isinstance(rank_payload.get("differential_abundance", {}), dict)
+            else {}
+        )
+        method = str(da_meta.get("method", "")).strip()
+        model = str(da_meta.get("model", "")).strip()
+        parts.append(
+            f'<section class="explore-rank"><h3>{html.escape(rank.title())}</h3>'
+        )
+
+        alpha_context = (
+            _alpha_inference_context(alpha, confidence_level) if not alpha.empty else ""
+        )
+        alpha_caption = "Alpha-diversity distributions. Exact dependence-aware effect estimates and multiplicity-adjusted P values are reported below."
+        if alpha_context:
+            alpha_caption = f"{alpha_caption} {alpha_context}"
+        alpha_figure = _fig(figure_dir / "alpha_diversity", report_dir, alpha_caption)
+        if alpha_figure:
+            parts.append(
+                f'<div class="explore-figure explore-figure-wide">{alpha_figure}</div>'
+            )
+        if not alpha.empty:
+            parts.append("<h4>Alpha-diversity inference</h4>")
+            parts.append(_html_table(_alpha_display_table(alpha, confidence_level)))
+
+        pcoa_figure = _fig(
+            figure_dir / "aitchison_pcoa",
+            report_dir,
+            "Aitchison principal coordinates analysis of centered-log-ratio (CLR) community profiles. For classification tasks, outlines are descriptive 80% covariance ellipses that summarize within-group concentration and are not confidence regions. PERMANOVA tests whether community composition differs with the target; PERMDISP checks whether apparent separation could instead reflect unequal within-group dispersion. Exact effect sizes and FDR-adjusted tests are reported below.",
+        )
+        if pcoa_figure:
+            parts.append(f'<div class="explore-figure">{pcoa_figure}</div>')
+        if not beta.empty:
+            parts.append("<h4>Beta-diversity inference</h4>")
+            parts.append(_html_table(_beta_display_table(beta)))
+
+        heatmap_figure = _fig(
+            figure_dir / "clr_heatmap",
+            report_dir,
+            "Standardized CLR abundance structure for prevalent, high-variance taxa. Cell colour runs from pale lower values to cyan higher values. This panel is descriptive and is intended to expose sample- and taxon-level structure rather than taxon-wise inference.",
+        )
+        if heatmap_figure:
+            parts.append("<h4>Multivariate abundance structure</h4>")
+            parts.append(
+                f'<div class="explore-figure explore-figure-wide">{heatmap_figure}</div>'
+            )
+
+        volcano_figure = _fig(
+            figure_dir / "differential_abundance",
+            report_dir,
+            "Differential-abundance or taxon-association volcano. Straight dashed leaders connect selected labels to their feature points; exact estimates, confidence intervals, prevalence and FDR-adjusted P values are reported below.",
+        )
+        if volcano_figure:
+            parts.append(
+                f'<div class="explore-figure explore-figure-wide">{volcano_figure}</div>'
+            )
+        if method or not da.empty:
+            parts.append("<h4>Differential abundance and taxon associations</h4>")
+            method_text = ". ".join(value for value in (method, model) if value)
+            if method_text:
+                readable_method = method_text.replace(
+                    "CLR linear model", "Centered log-ratio (CLR) linear model"
+                )
+                readable_method = readable_method.replace(
+                    "HC3 robust covariance",
+                    "HC3 heteroskedasticity-robust standard errors",
+                )
+                readable_method = readable_method.replace(
+                    "HC3 heteroskedasticity-robust standard errors",
+                    "HC3 heteroskedasticity-robust standard errors, which reduce sensitivity to unequal residual variance and influential observations",
+                )
+                readable_method = readable_method.replace(
+                    "cluster-robust covariance",
+                    "cluster-robust standard errors that preserve repeated/dependent observations",
+                )
+                parts.append(f"<p>{html.escape(readable_method)}.</p>")
+            if not da.empty:
+                parts.append(
+                    _html_table(_da_display_table(da, confidence_level).head(20))
+                )
+        parts.append("</section>")
+    return "\n".join(parts)
+
 
 def _render_report_html(
     sweep: Sweep,
@@ -2942,6 +3290,9 @@ def _render_report_html(
         else "<p>No explainability artefacts are available yet.</p>"
     )
     robustness_html = _robustness_report_html(sweep.root())
+    exploration_html = _exploration_report_html(
+        Path(sweep.root()), Path(sweep.root()) / "report"
+    )
     hardware_html = (
         _html_table(tables.hardware_summary)
         if not tables.hardware_summary.empty
@@ -2951,14 +3302,16 @@ def _render_report_html(
 <html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
 <title>mllabiome report</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"{_favicon_href()}\"><style>{_report_css()}</style></head>
 <body>
-{_report_nav_html(bool(robustness_html))}
+{_report_nav_html(bool(robustness_html), bool(exploration_html))}
 <div class=\"report-shell\"><main id=\"top\" class=\"report-content\">
 <h2 id=\"performance-evaluation\" class=\"first-section\">Task definition and evaluation procedure</h2>
 {_procedure_grid_html(analysis.procedure)}
 {analysis.multimodal_inclusion_html}
+{exploration_html}
 <h2 id=\"performance-summary\">Task performance summary</h2>
 {_performance_methodology_html(sweep.evaluation.protocol, 2000)}
 {_html_table(analysis.strategy_html, raw_html_cols=strategy_metric_cols)}
+{_baseline_rf_report_note(analysis.strategy_rows)}
 <h2 id=\"representation-impact\">Data representations and learner impact on performance</h2>
 {_representation_impact_note(str(sweep.evaluation.optimize_metric), bool(getattr(sweep, "uses_modalities", False)))}
 {representation_figure}
@@ -2981,7 +3334,7 @@ def _render_report_html(
 {robustness_html}
 
 <h2 id=\"compute\">Computational resources</h2>
-<p>Compute is summarized by additive CPU core-hours, model-fit count, and peak resident memory for the worker process tree. CPU time includes child processes and external R processes when used. MPMA-B and MPMA-E share the MPMA search pool, so their compute totals overlap.</p>
+<p>Compute is summarized by additive CPU core-hours, model-fit count, and peak resident memory for the worker process tree. CPU time includes child processes and external R processes when used. MPMA-B and MPMA-E share the MPMA search pool, so their compute totals overlap. Baseline RF, SIAMCAT and AutoML are listed when those comparators were actually evaluated; no cost is imputed for a comparator that was not run.</p>
 {_html_table(analysis.compute_display)}
 <h4>Hardware and runtime environment</h4>
 {hardware_html}

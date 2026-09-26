@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,54 @@ def _member_rows_for_final_model(
             )
         ordered.append(by_id[config_id])
     return pd.DataFrame(ordered)
+
+
+def _materialize_member_native_explanations(
+    root: Path, bundle: dict[str, Any], out_dir: Path
+) -> Path | None:
+    specs = list(bundle.get("specs", []))
+    if not specs:
+        return None
+    destination = out_dir / "member_native"
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+    manifest = []
+    for member_no, spec in enumerate(specs, start=1):
+        config_id = str(spec.get("config_id", ""))
+        source = root / "explainability" / "cache" / _core._safe_cache_name(config_id)
+        if not source.exists():
+            continue
+        member_dir = destination / f"member_{member_no:02d}"
+        shutil.copytree(source, member_dir)
+        row = spec.get("row", pd.Series(dtype=object))
+        final_member = (
+            spec.get("final_member", {})
+            if isinstance(spec.get("final_member", {}), dict)
+            else {}
+        )
+        manifest.append(
+            {
+                "member_no": int(member_no),
+                "directory": member_dir.name,
+                "representation": str(
+                    row.get("resolution", "+".join(spec.get("levels", ())))
+                ),
+                "transformation": str(
+                    spec.get("transformation_key", row.get("count_transformation", ""))
+                ),
+                "learner": str(spec.get("learner_key", row.get("learner", ""))),
+                "aggregation_weight": final_member.get(
+                    "aggregation_weight", final_member.get("weight")
+                ),
+            }
+        )
+    if not manifest:
+        shutil.rmtree(destination)
+        return None
+    manifest_path = destination / "manifest.json"
+    dump_json_standard({"members": manifest}, manifest_path)
+    return manifest_path
 
 
 def _linear_weights(mpma_e: dict[str, Any]) -> np.ndarray | None:
@@ -1236,6 +1285,7 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
     )
     info("Preparing final MPMA-E member refits for OOF explanation")
     bundle = _fit_oof_members(sweep, rankings, mpma_e)
+    member_manifest = _materialize_member_native_explanations(root, bundle, out_dir)
     dataset = bundle["dataset"]
     class_indices = _core._resolve_explainability_classes(
         dataset, sweep.explainability.classes
@@ -1251,6 +1301,8 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
     )
 
     outputs = _write_prediction_tables(bundle, mpma_e, out_dir)
+    if member_manifest is not None:
+        outputs["member_native_manifest"] = member_manifest
     reproduction_path = out_dir / "prediction_reproduction_diagnostics.parquet"
     write_table(reproduction_path, bundle["reproduction"])
     outputs["prediction_reproduction_diagnostics"] = reproduction_path
@@ -1316,6 +1368,7 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
         "geometry_projection_applied": bool(projection_applied),
         "perturbation_interpretation": perturbation_policy["interpretation"],
         "methods": ["shap"] if "shap" in global_methods else [],
+        "requested_methods": list(methods),
         "member_native_methods": list(methods),
         "method_parameters": [_core.method_to_dict(x) for x in method_specs],
         "top_k": int(sweep.explainability.top_k),
@@ -1341,10 +1394,10 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
         ],
         "ensemble_level_method_scope": {
             "shap": "exact_for_linear_probability_aggregation",
-            "lime": "member_native_only",
-            "ale": "member_native_only",
-            "permutation": "member_native_only",
-            "interactions": "member_native_only",
+            "lime": "member_native; local-surrogate coefficients are not averaged across heterogeneous member coordinate systems",
+            "ale": "member_native; effect curves remain in each member's fitted coordinate system",
+            "permutation": "member_native; perturbations remain valid within each member's transformation geometry",
+            "interactions": "member_native; interaction surfaces are not pooled across heterogeneous coordinate systems",
         },
         "cross_validation_explanations": "outer_test_folds_of_final_selected_specification",
         "selection_independence_note": (

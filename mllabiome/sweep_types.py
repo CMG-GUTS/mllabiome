@@ -27,7 +27,11 @@ from .metrics import (
     metric_requires_probability_semantics,
 )
 from .modalities import Modality, Samples
-from .utils import CLASSIFICATION_METRIC_COLUMNS, REGRESSION_METRIC_COLUMNS
+from .utils import (
+    CLASSIFICATION_METRIC_COLUMNS,
+    REGRESSION_METRIC_COLUMNS,
+    TAXONOMIC_LEVELS,
+)
 
 
 class SweepTask(str, Enum):
@@ -597,6 +601,112 @@ def validate_sweep_class_count(sweep: Any, n_classes: int) -> None:
 
 
 @dataclass(frozen=True)
+class Explore:
+    ranks: tuple[str, ...] = ("genus", "species")
+    top_taxa: int = 12
+    heatmap_top: int = 30
+    min_prevalence: float = 0.10
+    detection_limit: float = 0.0
+    zero_replacement: float | None = None
+    permutations: int = 999
+    bootstrap_replicates: int = 2000
+    confidence_level: float = 0.95
+    differential_abundance: str = "auto"
+    da_covariates: tuple[str, ...] = ()
+    da_alpha: float = 0.05
+    da_label_top: int = 8
+    ancombc2_runtime: str = "auto"
+    ancombc2_p_adjust_method: str = "holm"
+    ancombc2_pseudo_sens: bool = True
+    ancombc2_structural_zeros: bool = True
+    ancombc2_neg_lb: bool | None = None
+    ancombc2_workers: int = 1
+    random_state: int = 42
+
+    def __post_init__(self) -> None:
+        ranks = tuple(
+            dict.fromkeys(str(value).strip().casefold() for value in self.ranks)
+        )
+        invalid = sorted(set(ranks) - set(TAXONOMIC_LEVELS) - {"all", "raw"})
+        if invalid:
+            raise ValueError(f"Unsupported Explore.ranks: {invalid!r}.")
+        if int(self.top_taxa) < 1:
+            raise ValueError("Explore.top_taxa must be at least 1.")
+        if int(self.heatmap_top) < 2:
+            raise ValueError("Explore.heatmap_top must be at least 2.")
+        if not 0.0 <= float(self.min_prevalence) <= 1.0:
+            raise ValueError("Explore.min_prevalence must be between 0 and 1.")
+        if float(self.detection_limit) < 0.0:
+            raise ValueError("Explore.detection_limit cannot be negative.")
+        if (
+            self.zero_replacement is not None
+            and not 0.0 < float(self.zero_replacement) < 1.0
+        ):
+            raise ValueError(
+                "Explore.zero_replacement must be between 0 and 1 when provided."
+            )
+        if int(self.permutations) < 99:
+            raise ValueError("Explore.permutations must be at least 99.")
+        if int(self.bootstrap_replicates) < 200:
+            raise ValueError("Explore.bootstrap_replicates must be at least 200.")
+        if not 0.50 < float(self.confidence_level) < 1.0:
+            raise ValueError("Explore.confidence_level must be between 0.50 and 1.0.")
+        backend = str(self.differential_abundance).strip().casefold().replace("-", "_")
+        aliases = {"ancom_bc2": "ancombc2", "clr_model": "clr", "none": "off"}
+        backend = aliases.get(backend, backend)
+        if backend not in {"auto", "ancombc2", "clr", "off"}:
+            raise ValueError(
+                "Explore.differential_abundance must be one of: auto, ancombc2, clr, off."
+            )
+        covariates = tuple(
+            dict.fromkeys(str(value).strip() for value in self.da_covariates)
+        )
+        if any(not value for value in covariates):
+            raise ValueError("Explore.da_covariates cannot contain empty names.")
+        if not 0.0 < float(self.da_alpha) < 1.0:
+            raise ValueError("Explore.da_alpha must be between 0 and 1.")
+        if int(self.da_label_top) < 0:
+            raise ValueError("Explore.da_label_top cannot be negative.")
+        runtime = str(self.ancombc2_runtime).strip().casefold()
+        if runtime not in {"auto", "system", "managed"}:
+            raise ValueError(
+                "Explore.ancombc2_runtime must be one of: auto, system, managed."
+            )
+        p_adjust = str(self.ancombc2_p_adjust_method).strip()
+        if p_adjust not in {
+            "holm",
+            "hochberg",
+            "hommel",
+            "bonferroni",
+            "BH",
+            "BY",
+            "fdr",
+            "none",
+        }:
+            raise ValueError("Unsupported Explore.ancombc2_p_adjust_method.")
+        if int(self.ancombc2_workers) < 1:
+            raise ValueError("Explore.ancombc2_workers must be at least 1.")
+        object.__setattr__(self, "ranks", ranks)
+        object.__setattr__(self, "top_taxa", int(self.top_taxa))
+        object.__setattr__(self, "heatmap_top", int(self.heatmap_top))
+        object.__setattr__(self, "min_prevalence", float(self.min_prevalence))
+        object.__setattr__(self, "detection_limit", float(self.detection_limit))
+        if self.zero_replacement is not None:
+            object.__setattr__(self, "zero_replacement", float(self.zero_replacement))
+        object.__setattr__(self, "permutations", int(self.permutations))
+        object.__setattr__(self, "bootstrap_replicates", int(self.bootstrap_replicates))
+        object.__setattr__(self, "confidence_level", float(self.confidence_level))
+        object.__setattr__(self, "differential_abundance", backend)
+        object.__setattr__(self, "da_covariates", covariates)
+        object.__setattr__(self, "da_alpha", float(self.da_alpha))
+        object.__setattr__(self, "da_label_top", int(self.da_label_top))
+        object.__setattr__(self, "ancombc2_runtime", runtime)
+        object.__setattr__(self, "ancombc2_p_adjust_method", p_adjust)
+        object.__setattr__(self, "ancombc2_workers", int(self.ancombc2_workers))
+        object.__setattr__(self, "random_state", int(self.random_state))
+
+
+@dataclass(frozen=True)
 class Robustness:
     covariates: tuple[str, ...] = ()
     technical: tuple[str, ...] = ()
@@ -612,7 +722,9 @@ class Robustness:
     random_state: int = 42
 
     def __post_init__(self) -> None:
-        targets = tuple(str(value).strip().casefold().replace("-", "_") for value in self.targets)
+        targets = tuple(
+            str(value).strip().casefold().replace("-", "_") for value in self.targets
+        )
         invalid = sorted(set(targets) - {"mpma_b", "mpma_e"})
         if invalid:
             raise ValueError(f"Unsupported Robustness.targets: {invalid!r}.")
@@ -620,29 +732,111 @@ class Robustness:
             raise ValueError("Robustness.top_k must be at least 1.")
         if int(self.min_subgroup_size) < 2:
             raise ValueError("Robustness.min_subgroup_size must be at least 2.")
-        if self.min_subgroup_clusters is not None and int(self.min_subgroup_clusters) < 2:
-            raise ValueError("Robustness.min_subgroup_clusters must be at least 2 when provided.")
+        if (
+            self.min_subgroup_clusters is not None
+            and int(self.min_subgroup_clusters) < 2
+        ):
+            raise ValueError(
+                "Robustness.min_subgroup_clusters must be at least 2 when provided."
+            )
         if int(self.min_class_clusters) < 1:
             raise ValueError("Robustness.min_class_clusters must be at least 1.")
         if int(self.bootstrap_replicates) < 200:
             raise ValueError("Robustness.bootstrap_replicates must be at least 200.")
         if not 0.50 < float(self.confidence_level) < 1.0:
-            raise ValueError("Robustness.confidence_level must be between 0.50 and 1.0.")
+            raise ValueError(
+                "Robustness.confidence_level must be between 0.50 and 1.0."
+            )
         if not 0.50 <= float(self.min_bootstrap_valid_fraction) <= 1.0:
-            raise ValueError("Robustness.min_bootstrap_valid_fraction must be between 0.50 and 1.0.")
+            raise ValueError(
+                "Robustness.min_bootstrap_valid_fraction must be between 0.50 and 1.0."
+            )
         object.__setattr__(self, "targets", targets)
-        object.__setattr__(self, "covariates", tuple(dict.fromkeys(str(value) for value in self.covariates)))
-        object.__setattr__(self, "technical", tuple(dict.fromkeys(str(value) for value in self.technical)))
-        object.__setattr__(self, "subgroups", tuple(dict.fromkeys(str(value) for value in self.subgroups)))
+        object.__setattr__(
+            self,
+            "covariates",
+            tuple(dict.fromkeys(str(value) for value in self.covariates)),
+        )
+        object.__setattr__(
+            self,
+            "technical",
+            tuple(dict.fromkeys(str(value) for value in self.technical)),
+        )
+        object.__setattr__(
+            self,
+            "subgroups",
+            tuple(dict.fromkeys(str(value) for value in self.subgroups)),
+        )
         object.__setattr__(self, "top_k", int(self.top_k))
         object.__setattr__(self, "min_subgroup_size", int(self.min_subgroup_size))
         if self.min_subgroup_clusters is not None:
-            object.__setattr__(self, "min_subgroup_clusters", int(self.min_subgroup_clusters))
+            object.__setattr__(
+                self, "min_subgroup_clusters", int(self.min_subgroup_clusters)
+            )
         object.__setattr__(self, "min_class_clusters", int(self.min_class_clusters))
         object.__setattr__(self, "bootstrap_replicates", int(self.bootstrap_replicates))
         object.__setattr__(self, "confidence_level", float(self.confidence_level))
-        object.__setattr__(self, "min_bootstrap_valid_fraction", float(self.min_bootstrap_valid_fraction))
+        object.__setattr__(
+            self,
+            "min_bootstrap_valid_fraction",
+            float(self.min_bootstrap_valid_fraction),
+        )
         object.__setattr__(self, "random_state", int(self.random_state))
+
+
+@dataclass(frozen=True)
+class Inference:
+    abundance_path: Path | str
+    targets: tuple[str, ...] = ("mpma_b", "mpma_e")
+    metadata_path: Path | str | None = None
+    format: str = "same"
+    sample_id_col: str | None = None
+    feature_policy: str = "strict"
+    allow_training_sample_overlap: bool = False
+
+    def __post_init__(self) -> None:
+        targets = tuple(
+            dict.fromkeys(
+                str(value).strip().casefold().replace("-", "_")
+                for value in self.targets
+            )
+        )
+        invalid = sorted(set(targets) - {"mpma_b", "mpma_e"})
+        if invalid or not targets:
+            raise ValueError(
+                f"Inference.targets must contain one or both of 'mpma_b' and 'mpma_e'; got {invalid or targets!r}."
+            )
+        format_value = str(self.format).strip().casefold().replace("-", "_")
+        if format_value not in {
+            "same",
+            "mllab",
+            "matrix_tsv",
+            "metaphlan",
+            "metaphlan_tsv",
+            "profile_tsv",
+            "csv",
+            "wide_csv",
+        }:
+            raise ValueError(f"Unsupported Inference.format {self.format!r}.")
+        policy = str(self.feature_policy).strip().casefold().replace("-", "_")
+        if policy not in {"strict", "zero_fill"}:
+            raise ValueError(
+                "Inference.feature_policy must be 'strict' or 'zero_fill'."
+            )
+        sample_id_col = (
+            None if self.sample_id_col is None else str(self.sample_id_col).strip()
+        )
+        if sample_id_col == "":
+            sample_id_col = None
+        object.__setattr__(self, "targets", targets)
+        object.__setattr__(self, "format", format_value)
+        object.__setattr__(self, "feature_policy", policy)
+        object.__setattr__(self, "sample_id_col", sample_id_col)
+        object.__setattr__(
+            self,
+            "allow_training_sample_overlap",
+            bool(self.allow_training_sample_overlap),
+        )
 
 
 @dataclass
@@ -659,8 +853,10 @@ class Sweep:
     evaluation: Evaluation = field(default_factory=Evaluation)
     gate: QualificationGate = field(default_factory=QualificationGate)
     ensemble: Ensemble = field(default_factory=Ensemble)
+    explore: Explore = field(default_factory=Explore)
     explainability: Explainability = field(default_factory=Explainability)
     robustness: Robustness | None = None
+    inference: Inference | None = None
     title: str = "mllabiome sweep"
     samples: Samples | None = None
     modalities: Sequence[Modality] = field(default_factory=tuple)
@@ -784,8 +980,10 @@ def build_sweep_from_module(mod: Any) -> Sweep:
             evaluation=getattr(mod, "EVALUATION", Evaluation()),
             gate=getattr(mod, "GATE", QualificationGate()),
             ensemble=ensemble,
+            explore=getattr(mod, "EXPLORE", Explore()),
             explainability=getattr(mod, "EXPLAINABILITY", Explainability()),
             robustness=getattr(mod, "ROBUSTNESS", None),
+            inference=getattr(mod, "INFERENCE", None),
             samples=samples,
             modalities=modalities,
             representations=getattr(mod, "REPRESENTATIONS", {}),
@@ -843,8 +1041,10 @@ def build_sweep_from_module(mod: Any) -> Sweep:
         evaluation=getattr(mod, "EVALUATION", Evaluation()),
         gate=getattr(mod, "GATE", QualificationGate()),
         ensemble=getattr(mod, "ENSEMBLE", Ensemble()),
+        explore=getattr(mod, "EXPLORE", Explore()),
         explainability=getattr(mod, "EXPLAINABILITY", Explainability()),
         robustness=getattr(mod, "ROBUSTNESS", None),
+        inference=getattr(mod, "INFERENCE", None),
     )
 
 

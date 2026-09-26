@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.patches import ConnectionPatch
 
 from .explainability_support import top_k_rank_support
 from .style import COL_W_2, compact_svg, enforce_nature_figure
@@ -1097,45 +1098,136 @@ def _draw_network(
             )
         )
 
-    text_x_left = -6.10
-    text_x_right = 6.10
-    line_end_left = -5.88
-    line_end_right = 5.88
-    for node in G.nodes():
-        x, y = map(float, pos[node])
-        side = "left" if x < 0.0 else "right"
-        sign = -1.0 if side == "left" else 1.0
-        anchor_x = x + sign * (radii[node] + 0.045)
-        line_end = line_end_left if side == "left" else line_end_right
-        text_x = text_x_left if side == "left" else text_x_right
-        ha = "right" if side == "left" else "left"
-        ax.plot(
-            [anchor_x, line_end],
-            [y, y],
-            color=MID,
-            linewidth=0.42,
-            alpha=0.78,
-            linestyle=(0, (1.6, 2.2)),
-            solid_capstyle="round",
-            zorder=4,
-        )
-        label = _net_italic(str(G.nodes[node]["label"]))
-        is_hub = bool(node == hub and hub_deg >= 4)
-        ax.text(
-            text_x,
-            y,
-            label,
-            ha=ha,
-            va="center",
-            fontsize=6.7 if not is_hub else 7.1,
-            color=INK,
-            fontweight="bold" if is_hub else "normal",
-            path_effects=[mpe.withStroke(linewidth=1.6, foreground="white")],
-            zorder=6,
-        )
-
-    ax.set_xlim(-6.65, 6.65)
+    ax.set_xlim(-7.80, 7.80)
     ax.set_ylim(-4.25, 4.25)
+    fig = ax.figure
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    axes_box = ax.get_window_extent(renderer=renderer)
+
+    left_nodes = [node for node in G.nodes() if float(pos[node][0]) < 0.0]
+    right_nodes = [node for node in G.nodes() if float(pos[node][0]) >= 0.0]
+    max_side = max(len(left_nodes), len(right_nodes), 1)
+    base_fontsize = max(5.0, 6.35 - max(0, max_side - 14) * 0.18)
+
+    label_info = {}
+    for node in G.nodes():
+        is_hub = bool(node == hub and hub_deg >= 4)
+        fontsize = min(7.0, base_fontsize + 0.35) if is_hub else base_fontsize
+        label = _net_italic(str(G.nodes[node]["label"]))
+        probe = ax.text(
+            0.5,
+            0.5,
+            label,
+            transform=ax.transAxes,
+            fontsize=fontsize,
+            fontweight="bold" if is_hub else "normal",
+            alpha=0.0,
+        )
+        fig.canvas.draw()
+        box = probe.get_window_extent(renderer=fig.canvas.get_renderer())
+        probe.remove()
+        label_info[node] = {
+            "label": label,
+            "fontsize": fontsize,
+            "weight": "bold" if is_hub else "normal",
+            "width": float(box.width / max(axes_box.width, 1.0)),
+            "height": float(box.height / max(axes_box.height, 1.0)),
+        }
+
+    def desired_y(node):
+        return float(np.clip((float(pos[node][1]) + 4.25) / 8.5, 0.0, 1.0))
+
+    def pack(nodes):
+        ordered = sorted(nodes, key=desired_y)
+        if not ordered:
+            return {}
+        lower = 0.015
+        upper = 0.985
+        height_sum = sum(label_info[node]["height"] for node in ordered)
+        if len(ordered) > 1:
+            gap = min(
+                0.012, max(0.002, (upper - lower - height_sum) / (len(ordered) - 1))
+            )
+        else:
+            gap = 0.0
+        ys = []
+        for index, node in enumerate(ordered):
+            half = label_info[node]["height"] / 2.0
+            target = float(np.clip(desired_y(node), lower + half, upper - half))
+            if index == 0:
+                ys.append(target)
+            else:
+                previous = ordered[index - 1]
+                minimum = ys[-1] + label_info[previous]["height"] / 2.0 + half + gap
+                ys.append(max(target, minimum))
+        overflow = ys[-1] + label_info[ordered[-1]]["height"] / 2.0 - upper
+        if overflow > 0:
+            ys = [value - overflow for value in ys]
+        for index in range(len(ordered) - 2, -1, -1):
+            node = ordered[index]
+            nxt = ordered[index + 1]
+            maximum = (
+                ys[index + 1]
+                - label_info[nxt]["height"] / 2.0
+                - label_info[node]["height"] / 2.0
+                - gap
+            )
+            ys[index] = min(ys[index], maximum)
+        underflow = lower - (ys[0] - label_info[ordered[0]]["height"] / 2.0)
+        if underflow > 0:
+            ys = [value + underflow for value in ys]
+        overflow = ys[-1] + label_info[ordered[-1]]["height"] / 2.0 - upper
+        if overflow > 0:
+            ys = [value - overflow for value in ys]
+        return {node: float(value) for node, value in zip(ordered, ys)}
+
+    left_y = pack(left_nodes)
+    right_y = pack(right_nodes)
+    left_width = max((label_info[node]["width"] for node in left_nodes), default=0.0)
+    right_width = max((label_info[node]["width"] for node in right_nodes), default=0.0)
+    left_anchor = float(np.clip(left_width + 0.010, 0.18, 0.255))
+    right_anchor = float(np.clip(1.0 - right_width - 0.010, 0.745, 0.82))
+    left_endpoint = left_anchor + 0.012
+    right_endpoint = right_anchor - 0.012
+
+    for side, nodes, packed, anchor_x, endpoint_x in (
+        ("left", left_nodes, left_y, left_anchor, left_endpoint),
+        ("right", right_nodes, right_y, right_anchor, right_endpoint),
+    ):
+        for node in sorted(nodes, key=lambda value: -float(packed[value])):
+            info = label_info[node]
+            y = float(packed[node])
+            ax.text(
+                anchor_x,
+                y,
+                info["label"],
+                transform=ax.transAxes,
+                ha="right" if side == "left" else "left",
+                va="center",
+                fontsize=info["fontsize"],
+                color=INK,
+                fontweight=info["weight"],
+                path_effects=[mpe.withStroke(linewidth=1.35, foreground="white")],
+                clip_on=False,
+                zorder=6,
+            )
+            connector = ConnectionPatch(
+                xyA=(float(pos[node][0]), float(pos[node][1])),
+                coordsA=ax.transData,
+                xyB=(endpoint_x, y),
+                coordsB=ax.transAxes,
+                axesA=ax,
+                axesB=ax,
+                arrowstyle="-",
+                linewidth=0.42,
+                linestyle=(0, (1.6, 2.15)),
+                color=MID,
+                alpha=0.84,
+                zorder=2,
+                clip_on=False,
+            )
+            ax.add_artist(connector)
     return (
         float(s_min),
         float(s_max),
@@ -1327,7 +1419,12 @@ def plot_interaction_network(
 ) -> bool:
     apply_style()
     labels = [str(x) for x in (class_labels or ())]
-    fig = plt.figure(figsize=(COL_W_2, 112 * MM))
+    try:
+        node_count = len(_build_network_graph(tab.head(int(top_k)), stats).nodes())
+    except Exception:
+        node_count = 0
+    panel_height = min(160.0, 112.0 + max(0, node_count - 24) * 3.0)
+    fig = plt.figure(figsize=(COL_W_2, panel_height * MM))
     fig.patch.set_facecolor(BG)
     ax_net = fig.add_axes([0.025, 0.225, 0.950, 0.745], zorder=4)
     ax_leg = fig.add_axes([0.035, 0.025, 0.930, 0.155], zorder=12)

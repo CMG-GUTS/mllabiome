@@ -15,7 +15,11 @@ from .modalities import load_modalities
 from .oof_statistics import _calibration_binary
 from .statistics_common import _LODO_PROTOCOLS, _repeat_id, _stable_seed
 from .storage import read_table, table_exists, write_table
-from .utils import CLASSIFICATION_METRIC_COLUMNS, REGRESSION_METRIC_COLUMNS, dump_json_standard
+from .utils import (
+    CLASSIFICATION_METRIC_COLUMNS,
+    REGRESSION_METRIC_COLUMNS,
+    dump_json_standard,
+)
 
 _CALIBRATION_METRICS = (
     "CalibrationInTheLarge",
@@ -26,11 +30,14 @@ _CALIBRATION_METRICS = (
     "CalibrationSlope_macro_OvR",
 )
 
-_CLASSIFICATION_ROBUSTNESS_METRICS = tuple(
-    metric
-    for metric in CLASSIFICATION_METRIC_COLUMNS
-    if metric not in {"subject_macro_log_loss", "cohort_macro_log_loss"}
-) + _CALIBRATION_METRICS
+_CLASSIFICATION_ROBUSTNESS_METRICS = (
+    tuple(
+        metric
+        for metric in CLASSIFICATION_METRIC_COLUMNS
+        if metric not in {"subject_macro_log_loss", "cohort_macro_log_loss"}
+    )
+    + _CALIBRATION_METRICS
+)
 
 _BINARY_CONTRAST_METRICS = ("AUROC", "AP", "log_loss", "brier", "MCC", "BalAcc")
 _MULTICLASS_CONTRAST_METRICS = (
@@ -73,20 +80,28 @@ def _metadata(sweep: Any) -> tuple[pd.DataFrame, str, dict[str, Any]]:
     group_col = getattr(spec, "group_col", None)
     cluster_source = "subject_id" if subject_declared else "sample_id"
     frame["__cluster_id__"] = frame["__subject_id__"].astype(str)
-    if not subject_declared and group_col is not None and str(group_col) in frame.columns:
+    if (
+        not subject_declared
+        and group_col is not None
+        and str(group_col) in frame.columns
+    ):
         values = frame[str(group_col)]
         if values.notna().all() and values.astype(str).nunique() < len(frame):
             frame["__cluster_id__"] = values.astype(str)
             cluster_source = f"group_col:{group_col}"
-    return frame, sample_col, {
-        "target": str(dataset.target_name),
-        "task": str(dataset.task),
-        "class_labels": tuple(str(value) for value in dataset.class_labels),
-        "positive_class": dataset.positive_class,
-        "subject_id_declared": subject_declared,
-        "cluster_source": cluster_source,
-        "protocol": str(sweep.evaluation.protocol),
-    }
+    return (
+        frame,
+        sample_col,
+        {
+            "target": str(dataset.target_name),
+            "task": str(dataset.task),
+            "class_labels": tuple(str(value) for value in dataset.class_labels),
+            "positive_class": dataset.positive_class,
+            "subject_id_declared": subject_declared,
+            "cluster_source": cluster_source,
+            "protocol": str(sweep.evaluation.protocol),
+        },
+    )
 
 
 def _metadata_schema(sweep: Any) -> Any:
@@ -95,7 +110,9 @@ def _metadata_schema(sweep: Any) -> Any:
     return metadata_spec(sweep.data)
 
 
-def _metadata_inventory(metadata: pd.DataFrame, schema: Any, context: dict[str, Any]) -> pd.DataFrame:
+def _metadata_inventory(
+    metadata: pd.DataFrame, schema: Any, context: dict[str, Any]
+) -> pd.DataFrame:
     if schema is None:
         return pd.DataFrame()
     declarations: dict[str, dict[str, set[str]]] = {}
@@ -113,17 +130,33 @@ def _metadata_inventory(metadata: pd.DataFrame, schema: Any, context: dict[str, 
         entry["roles"].add("technical")
         entry["categories"].add("technical")
     rows: list[dict[str, Any]] = []
-    total_subjects = int(metadata["__subject_id__"].nunique()) if bool(context["subject_id_declared"]) else np.nan
+    total_subjects = (
+        int(metadata["__subject_id__"].nunique())
+        if bool(context["subject_id_declared"])
+        else np.nan
+    )
     total_clusters = int(metadata["__cluster_id__"].nunique())
     for column, declaration in declarations.items():
         if column not in metadata.columns:
-            raise ValueError(f"Declared metadata column {column!r} is not present in metadata.")
+            raise ValueError(
+                f"Declared metadata column {column!r} is not present in metadata."
+            )
         values = metadata[column]
         numeric = pd.to_numeric(values, errors="coerce")
         numeric_fraction = float(numeric.notna().mean()) if len(values) else 0.0
-        kind = "numeric" if numeric_fraction >= 0.95 and numeric.nunique(dropna=True) > 2 else "categorical"
-        observed_subjects = int(metadata.loc[values.notna(), "__subject_id__"].nunique()) if bool(context["subject_id_declared"]) else np.nan
-        observed_clusters = int(metadata.loc[values.notna(), "__cluster_id__"].nunique())
+        kind = (
+            "numeric"
+            if numeric_fraction >= 0.95 and numeric.nunique(dropna=True) > 2
+            else "categorical"
+        )
+        observed_subjects = (
+            int(metadata.loc[values.notna(), "__subject_id__"].nunique())
+            if bool(context["subject_id_declared"])
+            else np.nan
+        )
+        observed_clusters = int(
+            metadata.loc[values.notna(), "__cluster_id__"].nunique()
+        )
         rows.append(
             {
                 "role": ", ".join(sorted(declaration["roles"])),
@@ -137,8 +170,12 @@ def _metadata_inventory(metadata: pd.DataFrame, schema: Any, context: dict[str, 
                 "observed_subjects": observed_subjects,
                 "observed_clusters": observed_clusters,
                 "missing": int(values.isna().sum()),
-                "missing_subjects": int(total_subjects - observed_subjects) if np.isfinite(total_subjects) and np.isfinite(observed_subjects) else np.nan,
-                "missing_fraction": float(values.isna().mean()) if len(values) else np.nan,
+                "missing_subjects": int(total_subjects - observed_subjects)
+                if np.isfinite(total_subjects) and np.isfinite(observed_subjects)
+                else np.nan,
+                "missing_fraction": float(values.isna().mean())
+                if len(values)
+                else np.nan,
                 "unique": int(values.nunique(dropna=True)),
             }
         )
@@ -151,12 +188,16 @@ def _stable_within_subject(values: pd.Series, subjects: pd.Series) -> bool:
     return bool(encoded.groupby(frame["subject"], sort=False).nunique().le(1).all())
 
 
-def _balance_analysis_frame(metadata: pd.DataFrame, column: str, context: dict[str, Any]) -> tuple[pd.DataFrame, str]:
+def _balance_analysis_frame(
+    metadata: pd.DataFrame, column: str, context: dict[str, Any]
+) -> tuple[pd.DataFrame, str]:
     cluster = metadata["__cluster_id__"]
     stable_target = _stable_within_subject(metadata["__y_label__"], cluster)
     stable_covariate = _stable_within_subject(metadata[column], cluster)
     if stable_target and stable_covariate and int(cluster.nunique()) < len(metadata):
-        unit = "subject" if bool(context["subject_id_declared"]) else "dependence_cluster"
+        unit = (
+            "subject" if bool(context["subject_id_declared"]) else "dependence_cluster"
+        )
         return metadata.drop_duplicates("__cluster_id__", keep="first").copy(), unit
     return metadata.copy(), "sample"
 
@@ -192,9 +233,15 @@ def _numeric_pairwise_balance(values: pd.Series, groups: pd.Series) -> dict[str,
         raw = abs(float(np.mean(a)) - float(np.mean(b)))
         if len(a) > 1 and len(b) > 1:
             denominator_df = len(a) + len(b) - 2
-            variance = ((len(a) - 1) * np.var(a, ddof=1) + (len(b) - 1) * np.var(b, ddof=1)) / denominator_df
+            variance = (
+                (len(a) - 1) * np.var(a, ddof=1) + (len(b) - 1) * np.var(b, ddof=1)
+            ) / denominator_df
             denominator = float(np.sqrt(max(float(variance), 0.0)))
-            smd = raw / denominator if denominator > 0.0 else (0.0 if raw == 0.0 else float("inf"))
+            smd = (
+                raw / denominator
+                if denominator > 0.0
+                else (0.0 if raw == 0.0 else float("inf"))
+            )
         else:
             smd = np.nan
         if np.isfinite(smd) or np.isinf(smd):
@@ -211,8 +258,12 @@ def _numeric_pairwise_balance(values: pd.Series, groups: pd.Series) -> dict[str,
     }
 
 
-def _categorical_pairwise_balance(values: pd.Series, groups: pd.Series) -> dict[str, Any]:
-    observed = pd.DataFrame({"value": values.astype("string"), "group": groups.astype("string")}).dropna()
+def _categorical_pairwise_balance(
+    values: pd.Series, groups: pd.Series
+) -> dict[str, Any]:
+    observed = pd.DataFrame(
+        {"value": values.astype("string"), "group": groups.astype("string")}
+    ).dropna()
     if observed.empty or observed["group"].nunique() < 2:
         return {
             "max_pairwise_smd": np.nan,
@@ -241,7 +292,9 @@ def _categorical_pairwise_balance(values: pd.Series, groups: pd.Series) -> dict[
                 best_pair = f"{first} vs {second}"
                 best_level = str(level)
     summaries = {
-        str(group): {str(level): float(table.loc[group, level]) for level in value_levels}
+        str(group): {
+            str(level): float(table.loc[group, level]) for level in value_levels
+        }
         for group in group_levels
     }
     return {
@@ -253,7 +306,9 @@ def _categorical_pairwise_balance(values: pd.Series, groups: pd.Series) -> dict[
     }
 
 
-def _missingness_balance(values: pd.Series, groups: pd.Series) -> tuple[float, float, str]:
+def _missingness_balance(
+    values: pd.Series, groups: pd.Series
+) -> tuple[float, float, str]:
     levels = sorted(groups.dropna().astype(str).unique())
     missing = values.isna()
     best_smd = np.nan
@@ -275,18 +330,33 @@ def _missingness_balance(values: pd.Series, groups: pd.Series) -> tuple[float, f
     return best_smd, best_raw, best_pair
 
 
-def _balance_table(metadata: pd.DataFrame, columns: tuple[str, ...], technical: set[str], context: dict[str, Any]) -> pd.DataFrame:
+def _balance_table(
+    metadata: pd.DataFrame,
+    columns: tuple[str, ...],
+    technical: set[str],
+    context: dict[str, Any],
+) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for column in columns:
         if column not in metadata.columns:
-            raise ValueError(f"Robustness covariate {column!r} is not present in metadata.")
+            raise ValueError(
+                f"Robustness covariate {column!r} is not present in metadata."
+            )
         analysis, unit = _balance_analysis_frame(metadata, column, context)
         values = analysis[column]
         groups = analysis["__y_label__"]
         numeric = pd.to_numeric(values, errors="coerce")
         numeric_fraction = float(numeric.notna().mean()) if len(values) else 0.0
-        kind = "numeric" if numeric_fraction >= 0.95 and numeric.nunique(dropna=True) > 2 else "categorical"
-        result = _numeric_pairwise_balance(values, groups) if kind == "numeric" else _categorical_pairwise_balance(values, groups)
+        kind = (
+            "numeric"
+            if numeric_fraction >= 0.95 and numeric.nunique(dropna=True) > 2
+            else "categorical"
+        )
+        result = (
+            _numeric_pairwise_balance(values, groups)
+            if kind == "numeric"
+            else _categorical_pairwise_balance(values, groups)
+        )
         missing_smd, missing_raw, missing_pair = _missingness_balance(values, groups)
         rows.append(
             {
@@ -296,7 +366,9 @@ def _balance_table(metadata: pd.DataFrame, columns: tuple[str, ...], technical: 
                 "analysis_unit": unit,
                 "n_units": int(len(analysis)),
                 "n_samples": int(len(metadata)),
-                "n_subjects": int(metadata["__subject_id__"].nunique()) if bool(context["subject_id_declared"]) else np.nan,
+                "n_subjects": int(metadata["__subject_id__"].nunique())
+                if bool(context["subject_id_declared"])
+                else np.nan,
                 "n_resampling_clusters": int(metadata["__cluster_id__"].nunique()),
                 "observed": int(values.notna().sum()),
                 "missing": int(values.isna().sum()),
@@ -319,14 +391,22 @@ def _prediction_sources(root: Path, targets: tuple[str, ...]) -> list[tuple[str,
         "mpma_b": root / "predictions" / "mpma_b_outer_predictions.parquet",
         "mpma_e": root / "ensembling" / "ensemble_predictions.parquet",
     }
-    return [(target, sources[target]) for target in targets if target in sources and table_exists(sources[target])]
+    return [
+        (target, sources[target])
+        for target in targets
+        if target in sources and table_exists(sources[target])
+    ]
 
 
-def _probability_columns(frame: pd.DataFrame, class_labels: tuple[str, ...]) -> list[str]:
+def _probability_columns(
+    frame: pd.DataFrame, class_labels: tuple[str, ...]
+) -> list[str]:
     expected = [f"proba_{label}" for label in class_labels]
     missing = [column for column in expected if column not in frame.columns]
     if missing:
-        available = [str(column) for column in frame.columns if str(column).startswith("proba_")]
+        available = [
+            str(column) for column in frame.columns if str(column).startswith("proba_")
+        ]
         raise ValueError(
             f"Held-out predictions do not match declared class-label order; missing={missing!r}, available={available!r}."
         )
@@ -341,43 +421,65 @@ def _prepare_predictions(
     context: dict[str, Any],
 ) -> tuple[pd.DataFrame, list[str]]:
     if subgroup not in metadata.columns:
-        raise ValueError(f"Robustness subgroup {subgroup!r} is not present in metadata.")
+        raise ValueError(
+            f"Robustness subgroup {subgroup!r} is not present in metadata."
+        )
     out = predictions.copy()
     if "outer_split_key" not in out.columns:
         if "split_key" not in out.columns:
-            raise ValueError("Held-out predictions must contain outer_split_key or split_key.")
+            raise ValueError(
+                "Held-out predictions must contain outer_split_key or split_key."
+            )
         out["outer_split_key"] = out["split_key"]
     required = {"outer_split_key", "sample_id", "y_true", "y_pred"}
     missing = sorted(required - set(out.columns))
     if missing:
-        raise ValueError(f"Held-out predictions are missing required columns: {missing!r}.")
+        raise ValueError(
+            f"Held-out predictions are missing required columns: {missing!r}."
+        )
     out["sample_id"] = out["sample_id"].astype(str)
     out["outer_split_key"] = out["outer_split_key"].astype(str)
     meta = metadata[[sample_col, "__subject_id__", "__cluster_id__", subgroup]].copy()
     meta[sample_col] = meta[sample_col].astype(str)
-    out = out.merge(meta, left_on="sample_id", right_on=sample_col, how="left", validate="many_to_one")
+    out = out.merge(
+        meta,
+        left_on="sample_id",
+        right_on=sample_col,
+        how="left",
+        validate="many_to_one",
+    )
     if out[subgroup].isna().all():
-        raise ValueError(f"Robustness subgroup {subgroup!r} has no observed values among held-out predictions.")
+        raise ValueError(
+            f"Robustness subgroup {subgroup!r} has no observed values among held-out predictions."
+        )
     if "subject_id" in out.columns:
         if out["subject_id"].isna().any():
             raise ValueError("Held-out predictions contain missing subject_id values.")
         mismatch = out["subject_id"].astype(str).ne(out["__subject_id__"].astype(str))
         if bool(mismatch.any()):
-            raise ValueError("Held-out prediction subject_id values disagree with the data specification.")
+            raise ValueError(
+                "Held-out prediction subject_id values disagree with the data specification."
+            )
     protocol = str(context["protocol"]).strip().lower()
     if protocol in _LODO_PROTOCOLS:
         out["_repeat"] = "r0"
         out["_cluster"] = out["outer_split_key"].astype(str)
         duplicate_keys = ["_cluster", "sample_id"]
-        cluster_cohorts = out.groupby("__cluster_id__", sort=False)["_cluster"].nunique()
+        cluster_cohorts = out.groupby("__cluster_id__", sort=False)[
+            "_cluster"
+        ].nunique()
         if bool((cluster_cohorts > 1).any()):
-            raise ValueError("A robustness resampling cluster occurs in more than one held-out LODO cohort.")
+            raise ValueError(
+                "A robustness resampling cluster occurs in more than one held-out LODO cohort."
+            )
     else:
         out["_repeat"] = out["outer_split_key"].map(_repeat_id)
         out["_cluster"] = out["_repeat"]
         duplicate_keys = ["_repeat", "sample_id"]
     if out.duplicated(duplicate_keys).any():
-        raise ValueError("Held-out predictions contain duplicate inference rows within an evaluation repeat or cohort.")
+        raise ValueError(
+            "Held-out predictions contain duplicate inference rows within an evaluation repeat or cohort."
+        )
     task = str(context["task"])
     if task == "classification":
         pcols = _probability_columns(out, tuple(context["class_labels"]))
@@ -395,20 +497,28 @@ def _prepare_predictions(
         )
         if "probability_valid" in out.columns:
             declared = out["probability_valid"].map(
-                lambda value: value if isinstance(value, (bool, np.bool_)) else str(value).strip().lower() in {"1", "true", "yes"}
+                lambda value: (
+                    value
+                    if isinstance(value, (bool, np.bool_))
+                    else str(value).strip().lower() in {"1", "true", "yes"}
+                )
             )
             probability_valid = bool(declared.all())
         else:
             probability_valid = inferred_probability_valid
         if probability_valid and not inferred_probability_valid:
-            raise ValueError("Held-out predictions are declared probability-valued but rows do not sum to one.")
+            raise ValueError(
+                "Held-out predictions are declared probability-valued but rows do not sum to one."
+            )
         out["__probability_valid__"] = probability_valid
     else:
         pcols = []
         out["y_true"] = pd.to_numeric(out["y_true"], errors="raise").astype(float)
         out["y_pred"] = pd.to_numeric(out["y_pred"], errors="raise").astype(float)
         if not np.isfinite(out[["y_true", "y_pred"]].to_numpy(dtype=float)).all():
-            raise ValueError("Held-out regression predictions contain non-finite values.")
+            raise ValueError(
+                "Held-out regression predictions contain non-finite values."
+            )
     return out.reset_index(drop=True), pcols
 
 
@@ -422,9 +532,18 @@ def _classification_metrics(
     y_true = frame["y_true"].to_numpy(dtype=int)
     y_pred = frame["y_pred"].to_numpy(dtype=int)
     proba = frame[pcols].to_numpy(dtype=float)
-    values = compute_metrics(y_true, y_pred, proba, classes, positive_class=positive_class)
-    out = {metric: float(values.get(metric, np.nan)) for metric in _CLASSIFICATION_ROBUSTNESS_METRICS}
-    probability_valid = bool(frame["__probability_valid__"].all()) if "__probability_valid__" in frame.columns else True
+    values = compute_metrics(
+        y_true, y_pred, proba, classes, positive_class=positive_class
+    )
+    out = {
+        metric: float(values.get(metric, np.nan))
+        for metric in _CLASSIFICATION_ROBUSTNESS_METRICS
+    }
+    probability_valid = (
+        bool(frame["__probability_valid__"].all())
+        if "__probability_valid__" in frame.columns
+        else True
+    )
     if not probability_valid:
         out["log_loss"] = np.nan
         out["brier"] = np.nan
@@ -433,12 +552,17 @@ def _classification_metrics(
         return out
     if n_classes == 2:
         index = int(classes[-1] if positive_class is None else positive_class)
-        calibration = _calibration_binary((y_true == index).astype(float), proba[:, index])
+        calibration = _calibration_binary(
+            (y_true == index).astype(float), proba[:, index]
+        )
         out["CalibrationInTheLarge"] = float(calibration[0])
         out["CalibrationIntercept"] = float(calibration[1])
         out["CalibrationSlope"] = float(calibration[2])
     else:
-        calibration = [_calibration_binary((y_true == index).astype(float), proba[:, index]) for index in classes]
+        calibration = [
+            _calibration_binary((y_true == index).astype(float), proba[:, index])
+            for index in classes
+        ]
         for position, name in enumerate(
             (
                 "CalibrationInTheLarge_macro_OvR",
@@ -446,21 +570,41 @@ def _classification_metrics(
                 "CalibrationSlope_macro_OvR",
             )
         ):
-            finite = np.asarray([value[position] for value in calibration if np.isfinite(value[position])], dtype=float)
+            finite = np.asarray(
+                [
+                    value[position]
+                    for value in calibration
+                    if np.isfinite(value[position])
+                ],
+                dtype=float,
+            )
             out[name] = float(np.mean(finite)) if len(finite) else np.nan
     return out
 
 
-def _metric_values(frame: pd.DataFrame, task: str, pcols: list[str], positive_class: int | None) -> dict[str, float]:
+def _metric_values(
+    frame: pd.DataFrame, task: str, pcols: list[str], positive_class: int | None
+) -> dict[str, float]:
     if frame.empty:
-        metrics = _CLASSIFICATION_ROBUSTNESS_METRICS if task == "classification" else tuple(REGRESSION_METRIC_COLUMNS)
+        metrics = (
+            _CLASSIFICATION_ROBUSTNESS_METRICS
+            if task == "classification"
+            else tuple(REGRESSION_METRIC_COLUMNS)
+        )
         return {metric: np.nan for metric in metrics}
     if task == "classification":
         return _classification_metrics(frame, pcols, positive_class)
-    return {metric: float(value) for metric, value in compute_regression_metrics(frame["y_true"].to_numpy(dtype=float), frame["y_pred"].to_numpy(dtype=float)).items()}
+    return {
+        metric: float(value)
+        for metric, value in compute_regression_metrics(
+            frame["y_true"].to_numpy(dtype=float), frame["y_pred"].to_numpy(dtype=float)
+        ).items()
+    }
 
 
-def _mean_metric_dicts(values: list[dict[str, float]], metrics: tuple[str, ...]) -> dict[str, float]:
+def _mean_metric_dicts(
+    values: list[dict[str, float]], metrics: tuple[str, ...]
+) -> dict[str, float]:
     out: dict[str, float] = {}
     for metric in metrics:
         array = np.asarray([value.get(metric, np.nan) for value in values], dtype=float)
@@ -475,32 +619,52 @@ def _point_estimands(
     pcols: list[str],
 ) -> dict[str, dict[str, float]]:
     task = str(context["task"])
-    metrics = _CLASSIFICATION_ROBUSTNESS_METRICS if task == "classification" else tuple(REGRESSION_METRIC_COLUMNS)
+    metrics = (
+        _CLASSIFICATION_ROBUSTNESS_METRICS
+        if task == "classification"
+        else tuple(REGRESSION_METRIC_COLUMNS)
+    )
     positive = context["positive_class"] if task == "classification" else None
     protocol = str(context["protocol"]).strip().lower()
     if protocol in _LODO_PROTOCOLS:
-        cohort_values = [_metric_values(group, task, pcols, positive) for _, group in frame.groupby("_cluster", sort=True)]
+        cohort_values = [
+            _metric_values(group, task, pcols, positive)
+            for _, group in frame.groupby("_cluster", sort=True)
+        ]
         return {
             "pooled_sample_weighted": _metric_values(frame, task, pcols, positive),
             "cohort_macro_equal_weight": _mean_metric_dicts(cohort_values, metrics),
         }
-    repeat_values = [_metric_values(group, task, pcols, positive) for _, group in frame.groupby("_repeat", sort=True)]
+    repeat_values = [
+        _metric_values(group, task, pcols, positive)
+        for _, group in frame.groupby("_repeat", sort=True)
+    ]
     return {"mean_repeat_pooled_oof": _mean_metric_dicts(repeat_values, metrics)}
 
 
-def _resample_subject_clusters(frame: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
-    clusters = [group.reset_index(drop=True) for _, group in frame.groupby("__cluster_id__", sort=True)]
+def _resample_subject_clusters(
+    frame: pd.DataFrame, rng: np.random.Generator
+) -> pd.DataFrame:
+    clusters = [
+        group.reset_index(drop=True)
+        for _, group in frame.groupby("__cluster_id__", sort=True)
+    ]
     if not clusters:
         return frame.iloc[0:0].copy()
     chosen = rng.integers(0, len(clusters), size=len(clusters))
     return pd.concat([clusters[int(index)] for index in chosen], ignore_index=True)
 
 
-def _bootstrap_frame(frame: pd.DataFrame, protocol: str, rng: np.random.Generator) -> pd.DataFrame:
+def _bootstrap_frame(
+    frame: pd.DataFrame, protocol: str, rng: np.random.Generator
+) -> pd.DataFrame:
     key = str(protocol).strip().lower()
     if key not in _LODO_PROTOCOLS:
         return _resample_subject_clusters(frame, rng)
-    cohorts = [group.reset_index(drop=True) for _, group in frame.groupby("_cluster", sort=True)]
+    cohorts = [
+        group.reset_index(drop=True)
+        for _, group in frame.groupby("_cluster", sort=True)
+    ]
     if not cohorts:
         return frame.iloc[0:0].copy()
     chosen = rng.integers(0, len(cohorts), size=len(cohorts))
@@ -525,7 +689,11 @@ def _support_row(
 ) -> dict[str, Any]:
     unique_samples = frame.drop_duplicates("sample_id", keep="first")
     n_samples = int(unique_samples["sample_id"].nunique())
-    n_subjects = int(unique_samples["__subject_id__"].nunique()) if bool(context["subject_id_declared"]) else np.nan
+    n_subjects = (
+        int(unique_samples["__subject_id__"].nunique())
+        if bool(context["subject_id_declared"])
+        else np.nan
+    )
     n_clusters = int(unique_samples["__cluster_id__"].nunique())
     eligible = n_samples >= min_samples and n_clusters >= min_clusters
     reason = ""
@@ -552,9 +720,16 @@ def _support_row(
     }
     if str(context["task"]) == "classification":
         labels = tuple(context["class_labels"])
-        sample_counts = {label: int((unique_samples["y_true"].astype(int) == index).sum()) for index, label in enumerate(labels)}
+        sample_counts = {
+            label: int((unique_samples["y_true"].astype(int) == index).sum())
+            for index, label in enumerate(labels)
+        }
         cluster_counts = {
-            label: int(unique_samples.loc[unique_samples["y_true"].astype(int).eq(index), "__cluster_id__"].nunique())
+            label: int(
+                unique_samples.loc[
+                    unique_samples["y_true"].astype(int).eq(index), "__cluster_id__"
+                ].nunique()
+            )
             for index, label in enumerate(labels)
         }
         minimum = min(cluster_counts.values()) if cluster_counts else 0
@@ -567,7 +742,9 @@ def _support_row(
     return row
 
 
-def _confidence_interval(draws: np.ndarray, confidence_level: float, minimum_valid: int) -> tuple[float, float, int, str]:
+def _confidence_interval(
+    draws: np.ndarray, confidence_level: float, minimum_valid: int
+) -> tuple[float, float, int, str]:
     finite = np.asarray(draws, dtype=float)
     finite = finite[np.isfinite(finite)]
     count = int(len(finite))
@@ -587,7 +764,9 @@ def _subgroup_analysis(
     context: dict[str, Any],
     config: Any,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    joined, pcols = _prepare_predictions(predictions, metadata, sample_col, subgroup, context)
+    joined, pcols = _prepare_predictions(
+        predictions, metadata, sample_col, subgroup, context
+    )
     observed = joined.dropna(subset=[subgroup]).copy()
     levels = sorted(observed[subgroup].unique(), key=lambda value: str(value))
     support_rows: list[dict[str, Any]] = []
@@ -631,17 +810,25 @@ def _subgroup_analysis(
         for level in eligible_levels
     }
     task = str(context["task"])
-    metrics = _CLASSIFICATION_ROBUSTNESS_METRICS if task == "classification" else tuple(REGRESSION_METRIC_COLUMNS)
+    metrics = (
+        _CLASSIFICATION_ROBUSTNESS_METRICS
+        if task == "classification"
+        else tuple(REGRESSION_METRIC_COLUMNS)
+    )
     estimands = tuple(next(iter(points.values())).keys())
     n_bootstrap = int(config.bootstrap_replicates)
     storage = {
         level: {
-            estimand: {metric: np.full(n_bootstrap, np.nan, dtype=float) for metric in metrics}
+            estimand: {
+                metric: np.full(n_bootstrap, np.nan, dtype=float) for metric in metrics
+            }
             for estimand in estimands
         }
         for level in eligible_levels
     }
-    rng = np.random.default_rng(_stable_seed(int(config.random_state), "robustness", strategy, subgroup))
+    rng = np.random.default_rng(
+        _stable_seed(int(config.random_state), "robustness", strategy, subgroup)
+    )
     for bootstrap_index in range(n_bootstrap):
         sampled = _bootstrap_frame(observed, str(context["protocol"]), rng)
         for level in eligible_levels:
@@ -651,14 +838,26 @@ def _subgroup_analysis(
             values = _point_estimands(level_frame, context, pcols)
             for estimand in estimands:
                 for metric in metrics:
-                    storage[level][estimand][metric][bootstrap_index] = values.get(estimand, {}).get(metric, np.nan)
-    minimum_valid = int(np.ceil(float(config.min_bootstrap_valid_fraction) * n_bootstrap))
+                    storage[level][estimand][metric][bootstrap_index] = values.get(
+                        estimand, {}
+                    ).get(metric, np.nan)
+    minimum_valid = int(
+        np.ceil(float(config.min_bootstrap_valid_fraction) * n_bootstrap)
+    )
     performance_rows: list[dict[str, Any]] = []
     support_lookup = {row["level"]: row for row in support_rows}
     for level in eligible_levels:
         level_name = str(level)
         support = support_lookup[level_name]
-        probability_valid = bool(observed.loc[observed[subgroup].eq(level), "__probability_valid__"].all()) if task == "classification" else np.nan
+        probability_valid = (
+            bool(
+                observed.loc[
+                    observed[subgroup].eq(level), "__probability_valid__"
+                ].all()
+            )
+            if task == "classification"
+            else np.nan
+        )
         for estimand, values in points[level].items():
             for metric in metrics:
                 estimate = float(values.get(metric, np.nan))
@@ -680,12 +879,16 @@ def _subgroup_analysis(
                         "ci_low": low,
                         "ci_high": high,
                         "confidence_level": float(config.confidence_level),
-                        "ci_method": "hierarchical_cluster_percentile_bootstrap" if str(context["protocol"]).strip().lower() in _LODO_PROTOCOLS else "cluster_percentile_bootstrap",
+                        "ci_method": "hierarchical_cluster_percentile_bootstrap"
+                        if str(context["protocol"]).strip().lower() in _LODO_PROTOCOLS
+                        else "cluster_percentile_bootstrap",
                         "n_bootstrap": n_bootstrap,
                         "n_bootstrap_valid": valid,
                         "ci_status": status,
                         "n_samples": int(support["n_samples"]),
-                        "n_subjects": float(support["n_subjects"]) if np.isfinite(support["n_subjects"]) else np.nan,
+                        "n_subjects": float(support["n_subjects"])
+                        if np.isfinite(support["n_subjects"])
+                        else np.nan,
                         "n_resampling_clusters": int(support["n_resampling_clusters"]),
                         "n_oof_rows": int(support["n_oof_rows"]),
                         "n_repeats": int(support["n_repeats"]),
@@ -697,7 +900,11 @@ def _subgroup_analysis(
     contrast_metrics = (
         _REGRESSION_CONTRAST_METRICS
         if task == "regression"
-        else (_BINARY_CONTRAST_METRICS if len(tuple(context["class_labels"])) == 2 else _MULTICLASS_CONTRAST_METRICS)
+        else (
+            _BINARY_CONTRAST_METRICS
+            if len(tuple(context["class_labels"])) == 2
+            else _MULTICLASS_CONTRAST_METRICS
+        )
     )
     contrast_rows: list[dict[str, Any]] = []
     for first, second in combinations(eligible_levels, 2):
@@ -707,7 +914,9 @@ def _subgroup_analysis(
                 second_estimate = float(points[second][estimand].get(metric, np.nan))
                 if not np.isfinite(first_estimate) or not np.isfinite(second_estimate):
                     continue
-                draws = storage[first][estimand][metric] - storage[second][estimand][metric]
+                draws = (
+                    storage[first][estimand][metric] - storage[second][estimand][metric]
+                )
                 low, high, valid, status = _confidence_interval(
                     draws,
                     float(config.confidence_level),
@@ -725,14 +934,20 @@ def _subgroup_analysis(
                         "ci_low": low,
                         "ci_high": high,
                         "confidence_level": float(config.confidence_level),
-                        "ci_method": "paired_hierarchical_cluster_percentile_bootstrap" if str(context["protocol"]).strip().lower() in _LODO_PROTOCOLS else "paired_cluster_percentile_bootstrap",
+                        "ci_method": "paired_hierarchical_cluster_percentile_bootstrap"
+                        if str(context["protocol"]).strip().lower() in _LODO_PROTOCOLS
+                        else "paired_cluster_percentile_bootstrap",
                         "n_bootstrap": n_bootstrap,
                         "n_bootstrap_valid": valid,
                         "ci_status": status,
                         "multiplicity_adjusted": False,
                     }
                 )
-    return pd.DataFrame(performance_rows), pd.DataFrame(support_rows), pd.DataFrame(contrast_rows)
+    return (
+        pd.DataFrame(performance_rows),
+        pd.DataFrame(support_rows),
+        pd.DataFrame(contrast_rows),
+    )
 
 
 def _explained_unit(path: Path) -> dict[str, Any]:
@@ -743,7 +958,9 @@ def _explained_unit(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _feature_robustness(root: Path, targets: tuple[str, ...], top_k: int) -> pd.DataFrame:
+def _feature_robustness(
+    root: Path, targets: tuple[str, ...], top_k: int
+) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for target in targets:
         directory = root / "explainability" / target
@@ -753,22 +970,24 @@ def _feature_robustness(root: Path, targets: tuple[str, ...], top_k: int) -> pd.
         frame = read_table(path).copy()
         if frame.empty:
             continue
-        unit = _explained_unit(directory / "explained_unit.json")
-        model_id = ""
-        if target == "mpma_b":
-            config = unit.get("config", {}) if isinstance(unit.get("config"), dict) else {}
-            model_id = str(config.get("config_id", ""))
-        else:
-            model_id = str(unit.get("ensemble_config_id", ""))
         frame.insert(0, "strategy", target.upper().replace("_", "-"))
-        frame.insert(1, "model_or_ensemble_id", model_id)
-        frame.insert(2, "explainability_scope", "outer_test_folds")
+        frame.insert(1, "explainability_scope", "outer_test_folds")
         if "rank_median" in frame.columns:
-            columns = [column for column in ("class_index", "rank_median", "importance_mean") if column in frame.columns]
+            columns = [
+                column
+                for column in ("class_index", "rank_median", "importance_mean")
+                if column in frame.columns
+            ]
             frame = frame.sort_values(columns, ascending=True, kind="mergesort")
         elif "importance_mean" in frame.columns:
-            frame = frame.sort_values("importance_mean", ascending=False, kind="mergesort")
-        group_cols = [column for column in ("class_index", "class_label") if column in frame.columns]
+            frame = frame.sort_values(
+                "importance_mean", ascending=False, kind="mergesort"
+            )
+        group_cols = [
+            column
+            for column in ("class_index", "class_label")
+            if column in frame.columns
+        ]
         if group_cols:
             frame = frame.groupby(group_cols, group_keys=False, sort=False).head(top_k)
         else:
@@ -795,18 +1014,24 @@ def run_robustness(sweep: Any) -> dict[str, Path]:
         outputs["metadata_inventory"] = path
     automatic_covariates = schema.covariate_columns if schema is not None else ()
     automatic_technical = schema.technical_columns if schema is not None else ()
-    covariate_columns = tuple(dict.fromkeys((*automatic_covariates, *config.covariates)))
+    covariate_columns = tuple(
+        dict.fromkeys((*automatic_covariates, *config.covariates))
+    )
     technical_columns = tuple(dict.fromkeys((*automatic_technical, *config.technical)))
     balance_columns = tuple(dict.fromkeys((*covariate_columns, *technical_columns)))
     if balance_columns and str(context["task"]) == "classification":
-        balance = _balance_table(metadata, balance_columns, set(technical_columns), context)
+        balance = _balance_table(
+            metadata, balance_columns, set(technical_columns), context
+        )
         path = out_dir / "covariate_balance.parquet"
         write_table(path, balance)
         outputs["covariate_balance"] = path
     subgroup_frames: list[pd.DataFrame] = []
     support_frames: list[pd.DataFrame] = []
     contrast_frames: list[pd.DataFrame] = []
-    automatic_subgroups = schema.categorical_subgroup_columns if schema is not None else ()
+    automatic_subgroups = (
+        schema.categorical_subgroup_columns if schema is not None else ()
+    )
     subgroup_columns = tuple(dict.fromkeys((*automatic_subgroups, *config.subgroups)))
     for strategy, path in _prediction_sources(root, config.targets):
         predictions = read_table(path)
@@ -864,13 +1089,17 @@ def run_robustness(sweep: Any) -> dict[str, Path]:
             "subgroups": list(subgroup_columns),
             "top_k": int(config.top_k),
             "min_subgroup_size": int(config.min_subgroup_size),
-            "min_subgroup_clusters": int(config.min_subgroup_clusters or config.min_subgroup_size),
+            "min_subgroup_clusters": int(
+                config.min_subgroup_clusters or config.min_subgroup_size
+            ),
             "min_class_clusters": int(config.min_class_clusters),
             "bootstrap_replicates": int(config.bootstrap_replicates),
             "confidence_level": float(config.confidence_level),
             "min_bootstrap_valid_fraction": float(config.min_bootstrap_valid_fraction),
             "random_state": int(config.random_state),
-            "subgroup_point_estimand": "mean of repeat-specific pooled outer-held-out metrics" if str(context["protocol"]).strip().lower() not in _LODO_PROTOCOLS else "pooled and cohort-macro outer-held-out metrics",
+            "subgroup_point_estimand": "mean of repeat-specific pooled outer-held-out metrics"
+            if str(context["protocol"]).strip().lower() not in _LODO_PROTOCOLS
+            else "pooled and cohort-macro outer-held-out metrics",
             "subgroup_uncertainty": "nonparametric cluster bootstrap preserving repeated observations and repeated CV structure",
             "subgroup_uncertainty_scope": "conditional on the existing outer-held-out prediction artifacts; model fitting and model selection are not rerun inside bootstrap replicates",
             "subgroup_contrasts": "exploratory pairwise metric differences with paired cluster-bootstrap confidence intervals and no multiplicity adjustment",

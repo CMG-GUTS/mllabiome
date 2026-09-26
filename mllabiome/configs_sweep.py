@@ -66,7 +66,7 @@ from .sweep_types import Evaluation
 from .sweep_types import Explainability as Explainability
 from .sweep_types import LocalExplanationMode as LocalExplanationMode
 from .sweep_types import LocalExplanations as LocalExplanations
-from .sweep_types import QualificationGate, Robustness, Sweep
+from .sweep_types import Explore, Inference, QualificationGate, Robustness, Sweep
 from .sweep_types import SweepTask as SweepTask
 from .sweep_types import (
     _effective_local_explanations_mode as _effective_local_explanations_mode,

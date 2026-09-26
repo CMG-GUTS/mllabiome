@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator
 
+from .baseline_rf import resolve_baseline_rf_config_id
 from .configs_sweep import (
     Sweep,
     _effective_local_explanations_mode,
@@ -1668,11 +1669,12 @@ def _resolve_explainability_target(
         label = "MPMA-E"
         slug = "mpma_e"
     elif target in {"baseline_rf", "Baseline RF", "baseline-rf"}:
-        resolved = _resolve_baseline_rf_row(rankings)
+        resolved = _resolve_baseline_rf_row(rankings, sweep.root())
         if resolved is None:
             raise ExplainabilityConfigurationError(
                 "Baseline RF explainability was requested, but no completed MPMA matches "
-                "RF_1000_msl5 + arcsin_sqrt + deepest available single rank."
+                "the fixed Baseline RF protocol: deepest active eligible single rank (strain, species, or genus), rank-wise arcsine-square-root relative abundance, "
+                "no prevalence filter, 1,000 trees, minimum leaf size 5, and otherwise scikit-learn RF defaults."
             )
         row = resolved
         label = "Baseline RF"
@@ -3240,41 +3242,28 @@ def _row_levels(row: pd.Series) -> tuple[str, ...]:
     return tuple(x.strip() for x in str(val).replace("+", ",").split(",") if x.strip())
 
 
-def _resolve_baseline_rf_row(rankings: pd.DataFrame) -> pd.Series | None:
-    required = rankings.copy()
-    if (
-        "learner" not in required.columns
-        or "count_transformation" not in required.columns
-    ):
+def _resolve_baseline_rf_row(rankings: pd.DataFrame, root: Path) -> pd.Series | None:
+    configs_path = root / "configs.parquet"
+    if not table_exists(configs_path):
         return None
-    required = required[
-        required["learner"].astype(str).eq("RF_1000_msl5")
-        & required["count_transformation"]
-        .astype(str)
-        .str.fullmatch(r"arcsine_sqrt(?:@(rank|global))?", case=False)
-        .fillna(False)
-    ].copy()
-    if required.empty:
+    configs = read_table(configs_path)
+    config_id = resolve_baseline_rf_config_id(configs)
+    if config_id is None or "config_id" not in rankings.columns:
         return None
-    required["_single_rank"] = required.apply(
-        lambda r: _row_levels(r)[0] if len(_row_levels(r)) == 1 else "", axis=1
-    )
-    for rank in ("strain", "species", "genus"):
-        sub = required[required["_single_rank"].eq(rank)].copy()
-        if sub.empty:
-            continue
-        sort_col = _score_sort_column(sub)
-        if sort_col and sort_col in sub.columns:
-            if sort_col == "rank":
-                ascending = True
-            elif sort_col in {"inner_score", "inner_validation_score"}:
-                metric = str(sub.get("selection_metric", pd.Series([""])).iloc[0])
-                ascending = metric_is_loss(metric)
-            else:
-                ascending = "loss" in sort_col.casefold()
-            sub = sub.sort_values(sort_col, ascending=ascending)
-        return sub.iloc[0].drop(labels=["_single_rank"], errors="ignore")
-    return None
+    matches = rankings[rankings["config_id"].astype(str).eq(config_id)].copy()
+    if matches.empty:
+        return None
+    sort_col = _score_sort_column(matches)
+    if sort_col and sort_col in matches.columns:
+        if sort_col == "rank":
+            ascending = True
+        elif sort_col in {"inner_score", "inner_validation_score"}:
+            metric = str(matches.get("selection_metric", pd.Series([""])).iloc[0])
+            ascending = metric_is_loss(metric)
+        else:
+            ascending = "loss" in sort_col.casefold()
+        matches = matches.sort_values(sort_col, ascending=ascending)
+    return matches.iloc[0]
 
 
 def _parse_members(value: Any) -> list[str]:
@@ -3335,7 +3324,7 @@ def _standard_explainability_targets(sweep: Sweep, rankings: pd.DataFrame) -> li
     ):
         targets.append("mpma_e")
     targets.append("mpma_b")
-    if _resolve_baseline_rf_row(rankings) is not None:
+    if _resolve_baseline_rf_row(rankings, sweep.root()) is not None:
         targets.append("baseline_rf")
     return targets
 

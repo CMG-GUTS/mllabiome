@@ -6,11 +6,21 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .baseline_rf import resolve_baseline_rf_configs
 from .metrics import canonical_metric_name
 from .selection import select_mpma_b_by_outer_fold, selected_mpma_b_outer_predictions
 from .storage import read_table, table_exists
 
-_RANK_PRIORITY = ("strain", "species", "genus")
+_RANK_PRIORITY = (
+    "strain",
+    "species",
+    "genus",
+    "family",
+    "order",
+    "class",
+    "phylum",
+    "domain",
+)
 _COMPARATORS = ("AutoML", "Baseline RF", "SIAMCAT")
 
 
@@ -292,20 +302,7 @@ def _comparator_configs(configs: pd.DataFrame, strategy: str) -> pd.DataFrame:
                 return ranked.drop(columns=["_single_rank"])
         return frame.iloc[0:0].drop(columns=["_single_rank"])
     if strategy == "Baseline RF":
-        frame = frame[
-            learner.str.fullmatch("RF_1000_msl5", case=False).fillna(False)
-            & transform.str.fullmatch(
-                r"arcsine_sqrt(?:@(rank-wise|joint))?", case=False
-            ).fillna(False)
-        ].copy()
-        if frame.empty:
-            return frame
-        frame["_single_rank"] = _single_rank(frame)
-        for rank in _RANK_PRIORITY:
-            ranked = frame[frame["_single_rank"].eq(rank)].copy()
-            if not ranked.empty:
-                return ranked.drop(columns=["_single_rank"])
-        return frame.iloc[0:0].drop(columns=["_single_rank"])
+        return resolve_baseline_rf_configs(frame)
     if strategy == "SIAMCAT":
         siamcat = learner.str.fullmatch("SIAMCAT", case=False).fillna(False)
         siamcat |= learner_class.str.endswith("SIAMCATClassifier", na=False)

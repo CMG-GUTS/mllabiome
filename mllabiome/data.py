@@ -61,11 +61,7 @@ class Metadata:
             "site": self.site,
             "batch": self.batch,
         }
-        return {
-            name: str(value)
-            for name, value in values.items()
-            if value is not None
-        }
+        return {name: str(value) for name, value in values.items() if value is not None}
 
     @property
     def semantic_columns(self) -> tuple[str, ...]:
@@ -80,9 +76,7 @@ class Metadata:
             *self.covariates,
             *self.technical,
         )
-        return tuple(
-            dict.fromkeys(str(value) for value in values if value is not None)
-        )
+        return tuple(dict.fromkeys(str(value) for value in values if value is not None))
 
     @property
     def covariate_columns(self) -> tuple[str, ...]:
@@ -94,23 +88,17 @@ class Metadata:
             self.smoking,
             *self.covariates,
         )
-        return tuple(
-            dict.fromkeys(str(value) for value in values if value is not None)
-        )
+        return tuple(dict.fromkeys(str(value) for value in values if value is not None))
 
     @property
     def technical_columns(self) -> tuple[str, ...]:
         values = (self.site, self.batch, *self.technical)
-        return tuple(
-            dict.fromkeys(str(value) for value in values if value is not None)
-        )
+        return tuple(dict.fromkeys(str(value) for value in values if value is not None))
 
     @property
     def categorical_subgroup_columns(self) -> tuple[str, ...]:
         values = (self.biological_sex, self.gender, self.smoking, self.site, self.batch)
-        return tuple(
-            dict.fromkeys(str(value) for value in values if value is not None)
-        )
+        return tuple(dict.fromkeys(str(value) for value in values if value is not None))
 
 
 @dataclass

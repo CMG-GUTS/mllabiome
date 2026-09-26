@@ -1033,26 +1033,28 @@ def _decision_curve_figure_html(
             ax_roc.spines["right"].set_visible(False)
             if roc_strategies:
                 ax_roc.legend(loc="lower right")
+            fig.subplots_adjust(
+                left=0.08, right=0.985, bottom=0.16, top=0.94, wspace=0.32
+            )
             ax_dca.text(
-                -0.13,
-                1.03,
+                0.0,
+                1.025,
                 "a",
                 transform=ax_dca.transAxes,
                 fontweight="bold",
                 va="bottom",
                 ha="left",
+                clip_on=False,
             )
             ax_roc.text(
-                -0.13,
-                1.03,
+                0.0,
+                1.025,
                 "b",
                 transform=ax_roc.transAxes,
                 fontweight="bold",
                 va="bottom",
                 ha="left",
-            )
-            fig.subplots_adjust(
-                left=0.08, right=0.985, bottom=0.16, top=0.96, wspace=0.32
+                clip_on=False,
             )
             target = report_dir / "figures" / f"decision_roc__{index}.svg"
             _style.save_svg(fig, target)

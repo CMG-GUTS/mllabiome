@@ -43,14 +43,28 @@ def main(argv: list[str] | None = None) -> None:
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(
         prog="mllabiome",
-        description="Run the configured MPMA sweep, ensemble sweep, and explainability stages.",
+        description="Run exploratory microbiome analysis, MPMA evaluation, ensembling, deployment inference, explainability, robustness, and reporting.",
     )
     parser.add_argument("config", type=Path, help="Python sweep config.")
     parser.add_argument(
         "--stage",
-        choices=["all", "evaluate", "ensemble", "explain", "robustness", "report"],
+        choices=[
+            "all",
+            "explore",
+            "evaluate",
+            "ensemble",
+            "inference",
+            "explain",
+            "robustness",
+            "report",
+        ],
         default="all",
         help="Entry point for full execution or stage-level restart.",
+    )
+    parser.add_argument(
+        "--explore",
+        action="store_true",
+        help="Run only the exploratory microbiome analysis stage.",
     )
     parser.add_argument(
         "--redo", action="store_true", help="Recompute completed evaluation outputs."
@@ -58,23 +72,30 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--export-tsv",
         action="store_true",
-        help="After --stage report, export canonical tables to mirrored TSV files under exports/tsv/.",
+        help="After report or explore, export canonical tables to mirrored TSV files under exports/tsv/.",
     )
     parser.add_argument(
         "--export-png",
         action="store_true",
-        help="After --stage report, convert canonical SVG figures to mirrored PNG files under exports/png/.",
+        help="After report or explore, convert canonical SVG figures to mirrored PNG files under exports/png/.",
     )
     parser.add_argument(
         "--export-pdf",
         action="store_true",
-        help="After --stage report, convert canonical SVG figures to mirrored PDF files under exports/pdf/.",
+        help="After report or explore, convert canonical SVG figures to mirrored PDF files under exports/pdf/.",
     )
     args = parser.parse_args(argv)
-    if (
-        args.export_tsv or args.export_png or args.export_pdf
-    ) and args.stage != "report":
-        parser.error("Export flags are only valid with --stage report.")
+    if args.explore:
+        if args.stage != "all":
+            parser.error("Use either --explore or --stage, not both.")
+        args.stage = "explore"
+    if (args.export_tsv or args.export_png or args.export_pdf) and args.stage not in {
+        "report",
+        "explore",
+    }:
+        parser.error(
+            "Export flags are only valid with --stage report, --stage explore, or --explore."
+        )
     try:
         sweep = _load_sweep(args.config)
     except Exception as exc:
@@ -136,6 +157,14 @@ def main(argv: list[str] | None = None) -> None:
         stage("Figure export", str(sweep.root() / "exports"))
     if args.stage in {"report", "all"}:
         _open_report(sweep.root())
+    elif args.stage == "explore":
+        explore_report = (Path(sweep.root()) / "explore" / "index.html").resolve()
+        if explore_report.exists():
+            target = explore_report.as_uri()
+            if webbrowser.open(target, new=2, autoraise=True):
+                success(f"Explore report opened · {target}")
+            else:
+                warn(f"Explore report browser · could not open automatically: {target}")
 
 
 if __name__ == "__main__":

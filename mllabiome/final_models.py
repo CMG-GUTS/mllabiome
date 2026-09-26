@@ -317,7 +317,9 @@ def _validate_outer_predictions(root: Path, models: dict[str, Any]) -> None:
             )
 
 
-def build_final_models(root: Path | str) -> dict[str, Any]:
+def build_final_models(
+    root: Path | str, *, include_mpma_e: bool = True
+) -> dict[str, Any]:
     root = Path(root)
     configs = _read_table(root / "configs.parquet").copy()
     if "config_id" not in configs.columns:
@@ -336,9 +338,10 @@ def build_final_models(root: Path | str) -> dict[str, Any]:
         "schema_version": _SCHEMA_VERSION,
         "MPMA-B": _build_mpma_b(root, configs),
     }
-    mpma_e = _build_mpma_e(root, configs)
-    if mpma_e is not None:
-        models["MPMA-E"] = mpma_e
+    if include_mpma_e:
+        mpma_e = _build_mpma_e(root, configs)
+        if mpma_e is not None:
+            models["MPMA-E"] = mpma_e
     _validate_outer_predictions(root, models)
     path = root / "final_models.json"
     temp = path.with_suffix(".json.tmp")
@@ -354,7 +357,7 @@ def load_final_models(root: Path | str) -> dict[str, Any]:
     path = root / "final_models.json"
     if not path.exists():
         raise FileNotFoundError(
-            f"Final model artifact does not exist: {path}. Run the ensemble, explain, or report stage first."
+            f"Final model artifact does not exist: {path}. Run the ensemble, inference, explain, or report stage first."
         )
     models = _read_json(path)
     if int(models.get("schema_version", -1)) != _SCHEMA_VERSION:

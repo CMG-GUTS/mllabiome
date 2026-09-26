@@ -35,6 +35,18 @@ DATA = mll.Data(
     group_col="Participant_Id",
 )
 
+EXPLORE = mll.Explore(
+    ranks=("genus", "species"),
+    top_taxa=12,
+    heatmap_top=30,
+    min_prevalence=0.10,
+    detection_limit=0.0,
+    permutations=999,
+    bootstrap_replicates=2000,
+    confidence_level=0.95,
+    random_state=42,
+)
+
 RESOLUTIONS = (
     # ("phylum", ("phylum",)),
     ("class", ("class",)),
