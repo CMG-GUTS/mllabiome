@@ -5,12 +5,13 @@
     height="80"
     alt="mllabiome icon"
   >
-  <img
-    align="right"
-    src="https://raw.githubusercontent.com/CMG-GUTS/mllabiome/main/assets/interaction-network.gif"
-    width="190"
-    alt="Animated microbiome interaction network"
-  >
+  <a href="https://cmg-guts.github.io/mllabiome/">
+    <img
+      src="https://raw.githubusercontent.com/CMG-GUTS/mllabiome/main/assets/mllabiome-readme-flow.svg"
+      width="900"
+      alt="Microbiome abundance data flowing through machine learning to learned patterns and interactions"
+    >
+  </a>
 </p>
 
 <b>E</b>valuate, <b>e</b>nsemble, <b>e</b>xplain machine learning for microbiota data analysis in single-modality and multimodality scenarios.

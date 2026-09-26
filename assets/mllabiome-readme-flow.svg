@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 330" role="img" aria-labelledby="title desc">
+  <title id="title">mllabiome workflow</title>
+  <desc id="desc">Microbiome abundance data flowing through machine learning to learned patterns and interactions.</desc>
+
+  <g transform="translate(34 72)">
+    <g>
+      <rect x="0" y="0" width="18" height="18" rx="3" fill="#dbeafe"/>
+      <rect x="24" y="0" width="18" height="18" rx="3" fill="#7aa2ef"/>
+      <rect x="48" y="0" width="18" height="18" rx="3" fill="#a7c2f7"/>
+      <rect x="72" y="0" width="18" height="18" rx="3" fill="#4f83ea"/>
+      <rect x="96" y="0" width="18" height="18" rx="3" fill="#9dbaf3"/>
+      <rect x="120" y="0" width="18" height="18" rx="3" fill="#d5e3fb"/>
+      <rect x="144" y="0" width="18" height="18" rx="3" fill="#6793ed"/>
+      <rect x="168" y="0" width="18" height="18" rx="3" fill="#bfd2f8"/>
+
+      <rect x="0" y="24" width="18" height="18" rx="3" fill="#82a7f0"/>
+      <rect x="24" y="24" width="18" height="18" rx="3" fill="#3f78e6"/>
+      <rect x="48" y="24" width="18" height="18" rx="3" fill="#9ebbf4"/>
+      <rect x="72" y="24" width="18" height="18" rx="3" fill="#c9d9fa"/>
+      <rect x="96" y="24" width="18" height="18" rx="3" fill="#8baef1"/>
+      <rect x="120" y="24" width="18" height="18" rx="3" fill="#5d8bec"/>
+      <rect x="144" y="24" width="18" height="18" rx="3" fill="#d8e5fb"/>
+      <rect x="168" y="24" width="18" height="18" rx="3" fill="#759eef"/>
+
+      <rect x="0" y="48" width="18" height="18" rx="3" fill="#aec6f6"/>
+      <rect x="24" y="48" width="18" height="18" rx="3" fill="#4b80e8"/>
+      <rect x="48" y="48" width="18" height="18" rx="3" fill="#d0defa"/>
+      <rect x="72" y="48" width="18" height="18" rx="3" fill="#6d98ee"/>
+      <rect x="96" y="48" width="18" height="18" rx="3" fill="#b9cef7"/>
+      <rect x="120" y="48" width="18" height="18" rx="3" fill="#8caff2"/>
+      <rect x="144" y="48" width="18" height="18" rx="3" fill="#447ce7"/>
+      <rect x="168" y="48" width="18" height="18" rx="3" fill="#c5d6f9"/>
+
+      <rect x="0" y="72" width="18" height="18" rx="3" fill="#a7c2f5"/>
+      <rect x="24" y="72" width="18" height="18" rx="3" fill="#6894ed"/>
+      <rect x="48" y="72" width="18" height="18" rx="3" fill="#d6e3fb"/>
+      <rect x="72" y="72" width="18" height="18" rx="3" fill="#5b89eb"/>
+      <rect x="96" y="72" width="18" height="18" rx="3" fill="#93b3f2"/>
+      <rect x="120" y="72" width="18" height="18" rx="3" fill="#b8cdf7"/>
+      <rect x="144" y="72" width="18" height="18" rx="3" fill="#7fa5ef"/>
+      <rect x="168" y="72" width="18" height="18" rx="3" fill="#4c81e8"/>
+
+      <rect x="0" y="96" width="18" height="18" rx="3" fill="#cbdafa"/>
+      <rect x="24" y="96" width="18" height="18" rx="3" fill="#8baff1"/>
+      <rect x="48" y="96" width="18" height="18" rx="3" fill="#5f8ceb"/>
+      <rect x="72" y="96" width="18" height="18" rx="3" fill="#bed1f8"/>
+      <rect x="96" y="96" width="18" height="18" rx="3" fill="#a0bdf4"/>
+      <rect x="120" y="96" width="18" height="18" rx="3" fill="#5687ea"/>
+      <rect x="144" y="96" width="18" height="18" rx="3" fill="#d9e6fc"/>
+      <rect x="168" y="96" width="18" height="18" rx="3" fill="#729bef"/>
+
+      <rect x="0" y="120" width="18" height="18" rx="3" fill="#9ebbf4"/>
+      <rect x="24" y="120" width="18" height="18" rx="3" fill="#79a0ef"/>
+      <rect x="48" y="120" width="18" height="18" rx="3" fill="#4a80e8"/>
+      <rect x="72" y="120" width="18" height="18" rx="3" fill="#c6d7f9"/>
+      <rect x="96" y="120" width="18" height="18" rx="3" fill="#91b2f2"/>
+      <rect x="120" y="120" width="18" height="18" rx="3" fill="#6b97ed"/>
+      <rect x="144" y="120" width="18" height="18" rx="3" fill="#b5cbf7"/>
+      <rect x="168" y="120" width="18" height="18" rx="3" fill="#5d8bec"/>
+    </g>
+    <text x="93" y="186" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#64748b">abundance data</text>
+  </g>
+
+  <g stroke="#cbd5e1" stroke-width="2.4" stroke-dasharray="8 10" fill="none">
+    <path d="M255 141 H355"/>
+    <path d="M620 141 H700"/>
+  </g>
+  <g fill="none" stroke="#94a3b8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M343 132 L356 141 L343 150"/>
+    <path d="M688 132 L701 141 L688 150"/>
+  </g>
+
+  <g transform="translate(385 56)">
+    <g stroke="#dbeafe" stroke-width="1.7">
+      <line x1="0" y1="22" x2="82" y2="40"/>
+      <line x1="0" y1="22" x2="82" y2="85"/>
+      <line x1="0" y1="22" x2="82" y2="130"/>
+      <line x1="0" y1="62" x2="82" y2="40"/>
+      <line x1="0" y1="62" x2="82" y2="85"/>
+      <line x1="0" y1="62" x2="82" y2="130"/>
+      <line x1="0" y1="102" x2="82" y2="40"/>
+      <line x1="0" y1="102" x2="82" y2="85"/>
+      <line x1="0" y1="102" x2="82" y2="130"/>
+      <line x1="0" y1="142" x2="82" y2="40"/>
+      <line x1="0" y1="142" x2="82" y2="85"/>
+      <line x1="0" y1="142" x2="82" y2="130"/>
+    </g>
+    <g stroke="#bfdbfe" stroke-width="1.9">
+      <line x1="82" y1="40" x2="162" y2="62"/>
+      <line x1="82" y1="40" x2="162" y2="123"/>
+      <line x1="82" y1="85" x2="162" y2="62"/>
+      <line x1="82" y1="85" x2="162" y2="123"/>
+      <line x1="82" y1="130" x2="162" y2="62"/>
+      <line x1="82" y1="130" x2="162" y2="123"/>
+    </g>
+    <g fill="#dbeafe" stroke="#60a5fa" stroke-width="2">
+      <circle cx="0" cy="22" r="10"/>
+      <circle cx="0" cy="62" r="10"/>
+      <circle cx="0" cy="102" r="10"/>
+      <circle cx="0" cy="142" r="10"/>
+    </g>
+    <g fill="#bfdbfe" stroke="#3b82f6" stroke-width="2">
+      <circle cx="82" cy="40" r="12"/>
+      <circle cx="82" cy="85" r="12"/>
+      <circle cx="82" cy="130" r="12"/>
+    </g>
+    <g fill="#93c5fd" stroke="#2563eb" stroke-width="2">
+      <circle cx="162" cy="62" r="13"/>
+      <circle cx="162" cy="123" r="13"/>
+    </g>
+    <text x="82" y="193" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#64748b">machine learning</text>
+  </g>
+
+  <g transform="translate(730 42)">
+    <g stroke="#cbd5e1" stroke-width="2">
+      <line x1="20" y1="65" x2="105" y2="28"/>
+      <line x1="20" y1="65" x2="154" y2="102"/>
+      <line x1="20" y1="65" x2="79" y2="142"/>
+      <line x1="105" y1="28" x2="154" y2="102"/>
+      <line x1="105" y1="28" x2="198" y2="42"/>
+      <line x1="154" y1="102" x2="198" y2="42"/>
+      <line x1="154" y1="102" x2="232" y2="114"/>
+      <line x1="154" y1="102" x2="143" y2="169"/>
+      <line x1="79" y1="142" x2="143" y2="169"/>
+      <line x1="198" y1="42" x2="232" y2="114"/>
+      <line x1="198" y1="42" x2="266" y2="65"/>
+      <line x1="232" y1="114" x2="143" y2="169"/>
+      <line x1="232" y1="114" x2="266" y2="65"/>
+    </g>
+    <circle cx="20" cy="65" r="20" fill="#2563eb" fill-opacity=".88"/>
+    <circle cx="105" cy="28" r="15" fill="#60a5fa" fill-opacity=".78"/>
+    <circle cx="154" cy="102" r="18" fill="#bfdbfe" fill-opacity=".95"/>
+    <circle cx="79" cy="142" r="13" fill="#2563eb" fill-opacity=".88"/>
+    <circle cx="198" cy="42" r="12" fill="#60a5fa" fill-opacity=".78"/>
+    <circle cx="232" cy="114" r="14" fill="#bfdbfe" fill-opacity=".95"/>
+    <circle cx="143" cy="169" r="11" fill="#2563eb" fill-opacity=".88"/>
+    <circle cx="266" cy="65" r="10" fill="#60a5fa" fill-opacity=".78"/>
+    <text x="143" y="221" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#64748b">patterns and interactions</text>
+  </g>
+</svg>
