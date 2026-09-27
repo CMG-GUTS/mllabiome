@@ -70,6 +70,11 @@ or:
 pip install mllabiome
 ```
 
+To use benchmark datasets:
+```bash
+pip install -e ".[benchmark]"
+```
+
 For development from a checked-out repository:
 
 ```bash

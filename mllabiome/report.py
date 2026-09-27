@@ -2698,6 +2698,14 @@ def _analyze_report(sweep: Sweep, root: Path) -> _ReportAnalysis:
         compute_display = compute_accounting.get("display", pd.DataFrame())
         compute_environment = compute_accounting.get("environment", {})
         phase.phase("statistics")
+
+        def _statistics_progress(label: str, completed: int, total: int) -> None:
+            phase.detail(
+                f"statistics · {label}",
+                completed=int(completed),
+                total=int(total),
+            )
+
         statistics = run_report_statistics(
             root,
             sweep.evaluation.protocol,
@@ -2717,6 +2725,7 @@ def _analyze_report(sweep: Sweep, root: Path) -> _ReportAnalysis:
             decision_curve_points=getattr(
                 sweep.evaluation, "decision_curve_points", 99
             ),
+            progress_callback=_statistics_progress,
         )
         strategy_html = _strategy_performance_display(
             root,

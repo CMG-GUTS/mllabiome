@@ -478,9 +478,7 @@ def test_evaluate_lodo_applies_fold_local_feature_vocabulary_before_transformati
     cursor = 0
     for split in outer_splits:
         outer_train_idx = np.asarray(split["train_idx"], dtype=int)
-        inner_splits = cs._inner_splits(
-            plan, dataset.y, outer_train_idx, groups, split
-        )
+        inner_splits = cs._inner_splits(plan, dataset.y, outer_train_idx, groups, split)
         for inner_train_local, inner_val_local in inner_splits:
             inner_train_idx = outer_train_idx[np.asarray(inner_train_local, dtype=int)]
             expected_features = 1 + len(set(groups[inner_train_idx]))

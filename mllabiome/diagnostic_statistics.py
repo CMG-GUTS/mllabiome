@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_curve as sklearn_roc_curve
 
-from .oof_statistics import _probability_columns, _resample_subjects
+from .oof_statistics import (
+    _lodo_cluster_subject_indices,
+    _probability_columns,
+    _resample_subjects,
+    _sample_lodo_cluster_indices,
+)
 from .statistics_common import _LODO_PROTOCOLS, DIAGNOSTIC_METRICS, _stable_seed
 
 
@@ -55,17 +61,13 @@ def _decision_curve_grid(
     return np.linspace(low, high, count, dtype=float)
 
 
-def _binary_threshold_counts(
-    frame: pd.DataFrame,
+def _binary_threshold_counts_arrays(
+    y_true: np.ndarray,
+    score: np.ndarray,
     thresholds: np.ndarray,
 ) -> dict[str, np.ndarray]:
-    pcols = _probability_columns(frame)
-    if len(pcols) != 2:
-        raise ValueError(
-            "Binary diagnostic thresholds require exactly two probability columns."
-        )
-    y = frame["y_true"].astype(int).to_numpy()
-    score = frame[pcols[1]].to_numpy(dtype=float)
+    y = np.asarray(y_true, dtype=int)
+    score = np.asarray(score, dtype=float)
     thresholds = np.asarray(thresholds, dtype=float)
     positive_scores = np.sort(score[y == 1])
     negative_scores = np.sort(score[y == 0])
@@ -83,6 +85,22 @@ def _binary_threshold_counts(
         "FN": fn.astype(float),
         "TP": tp.astype(float),
     }
+
+
+def _binary_threshold_counts(
+    frame: pd.DataFrame,
+    thresholds: np.ndarray,
+) -> dict[str, np.ndarray]:
+    pcols = _probability_columns(frame)
+    if len(pcols) != 2:
+        raise ValueError(
+            "Binary diagnostic thresholds require exactly two probability columns."
+        )
+    return _binary_threshold_counts_arrays(
+        frame["y_true"].astype(int).to_numpy(),
+        frame[pcols[1]].to_numpy(dtype=float),
+        thresholds,
+    )
 
 
 def _safe_ratio_array(numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
@@ -123,11 +141,30 @@ def _diagnostic_values_from_counts(
     }
 
 
+def _threshold_diagnostic_values_arrays(
+    y_true: np.ndarray,
+    score: np.ndarray,
+    thresholds: np.ndarray,
+) -> dict[str, np.ndarray]:
+    return _diagnostic_values_from_counts(
+        _binary_threshold_counts_arrays(y_true, score, thresholds)
+    )
+
+
 def _threshold_diagnostic_values(
     frame: pd.DataFrame,
     thresholds: np.ndarray,
 ) -> dict[str, np.ndarray]:
-    return _diagnostic_values_from_counts(_binary_threshold_counts(frame, thresholds))
+    pcols = _probability_columns(frame)
+    if len(pcols) != 2:
+        raise ValueError(
+            "Binary diagnostic thresholds require exactly two probability columns."
+        )
+    return _threshold_diagnostic_values_arrays(
+        frame["y_true"].astype(int).to_numpy(),
+        frame[pcols[1]].to_numpy(dtype=float),
+        thresholds,
+    )
 
 
 def _nanmean_vectors(values: list[np.ndarray], size: int) -> np.ndarray:
@@ -189,6 +226,9 @@ def _bootstrap_threshold_estimands(
     thresholds: np.ndarray,
     n_bootstrap: int,
     rng: np.random.Generator,
+    *,
+    progress_callback: Callable[[str, int, int], None] | None = None,
+    progress_label: str = "diagnostic-threshold bootstrap",
 ) -> dict[str, dict[str, np.ndarray]]:
     protocol_key = str(protocol).lower()
     names = (
@@ -206,22 +246,22 @@ def _bootstrap_threshold_estimands(
     if frame.empty or int(n_bootstrap) <= 0:
         return storage
     if protocol_key in _LODO_PROTOCOLS:
-        groups = [
-            group.reset_index(drop=True)
-            for _, group in frame.groupby("_cluster", sort=True)
-        ]
+        pcols = _probability_columns(frame)
+        y_true = frame["y_true"].astype(int).to_numpy()
+        score = frame[pcols[1]].to_numpy(dtype=float)
+        clusters = _lodo_cluster_subject_indices(frame)
         for bootstrap_index in range(int(n_bootstrap)):
-            chosen = rng.integers(0, len(groups), size=len(groups))
-            sampled_groups = [
-                _resample_subjects(groups[int(index)], rng) for index in chosen
-            ]
-            pooled = _threshold_diagnostic_values(
-                pd.concat(sampled_groups, ignore_index=True), thresholds
+            sampled_indices = _sample_lodo_cluster_indices(clusters, rng)
+            pooled_index = np.concatenate(sampled_indices)
+            pooled = _threshold_diagnostic_values_arrays(
+                y_true[pooled_index], score[pooled_index], thresholds
             )
             macro = _mean_diagnostic_vectors(
                 [
-                    _threshold_diagnostic_values(group, thresholds)
-                    for group in sampled_groups
+                    _threshold_diagnostic_values_arrays(
+                        y_true[index], score[index], thresholds
+                    )
+                    for index in sampled_indices
                 ],
                 len(thresholds),
             )
@@ -232,6 +272,14 @@ def _bootstrap_threshold_estimands(
                 storage["cohort_macro_equal_weight"][metric][bootstrap_index] = macro[
                     metric
                 ]
+            completed = bootstrap_index + 1
+            update_every = max(1, int(n_bootstrap) // 100)
+            if progress_callback is not None and (
+                completed == 1
+                or completed == int(n_bootstrap)
+                or completed % update_every == 0
+            ):
+                progress_callback(progress_label, completed, int(n_bootstrap))
         return storage
     for bootstrap_index in range(int(n_bootstrap)):
         sampled = _resample_subjects(frame, rng)
@@ -244,6 +292,14 @@ def _bootstrap_threshold_estimands(
             storage["mean_repeat_pooled_oof"][metric][bootstrap_index] = averaged[
                 metric
             ]
+        completed = bootstrap_index + 1
+        update_every = max(1, int(n_bootstrap) // 100)
+        if progress_callback is not None and (
+            completed == 1
+            or completed == int(n_bootstrap)
+            or completed % update_every == 0
+        ):
+            progress_callback(progress_label, completed, int(n_bootstrap))
     return storage
 
 
@@ -255,6 +311,8 @@ def _threshold_metric_rows(
     n_bootstrap: int,
     random_state: int,
     positive_class_label: str,
+    *,
+    progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> list[dict[str, Any]]:
     if not thresholds:
         return []
@@ -268,6 +326,8 @@ def _threshold_metric_rows(
         np.random.default_rng(
             _stable_seed(random_state, "diagnostic_threshold", strategy)
         ),
+        progress_callback=progress_callback,
+        progress_label=f"diagnostic-threshold bootstrap · {strategy}",
     )
     rows: list[dict[str, Any]] = []
     for estimand, values in point.items():
@@ -500,11 +560,12 @@ def _operating_confusion_rows(
     return rows
 
 
-def _decision_curve_values(
-    frame: pd.DataFrame,
+def _decision_curve_values_arrays(
+    y_true: np.ndarray,
+    score: np.ndarray,
     thresholds: np.ndarray,
 ) -> dict[str, np.ndarray]:
-    counts = _binary_threshold_counts(frame, thresholds)
+    counts = _binary_threshold_counts_arrays(y_true, score, thresholds)
     tn = counts["TN"]
     fp = counts["FP"]
     fn = counts["FN"]
@@ -527,6 +588,22 @@ def _decision_curve_values(
         "standardized_net_benefit": standardized,
         "prevalence": prevalence,
     }
+
+
+def _decision_curve_values(
+    frame: pd.DataFrame,
+    thresholds: np.ndarray,
+) -> dict[str, np.ndarray]:
+    pcols = _probability_columns(frame)
+    if len(pcols) != 2:
+        raise ValueError(
+            "Binary decision curves require exactly two probability columns."
+        )
+    return _decision_curve_values_arrays(
+        frame["y_true"].astype(int).to_numpy(),
+        frame[pcols[1]].to_numpy(dtype=float),
+        thresholds,
+    )
 
 
 def _mean_decision_vectors(
@@ -578,6 +655,9 @@ def _bootstrap_decision_curve(
     thresholds: np.ndarray,
     n_bootstrap: int,
     rng: np.random.Generator,
+    *,
+    progress_callback: Callable[[str, int, int], None] | None = None,
+    progress_label: str = "decision-curve bootstrap",
 ) -> dict[str, np.ndarray]:
     protocol_key = str(protocol).lower()
     names = (
@@ -592,24 +672,35 @@ def _bootstrap_decision_curve(
     if frame.empty or int(n_bootstrap) <= 0:
         return storage
     if protocol_key in _LODO_PROTOCOLS:
-        groups = [
-            group.reset_index(drop=True)
-            for _, group in frame.groupby("_cluster", sort=True)
-        ]
+        pcols = _probability_columns(frame)
+        y_true = frame["y_true"].astype(int).to_numpy()
+        score = frame[pcols[1]].to_numpy(dtype=float)
+        clusters = _lodo_cluster_subject_indices(frame)
         for bootstrap_index in range(int(n_bootstrap)):
-            chosen = rng.integers(0, len(groups), size=len(groups))
-            sampled_groups = [
-                _resample_subjects(groups[int(index)], rng) for index in chosen
-            ]
-            pooled = _decision_curve_values(
-                pd.concat(sampled_groups, ignore_index=True), thresholds
+            sampled_indices = _sample_lodo_cluster_indices(clusters, rng)
+            pooled_index = np.concatenate(sampled_indices)
+            pooled = _decision_curve_values_arrays(
+                y_true[pooled_index], score[pooled_index], thresholds
             )
             macro = _mean_decision_vectors(
-                [_decision_curve_values(group, thresholds) for group in sampled_groups],
+                [
+                    _decision_curve_values_arrays(
+                        y_true[index], score[index], thresholds
+                    )
+                    for index in sampled_indices
+                ],
                 len(thresholds),
             )
             storage["pooled_sample_weighted"][bootstrap_index] = pooled["net_benefit"]
             storage["cohort_macro_equal_weight"][bootstrap_index] = macro["net_benefit"]
+            completed = bootstrap_index + 1
+            update_every = max(1, int(n_bootstrap) // 100)
+            if progress_callback is not None and (
+                completed == 1
+                or completed == int(n_bootstrap)
+                or completed % update_every == 0
+            ):
+                progress_callback(progress_label, completed, int(n_bootstrap))
         return storage
     for bootstrap_index in range(int(n_bootstrap)):
         sampled = _resample_subjects(frame, rng)
@@ -619,6 +710,14 @@ def _bootstrap_decision_curve(
         ]
         averaged = _mean_decision_vectors(values, len(thresholds))
         storage["mean_repeat_pooled_oof"][bootstrap_index] = averaged["net_benefit"]
+        completed = bootstrap_index + 1
+        update_every = max(1, int(n_bootstrap) // 100)
+        if progress_callback is not None and (
+            completed == 1
+            or completed == int(n_bootstrap)
+            or completed % update_every == 0
+        ):
+            progress_callback(progress_label, completed, int(n_bootstrap))
     return storage
 
 
@@ -630,6 +729,8 @@ def _decision_curve_rows(
     n_bootstrap: int,
     random_state: int,
     positive_class_label: str,
+    *,
+    progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> list[dict[str, Any]]:
     point = _decision_curve_point_estimands(frame, protocol, thresholds)
     boot = _bootstrap_decision_curve(
@@ -638,6 +739,8 @@ def _decision_curve_rows(
         thresholds,
         n_bootstrap,
         np.random.default_rng(_stable_seed(random_state, "decision_curve", strategy)),
+        progress_callback=progress_callback,
+        progress_label=f"decision-curve bootstrap · {strategy}",
     )
     rows: list[dict[str, Any]] = []
     for estimand, values in point.items():

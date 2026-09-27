@@ -311,14 +311,18 @@ def _read_manifest(
         expected_data_signature = data_signature
         expected_plan_signature = plan_signature
     elif legacy_signatures is not None and schema_version in legacy_signatures:
-        expected_data_signature, expected_plan_signature = legacy_signatures[schema_version]
+        expected_data_signature, expected_plan_signature = legacy_signatures[
+            schema_version
+        ]
     else:
         raise ValueError(
             "Stored cross-validation split manifest has an unsupported schema."
         )
     data_values = set(frame["data_signature"].astype(str))
     plan_values = set(frame["plan_signature"].astype(str))
-    if data_values != {expected_data_signature} or plan_values != {expected_plan_signature}:
+    if data_values != {expected_data_signature} or plan_values != {
+        expected_plan_signature
+    }:
         raise ValueError(
             "Stored cross-validation splits do not match the current dataset or evaluation plan. Use a new experiment directory for a different split definition."
         )
@@ -602,7 +606,9 @@ def resolve_cv_splits(
     if source_path is not None:
         source = Path(source_path)
         if not table_exists(source):
-            raise FileNotFoundError(f"Cross-validation split manifest not found: {source}")
+            raise FileNotFoundError(
+                f"Cross-validation split manifest not found: {source}"
+            )
         _read_manifest(
             source, sample_ids, data_signature, plan_signature, legacy_signatures
         )
@@ -669,4 +675,3 @@ def resolve_cv_splits(
         path, sample_ids, data_signature, plan_signature, legacy_signatures
     )
     return outer_splits, inner_splits, path
-

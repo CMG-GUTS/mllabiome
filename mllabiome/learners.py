@@ -383,14 +383,20 @@ def _estimator_children(estimator: Any) -> list[Any]:
             continue
         if isinstance(value, (list, tuple)):
             for item in value:
-                if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):
+                if (
+                    isinstance(item, tuple)
+                    and len(item) == 2
+                    and isinstance(item[0], str)
+                ):
                     stack.append(item[1])
                 else:
                     stack.append(item)
     return children
 
 
-def _first_group_sensitive_descendant(estimator: Any, seen: set[int] | None = None) -> Any:
+def _first_group_sensitive_descendant(
+    estimator: Any, seen: set[int] | None = None
+) -> Any:
     if seen is None:
         seen = set()
     marker = id(estimator)
@@ -398,7 +404,11 @@ def _first_group_sensitive_descendant(estimator: Any, seen: set[int] | None = No
         return None
     seen.add(marker)
     for child in _estimator_children(estimator):
-        if _internal_cv_active(child) or _hidden_internal_cv(child) or _fit_accepts_groups(child):
+        if (
+            _internal_cv_active(child)
+            or _hidden_internal_cv(child)
+            or _fit_accepts_groups(child)
+        ):
             return child
         nested = _first_group_sensitive_descendant(child, seen)
         if nested is not None:
@@ -429,28 +439,49 @@ def _hidden_internal_cv(estimator: Any) -> bool:
     if isinstance(estimator, SVC) and bool(estimator.probability):
         return True
     name = type(estimator).__name__
-    return name.endswith("CV") and not _cv_value(estimator)[0] and not _fit_accepts_groups(estimator)
+    return (
+        name.endswith("CV")
+        and not _cv_value(estimator)[0]
+        and not _fit_accepts_groups(estimator)
+    )
 
 
-def _validated_group_splits(splits: Any, groups: np.ndarray, n_samples: int) -> list[tuple[np.ndarray, np.ndarray]]:
+def _validated_group_splits(
+    splits: Any, groups: np.ndarray, n_samples: int
+) -> list[tuple[np.ndarray, np.ndarray]]:
     materialized = []
     if isinstance(splits, (str, bytes)):
-        raise TypeError("Cross-validation splits must be an iterable of train/test index pairs.")
+        raise TypeError(
+            "Cross-validation splits must be an iterable of train/test index pairs."
+        )
     try:
         iterator = iter(splits)
     except TypeError as exc:
         raise TypeError("Cross-validation splits must be iterable.") from exc
     for fold, pair in enumerate(iterator):
         if not isinstance(pair, (list, tuple)) or len(pair) != 2:
-            raise TypeError(f"Cross-validation fold {fold} must contain train and test indices.")
+            raise TypeError(
+                f"Cross-validation fold {fold} must contain train and test indices."
+            )
         train = np.asarray(pair[0], dtype=int).reshape(-1)
         test = np.asarray(pair[1], dtype=int).reshape(-1)
         if train.size == 0 or test.size == 0:
-            raise ValueError(f"Cross-validation fold {fold} contains an empty partition.")
-        if train.min() < 0 or test.min() < 0 or train.max() >= n_samples or test.max() >= n_samples:
-            raise ValueError(f"Cross-validation fold {fold} contains out-of-range indices.")
+            raise ValueError(
+                f"Cross-validation fold {fold} contains an empty partition."
+            )
+        if (
+            train.min() < 0
+            or test.min() < 0
+            or train.max() >= n_samples
+            or test.max() >= n_samples
+        ):
+            raise ValueError(
+                f"Cross-validation fold {fold} contains out-of-range indices."
+            )
         if np.intersect1d(train, test).size:
-            raise ValueError(f"Cross-validation fold {fold} contains samples in both train and test partitions.")
+            raise ValueError(
+                f"Cross-validation fold {fold} contains samples in both train and test partitions."
+            )
         train_groups = np.unique(groups[train])
         test_groups = np.unique(groups[test])
         overlap = np.intersect1d(train_groups, test_groups)
@@ -464,7 +495,9 @@ def _validated_group_splits(splits: Any, groups: np.ndarray, n_samples: int) -> 
     return materialized
 
 
-def _default_group_splits(X: Any, y: Any, groups: np.ndarray, n_splits: int) -> list[tuple[np.ndarray, np.ndarray]]:
+def _default_group_splits(
+    X: Any, y: Any, groups: np.ndarray, n_splits: int
+) -> list[tuple[np.ndarray, np.ndarray]]:
     if n_splits < 2:
         raise ValueError("Cross-validation requires at least two folds.")
     unique_groups = np.unique(groups)
@@ -484,7 +517,10 @@ def _default_group_splits(X: Any, y: Any, groups: np.ndarray, n_splits: int) -> 
     splits = list(splitter.split(X, y_array, groups))
     required = set(classes.tolist())
     for fold, (train, test) in enumerate(splits):
-        if set(np.unique(y_array[train]).tolist()) != required or set(np.unique(y_array[test]).tolist()) != required:
+        if (
+            set(np.unique(y_array[train]).tolist()) != required
+            or set(np.unique(y_array[test]).tolist()) != required
+        ):
             raise ValueError(
                 f"Group-aware cross-validation fold {fold} does not contain every outcome class in both partitions."
             )
@@ -507,7 +543,9 @@ def _splitter_uses_groups(cv: Any) -> bool | None:
     return None
 
 
-def _materialize_group_cv(cv: Any, X: Any, y: Any, groups: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
+def _materialize_group_cv(
+    cv: Any, X: Any, y: Any, groups: np.ndarray
+) -> list[tuple[np.ndarray, np.ndarray]]:
     if cv is None or isinstance(cv, (int, np.integer)):
         return _default_group_splits(X, y, groups, 5 if cv is None else int(cv))
     if hasattr(cv, "split"):
@@ -538,7 +576,15 @@ def _materialize_group_cv(cv: Any, X: Any, y: Any, groups: np.ndarray) -> list[t
     return _validated_group_splits(splits, groups, len(y))
 
 
-def _prepare_group_cv_estimator(estimator: Any, X: Any, y: Any, groups: np.ndarray, *, nested_under_cv: bool = False, allow_pipeline: bool = True) -> None:
+def _prepare_group_cv_estimator(
+    estimator: Any,
+    X: Any,
+    y: Any,
+    groups: np.ndarray,
+    *,
+    nested_under_cv: bool = False,
+    allow_pipeline: bool = True,
+) -> None:
     if _hidden_internal_cv(estimator):
         if isinstance(estimator, SVC):
             raise ValueError(
@@ -565,24 +611,40 @@ def _prepare_group_cv_estimator(estimator: Any, X: Any, y: Any, groups: np.ndarr
         for _, step in estimator.steps:
             if step is None or step == "passthrough":
                 continue
-            _prepare_group_cv_estimator(step, X, y, groups, nested_under_cv=False, allow_pipeline=True)
+            _prepare_group_cv_estimator(
+                step, X, y, groups, nested_under_cv=False, allow_pipeline=True
+            )
         return
     children = _estimator_children(estimator)
     for child in children:
         if child is estimator:
             continue
-        sensitive = child if (_internal_cv_active(child) or _hidden_internal_cv(child) or _fit_accepts_groups(child)) else _first_group_sensitive_descendant(child)
+        sensitive = (
+            child
+            if (
+                _internal_cv_active(child)
+                or _hidden_internal_cv(child)
+                or _fit_accepts_groups(child)
+            )
+            else _first_group_sensitive_descendant(child)
+        )
         if active_cv and sensitive is not None:
             raise ValueError(
                 f"{type(estimator).__name__} contains {type(sensitive).__name__}, which requires its own grouped fitting inside an internal CV loop. This nesting is rejected because group metadata cannot be guaranteed for every inner fit."
             )
-        if not active_cv and not isinstance(estimator, Pipeline) and sensitive is not None:
+        if (
+            not active_cv
+            and not isinstance(estimator, Pipeline)
+            and sensitive is not None
+        ):
             raise ValueError(
                 f"{type(estimator).__name__} contains group-sensitive estimator {type(sensitive).__name__}. Only transparent Pipeline nesting is supported for grouped fitting; this meta-estimator is rejected to prevent silent leakage."
             )
 
 
-def _pipeline_group_fit_params(estimator: Pipeline, groups: np.ndarray) -> dict[str, Any]:
+def _pipeline_group_fit_params(
+    estimator: Pipeline, groups: np.ndarray
+) -> dict[str, Any]:
     params = {}
     for index, (name, step) in enumerate(estimator.steps):
         if step is None or step == "passthrough":

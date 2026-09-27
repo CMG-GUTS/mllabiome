@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 import itertools
 import json
 from pathlib import Path
@@ -462,6 +463,8 @@ def _run_oof_statistics(
     calibration_bins: int,
     diagnostic_thresholds: tuple[float, ...],
     decision_curve_thresholds: np.ndarray,
+    *,
+    progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> dict[str, Any]:
     prepared: dict[str, pd.DataFrame] = {}
     semantics: dict[str, dict[str, Any]] = {}
@@ -477,6 +480,8 @@ def _run_oof_statistics(
     class_labels: tuple[str, ...] = ()
     n_classes = 0
     for strategy, frame in frames.items():
+        if progress_callback is not None:
+            progress_callback(f"prepare OOF statistics · {strategy}", 0, 1)
         current = _prepare_oof_frame(frame, protocol)
         if current.empty:
             continue
@@ -501,6 +506,7 @@ def _run_oof_statistics(
                 probability_valid,
                 n_bootstrap,
                 random_state,
+                progress_callback=progress_callback,
             )
         )
         calibration_rows.extend(
@@ -542,6 +548,7 @@ def _run_oof_statistics(
                         n_bootstrap,
                         random_state,
                         current_labels[1],
+                        progress_callback=progress_callback,
                     )
                 )
                 confusion_rows.extend(
@@ -562,6 +569,7 @@ def _run_oof_statistics(
                         n_bootstrap,
                         random_state,
                         current_labels[1],
+                        progress_callback=progress_callback,
                     )
                 )
         coverage_rows.append(_coverage_row(strategy, current, protocol))
@@ -571,6 +579,7 @@ def _run_oof_statistics(
         semantics,
         n_bootstrap,
         random_state,
+        progress_callback=progress_callback,
     )
     return {
         "performance": pd.DataFrame(performance_rows),
@@ -668,7 +677,7 @@ def _statistics_fingerprint(
             float(value) for value in decision_curve_thresholds
         ],
         "files": [_file_signature(path) for path in paths],
-        "schema_version": 14,
+        "schema_version": 15,
     }
     text = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -762,8 +771,11 @@ def run_report_statistics(
     decision_curve_min_threshold: float = 0.01,
     decision_curve_max_threshold: float = 0.99,
     decision_curve_points: int = 99,
+    progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> dict[str, Any]:
     root = Path(root)
+    if progress_callback is not None:
+        progress_callback("loading statistical inputs", 0, 1)
     diagnostic_thresholds = _validated_diagnostic_thresholds(diagnostic_thresholds)
     decision_curve_thresholds = _decision_curve_grid(
         decision_curve_min_threshold,
@@ -795,7 +807,11 @@ def run_report_statistics(
     )
     cached = _cached_result(root, fingerprint)
     if cached is not None:
+        if progress_callback is not None:
+            progress_callback("statistics cache reused", 1, 1)
         return cached
+    if progress_callback is not None:
+        progress_callback("loading displayed-strategy predictions", 0, 1)
     frames = _strategy_prediction_frames(root, strategy_rows, resolved_selection)
     split_sizes = _outer_split_sizes(root)
     unit_frames: list[pd.DataFrame] = []
@@ -821,6 +837,8 @@ def run_report_statistics(
         )
     )
     summary_metrics = inference_metrics
+    if progress_callback is not None:
+        progress_callback("outer-unit bootstrap summaries", 0, 1)
     summary = (
         _summary_rows(
             unit_metrics,
@@ -832,6 +850,8 @@ def run_report_statistics(
         if not unit_metrics.empty
         else pd.DataFrame()
     )
+    if progress_callback is not None:
+        progress_callback("outer-unit pairwise tests", 0, 1)
     pairwise = (
         _pairwise_rows(
             unit_metrics,
@@ -852,6 +872,8 @@ def run_report_statistics(
     write_table(unit_path, unit_metrics)
     write_table(summary_path, summary)
     write_table(pairwise_path, pairwise)
+    if progress_callback is not None:
+        progress_callback("OOF inference", 0, 1)
     advanced = _run_oof_statistics(
         frames,
         protocol,
@@ -860,7 +882,10 @@ def run_report_statistics(
         int(calibration_bins),
         diagnostic_thresholds,
         decision_curve_thresholds,
+        progress_callback=progress_callback,
     )
+    if progress_callback is not None:
+        progress_callback("writing statistical tables", 0, 1)
     oof_performance_path = tables / "strategy_oof_performance.parquet"
     oof_calibration_path = tables / "strategy_oof_calibration.parquet"
     oof_calibration_coefficients_path = (
@@ -885,7 +910,7 @@ def run_report_statistics(
     write_table(oof_decision_curve_path, advanced["decision_curve"])
     write_table(oof_roc_curve_path, advanced["roc_curve"])
     oof_manifest = {
-        "schema_version": 11,
+        "schema_version": 12,
         "protocol": str(protocol),
         "strategies": list(frames),
         "n_classes": int(advanced["n_classes"]),
@@ -927,7 +952,7 @@ def run_report_statistics(
             else "subject-cluster bootstrap preserving all repeat-specific predictions per sampled subject"
         ),
         "subject_identifier": "subject_id when available, otherwise sample_id",
-        "paired_contrasts": "matched held-out observations with shared bootstrap draws",
+        "paired_contrasts": "matched held-out observations with shared hierarchical bootstrap draws; aligned LODO strategies reuse one common draw stream",
         "metric_direction": {
             metric: ("lower" if metric_is_loss(metric) else "higher")
             for metric in _OOF_CONTRAST_METRICS
@@ -940,7 +965,7 @@ def run_report_statistics(
     }
     dump_json_standard(oof_manifest, oof_manifest_path)
     manifest = {
-        "schema_version": 11,
+        "schema_version": 12,
         "fingerprint": fingerprint,
         "protocol": str(protocol),
         "strategies": list(frames),
@@ -966,6 +991,8 @@ def run_report_statistics(
         "final_refit_specifications_excluded_from_performance_estimation": True,
     }
     dump_json_standard(manifest, manifest_path)
+    if progress_callback is not None:
+        progress_callback("statistics complete", 1, 1)
     return {
         "unit_metrics": unit_metrics,
         "summary": summary,

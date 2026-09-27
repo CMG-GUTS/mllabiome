@@ -79,8 +79,12 @@ def _regression_inner_splits(
     local_groups = None if groups is None else groups[outer_train_idx]
     if protocol in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}:
         mode = plan.inner_grouping
-        local_subjects = None if subject_groups is None else subject_groups[outer_train_idx]
-        repeated = local_subjects is not None and len(pd.unique(local_subjects)) < len(local_subjects)
+        local_subjects = (
+            None if subject_groups is None else subject_groups[outer_train_idx]
+        )
+        repeated = local_subjects is not None and len(pd.unique(local_subjects)) < len(
+            local_subjects
+        )
         if protocol == "hierarchical_lodo" and mode == "auto":
             mode = "subject"
         elif mode == "auto":
@@ -390,8 +394,12 @@ def _inner_splits(
     protocol = plan.protocol.lower()
     if protocol in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}:
         mode = plan.inner_grouping
-        local_subjects = None if subject_groups is None else subject_groups[outer_train_idx]
-        repeated = local_subjects is not None and len(pd.unique(local_subjects)) < len(local_subjects)
+        local_subjects = (
+            None if subject_groups is None else subject_groups[outer_train_idx]
+        )
+        repeated = local_subjects is not None and len(pd.unique(local_subjects)) < len(
+            local_subjects
+        )
         if protocol == "hierarchical_lodo" and mode == "auto":
             mode = "subject"
         elif mode == "auto":

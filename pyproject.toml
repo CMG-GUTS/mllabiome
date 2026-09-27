@@ -99,7 +99,9 @@ dev = [
   "pytest>=9.0.3",
   "ruff>=0.16.7",
 ]
-
+benchmark = [
+    "curated-microbiota @ git+https://github.com/CMG-GUTS/curated-microbiota.git@v0.1.0",
+]
 
 [project.scripts]
 mllabiome = "mllabiome.cli:main"

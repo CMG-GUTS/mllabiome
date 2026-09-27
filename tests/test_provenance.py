@@ -64,8 +64,7 @@ def test_software_provenance_has_source_runtime_and_dependency_identity():
     provenance = cs._software_provenance()
     assert provenance["mllabiome_source_version"] == mllabiome.__version__
     assert provenance["version_consistent"] is (
-        provenance["mllabiome_distribution_version"]
-        in {None, mllabiome.__version__}
+        provenance["mllabiome_distribution_version"] in {None, mllabiome.__version__}
     )
     assert len(provenance["source_tree_sha256"]) == 64
     int(provenance["source_tree_sha256"], 16)
@@ -100,7 +99,6 @@ def test_manifest_records_version_and_software_provenance(tmp_path):
     )
     provenance = manifest["software_provenance"]
     assert provenance["version_consistent"] is (
-        provenance["mllabiome_distribution_version"]
-        in {None, mllabiome.__version__}
+        provenance["mllabiome_distribution_version"] in {None, mllabiome.__version__}
     )
     assert manifest["dataset_fingerprint_algorithm"] == "sha256-model-input-v2"

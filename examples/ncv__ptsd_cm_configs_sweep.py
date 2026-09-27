@@ -13,28 +13,20 @@ from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
 from mllabiome import mll
+from curated_microbiota.collections import prime_ptsd
 
 HERE = Path(__file__).resolve().parent
-TITLE = "PTSD intervention within-dataset subject-grouped MPMA sweep"
-EXPERIMENT_DIR = HERE / "runs" / "PTSD-NCV-grouped-paths"
+TITLE = "PRIME PTSD intervention mllabiome benchmark sweep"
+EXPERIMENT_DIR = HERE / "runs" / "PTSD-NCV-grouped-CM"
 
-METADATA = mll.Metadata(
-    metadata_path=HERE / "data" / "PTSD" / "PTSD_metadata.tsv",
-    biological_sex="host_sex",
-)
+DATA = prime_ptsd.mllabiome(target="intervention")
 
-DATA = mll.Data(
-    abundance_path=HERE / "data" / "PTSD" / "PTSD_profiles.tsv",
-    metadata=METADATA,
-    format="metaphlan_tsv",
-    sample_id_col="sampleId",
-    target_col="group",
-    task="classification",
-    class_labels=("Placebo", "Active"),
-    positive_class="Active",
-    group_col="Participant_Id",
-    subject_id_col="Participant_Id",
-    stratify_col="Time_Point",
+EVALUATION = prime_ptsd.splits(
+    target="intervention",
+    benchmark="mllabiome-benchmark-v1",
+).mllabiome(
+    optimize_metric="log_loss",
+    n_jobs="auto",
 )
 
 EXPLORE = mll.Explore(
@@ -227,11 +219,6 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
-)
-
-EVALUATION = mll.Evaluation.benchmark(
-    optimize_metric="log_loss",
-    n_jobs="auto",
 )
 
 GATE = mll.QualificationGate(

@@ -96,6 +96,8 @@ class PhaseProgress:
         self._task = None
         self._completed = 0
         self._active = False
+        self._detail_task = None
+        self._detail_label = None
 
     def __enter__(self):
         self._context = progress()
@@ -103,19 +105,55 @@ class PhaseProgress:
         self._task = self._progress.add_task(self.title, total=self.total)
         return self
 
+    def _clear_detail(self) -> None:
+        if self._progress is not None and self._detail_task is not None:
+            self._progress.remove_task(self._detail_task)
+        self._detail_task = None
+        self._detail_label = None
+
     def phase(self, label: str) -> None:
         if self._progress is None or self._task is None:
             return
+        self._clear_detail()
         if self._active:
             self._completed = min(self.total, self._completed + 1)
         self._active = True
         self._progress.update(
             self._task,
+            total=self.total,
             completed=self._completed,
             description=f"{self.title} · {label}",
         )
 
+    def detail(
+        self,
+        label: str,
+        completed: int | None = None,
+        total: int | None = None,
+    ) -> None:
+        if self._progress is None:
+            return
+        label = str(label)
+        resolved_total = int(total) if total is not None and int(total) > 1 else None
+        resolved_completed = int(completed) if completed is not None else 0
+        if self._detail_task is None or self._detail_label != label:
+            self._clear_detail()
+            self._detail_task = self._progress.add_task(
+                f"{self.title} · {label}",
+                total=resolved_total,
+                completed=resolved_completed,
+            )
+            self._detail_label = label
+            return
+        self._progress.update(
+            self._detail_task,
+            total=resolved_total,
+            completed=resolved_completed,
+            description=f"{self.title} · {label}",
+        )
+
     def __exit__(self, exc_type, exc, tb):
+        self._clear_detail()
         if self._progress is not None and self._task is not None and exc is None:
             self._progress.update(
                 self._task,

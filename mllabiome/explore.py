@@ -21,6 +21,7 @@ from scipy.stats import (
 )
 
 from .ancombc2_runtime import ANCOMBC_VERSION, run_ancombc2
+from .console import phase_progress
 from .explainability_visuals import _plain_taxon_label
 from .data import Dataset, load_dataset
 from .storage import write_table
@@ -2872,6 +2873,17 @@ def _available_ranks(dataset: Dataset, requested: tuple[str, ...]) -> tuple[str,
     return ("all",)
 
 
+def _explore_da_label(scale: str, explore: Any) -> str:
+    backend = str(explore.differential_abundance)
+    if backend == "off":
+        return "differential abundance · off"
+    if backend == "auto":
+        backend = "ancombc2" if scale == "counts" else "clr"
+    if backend == "ancombc2":
+        return "differential abundance · ANCOM-BC2"
+    return "differential abundance · CLR association"
+
+
 def run_explore(sweep: Any) -> dict[str, Any]:
     if getattr(sweep, "uses_modalities", False):
         raise ValueError("Explore currently requires a Data-based microbiome sweep.")
@@ -2880,7 +2892,9 @@ def run_explore(sweep: Any) -> dict[str, Any]:
     explore = sweep.explore
     requested = tuple(explore.ranks)
     levels = tuple(dict.fromkeys((*requested, *TAXONOMIC_LEVELS)))
-    dataset = load_dataset(sweep.data, levels_needed=levels)
+    with phase_progress("Explore data", 1) as phase:
+        phase.phase("loading and validating microbiome data")
+        dataset = load_dataset(sweep.data, levels_needed=levels)
     ranks = _available_ranks(dataset, requested)
     available = tuple(
         level
@@ -2898,111 +2912,153 @@ def run_explore(sweep: Any) -> dict[str, Any]:
         legacy_report.unlink()
     rank_outputs = []
     manifest_ranks = []
-    for rank in ranks:
-        X = np.asarray(dataset.X_by_level[rank], dtype=float)
-        names = list(dataset.feature_names_by_level[rank])
-        relative, totals = _relative_abundance(X)
-        scale = _infer_scale(X, totals)
-        zero_replacement = _adaptive_zero_replacement(
-            relative, explore.zero_replacement
-        )
-        clr = _clr_matrix(relative, zero_replacement)
-        rank_dir = root / rank
-        figure_dir = rank_dir / "figures"
-        table_dir = rank_dir / "tables"
-        alpha = _alpha_table(
-            relative, dataset, clusters, cluster_source, explore.detection_limit
-        )
-        alpha_stats = _alpha_statistics(alpha, dataset, explore)
-        distances = _distance_matrices(relative, clr, explore.detection_limit)
-        beta_stats = _beta_statistics(
-            distances, _group_labels(dataset), clusters, explore
-        )
-        summary = _taxon_summary(relative, names, explore.detection_limit)
-        qc = _sample_qc(X, relative, totals, dataset, explore.detection_limit)
-        coordinates, explained = _pcoa(distances["aitchison"])
-        da = _differential_abundance(
-            scale,
-            base_X,
-            base_names,
-            X,
-            relative,
-            clr,
-            names,
-            dataset,
-            clusters,
-            explore,
-        )
-        table_frames: dict[str, pd.DataFrame] = {
-            "sample_qc": qc,
-            "alpha_diversity": alpha,
-            "alpha_statistics": alpha_stats,
-            "beta_statistics": beta_stats,
-            "taxon_summary": summary,
-            "differential_abundance": da.get("results", pd.DataFrame()),
-            "differential_abundance_global": da.get("global", pd.DataFrame()),
-            "differential_abundance_pairwise": da.get("pairwise", pd.DataFrame()),
-            "differential_abundance_structural_zeros": da.get(
-                "structural_zeros", pd.DataFrame()
-            ),
-            "differential_abundance_sensitivity": da.get("sensitivity", pd.DataFrame()),
-        }
-        if "primary" in da:
-            table_frames["differential_abundance_primary"] = da.get(
-                "primary", pd.DataFrame()
+    phases_per_rank = 13
+    with phase_progress("Explore", max(1, len(ranks) * phases_per_rank)) as phase:
+        for rank_index, rank in enumerate(ranks, start=1):
+            rank_prefix = f"rank {rank_index}/{len(ranks)} · {rank}"
+            phase.phase(f"{rank_prefix} · preparing abundance geometry")
+            X = np.asarray(dataset.X_by_level[rank], dtype=float)
+            names = list(dataset.feature_names_by_level[rank])
+            relative, totals = _relative_abundance(X)
+            scale = _infer_scale(X, totals)
+            zero_replacement = _adaptive_zero_replacement(
+                relative, explore.zero_replacement
             )
-        tables = {
-            name: write_table(table_dir / f"{name}.parquet", frame)
-            for name, frame in table_frames.items()
-            if not frame.empty
-        }
-        for stale_name in ("composition.svg", "beta_diversity_statistics.svg"):
-            (figure_dir / stale_name).unlink(missing_ok=True)
-        figures: dict[str, Path | None] = {
-            "Alpha diversity": _plot_alpha(
+            clr = _clr_matrix(relative, zero_replacement)
+            rank_dir = root / rank
+            figure_dir = rank_dir / "figures"
+            table_dir = rank_dir / "tables"
+
+            phase.phase(f"{rank_prefix} · alpha diversity")
+            alpha = _alpha_table(
+                relative, dataset, clusters, cluster_source, explore.detection_limit
+            )
+
+            phase.phase(
+                f"{rank_prefix} · alpha-diversity inference · "
+                f"{int(explore.bootstrap_replicates):,} bootstrap replicates"
+            )
+            alpha_stats = _alpha_statistics(alpha, dataset, explore)
+
+            phase.phase(f"{rank_prefix} · beta-diversity distance matrices")
+            distances = _distance_matrices(relative, clr, explore.detection_limit)
+
+            phase.phase(
+                f"{rank_prefix} · beta-diversity inference · "
+                f"{int(explore.permutations):,} permutations · "
+                f"{int(explore.bootstrap_replicates):,} bootstrap replicates"
+            )
+            beta_stats = _beta_statistics(
+                distances, _group_labels(dataset), clusters, explore
+            )
+
+            phase.phase(f"{rank_prefix} · taxon summaries and sample QC")
+            summary = _taxon_summary(relative, names, explore.detection_limit)
+            qc = _sample_qc(X, relative, totals, dataset, explore.detection_limit)
+
+            phase.phase(f"{rank_prefix} · Aitchison PCoA")
+            coordinates, explained = _pcoa(distances["aitchison"])
+
+            phase.phase(f"{rank_prefix} · {_explore_da_label(scale, explore)}")
+            da = _differential_abundance(
+                scale,
+                base_X,
+                base_names,
+                X,
+                relative,
+                clr,
+                names,
+                dataset,
+                clusters,
+                explore,
+            )
+
+            phase.phase(f"{rank_prefix} · writing analysis tables")
+            table_frames: dict[str, pd.DataFrame] = {
+                "sample_qc": qc,
+                "alpha_diversity": alpha,
+                "alpha_statistics": alpha_stats,
+                "beta_statistics": beta_stats,
+                "taxon_summary": summary,
+                "differential_abundance": da.get("results", pd.DataFrame()),
+                "differential_abundance_global": da.get("global", pd.DataFrame()),
+                "differential_abundance_pairwise": da.get("pairwise", pd.DataFrame()),
+                "differential_abundance_structural_zeros": da.get(
+                    "structural_zeros", pd.DataFrame()
+                ),
+                "differential_abundance_sensitivity": da.get(
+                    "sensitivity", pd.DataFrame()
+                ),
+            }
+            if "primary" in da:
+                table_frames["differential_abundance_primary"] = da.get(
+                    "primary", pd.DataFrame()
+                )
+            tables = {
+                name: write_table(table_dir / f"{name}.parquet", frame)
+                for name, frame in table_frames.items()
+                if not frame.empty
+            }
+
+            phase.phase(f"{rank_prefix} · rendering alpha-diversity figure")
+            figure_dir.mkdir(parents=True, exist_ok=True)
+            for stale_name in ("composition.svg", "beta_diversity_statistics.svg"):
+                (figure_dir / stale_name).unlink(missing_ok=True)
+            alpha_figure = _plot_alpha(
                 alpha, dataset, figure_dir / "alpha_diversity.svg"
-            ),
-            "Aitchison PCoA": _plot_pcoa(
+            )
+
+            phase.phase(f"{rank_prefix} · rendering ordination and CLR figures")
+            pcoa_figure = _plot_pcoa(
                 coordinates, explained, dataset, figure_dir / "aitchison_pcoa.svg"
-            ),
-            "CLR abundance structure": _plot_heatmap(
+            )
+            heatmap_figure = _plot_heatmap(
                 clr, relative, names, dataset, explore, figure_dir / "clr_heatmap.svg"
-            ),
-            "Differential abundance and taxon associations": _plot_da_volcano(
+            )
+
+            phase.phase(f"{rank_prefix} · rendering differential-abundance figure")
+            da_figure = _plot_da_volcano(
                 da.get("results", pd.DataFrame()),
                 figure_dir / "differential_abundance.svg",
                 explore,
-            ),
-        }
-        payload = {
-            "rank": rank,
-            "scale": scale,
-            "zero_replacement_relative": zero_replacement,
-            "n_features": len(names),
-            "tables": {name: str(value) for name, value in tables.items()},
-            "figures": {
-                name: str(value) if value is not None else None
-                for name, value in figures.items()
-            },
-            "differential_abundance": {
-                "method": da.get("method"),
-                "status": da.get("status"),
-                "model": da.get("model"),
-                "multiple_testing": da.get("multiple_testing"),
-                "runtime": da.get("runtime"),
-            },
-        }
-        dump_json_standard(payload, rank_dir / "manifest.json")
-        rank_outputs.append(
-            {
-                "rank": rank,
-                "alpha_statistics": alpha_stats,
-                "beta_statistics": beta_stats,
-                "differential_abundance": da,
-                "figures": figures,
+            )
+            figures: dict[str, Path | None] = {
+                "Alpha diversity": alpha_figure,
+                "Aitchison PCoA": pcoa_figure,
+                "CLR abundance structure": heatmap_figure,
+                "Differential abundance and taxon associations": da_figure,
             }
-        )
-        manifest_ranks.append(payload)
+
+            phase.phase(f"{rank_prefix} · writing rank manifest")
+            payload = {
+                "rank": rank,
+                "scale": scale,
+                "zero_replacement_relative": zero_replacement,
+                "n_features": len(names),
+                "tables": {name: str(value) for name, value in tables.items()},
+                "figures": {
+                    name: str(value) if value is not None else None
+                    for name, value in figures.items()
+                },
+                "differential_abundance": {
+                    "method": da.get("method"),
+                    "status": da.get("status"),
+                    "model": da.get("model"),
+                    "multiple_testing": da.get("multiple_testing"),
+                    "runtime": da.get("runtime"),
+                },
+            }
+            dump_json_standard(payload, rank_dir / "manifest.json")
+            rank_outputs.append(
+                {
+                    "rank": rank,
+                    "alpha_statistics": alpha_stats,
+                    "beta_statistics": beta_stats,
+                    "differential_abundance": da,
+                    "figures": figures,
+                }
+            )
+            manifest_ranks.append(payload)
     manifest = {
         "stage": "explore",
         "target": dataset.target_name,

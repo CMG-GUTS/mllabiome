@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -150,7 +151,7 @@ def _calibration_binary(
     logit = np.log(p / (1.0 - p))
     low = -50.0
     high = 50.0
-    for _ in range(120):
+    for _ in range(48):
         alpha = 0.5 * (low + high)
         score = float(np.sum(y - _sigmoid(logit + alpha)))
         if score > 0.0:
@@ -198,7 +199,12 @@ def _calibration_binary(
     return float(alpha), float(beta[0]), float(beta[1])
 
 
-def _proper_metrics(y_true: np.ndarray, proba: np.ndarray) -> dict[str, float]:
+def _proper_metrics(
+    y_true: np.ndarray,
+    proba: np.ndarray,
+    *,
+    include_calibration: bool = True,
+) -> dict[str, float]:
     y = np.asarray(y_true, dtype=int)
     p = _renormalize_proba(np.asarray(proba, dtype=float), proba.shape[1])
     n_classes = p.shape[1]
@@ -217,34 +223,36 @@ def _proper_metrics(y_true: np.ndarray, proba: np.ndarray) -> dict[str, float]:
     if n_classes == 2:
         target = (y == 1).astype(float)
         out["brier"] = float(np.mean((p[:, 1] - target) ** 2))
-        citl, intercept, slope = _calibration_binary(target, p[:, 1])
-        out["CalibrationInTheLarge"] = citl
-        out["CalibrationIntercept"] = intercept
-        out["CalibrationSlope"] = slope
+        if include_calibration:
+            citl, intercept, slope = _calibration_binary(target, p[:, 1])
+            out["CalibrationInTheLarge"] = citl
+            out["CalibrationIntercept"] = intercept
+            out["CalibrationSlope"] = slope
     else:
         one_hot = np.eye(n_classes, dtype=float)[y]
         out["brier_multiclass"] = float(np.mean(np.sum((p - one_hot) ** 2, axis=1)))
-        values = []
-        for class_index in range(n_classes):
-            target = (y == class_index).astype(float)
-            values.append(_calibration_binary(target, p[:, class_index]))
-        for output_index, name in enumerate(
-            (
-                "CalibrationInTheLarge_macro_OvR",
-                "CalibrationIntercept_macro_OvR",
-                "CalibrationSlope_macro_OvR",
-            )
-        ):
-            finite = np.asarray(
-                [
-                    value[output_index]
-                    for value in values
-                    if np.isfinite(value[output_index])
-                ],
-                dtype=float,
-            )
-            if len(finite):
-                out[name] = float(np.mean(finite))
+        if include_calibration:
+            values = []
+            for class_index in range(n_classes):
+                target = (y == class_index).astype(float)
+                values.append(_calibration_binary(target, p[:, class_index]))
+            for output_index, name in enumerate(
+                (
+                    "CalibrationInTheLarge_macro_OvR",
+                    "CalibrationIntercept_macro_OvR",
+                    "CalibrationSlope_macro_OvR",
+                )
+            ):
+                finite = np.asarray(
+                    [
+                        value[output_index]
+                        for value in values
+                        if np.isfinite(value[output_index])
+                    ],
+                    dtype=float,
+                )
+                if len(finite):
+                    out[name] = float(np.mean(finite))
     return out
 
 
@@ -411,18 +419,78 @@ def _fast_classification_metrics(
     return out
 
 
-def _oof_metrics(frame: pd.DataFrame, probability_valid: bool) -> dict[str, float]:
-    if frame.empty:
+def _oof_metrics_arrays(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    score: np.ndarray,
+    probability_valid: bool,
+    *,
+    include_calibration: bool = True,
+) -> dict[str, float]:
+    y_true = np.asarray(y_true, dtype=int)
+    y_pred = np.asarray(y_pred, dtype=int)
+    score = np.asarray(score, dtype=float)
+    if len(y_true) == 0:
         return {metric: float("nan") for metric in OOF_METRIC_ORDER}
-    pcols = _probability_columns(frame)
-    y_true = frame["y_true"].astype(int).to_numpy()
-    y_pred = frame["y_pred"].astype(int).to_numpy()
-    score = frame[pcols].to_numpy(dtype=float)
     values = _fast_classification_metrics(y_true, y_pred, score)
     out = {metric: float(values.get(metric, np.nan)) for metric in OOF_METRIC_ORDER}
     if probability_valid:
-        out.update(_proper_metrics(y_true, score))
+        out.update(
+            _proper_metrics(
+                y_true,
+                score,
+                include_calibration=include_calibration,
+            )
+        )
     return out
+
+
+def _oof_metrics(
+    frame: pd.DataFrame,
+    probability_valid: bool,
+    *,
+    include_calibration: bool = True,
+) -> dict[str, float]:
+    if frame.empty:
+        return {metric: float("nan") for metric in OOF_METRIC_ORDER}
+    pcols = _probability_columns(frame)
+    return _oof_metrics_arrays(
+        frame["y_true"].astype(int).to_numpy(),
+        frame["y_pred"].astype(int).to_numpy(),
+        frame[pcols].to_numpy(dtype=float),
+        probability_valid,
+        include_calibration=include_calibration,
+    )
+
+
+def _lodo_cluster_subject_indices(frame: pd.DataFrame) -> list[list[np.ndarray]]:
+    if frame.empty:
+        return []
+    clusters: list[list[np.ndarray]] = []
+    for _, cluster_group in frame.groupby("_cluster", sort=True):
+        subjects = [
+            subject_group.index.to_numpy(dtype=int)
+            for _, subject_group in cluster_group.groupby("_subject_id", sort=True)
+        ]
+        clusters.append(subjects)
+    return clusters
+
+
+def _sample_lodo_cluster_indices(
+    clusters: list[list[np.ndarray]],
+    rng: np.random.Generator,
+) -> list[np.ndarray]:
+    if not clusters:
+        return []
+    chosen_clusters = rng.integers(0, len(clusters), size=len(clusters))
+    sampled: list[np.ndarray] = []
+    for cluster_index in chosen_clusters:
+        subjects = clusters[int(cluster_index)]
+        chosen_subjects = rng.integers(0, len(subjects), size=len(subjects))
+        sampled.append(
+            np.concatenate([subjects[int(index)] for index in chosen_subjects])
+        )
+    return sampled
 
 
 def _mean_metric_dicts(values: list[dict[str, float]]) -> dict[str, float]:
@@ -438,12 +506,18 @@ def _point_oof_estimands(
     frame: pd.DataFrame,
     protocol: str,
     probability_valid: bool,
+    *,
+    include_calibration: bool = True,
 ) -> dict[str, dict[str, float]]:
     protocol_key = str(protocol).lower()
     if protocol_key in _LODO_PROTOCOLS:
-        pooled = _oof_metrics(frame, probability_valid)
+        pooled = _oof_metrics(
+            frame, probability_valid, include_calibration=include_calibration
+        )
         cohort_metrics = [
-            _oof_metrics(group, probability_valid)
+            _oof_metrics(
+                group, probability_valid, include_calibration=include_calibration
+            )
             for _, group in frame.groupby("_cluster", sort=True)
         ]
         return {
@@ -451,7 +525,7 @@ def _point_oof_estimands(
             "cohort_macro_equal_weight": _mean_metric_dicts(cohort_metrics),
         }
     repeat_metrics = [
-        _oof_metrics(group, probability_valid)
+        _oof_metrics(group, probability_valid, include_calibration=include_calibration)
         for _, group in frame.groupby("_repeat", sort=True)
     ]
     return {"mean_repeat_pooled_oof": _mean_metric_dicts(repeat_metrics)}
@@ -474,6 +548,9 @@ def _bootstrap_oof_estimands(
     probability_valid: bool,
     n_bootstrap: int,
     rng: np.random.Generator,
+    *,
+    progress_callback: Callable[[str, int, int], None] | None = None,
+    progress_label: str = "OOF bootstrap",
 ) -> dict[str, dict[str, np.ndarray]]:
     protocol_key = str(protocol).lower()
     names = (
@@ -490,21 +567,33 @@ def _bootstrap_oof_estimands(
     }
     if frame.empty or int(n_bootstrap) <= 0:
         return storage
+    n_bootstrap = int(n_bootstrap)
+    update_every = max(1, n_bootstrap // 100)
     if protocol_key in _LODO_PROTOCOLS:
-        groups = [
-            group.reset_index(drop=True)
-            for _, group in frame.groupby("_cluster", sort=True)
-        ]
-        for bootstrap_index in range(int(n_bootstrap)):
-            chosen = rng.integers(0, len(groups), size=len(groups))
-            sampled_groups = [
-                _resample_subjects(groups[int(index)], rng) for index in chosen
-            ]
-            pooled_metrics = _oof_metrics(
-                pd.concat(sampled_groups, ignore_index=True), probability_valid
+        pcols = _probability_columns(frame)
+        y_true = frame["y_true"].astype(int).to_numpy()
+        y_pred = frame["y_pred"].astype(int).to_numpy()
+        score = frame[pcols].to_numpy(dtype=float)
+        clusters = _lodo_cluster_subject_indices(frame)
+        for bootstrap_index in range(n_bootstrap):
+            sampled_indices = _sample_lodo_cluster_indices(clusters, rng)
+            pooled_index = np.concatenate(sampled_indices)
+            pooled_metrics = _oof_metrics_arrays(
+                y_true[pooled_index],
+                y_pred[pooled_index],
+                score[pooled_index],
+                probability_valid,
             )
             macro_metrics = _mean_metric_dicts(
-                [_oof_metrics(group, probability_valid) for group in sampled_groups]
+                [
+                    _oof_metrics_arrays(
+                        y_true[index],
+                        y_pred[index],
+                        score[index],
+                        probability_valid,
+                    )
+                    for index in sampled_indices
+                ]
             )
             for metric in OOF_METRIC_ORDER:
                 storage["pooled_sample_weighted"][metric][bootstrap_index] = (
@@ -513,8 +602,15 @@ def _bootstrap_oof_estimands(
                 storage["cohort_macro_equal_weight"][metric][bootstrap_index] = (
                     macro_metrics.get(metric, np.nan)
                 )
+            completed = bootstrap_index + 1
+            if progress_callback is not None and (
+                completed == 1
+                or completed == n_bootstrap
+                or completed % update_every == 0
+            ):
+                progress_callback(progress_label, completed, n_bootstrap)
         return storage
-    for bootstrap_index in range(int(n_bootstrap)):
+    for bootstrap_index in range(n_bootstrap):
         sampled = _resample_subjects(frame, rng)
         metrics = [
             _oof_metrics(group, probability_valid)
@@ -525,6 +621,11 @@ def _bootstrap_oof_estimands(
             storage["mean_repeat_pooled_oof"][metric][bootstrap_index] = averaged.get(
                 metric, np.nan
             )
+        completed = bootstrap_index + 1
+        if progress_callback is not None and (
+            completed == 1 or completed == n_bootstrap or completed % update_every == 0
+        ):
+            progress_callback(progress_label, completed, n_bootstrap)
     return storage
 
 
@@ -535,6 +636,8 @@ def _performance_rows(
     probability_valid: bool,
     n_bootstrap: int,
     random_state: int,
+    *,
+    progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> list[dict[str, Any]]:
     point = _point_oof_estimands(frame, protocol, probability_valid)
     boot = _bootstrap_oof_estimands(
@@ -543,6 +646,8 @@ def _performance_rows(
         probability_valid,
         n_bootstrap,
         np.random.default_rng(_stable_seed(random_state, "oof", strategy)),
+        progress_callback=progress_callback,
+        progress_label=f"OOF performance bootstrap · {strategy}",
     )
     rows: list[dict[str, Any]] = []
     for estimand, metrics in point.items():

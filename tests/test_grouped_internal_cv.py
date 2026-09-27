@@ -97,9 +97,7 @@ def test_grid_search_inside_pipeline_is_group_disjoint():
         {"C": [0.1, 1.0]},
         cv=3,
     )
-    estimator = Pipeline(
-        [("scale", StandardScaler()), ("search", search)]
-    )
+    estimator = Pipeline([("scale", StandardScaler()), ("search", search)])
     fit_classifier(estimator, X, y, groups)
     _assert_group_disjoint(estimator.named_steps["search"].cv, groups)
 
@@ -194,9 +192,7 @@ def test_pipeline_routes_groups_to_group_sensitive_final_estimator():
     set_config(enable_metadata_routing=True)
     try:
         fit_classifier(estimator, X, y, groups)
-        np.testing.assert_array_equal(
-            estimator.named_steps["model"].groups_, groups
-        )
+        np.testing.assert_array_equal(estimator.named_steps["model"].groups_, groups)
         assert bool(get_config().get("enable_metadata_routing", False)) is True
     finally:
         set_config(enable_metadata_routing=previous)

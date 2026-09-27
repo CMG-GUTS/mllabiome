@@ -945,13 +945,15 @@ def _regression_procedure(sweep: Sweep, root: Path) -> pd.DataFrame:
             [
                 "Outer folds",
                 ev.outer_folds
-                if ev.protocol not in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}
+                if ev.protocol
+                not in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}
                 else f"LODO ({ev.outer_folds} datasets)",
             ],
             [
                 "Inner folds",
                 ev.inner_folds
-                if ev.protocol not in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}
+                if ev.protocol
+                not in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}
                 else f"{ev.inner_folds}-fold {str(ev.inner_grouping).replace('_', ' ')} inner CV",
             ],
             ["Repeats", ev.repeats],

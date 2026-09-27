@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 import itertools
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from .metrics import metric_is_loss
-from .oof_statistics import _mean_metric_dicts, _oof_metrics, _prepare_oof_frame
+from .oof_statistics import (
+    _lodo_cluster_subject_indices,
+    _mean_metric_dicts,
+    _oof_metrics,
+    _oof_metrics_arrays,
+    _point_oof_estimands,
+    _prepare_oof_frame,
+    _probability_columns,
+    _sample_lodo_cluster_indices,
+)
 from .statistics_common import _LODO_PROTOCOLS, _OOF_CONTRAST_METRICS, _stable_seed
 
 
@@ -127,17 +137,25 @@ def _paired_point_estimands(
     protocol_key = str(protocol).lower()
     if protocol_key in _LODO_PROTOCOLS:
         pooled = (
-            _oof_metrics(left, probability_valid_a),
-            _oof_metrics(right, probability_valid_b),
+            _oof_metrics(left, probability_valid_a, include_calibration=False),
+            _oof_metrics(right, probability_valid_b, include_calibration=False),
         )
         left_cohort = []
         right_cohort = []
         for cluster in left["_cluster"].drop_duplicates().tolist():
             left_cohort.append(
-                _oof_metrics(left[left["_cluster"].eq(cluster)], probability_valid_a)
+                _oof_metrics(
+                    left[left["_cluster"].eq(cluster)],
+                    probability_valid_a,
+                    include_calibration=False,
+                )
             )
             right_cohort.append(
-                _oof_metrics(right[right["_cluster"].eq(cluster)], probability_valid_b)
+                _oof_metrics(
+                    right[right["_cluster"].eq(cluster)],
+                    probability_valid_b,
+                    include_calibration=False,
+                )
             )
         return {
             "pooled_sample_weighted": pooled,
@@ -150,10 +168,18 @@ def _paired_point_estimands(
     right_repeat = []
     for repeat in left["_repeat"].drop_duplicates().tolist():
         left_repeat.append(
-            _oof_metrics(left[left["_repeat"].eq(repeat)], probability_valid_a)
+            _oof_metrics(
+                left[left["_repeat"].eq(repeat)],
+                probability_valid_a,
+                include_calibration=False,
+            )
         )
         right_repeat.append(
-            _oof_metrics(right[right["_repeat"].eq(repeat)], probability_valid_b)
+            _oof_metrics(
+                right[right["_repeat"].eq(repeat)],
+                probability_valid_b,
+                include_calibration=False,
+            )
         )
     return {
         "mean_repeat_pooled_oof": (
@@ -171,6 +197,9 @@ def _paired_bootstrap_advantages(
     probability_valid_b: bool,
     n_bootstrap: int,
     rng: np.random.Generator,
+    *,
+    progress_callback: Callable[[str, int, int], None] | None = None,
+    progress_label: str = "paired OOF bootstrap",
 ) -> dict[str, dict[str, np.ndarray]]:
     protocol_key = str(protocol).lower()
     names = (
@@ -195,16 +224,26 @@ def _paired_bootstrap_advantages(
                 right.iloc[index].reset_index(drop=True) for index in sampled_indices
             ]
             left_pooled = _oof_metrics(
-                pd.concat(left_groups, ignore_index=True), probability_valid_a
+                pd.concat(left_groups, ignore_index=True),
+                probability_valid_a,
+                include_calibration=False,
             )
             right_pooled = _oof_metrics(
-                pd.concat(right_groups, ignore_index=True), probability_valid_b
+                pd.concat(right_groups, ignore_index=True),
+                probability_valid_b,
+                include_calibration=False,
             )
             left_macro = _mean_metric_dicts(
-                [_oof_metrics(group, probability_valid_a) for group in left_groups]
+                [
+                    _oof_metrics(group, probability_valid_a, include_calibration=False)
+                    for group in left_groups
+                ]
             )
             right_macro = _mean_metric_dicts(
-                [_oof_metrics(group, probability_valid_b) for group in right_groups]
+                [
+                    _oof_metrics(group, probability_valid_b, include_calibration=False)
+                    for group in right_groups
+                ]
             )
             pairs = {
                 "pooled_sample_weighted": (left_pooled, right_pooled),
@@ -215,11 +254,11 @@ def _paired_bootstrap_advantages(
             left_sample = left.iloc[index].reset_index(drop=True)
             right_sample = right.iloc[index].reset_index(drop=True)
             left_metrics = [
-                _oof_metrics(group, probability_valid_a)
+                _oof_metrics(group, probability_valid_a, include_calibration=False)
                 for _, group in left_sample.groupby("_repeat", sort=True)
             ]
             right_metrics = [
-                _oof_metrics(group, probability_valid_b)
+                _oof_metrics(group, probability_valid_b, include_calibration=False)
                 for _, group in right_sample.groupby("_repeat", sort=True)
             ]
             pairs = {
@@ -237,7 +276,125 @@ def _paired_bootstrap_advantages(
                 storage[estimand][metric][bootstrap_index] = (
                     b - a if metric_is_loss(metric) else a - b
                 )
+        completed = bootstrap_index + 1
+        update_every = max(1, int(n_bootstrap) // 100)
+        if progress_callback is not None and (
+            completed == 1
+            or completed == int(n_bootstrap)
+            or completed % update_every == 0
+        ):
+            progress_callback(progress_label, completed, int(n_bootstrap))
     return storage
+
+
+def _shared_lodo_pairwise_bootstrap(
+    prepared: dict[str, pd.DataFrame],
+    probability_semantics: dict[str, dict[str, Any]],
+    n_bootstrap: int,
+    rng: np.random.Generator,
+    progress_callback: Callable[[str, int, int], None] | None = None,
+) -> dict[str, dict[str, dict[str, np.ndarray]]]:
+    strategies = list(prepared)
+    storage = {
+        strategy: {
+            estimand: {
+                metric: np.full(int(n_bootstrap), np.nan, dtype=float)
+                for metric in _OOF_CONTRAST_METRICS
+            }
+            for estimand in (
+                "pooled_sample_weighted",
+                "cohort_macro_equal_weight",
+            )
+        }
+        for strategy in strategies
+    }
+    if not strategies or int(n_bootstrap) <= 0:
+        return storage
+    base = prepared[strategies[0]]
+    clusters = _lodo_cluster_subject_indices(base)
+    arrays: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, bool]] = {}
+    for strategy in strategies:
+        frame = prepared[strategy]
+        pcols = _probability_columns(frame)
+        arrays[strategy] = (
+            frame["y_true"].astype(int).to_numpy(),
+            frame["y_pred"].astype(int).to_numpy(),
+            frame[pcols].to_numpy(dtype=float),
+            bool(probability_semantics[strategy].get("valid", False)),
+        )
+    n_bootstrap = int(n_bootstrap)
+    update_every = max(1, n_bootstrap // 100)
+    label = f"LODO paired bootstrap · {len(strategies)} strategies"
+    for bootstrap_index in range(n_bootstrap):
+        sampled_indices = _sample_lodo_cluster_indices(clusters, rng)
+        pooled_index = np.concatenate(sampled_indices)
+        for strategy in strategies:
+            y_true, y_pred, score, probability_valid = arrays[strategy]
+            pooled = _oof_metrics_arrays(
+                y_true[pooled_index],
+                y_pred[pooled_index],
+                score[pooled_index],
+                probability_valid,
+                include_calibration=False,
+            )
+            macro = _mean_metric_dicts(
+                [
+                    _oof_metrics_arrays(
+                        y_true[index],
+                        y_pred[index],
+                        score[index],
+                        probability_valid,
+                        include_calibration=False,
+                    )
+                    for index in sampled_indices
+                ]
+            )
+            for metric in _OOF_CONTRAST_METRICS:
+                storage[strategy]["pooled_sample_weighted"][metric][bootstrap_index] = (
+                    pooled.get(metric, np.nan)
+                )
+                storage[strategy]["cohort_macro_equal_weight"][metric][
+                    bootstrap_index
+                ] = macro.get(metric, np.nan)
+        completed = bootstrap_index + 1
+        if progress_callback is not None and (
+            completed == 1 or completed == n_bootstrap or completed % update_every == 0
+        ):
+            progress_callback(label, completed, n_bootstrap)
+    return storage
+
+
+def _aligned_lodo_frames(
+    prepared: dict[str, pd.DataFrame],
+) -> dict[str, pd.DataFrame] | None:
+    strategies = list(prepared)
+    if len(strategies) < 2:
+        return None
+    keys = ["_cluster", "sample_id"]
+    aligned: dict[str, pd.DataFrame] = {}
+    reference_keys: np.ndarray | None = None
+    reference_y: np.ndarray | None = None
+    for strategy in strategies:
+        frame = prepared[strategy].copy()
+        frame["_shared_pair_key"] = frame[keys].astype(str).agg("\x1f".join, axis=1)
+        if frame["_shared_pair_key"].duplicated().any():
+            return None
+        frame = frame.sort_values("_shared_pair_key", kind="mergesort").reset_index(
+            drop=True
+        )
+        current_keys = frame["_shared_pair_key"].to_numpy()
+        current_y = frame["y_true"].to_numpy()
+        if reference_keys is None:
+            reference_keys = current_keys
+            reference_y = current_y
+        elif (
+            len(current_keys) != len(reference_keys)
+            or not np.array_equal(current_keys, reference_keys)
+            or not np.array_equal(current_y, reference_y)
+        ):
+            return None
+        aligned[strategy] = frame.drop(columns=["_shared_pair_key"])
+    return aligned
 
 
 def _paired_contrast_rows(
@@ -246,6 +403,8 @@ def _paired_contrast_rows(
     probability_semantics: dict[str, dict[str, Any]],
     n_bootstrap: int,
     random_state: int,
+    *,
+    progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     rows: list[dict[str, Any]] = []
     coverage_rows: list[dict[str, Any]] = []
@@ -253,6 +412,29 @@ def _paired_contrast_rows(
         strategy: _prepare_oof_frame(frame, protocol)
         for strategy, frame in frames.items()
     }
+    protocol_key = str(protocol).lower()
+    shared_bootstrap = None
+    shared_points: dict[str, dict[str, dict[str, float]]] = {}
+    aligned_lodo = (
+        _aligned_lodo_frames(prepared) if protocol_key in _LODO_PROTOCOLS else None
+    )
+    if aligned_lodo is not None:
+        for strategy, frame in aligned_lodo.items():
+            shared_points[strategy] = _point_oof_estimands(
+                frame,
+                protocol,
+                bool(probability_semantics[strategy].get("valid", False)),
+                include_calibration=False,
+            )
+        shared_bootstrap = _shared_lodo_pairwise_bootstrap(
+            aligned_lodo,
+            probability_semantics,
+            n_bootstrap,
+            np.random.default_rng(
+                _stable_seed(random_state, "paired_oof_shared", *prepared.keys())
+            ),
+            progress_callback=progress_callback,
+        )
     for strategy_a, strategy_b in itertools.combinations(prepared, 2):
         left, right, coverage = _matched_frames(
             prepared[strategy_a], prepared[strategy_b], protocol
@@ -264,18 +446,42 @@ def _paired_contrast_rows(
             continue
         valid_a = bool(probability_semantics[strategy_a].get("valid", False))
         valid_b = bool(probability_semantics[strategy_b].get("valid", False))
-        point = _paired_point_estimands(left, right, protocol, valid_a, valid_b)
-        boot = _paired_bootstrap_advantages(
-            left,
-            right,
-            protocol,
-            valid_a,
-            valid_b,
-            n_bootstrap,
-            np.random.default_rng(
-                _stable_seed(random_state, "paired_oof", strategy_a, strategy_b)
-            ),
-        )
+        if shared_bootstrap is not None:
+            point = {
+                estimand: (
+                    shared_points[strategy_a][estimand],
+                    shared_points[strategy_b][estimand],
+                )
+                for estimand in shared_points[strategy_a]
+            }
+            boot = {
+                estimand: {
+                    metric: (
+                        shared_bootstrap[strategy_b][estimand][metric]
+                        - shared_bootstrap[strategy_a][estimand][metric]
+                        if metric_is_loss(metric)
+                        else shared_bootstrap[strategy_a][estimand][metric]
+                        - shared_bootstrap[strategy_b][estimand][metric]
+                    )
+                    for metric in _OOF_CONTRAST_METRICS
+                }
+                for estimand in shared_points[strategy_a]
+            }
+        else:
+            point = _paired_point_estimands(left, right, protocol, valid_a, valid_b)
+            boot = _paired_bootstrap_advantages(
+                left,
+                right,
+                protocol,
+                valid_a,
+                valid_b,
+                n_bootstrap,
+                np.random.default_rng(
+                    _stable_seed(random_state, "paired_oof", strategy_a, strategy_b)
+                ),
+                progress_callback=progress_callback,
+                progress_label=f"paired OOF bootstrap · {strategy_a} vs {strategy_b}",
+            )
         for estimand, (metric_a, metric_b) in point.items():
             for metric in _OOF_CONTRAST_METRICS:
                 a = float(metric_a.get(metric, np.nan))

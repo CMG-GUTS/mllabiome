@@ -132,7 +132,11 @@ class QualificationGate:
 @dataclass
 class Evaluation:
     protocol: Literal[
-        "repeated_nested_cv", "nested_cv", "lodo", "leave_one_dataset_out", "hierarchical_lodo"
+        "repeated_nested_cv",
+        "nested_cv",
+        "lodo",
+        "leave_one_dataset_out",
+        "hierarchical_lodo",
     ] = "repeated_nested_cv"
     outer_folds: int = 5
     inner_folds: int = 3
@@ -171,7 +175,9 @@ class Evaluation:
             self.benchmark_id = benchmark_id or None
         inner_grouping = str(self.inner_grouping).strip().casefold().replace("-", "_")
         if inner_grouping not in {"auto", "outer_group", "subject", "none"}:
-            raise ValueError(f"Unsupported Evaluation.inner_grouping {self.inner_grouping!r}.")
+            raise ValueError(
+                f"Unsupported Evaluation.inner_grouping {self.inner_grouping!r}."
+            )
         self.inner_grouping = inner_grouping
         self.optimize_metric = canonical_metric_name(str(self.optimize_metric))
         if int(self.inner_folds) < 2:
@@ -185,7 +191,9 @@ class Evaluation:
             raise ValueError("Evaluation.repeats must be at least 1.")
 
     @classmethod
-    def benchmark(cls, *, split_manifest: str | Path | None = None, **values: Any) -> Evaluation:
+    def benchmark(
+        cls, *, split_manifest: str | Path | None = None, **values: Any
+    ) -> Evaluation:
         settings = {
             "protocol": "repeated_nested_cv",
             "outer_folds": 5,
