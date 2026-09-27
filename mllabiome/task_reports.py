@@ -941,17 +941,18 @@ def _regression_procedure(sweep: Sweep, root: Path) -> pd.DataFrame:
     rows.extend(
         [
             ["Procedure", ev.protocol],
+            ["Benchmark", ev.benchmark_id or ""],
             [
                 "Outer folds",
                 ev.outer_folds
-                if ev.protocol not in {"lodo", "leave_one_dataset_out"}
-                else "held-out datasets",
+                if ev.protocol not in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}
+                else f"LODO ({ev.outer_folds} datasets)",
             ],
             [
                 "Inner folds",
                 ev.inner_folds
-                if ev.protocol not in {"lodo", "leave_one_dataset_out"}
-                else "leave-one-dataset-out across outer-training datasets",
+                if ev.protocol not in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}
+                else f"{ev.inner_folds}-fold {str(ev.inner_grouping).replace('_', ' ')} inner CV",
             ],
             ["Repeats", ev.repeats],
             ["Selection metric", ev.optimize_metric],
@@ -1718,6 +1719,7 @@ def write_multi_target_report(
                 ["Target count", len(children)],
                 ["Data format", _task_data_format(sweep)],
                 ["Procedure", sweep.evaluation.protocol],
+                ["Benchmark", sweep.evaluation.benchmark_id or ""],
                 ["Outer folds", sweep.evaluation.outer_folds],
                 ["Inner folds", sweep.evaluation.inner_folds],
                 ["Repeats", sweep.evaluation.repeats],

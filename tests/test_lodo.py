@@ -156,7 +156,7 @@ def test_lodo_outer_test_is_exactly_one_complete_group():
         assert len(test_idx) == int(np.sum(groups == held))
 
 
-def test_lodo_inner_validation_leaves_out_each_remaining_group_once():
+def test_lodo_inner_validation_uses_configured_grouped_folds_without_group_leakage():
     plan = Evaluation(protocol="lodo", inner_folds=3, random_state=42)
     groups = _groups()
     y = _labels()
@@ -166,22 +166,23 @@ def test_lodo_inner_validation_leaves_out_each_remaining_group_once():
         held_outer = str(split["outer_group"])
         inner = cs._inner_splits(plan, y, train_idx, groups, split)
         remaining = set(groups[train_idx])
-        assert len(inner) == 5
+        assert len(inner) == 3
         seen = []
         for train_local, val_local in inner:
             train_global = train_idx[np.asarray(train_local, dtype=int)]
             val_global = train_idx[np.asarray(val_local, dtype=int)]
+            train_groups = set(groups[train_global])
             val_groups = set(groups[val_global])
-            assert len(val_groups) == 1
-            val_group = next(iter(val_groups))
-            seen.append(val_group)
-            assert val_group not in set(groups[train_global])
-            assert held_outer not in set(groups[train_global])
+            assert val_groups
+            assert train_groups.isdisjoint(val_groups)
+            assert held_outer not in train_groups
             assert held_outer not in val_groups
+            seen.extend(val_groups)
         assert set(seen) == remaining
+        assert len(seen) == len(remaining)
 
 
-def test_lodo_inner_folds_parameter_does_not_truncate_leave_one_group_out():
+def test_lodo_inner_folds_parameter_controls_grouped_inner_cv():
     y = _labels()
     groups = _groups()
     for configured_inner_folds in (2, 3, 4, 10):
@@ -191,14 +192,26 @@ def test_lodo_inner_folds_parameter_does_not_truncate_leave_one_group_out():
             random_state=42,
         )
         split = cs._outer_splits(plan, y, groups)[0]
+        train_idx = np.asarray(split["train_idx"], dtype=int)
         inner = cs._inner_splits(
             plan,
             y,
-            np.asarray(split["train_idx"], dtype=int),
+            train_idx,
             groups,
             split,
         )
-        assert len(inner) == 5
+        remaining_groups = set(groups[train_idx])
+        assert len(inner) == min(configured_inner_folds, len(remaining_groups))
+        seen = []
+        for train_local, val_local in inner:
+            train_global = train_idx[np.asarray(train_local, dtype=int)]
+            val_global = train_idx[np.asarray(val_local, dtype=int)]
+            train_groups = set(groups[train_global])
+            val_groups = set(groups[val_global])
+            assert train_groups.isdisjoint(val_groups)
+            seen.extend(val_groups)
+        assert set(seen) == remaining_groups
+        assert len(seen) == len(remaining_groups)
 
 
 def test_lodo_mpma_b_selection_is_outer_cohort_specific_and_inner_only():
@@ -370,7 +383,7 @@ def test_lodo_feature_mask_excludes_outer_test_only_features():
     assert test.shape[1] == 6
 
 
-def test_lodo_feature_mask_excludes_inner_validation_only_features():
+def test_lodo_feature_mask_excludes_all_features_absent_from_inner_training():
     dataset = _feature_dataset()
     groups = dataset.metadata["study_id"].to_numpy()
     plan = Evaluation(protocol="lodo", inner_folds=3, random_state=42)
@@ -380,12 +393,13 @@ def test_lodo_feature_mask_excludes_inner_validation_only_features():
     inner_train_local, inner_val_local = inner[0]
     inner_train = outer_train[np.asarray(inner_train_local, dtype=int)]
     inner_val = outer_train[np.asarray(inner_val_local, dtype=int)]
-    held_inner = str(groups[inner_val[0]])
+    validation_groups = set(groups[inner_val])
     X = dataset.X_by_level["genus"]
     _, _, mask = cs._lodo_feature_pair(X, inner_train, inner_val, plan.protocol)
     expected = np.ones(7, dtype=bool)
     expected[1] = False
-    expected[1 + "ABCDEF".index(held_inner)] = False
+    for group in validation_groups:
+        expected[1 + "ABCDEF".index(str(group))] = False
     np.testing.assert_array_equal(mask, expected)
 
 
@@ -444,12 +458,38 @@ def test_evaluate_lodo_applies_fold_local_feature_vocabulary_before_transformati
         ensemble=Ensemble(sizes=(2,), optimize_metric="MCC"),
     )
     evaluate(sweep)
-    assert len(calls) == 36
-    for outer_no, outer_group in enumerate("ABCDEF"):
-        fold_calls = calls[outer_no * 6 : outer_no * 6 + 6]
-        for inner_train, inner_val in fold_calls[:5]:
-            assert inner_train.shape[1] == 5
-            assert inner_val.shape[1] == 5
-        outer_train, outer_test = fold_calls[5]
+    plan = sweep.evaluation
+    groups = dataset.metadata["study_id"].to_numpy()
+    outer_splits = cs._outer_splits(plan, dataset.y, groups)
+    expected_calls = sum(
+        len(
+            cs._inner_splits(
+                plan,
+                dataset.y,
+                np.asarray(split["train_idx"], dtype=int),
+                groups,
+                split,
+            )
+        )
+        + 1
+        for split in outer_splits
+    )
+    assert len(calls) == expected_calls == 24
+    cursor = 0
+    for split in outer_splits:
+        outer_train_idx = np.asarray(split["train_idx"], dtype=int)
+        inner_splits = cs._inner_splits(
+            plan, dataset.y, outer_train_idx, groups, split
+        )
+        for inner_train_local, inner_val_local in inner_splits:
+            inner_train_idx = outer_train_idx[np.asarray(inner_train_local, dtype=int)]
+            expected_features = 1 + len(set(groups[inner_train_idx]))
+            inner_train, inner_val = calls[cursor]
+            cursor += 1
+            assert inner_train.shape[1] == expected_features
+            assert inner_val.shape[1] == expected_features
+        outer_train, outer_test = calls[cursor]
+        cursor += 1
         assert outer_train.shape[1] == 6
         assert outer_test.shape[1] == 6
+    assert cursor == len(calls)

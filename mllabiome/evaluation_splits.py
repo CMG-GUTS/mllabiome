@@ -21,7 +21,7 @@ def _regression_outer_splits(
     plan: Evaluation, n_samples: int, groups: np.ndarray | None
 ) -> list[dict[str, Any]]:
     protocol = plan.protocol.lower()
-    if protocol in {"lodo", "leave_one_dataset_out"}:
+    if protocol in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}:
         if groups is None:
             raise ValueError("LODO requires DATA.group_col.")
         out = []
@@ -73,21 +73,22 @@ def _regression_inner_splits(
     outer_train_idx: np.ndarray,
     groups: np.ndarray | None,
     split: dict[str, Any],
+    subject_groups: np.ndarray | None = None,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
-    if (
-        plan.protocol.lower() in {"lodo", "leave_one_dataset_out"}
-        and groups is not None
-    ):
-        local_groups = groups[outer_train_idx]
-        result = []
-        for group in pd.unique(local_groups):
-            val = np.where(local_groups == group)[0]
-            train = np.where(local_groups != group)[0]
-            if len(train) and len(val):
-                result.append((train, val))
-        if result:
-            return result
+    protocol = plan.protocol.lower()
     local_groups = None if groups is None else groups[outer_train_idx]
+    if protocol in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}:
+        mode = plan.inner_grouping
+        local_subjects = None if subject_groups is None else subject_groups[outer_train_idx]
+        repeated = local_subjects is not None and len(pd.unique(local_subjects)) < len(local_subjects)
+        if protocol == "hierarchical_lodo" and mode == "auto":
+            mode = "subject"
+        elif mode == "auto":
+            mode = "subject" if repeated else "outer_group"
+        if mode == "subject":
+            local_groups = local_subjects
+        elif mode == "none":
+            local_groups = None
     if local_groups is None:
         n_splits = min(int(plan.inner_folds), len(outer_train_idx))
     else:
@@ -136,7 +137,7 @@ def _subject_safe_groups(
                 f"Repeated subjects map to multiple CV groups, which can leak a subject across train/test partitions: {bad!r}. Use a grouping column that is constant within subject."
             )
         return group_values, group_col
-    if protocol in {"lodo", "leave_one_dataset_out"}:
+    if protocol in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}:
         return None, group_col
     if repeated:
         return subject_ids, "__subject_id__"
@@ -153,6 +154,7 @@ def _resolved_evaluation_splits(
     group_col: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[tuple[np.ndarray, np.ndarray]]]]:
     task = str(dataset.task).lower()
+    subject_groups = np.asarray([str(x) for x in dataset.subject_ids], dtype=object)
     groups, group_col = _subject_safe_groups(plan, dataset, groups, group_col)
 
     def create():
@@ -160,7 +162,11 @@ def _resolved_evaluation_splits(
             outer = _regression_outer_splits(plan, len(dataset.y), groups)
             inner = {
                 str(split["split_key"]): _regression_inner_splits(
-                    plan, np.asarray(split["train_idx"], dtype=int), groups, split
+                    plan,
+                    np.asarray(split["train_idx"], dtype=int),
+                    groups,
+                    split,
+                    subject_groups=subject_groups,
                 )
                 for split in outer
             }
@@ -175,6 +181,7 @@ def _resolved_evaluation_splits(
                 split,
                 strata,
                 stratify_col,
+                subject_groups=subject_groups,
             )
             for split in outer
         }
@@ -186,6 +193,7 @@ def _resolved_evaluation_splits(
         y=dataset.y,
         groups=groups,
         strata=strata,
+        subject_ids=subject_groups,
         task=task,
         target_name=str(dataset.target_name),
         protocol=str(plan.protocol),
@@ -195,7 +203,9 @@ def _resolved_evaluation_splits(
         random_state=int(plan.random_state),
         group_col=group_col,
         stratify_col=stratify_col,
+        inner_grouping=str(plan.inner_grouping),
         create=create,
+        source_path=plan.split_manifest,
     )
     subjects = np.asarray([str(x) for x in dataset.subject_ids], dtype=object)
     for split in outer:
@@ -308,7 +318,7 @@ def _outer_splits(
 ) -> list[dict[str, Any]]:
     protocol = plan.protocol.lower()
     out: list[dict[str, Any]] = []
-    if protocol in {"lodo", "leave_one_dataset_out"}:
+    if protocol in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}:
         if groups is None:
             raise ValueError("LODO requires DATA.group_col.")
         for i, g in enumerate(pd.unique(groups)):
@@ -370,27 +380,26 @@ def _inner_splits(
     outer_split: dict[str, Any],
     strata: np.ndarray | None = None,
     stratify_col: str | Sequence[str] | None = None,
+    subject_groups: np.ndarray | None = None,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
-    if (
-        plan.protocol.lower() in {"lodo", "leave_one_dataset_out"}
-        and groups is not None
-    ):
-        g_train = groups[outer_train_idx]
-        unique = list(pd.unique(g_train))
-        if len(unique) >= 2:
-            out = []
-            for g in unique:
-                va = np.where(g_train == g)[0]
-                tr = np.where(g_train != g)[0]
-                if len(np.unique(y[outer_train_idx[tr]])) >= 2:
-                    out.append((tr, va))
-            if out:
-                return out
     y_train = y[outer_train_idx]
     split_strata = np.asarray(
         strata[outer_train_idx] if strata is not None else y_train, dtype=str
     )
     local_groups = None if groups is None else groups[outer_train_idx]
+    protocol = plan.protocol.lower()
+    if protocol in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}:
+        mode = plan.inner_grouping
+        local_subjects = None if subject_groups is None else subject_groups[outer_train_idx]
+        repeated = local_subjects is not None and len(pd.unique(local_subjects)) < len(local_subjects)
+        if protocol == "hierarchical_lodo" and mode == "auto":
+            mode = "subject"
+        elif mode == "auto":
+            mode = "subject" if repeated else "outer_group"
+        if mode == "subject":
+            local_groups = local_subjects
+        elif mode == "none":
+            local_groups = None
     if local_groups is None:
         n_splits = _safe_n_splits(split_strata, plan.inner_folds)
     else:

@@ -248,10 +248,11 @@ def _selected_levels(sweep: Sweep, model: dict[str, Any]) -> tuple[str, ...]:
 def _abundance_scale(X: np.ndarray) -> str:
     values = np.asarray(X, dtype=float)
     totals = values.sum(axis=1)
-    if np.any(totals <= 0):
-        raise ValueError(
-            "Inference contains zero-total abundance profiles at a selected model resolution."
-        )
+    informative = totals > 0
+    if not np.any(informative):
+        return "zero"
+    values = values[informative]
+    totals = totals[informative]
     positive = values[values > 0]
     integer_fraction = (
         float(np.mean(np.isclose(positive, np.rint(positive), atol=1e-8)))

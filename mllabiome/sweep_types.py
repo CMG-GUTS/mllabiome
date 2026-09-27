@@ -132,12 +132,15 @@ class QualificationGate:
 @dataclass
 class Evaluation:
     protocol: Literal[
-        "repeated_nested_cv", "nested_cv", "lodo", "leave_one_dataset_out"
+        "repeated_nested_cv", "nested_cv", "lodo", "leave_one_dataset_out", "hierarchical_lodo"
     ] = "repeated_nested_cv"
     outer_folds: int = 5
     inner_folds: int = 3
     repeats: int = 2
     random_state: int = 42
+    split_manifest: str | Path | None = None
+    benchmark_id: str | None = None
+    inner_grouping: Literal["auto", "outer_group", "subject", "none"] = "auto"
     optimize_metric: Any = "log_loss"
     n_jobs: int | str = 1
     parallel_backend: str = "loky"
@@ -157,9 +160,19 @@ class Evaluation:
             "nested_cv",
             "lodo",
             "leave_one_dataset_out",
+            "hierarchical_lodo",
         }:
             raise ValueError(f"Unsupported evaluation protocol {self.protocol!r}.")
         self.protocol = protocol
+        if self.split_manifest is not None:
+            self.split_manifest = str(Path(self.split_manifest).expanduser())
+        if self.benchmark_id is not None:
+            benchmark_id = str(self.benchmark_id).strip()
+            self.benchmark_id = benchmark_id or None
+        inner_grouping = str(self.inner_grouping).strip().casefold().replace("-", "_")
+        if inner_grouping not in {"auto", "outer_group", "subject", "none"}:
+            raise ValueError(f"Unsupported Evaluation.inner_grouping {self.inner_grouping!r}.")
+        self.inner_grouping = inner_grouping
         self.optimize_metric = canonical_metric_name(str(self.optimize_metric))
         if int(self.inner_folds) < 2:
             raise ValueError("Evaluation.inner_folds must be at least 2.")
@@ -170,6 +183,21 @@ class Evaluation:
             raise ValueError("Evaluation.outer_folds must be at least 2 for nested CV.")
         if int(self.repeats) < 1:
             raise ValueError("Evaluation.repeats must be at least 1.")
+
+    @classmethod
+    def benchmark(cls, *, split_manifest: str | Path | None = None, **values: Any) -> Evaluation:
+        settings = {
+            "protocol": "repeated_nested_cv",
+            "outer_folds": 5,
+            "inner_folds": 3,
+            "repeats": 3,
+            "random_state": 42,
+            "benchmark_id": "mllabiome-benchmark-v1",
+        }
+        if split_manifest is not None:
+            settings["split_manifest"] = split_manifest
+        settings.update(values)
+        return cls(**settings)
 
 
 @dataclass
@@ -447,6 +475,7 @@ def _validate_metric(
         if canonical == "cohort_macro_log_loss" and protocol not in {
             "lodo",
             "leave_one_dataset_out",
+            "hierarchical_lodo",
         }:
             raise ValueError(
                 f"{role}='cohort_macro_log_loss' requires protocol='lodo' or 'leave_one_dataset_out'."

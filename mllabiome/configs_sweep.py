@@ -253,8 +253,14 @@ def _evaluation_cache_payload(sweep: Sweep, dataset: Dataset) -> dict[str, Any]:
         dataset.y,
         None if sweep.data is None else sweep.data.stratify_col,
     )
+    split_manifest = getattr(plan, "split_manifest", None)
+    split_manifest_digest = None
+    if split_manifest is not None:
+        from .splits import split_manifest_fingerprint
+
+        split_manifest_digest = split_manifest_fingerprint(split_manifest)
     return {
-        "schema": "evaluation-cache-fingerprint-v1",
+        "schema": "evaluation-cache-fingerprint-v3",
         "source_tree_sha256": _source_tree_sha256(),
         "package_version": __version__,
         "python_version": platform.python_version(),
@@ -279,10 +285,13 @@ def _evaluation_cache_payload(sweep: Sweep, dataset: Dataset) -> dict[str, Any]:
         "target": str(dataset.target_name),
         "evaluation": {
             "protocol": str(plan.protocol),
+            "benchmark_id": plan.benchmark_id,
             "outer_folds": int(plan.outer_folds),
             "inner_folds": int(plan.inner_folds),
             "repeats": int(plan.repeats),
             "random_state": int(plan.random_state),
+            "inner_grouping": str(plan.inner_grouping),
+            "split_manifest_fingerprint": split_manifest_digest,
             "optimize_metric": _scientific_value(plan.optimize_metric),
         },
         "group_col": None if sweep.data is None else sweep.data.group_col,
@@ -375,6 +384,7 @@ def _incremental_context_payload_from_sweep(sweep: Sweep) -> dict[str, Any]:
     return {
         "evaluation": {
             "protocol": str(plan.protocol),
+            "benchmark_id": plan.benchmark_id,
             "outer_folds": int(plan.outer_folds),
             "inner_folds": int(plan.inner_folds),
             "repeats": int(plan.repeats),

@@ -94,6 +94,7 @@ def read_table(path: Path, *, dtype=None) -> pd.DataFrame:
                 legacy,
                 sep="\t" if legacy.suffix.lower() == ".tsv" else ",",
                 dtype=dtype,
+                low_memory=False,
             )
         except pd.errors.EmptyDataError:
             return pd.DataFrame()

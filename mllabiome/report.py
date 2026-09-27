@@ -1978,6 +1978,7 @@ def _procedure_table(sweep: Sweep, root: Path) -> pd.DataFrame:
         ["Samples", sample_value],
         ["Classes", ", ".join(map(str, classes)) if classes else ""],
         ["Procedure", ev.protocol],
+        ["Benchmark", ev.benchmark_id or ""],
         [
             "Stratification",
             "target"
@@ -1987,13 +1988,13 @@ def _procedure_table(sweep: Sweep, root: Path) -> pd.DataFrame:
         [
             "Outer folds",
             ev.outer_folds
-            if ev.protocol not in {"lodo", "leave_one_dataset_out"}
-            else "held-out datasets",
+            if ev.protocol not in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}
+            else f"LODO ({ev.outer_folds} datasets)",
         ],
         [
             "Inner folds",
-            "leave-one-dataset-out across outer-training datasets"
-            if ev.protocol in {"lodo", "leave_one_dataset_out"}
+            f"{ev.inner_folds}-fold {str(ev.inner_grouping).replace('_', ' ')} inner CV"
+            if ev.protocol in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}
             else ev.inner_folds,
         ],
         ["Repeats", ev.repeats],

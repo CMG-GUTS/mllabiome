@@ -13,7 +13,7 @@ import pandas as pd
 
 from .storage import read_table, table_exists, write_table
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _REQUIRED_COLUMNS = {
     "schema_version",
     "data_signature",
@@ -31,6 +31,43 @@ _REQUIRED_COLUMNS = {
     "sample_id",
     "sample_index",
 }
+
+_ASSIGNMENT_COLUMNS = (
+    "task",
+    "protocol",
+    "stage",
+    "split_key",
+    "inner_key",
+    "repeat",
+    "outer_fold",
+    "inner_fold",
+    "outer_group",
+    "role",
+    "sample_id",
+)
+
+
+def _assignment_fingerprint_frame(frame: pd.DataFrame) -> str:
+    missing = set(_ASSIGNMENT_COLUMNS).difference(frame.columns)
+    if missing:
+        raise ValueError(
+            f"Stored cross-validation split manifest is missing assignment columns: {sorted(missing)!r}."
+        )
+    values = frame.loc[:, _ASSIGNMENT_COLUMNS].copy()
+    for column in values.columns:
+        values[column] = values[column].fillna("").astype(str)
+    values = values.sort_values(list(_ASSIGNMENT_COLUMNS), kind="stable")
+    return _digest(values.to_dict(orient="records"))
+
+
+def split_manifest_fingerprint(path: Path | str) -> str:
+    path = Path(path)
+    if not table_exists(path):
+        raise FileNotFoundError(f"Cross-validation split manifest not found: {path}")
+    frame = read_table(path)
+    if frame.empty:
+        raise ValueError("Cross-validation split manifest is empty.")
+    return _assignment_fingerprint_frame(frame)
 
 
 def _json_value(value: Any) -> Any:
@@ -75,20 +112,22 @@ def _plan_signature(
     random_state: int,
     group_col: str | None,
     stratify_col: str | Sequence[str] | None,
+    inner_grouping: str,
     schema_version: int,
 ) -> str:
-    return _digest(
-        {
-            "schema_version": int(schema_version),
-            "protocol": str(protocol).lower(),
-            "outer_folds": int(outer_folds),
-            "inner_folds": int(inner_folds),
-            "repeats": int(repeats),
-            "random_state": int(random_state),
-            "group_col": group_col,
-            "stratify_col": _json_value(stratify_col),
-        }
-    )
+    payload = {
+        "schema_version": int(schema_version),
+        "protocol": str(protocol).lower(),
+        "outer_folds": int(outer_folds),
+        "inner_folds": int(inner_folds),
+        "repeats": int(repeats),
+        "random_state": int(random_state),
+        "group_col": group_col,
+        "stratify_col": _json_value(stratify_col),
+    }
+    if int(schema_version) >= 3:
+        payload["inner_grouping"] = str(inner_grouping)
+    return _digest(payload)
 
 
 def split_signatures(
@@ -96,6 +135,7 @@ def split_signatures(
     y: np.ndarray | Sequence[Any],
     groups: np.ndarray | Sequence[Any] | None,
     strata: np.ndarray | Sequence[Any] | None,
+    subject_ids: np.ndarray | Sequence[Any] | None,
     task: str,
     target_name: str,
     protocol: str,
@@ -105,6 +145,8 @@ def split_signatures(
     random_state: int,
     group_col: str | None,
     stratify_col: str | Sequence[str] | None,
+    inner_grouping: str,
+    schema_version: int = _SCHEMA_VERSION,
 ) -> tuple[str, str]:
     ids = [str(value) for value in sample_ids]
     if len(ids) != len(set(ids)):
@@ -116,15 +158,28 @@ def split_signatures(
         raise ValueError("Target length does not match the number of sample IDs.")
     group_values = _normalise_optional(groups, len(ids))
     stratum_values = _normalise_optional(strata, len(ids))
-    records = sorted(
-        (
-            ids[index],
-            _json_value(target[index]),
-            group_values[index],
-            stratum_values[index],
+    subject_values = _normalise_optional(subject_ids, len(ids))
+    if int(schema_version) >= 3:
+        records = sorted(
+            (
+                ids[index],
+                _json_value(target[index]),
+                group_values[index],
+                stratum_values[index],
+                subject_values[index],
+            )
+            for index in range(len(ids))
         )
-        for index in range(len(ids))
-    )
+    else:
+        records = sorted(
+            (
+                ids[index],
+                _json_value(target[index]),
+                group_values[index],
+                stratum_values[index],
+            )
+            for index in range(len(ids))
+        )
     data_signature = _digest(
         {
             "task": str(task),
@@ -140,7 +195,8 @@ def split_signatures(
         random_state,
         group_col,
         stratify_col,
-        _SCHEMA_VERSION,
+        inner_grouping,
+        int(schema_version),
     )
     return data_signature, plan_signature
 
@@ -233,7 +289,7 @@ def _read_manifest(
     sample_ids: Sequence[str],
     data_signature: str,
     plan_signature: str,
-    legacy_plan_signature: str | None = None,
+    legacy_signatures: dict[int, tuple[str, str]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[tuple[np.ndarray, np.ndarray]]]]:
     frame = read_table(path)
     missing = _REQUIRED_COLUMNS.difference(frame.columns)
@@ -246,17 +302,23 @@ def _read_manifest(
     schema_values = set(
         pd.to_numeric(frame["schema_version"], errors="coerce").dropna()
     )
-    if schema_values == {_SCHEMA_VERSION}:
+    if len(schema_values) != 1:
+        raise ValueError(
+            "Stored cross-validation split manifest has an unsupported schema."
+        )
+    schema_version = int(next(iter(schema_values)))
+    if schema_version == _SCHEMA_VERSION:
+        expected_data_signature = data_signature
         expected_plan_signature = plan_signature
-    elif schema_values == {1} and legacy_plan_signature is not None:
-        expected_plan_signature = legacy_plan_signature
+    elif legacy_signatures is not None and schema_version in legacy_signatures:
+        expected_data_signature, expected_plan_signature = legacy_signatures[schema_version]
     else:
         raise ValueError(
             "Stored cross-validation split manifest has an unsupported schema."
         )
     data_values = set(frame["data_signature"].astype(str))
     plan_values = set(frame["plan_signature"].astype(str))
-    if data_values != {data_signature} or plan_values != {expected_plan_signature}:
+    if data_values != {expected_data_signature} or plan_values != {expected_plan_signature}:
         raise ValueError(
             "Stored cross-validation splits do not match the current dataset or evaluation plan. Use a new experiment directory for a different split definition."
         )
@@ -313,7 +375,8 @@ def _read_manifest(
             "train_idx": train_idx,
             "test_idx": test_idx,
         }
-        outer_group = str(meta.get("outer_group", ""))
+        raw_outer_group = meta.get("outer_group", "")
+        outer_group = "" if pd.isna(raw_outer_group) else str(raw_outer_group)
         if outer_group:
             split["outer_group"] = outer_group
         outer_splits.append(split)
@@ -492,6 +555,7 @@ def resolve_cv_splits(
     y: np.ndarray | Sequence[Any],
     groups: np.ndarray | Sequence[Any] | None,
     strata: np.ndarray | Sequence[Any] | None,
+    subject_ids: np.ndarray | Sequence[Any] | None,
     task: str,
     target_name: str,
     protocol: str,
@@ -501,6 +565,7 @@ def resolve_cv_splits(
     random_state: int,
     group_col: str | None,
     stratify_col: str | Sequence[str] | None,
+    inner_grouping: str,
     create: Callable[
         [],
         tuple[
@@ -508,14 +573,16 @@ def resolve_cv_splits(
             dict[str, list[tuple[np.ndarray, np.ndarray]]],
         ],
     ],
+    source_path: Path | str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, list[tuple[np.ndarray, np.ndarray]]], Path]:
     root = Path(root)
     path = root / "tables" / "cv_splits.parquet"
-    data_signature, plan_signature = split_signatures(
+    signature_args = (
         sample_ids,
         y,
         groups,
         strata,
+        subject_ids,
         task,
         target_name,
         protocol,
@@ -525,7 +592,38 @@ def resolve_cv_splits(
         random_state,
         group_col,
         stratify_col,
+        inner_grouping,
     )
+    data_signature, plan_signature = split_signatures(*signature_args)
+    legacy_signatures = {
+        version: split_signatures(*signature_args, schema_version=version)
+        for version in (1, 2)
+    }
+    if source_path is not None:
+        source = Path(source_path)
+        if not table_exists(source):
+            raise FileNotFoundError(f"Cross-validation split manifest not found: {source}")
+        _read_manifest(
+            source, sample_ids, data_signature, plan_signature, legacy_signatures
+        )
+        source_frame = read_table(source)
+        source_fingerprint = _assignment_fingerprint_frame(source_frame)
+        if table_exists(path):
+            _read_manifest(
+                path, sample_ids, data_signature, plan_signature, legacy_signatures
+            )
+            current_frame = read_table(path)
+            current_fingerprint = _assignment_fingerprint_frame(current_frame)
+            if current_fingerprint != source_fingerprint:
+                raise ValueError(
+                    "Existing experiment cross-validation splits do not match the configured external split manifest. Use a new experiment directory or rerun with the intended split source."
+                )
+        else:
+            write_table(path, source_frame)
+        outer_splits, inner_splits = _read_manifest(
+            path, sample_ids, data_signature, plan_signature, legacy_signatures
+        )
+        return outer_splits, inner_splits, path
     if table_exists(path):
         frame = read_table(path)
         schema_values = (
@@ -533,27 +631,9 @@ def resolve_cv_splits(
             if "schema_version" in frame.columns
             else set()
         )
-        legacy_allowed = group_col is None or str(protocol).lower() in {
-            "lodo",
-            "leave_one_dataset_out",
-        }
-        if schema_values == {1} and legacy_allowed:
-            legacy_plan_signature = _plan_signature(
-                protocol,
-                outer_folds,
-                inner_folds,
-                repeats,
-                random_state,
-                group_col,
-                stratify_col,
-                1,
-            )
+        if schema_values in ({1}, {2}):
             outer_splits, inner_splits = _read_manifest(
-                path,
-                sample_ids,
-                data_signature,
-                plan_signature,
-                legacy_plan_signature,
+                path, sample_ids, data_signature, plan_signature, legacy_signatures
             )
             upgraded = _manifest_frame(
                 sample_ids,
@@ -566,11 +646,11 @@ def resolve_cv_splits(
             )
             write_table(path, upgraded)
             outer_splits, inner_splits = _read_manifest(
-                path, sample_ids, data_signature, plan_signature
+                path, sample_ids, data_signature, plan_signature, legacy_signatures
             )
             return outer_splits, inner_splits, path
         outer_splits, inner_splits = _read_manifest(
-            path, sample_ids, data_signature, plan_signature
+            path, sample_ids, data_signature, plan_signature, legacy_signatures
         )
         return outer_splits, inner_splits, path
     outer_splits, inner_splits = create()
@@ -586,6 +666,7 @@ def resolve_cv_splits(
     )
     write_table(path, frame)
     outer_splits, inner_splits = _read_manifest(
-        path, sample_ids, data_signature, plan_signature
+        path, sample_ids, data_signature, plan_signature, legacy_signatures
     )
     return outer_splits, inner_splits, path
+

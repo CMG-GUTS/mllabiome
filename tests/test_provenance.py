@@ -63,13 +63,31 @@ def test_pyproject_uses_dynamic_single_source_version():
 def test_software_provenance_has_source_runtime_and_dependency_identity():
     provenance = cs._software_provenance()
     assert provenance["mllabiome_source_version"] == mllabiome.__version__
-    assert provenance["version_consistent"] is True
+    assert provenance["version_consistent"] is (
+        provenance["mllabiome_distribution_version"]
+        in {None, mllabiome.__version__}
+    )
     assert len(provenance["source_tree_sha256"]) == 64
     int(provenance["source_tree_sha256"], 16)
     assert provenance["source_tree_fingerprint_algorithm"] == "sha256-package-source-v1"
     assert provenance["python_version"]
     assert provenance["python_implementation"]
     assert isinstance(provenance["dependencies"], dict)
+
+
+def test_software_provenance_detects_distribution_version_mismatch(monkeypatch):
+    original = cs._installed_distribution_version
+
+    def fake_version(name):
+        if name == "mllabiome":
+            return "0.0.0-mismatch"
+        return original(name)
+
+    monkeypatch.setattr(cs, "_installed_distribution_version", fake_version)
+    provenance = cs._software_provenance()
+    assert provenance["mllabiome_source_version"] == mllabiome.__version__
+    assert provenance["mllabiome_distribution_version"] == "0.0.0-mismatch"
+    assert provenance["version_consistent"] is False
 
 
 def test_manifest_records_version_and_software_provenance(tmp_path):
@@ -80,5 +98,9 @@ def test_manifest_records_version_and_software_provenance(tmp_path):
         manifest["software_provenance"]["mllabiome_source_version"]
         == mllabiome.__version__
     )
-    assert manifest["software_provenance"]["version_consistent"] is True
+    provenance = manifest["software_provenance"]
+    assert provenance["version_consistent"] is (
+        provenance["mllabiome_distribution_version"]
+        in {None, mllabiome.__version__}
+    )
     assert manifest["dataset_fingerprint_algorithm"] == "sha256-model-input-v2"
