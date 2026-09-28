@@ -36,24 +36,25 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
-    ("class", ("class",)),
-    ("genus", ("genus",)),
-    ("class-order", ("class", "order")),
+    ("raw", ("raw",)),
+    # ("class", ("class",)),
+    # ("genus", ("genus",)),
+    # ("class-order", ("class", "order")),
 )
 
 COUNT_TRANSFORMATIONS = (
-    mll.Transformation("presence_absence"),
+    # mll.Transformation("presence_absence"),
     mll.Transformation("identity"),
-    mll.Transformation("arcsine_sqrt", composition_scope="joint"),
-    mll.Transformation("yeo_johnson", composition_scope="joint"),
-    mll.Transformation(
-        "relative_abundance",
-        composition_scope="joint",
-        feature_filter=mll.PrevalenceFilter(
-            threshold=0.20,
-        ),
-    ),
-    mll.Transformation("log10", composition_scope="rank-wise"),
+    # mll.Transformation("arcsine_sqrt", composition_scope="joint"),
+    # mll.Transformation("yeo_johnson", composition_scope="joint"),
+    # mll.Transformation(
+    #     "relative_abundance",
+    #     composition_scope="joint",
+    #     feature_filter=mll.PrevalenceFilter(
+    #         threshold=0.20,
+    #     ),
+    # ),
+    # mll.Transformation("log10", composition_scope="rank-wise"),
 )
 
 MODELS = (
@@ -81,6 +82,13 @@ MODELS = (
             thread_count=1,
             verbose=False,
             allow_writing_files=False,
+        ),
+    ),
+    (
+        "SIAMCAT",
+        mll.SIAMCATClassifier(
+            random_state=42,
+            runtime="auto",
         ),
     ),
 )

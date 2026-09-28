@@ -2,23 +2,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from catboost import CatBoostClassifier
-from sklearn.ensemble import RandomForestClassifier
+from catboost import CatBoostRegressor
+from sklearn.ensemble import RandomForestRegressor
 
-from curated_microbiota.collections import metaibs_ibs
+from curated_microbiota.collections import healthy_colombia
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
-TITLE = "MetaIBS fecal IBS LODO mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "METAIBS-IBS-LODO-CM"
+TITLE = "Healthy Colombia Zung depression severity regression mllabiome benchmark sweep"
+EXPERIMENT_DIR = HERE / "runs" / "HEALTHY-COLOMBIA-ZUNG-REGRESSION-NCV-CM"
 
-DATA = metaibs_ibs.mllabiome(target="ibs")
+DATA = healthy_colombia.mllabiome(target="zung_depression")
 
-EVALUATION = metaibs_ibs.splits(
-    target="ibs",
+EVALUATION = healthy_colombia.splits(
+    target="zung_depression",
     benchmark="mllabiome-benchmark-v1",
 ).mllabiome(
-    optimize_metric="log_loss",
+    optimize_metric="RMSE",
     n_jobs="auto",
 )
 
@@ -38,9 +38,6 @@ EXPLORE = mll.Explore(
 RESOLUTIONS = (
     ("class", ("class",)),
     ("genus", ("genus",)),
-    ("family", ("family",)),
-    ("order-family", ("order", "family")),
-    ("order-genus", ("order", "family", "genus")),
     ("class-order", ("class", "order")),
 )
 
@@ -52,34 +49,29 @@ COUNT_TRANSFORMATIONS = (
     mll.Transformation(
         "relative_abundance",
         composition_scope="joint",
-        feature_filter=mll.PrevalenceFilter(
-            threshold=0.20,
-        ),
+        feature_filter=mll.PrevalenceFilter(threshold=0.20),
     ),
     mll.Transformation("log10", composition_scope="rank-wise"),
 )
 
 MODELS = (
     (
-        "RF_1000_msl5",
-        RandomForestClassifier(
-            n_estimators=1000,
-            min_samples_leaf=5,
-            n_jobs=1,
-            random_state=42,
+        "RFReg_1000_msl5",
+        RandomForestRegressor(
+            n_estimators=1000, min_samples_leaf=5, n_jobs=1, random_state=42
         ),
     ),
     (
-        "CB_abundance_i300_d3",
-        CatBoostClassifier(
+        "CBReg_abundance_i300_d3",
+        CatBoostRegressor(
             iterations=300,
             learning_rate=0.04,
             depth=3,
             l2_leaf_reg=10,
             random_strength=1.0,
             rsm=0.60,
-            loss_function="Logloss",
-            eval_metric="Logloss",
+            loss_function="RMSE",
+            eval_metric="RMSE",
             random_seed=42,
             thread_count=1,
             verbose=False,
@@ -88,11 +80,7 @@ MODELS = (
     ),
 )
 
-GATE = mll.QualificationGate(
-    enabled=False,
-    metric="MCC",
-    threshold=0.02,
-)
+GATE = mll.QualificationGate(enabled=False, metric="RMSE")
 
 ENSEMBLE = mll.Ensemble(
     max_sizes=(3,),
@@ -104,30 +92,26 @@ ENSEMBLE = mll.Ensemble(
         "super_learner",
     ),
     aggregation_strategies=(
-        "mean_proba",
-        "weighted_mean_proba",
-        "median_proba",
+        "mean_prediction",
+        "weighted_mean_prediction",
+        "median_prediction",
     ),
-    optimize_metric="log_loss",
+    optimize_metric="RMSE",
 )
 
 EXPLAINABILITY = mll.Explainability(
     targets=("mpma_b",),
     profile="screening",
     methods=(
-        mll.Permutation(),
+        mll.Permutation(scoring="RMSE"),
         mll.SHAP(),
         mll.ALE(),
         mll.LIME(),
         mll.ALEInteractions(),
     ),
-    classes="auto",
 )
 
-ROBUSTNESS = mll.Robustness(
-    targets=("mpma_b",),
-    top_k=30,
-)
+ROBUSTNESS = mll.Robustness(targets=("mpma_b",), top_k=30)
 
 SWEEP = mll.Sweep(
     data=DATA,

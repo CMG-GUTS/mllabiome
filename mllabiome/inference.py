@@ -101,7 +101,7 @@ def _read_optional_metadata(
 ) -> pd.DataFrame | None:
     if path is None:
         return None
-    frame = pd.read_csv(path, sep=None, engine="python", dtype=str)
+    frame = pd.read_csv(path, sep="\t", dtype=str)
     if sample_id_col not in frame.columns:
         raise ValueError(
             f"Inference metadata is missing sample ID column {sample_id_col!r}."

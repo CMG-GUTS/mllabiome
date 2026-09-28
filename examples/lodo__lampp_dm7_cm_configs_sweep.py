@@ -5,17 +5,16 @@ from pathlib import Path
 from catboost import CatBoostClassifier
 from sklearn.ensemble import RandomForestClassifier
 
-from curated_microbiota.collections import metaibs_ibs
+from curated_microbiota.collections import lampp_dm7
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
-TITLE = "MetaIBS fecal IBS LODO mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "METAIBS-IBS-LODO-CM"
+TITLE = "LAMPP delivery mode <=7 days LODO mllabiome benchmark sweep"
+EXPERIMENT_DIR = HERE / "runs" / "LAMPP-DM7-LODO-CM"
 
-DATA = metaibs_ibs.mllabiome(target="ibs")
+DATA = lampp_dm7.mllabiome()
 
-EVALUATION = metaibs_ibs.splits(
-    target="ibs",
+EVALUATION = lampp_dm7.splits(
     benchmark="mllabiome-benchmark-v1",
 ).mllabiome(
     optimize_metric="log_loss",
@@ -38,9 +37,6 @@ EXPLORE = mll.Explore(
 RESOLUTIONS = (
     ("class", ("class",)),
     ("genus", ("genus",)),
-    ("family", ("family",)),
-    ("order-family", ("order", "family")),
-    ("order-genus", ("order", "family", "genus")),
     ("class-order", ("class", "order")),
 )
 
@@ -129,6 +125,17 @@ ROBUSTNESS = mll.Robustness(
     top_k=30,
 )
 
+EXTERNAL_TEST = lampp_dm7.external_test
+
+if EXTERNAL_TEST is None:
+    raise RuntimeError("LAMPP external test set is unavailable")
+
+INFERENCE = EXTERNAL_TEST.mllabiome(
+    targets=("mpma_b", "mpma_e"),
+    feature_policy="strict",
+)
+
+
 SWEEP = mll.Sweep(
     data=DATA,
     experiment_dir=EXPERIMENT_DIR,
@@ -142,4 +149,5 @@ SWEEP = mll.Sweep(
     ensemble=ENSEMBLE,
     explainability=EXPLAINABILITY,
     robustness=ROBUSTNESS,
+    inference=INFERENCE,
 )

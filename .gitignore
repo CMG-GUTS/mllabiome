@@ -35,6 +35,7 @@ venv/
 !.env.example
 .ipynb_checkpoints/
 .DS_Store
+examples/_lampp_ibd_metadata_filtered.tsv
 
 docs/node_modules/
 docs/.next/

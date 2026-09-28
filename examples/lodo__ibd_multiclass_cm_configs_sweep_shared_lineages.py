@@ -5,17 +5,17 @@ from pathlib import Path
 from catboost import CatBoostClassifier
 from sklearn.ensemble import RandomForestClassifier
 
-from curated_microbiota.collections import metaibs_ibs
+from curated_microbiota.collections import ibd_multiclass
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
-TITLE = "MetaIBS fecal IBS LODO mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "METAIBS-IBS-LODO-CM"
+TITLE = "Cross-cohort multiclass IBD phenotype LODO mllabiome benchmark sweep"
+EXPERIMENT_DIR = HERE / "runs" / "IBD-MULTICLASS-LODO-CM"
 
-DATA = metaibs_ibs.mllabiome(target="ibs")
+DATA = ibd_multiclass.mllabiome(target="ibd_phenotype")
 
-EVALUATION = metaibs_ibs.splits(
-    target="ibs",
+EVALUATION = ibd_multiclass.splits(
+    target="ibd_phenotype",
     benchmark="mllabiome-benchmark-v1",
 ).mllabiome(
     optimize_metric="log_loss",
@@ -36,22 +36,22 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
+    ("phylum", ("phylum",)),
     ("class", ("class",)),
-    ("genus", ("genus",)),
+    ("order", ("order",)),
     ("family", ("family",)),
-    ("order-family", ("order", "family")),
-    ("order-genus", ("order", "family", "genus")),
-    ("class-order", ("class", "order")),
+    ("genus", ("genus",)),
+    ("phylum-genus", ("phylum", "class", "order", "family", "genus")),
 )
 
 COUNT_TRANSFORMATIONS = (
     mll.Transformation("presence_absence"),
     mll.Transformation("identity"),
-    mll.Transformation("arcsine_sqrt", composition_scope="joint"),
-    mll.Transformation("yeo_johnson", composition_scope="joint"),
+    mll.Transformation("arcsine_sqrt", composition_scope="rank-wise"),
+    mll.Transformation("yeo_johnson", composition_scope="rank-wise"),
     mll.Transformation(
         "relative_abundance",
-        composition_scope="joint",
+        composition_scope="rank-wise",
         feature_filter=mll.PrevalenceFilter(
             threshold=0.20,
         ),
@@ -70,7 +70,7 @@ MODELS = (
         ),
     ),
     (
-        "CB_abundance_i300_d3",
+        "CB_multiclass_i300_d3",
         CatBoostClassifier(
             iterations=300,
             learning_rate=0.04,
@@ -78,8 +78,8 @@ MODELS = (
             l2_leaf_reg=10,
             random_strength=1.0,
             rsm=0.60,
-            loss_function="Logloss",
-            eval_metric="Logloss",
+            loss_function="MultiClass",
+            eval_metric="MultiClass",
             random_seed=42,
             thread_count=1,
             verbose=False,

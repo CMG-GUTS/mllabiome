@@ -37,6 +37,7 @@ EXPLORE = mll.Explore(
 
 RESOLUTIONS = (
     ("class", ("class",)),
+    ("family", ("family",)),
     ("genus", ("genus",)),
     ("class-order", ("class", "order")),
 )
