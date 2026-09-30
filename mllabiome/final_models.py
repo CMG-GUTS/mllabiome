@@ -91,9 +91,26 @@ def _core_config(row: pd.Series) -> dict[str, Any]:
         "transformation_abbreviation",
         "learner",
         "feature_filter",
+        "transformation_fingerprint",
+        "resolution_fingerprint",
+        "learner_fingerprint",
+        "learner_class",
+        "taxonomic_blocks",
+        "representation_scope",
     ):
         if key in row.index and pd.notna(row[key]) and str(row[key]).strip():
             result[key] = str(row[key])
+    if "learner_params" in row.index and pd.notna(row["learner_params"]):
+        raw = row["learner_params"]
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = None
+        else:
+            parsed = raw
+        if isinstance(parsed, dict):
+            result["learner_params"] = parsed
     for key in ("prevalence_threshold", "detection_threshold"):
         if key not in row.index or pd.isna(row[key]):
             continue
@@ -103,7 +120,74 @@ def _core_config(row: pd.Series) -> dict[str, Any]:
             continue
         if np.isfinite(value):
             result[key] = value
+    if "taxonomic_block_count" in row.index and pd.notna(row["taxonomic_block_count"]):
+        try:
+            result["taxonomic_block_count"] = int(row["taxonomic_block_count"])
+        except (TypeError, ValueError):
+            pass
     return result
+
+
+def hydrate_final_models(root: Path | str, models: dict[str, Any]) -> dict[str, Any]:
+    root = Path(root)
+    configs = _read_table(root / "configs.parquet").copy()
+    if "config_id" not in configs.columns:
+        raise ValueError("configs.parquet has no config_id")
+    configs["config_id"] = configs["config_id"].astype(str)
+    rows = {str(row["config_id"]): row for _, row in configs.iterrows()}
+
+    def hydrate(model: dict[str, Any]) -> dict[str, Any]:
+        config_id = str(model.get("config_id", "")).strip()
+        if not config_id:
+            raise ValueError("Persisted final model has no config_id")
+        row = rows.get(config_id)
+        if row is None:
+            available = configs["config_id"].astype(str).tolist()
+            resolved = _resolve_config_id(config_id, available)
+            row = rows[resolved]
+        core = _core_config(row)
+        extra = {
+            key: value
+            for key, value in model.items()
+            if key
+            not in {
+                "config_id",
+                "resolution",
+                "levels",
+                "count_transformation",
+                "transformation_abbreviation",
+                "learner",
+                "feature_filter",
+                "transformation_fingerprint",
+                "resolution_fingerprint",
+                "learner_fingerprint",
+                "learner_class",
+                "learner_params",
+                "taxonomic_blocks",
+                "taxonomic_block_count",
+                "representation_scope",
+                "prevalence_threshold",
+                "detection_threshold",
+            }
+        }
+        core.update(extra)
+        return core
+
+    out = dict(models)
+    mpma_b = out.get("MPMA-B")
+    if isinstance(mpma_b, dict):
+        out["MPMA-B"] = hydrate(mpma_b)
+    mpma_e = out.get("MPMA-E")
+    if isinstance(mpma_e, dict):
+        unit = dict(mpma_e)
+        members = unit.get("members")
+        if isinstance(members, list):
+            unit["members"] = [
+                hydrate(member) if isinstance(member, dict) else member
+                for member in members
+            ]
+        out["MPMA-E"] = unit
+    return out
 
 
 def _member_scores(root: Path, member_ids: list[str], metric: str) -> dict[str, float]:

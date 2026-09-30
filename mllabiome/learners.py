@@ -31,9 +31,9 @@ from sklearn.linear_model import (
     SGDClassifier,
 )
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
-from sklearn.pipeline import Pipeline
 from sklearn.naive_bayes import BernoulliNB, GaussianNB, MultinomialNB
 from sklearn.neighbors import KNeighborsClassifier, NearestCentroid
+from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC, LinearSVC
 from sklearn.tree import DecisionTreeClassifier
 

@@ -8,7 +8,7 @@ from .console import info
 from .ensemble_sweep import sweep_ensemble
 from .explore import run_explore as execute_explore
 from .final_explainability import explain
-from .final_models import build_final_models
+from .final_models import build_final_models, load_final_models
 from .inference import run_inference as execute_inference
 from .report import write_report
 from .robustness import run_robustness as execute_robustness
@@ -45,8 +45,9 @@ def run_explore(sweep: Sweep) -> dict[str, Any]:
     legacy_report = Path(sweep.root()) / "explore" / "index.html"
     if legacy_report.exists():
         legacy_report.unlink()
+    redo = bool(getattr(sweep.evaluation, "redo", False))
     if getattr(sweep, "uses_modalities", False):
-        outputs = execute_explore(sweep)
+        outputs = execute_explore(sweep, redo=redo)
         print_stage_results(sweep, "explore")
         return outputs
     children = target_sweeps(sweep)
@@ -55,7 +56,7 @@ def run_explore(sweep: Sweep) -> dict[str, Any]:
     for index, child in enumerate(children, start=1):
         if _is_multi_target(sweep, children):
             info(f"Explore · target {index}/{len(children)} · {child.data.target_col}")
-        child_outputs = execute_explore(child)
+        child_outputs = execute_explore(child, redo=redo)
         target = str(child.data.target_col)
         outputs[target] = child_outputs
         records.append(_target_record(child, child_outputs))
@@ -127,11 +128,14 @@ def run_inference(sweep: Sweep) -> dict[str, Any]:
             info(
                 f"Inference · target {index}/{len(children)} · {child.data.target_col}"
             )
-        if "mpma_e" in child.inference.targets:
-            sweep_ensemble(child)
-        models = build_final_models(
-            child.root(), include_mpma_e="mpma_e" in child.inference.targets
-        )
+        include_mpma_e = "mpma_e" in child.inference.targets
+        final_models_path = Path(child.root()) / "final_models.json"
+        if final_models_path.exists():
+            models = load_final_models(child.root())
+            if include_mpma_e and "MPMA-E" not in models:
+                models = build_final_models(child.root(), include_mpma_e=True)
+        else:
+            models = build_final_models(child.root(), include_mpma_e=include_mpma_e)
         child_outputs = execute_inference(child, models=models)
         target = str(child.data.target_col)
         outputs[target] = child_outputs

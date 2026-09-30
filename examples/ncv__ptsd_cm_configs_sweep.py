@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from catboost import CatBoostClassifier
+from curated_microbiota.collections import prime_ptsd
 from lightgbm import LGBMClassifier
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
@@ -13,7 +14,6 @@ from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
 from mllabiome import mll
-from curated_microbiota.collections import prime_ptsd
 
 HERE = Path(__file__).resolve().parent
 TITLE = "PRIME PTSD intervention mllabiome benchmark sweep"

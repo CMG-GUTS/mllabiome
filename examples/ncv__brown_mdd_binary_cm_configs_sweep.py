@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from catboost import CatBoostClassifier
+from curated_microbiota.collections import brown_mdd
 from sklearn.ensemble import RandomForestClassifier
 
-from curated_microbiota.collections import brown_mdd
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent

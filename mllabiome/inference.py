@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import platform
 import re
@@ -15,24 +16,32 @@ import pandas as pd
 from ._version import __version__
 from .compute import ResourceTracker, machine_profile
 from .configs_sweep import Sweep, _scientific_digest
-from .data import (
-    Dataset,
-    _taxonomic_rank,
-    dataset_fingerprint,
-    load_dataset,
-    metadata_path as training_metadata_path,
-)
+from .data import Dataset, _taxonomic_rank, dataset_fingerprint, load_dataset
+from .data import metadata_path as training_metadata_path
 from .ensemble_aggregation import PROBABILITY_PRESERVING_AGGREGATIONS
 from .evaluation_splits import _groups_from_metadata
-from .final_models import aggregate_member_predictions, build_final_models
+from .final_models import (
+    aggregate_member_predictions,
+    build_final_models,
+    hydrate_final_models,
+)
 from .learners import _learner_factory, _learner_name, fit_classifier
 from .metrics import _estimator_call, _predict_proba_aligned
-from .resolutions import _parse_resolution, materialize_mpdr_with_blocks
+from .resolutions import (
+    _normalise_levels,
+    _parse_resolution,
+    materialize_mpdr_with_blocks,
+)
 from .runtime import configure_estimator_threads
 from .storage import table_exists
 from .transformations import (
+    PrevalenceFilter,
+    Transform,
     _count_transformation_factory,
     _count_transformation_specs_for_blocks,
+    _parse_transformation_identity,
+    _split_transformation_filter_identity,
+    transformation_label,
 )
 from .utils import TAXONOMIC_LEVELS, dump_json_standard
 
@@ -232,6 +241,30 @@ def _profile_for_sweep(
 
 
 def _selected_levels(sweep: Sweep, model: dict[str, Any]) -> tuple[str, ...]:
+    stored = model.get("levels")
+    if isinstance(stored, (list, tuple)):
+        values = tuple(str(value).strip() for value in stored if str(value).strip())
+        if values:
+            return _normalise_levels(values)
+    elif stored is not None:
+        text = str(stored).strip()
+        if text and text.casefold() not in {"none", "nan"}:
+            parsed = None
+            if text.startswith("["):
+                try:
+                    candidate = json.loads(text)
+                except json.JSONDecodeError:
+                    candidate = None
+                if isinstance(candidate, list):
+                    parsed = tuple(
+                        str(value).strip() for value in candidate if str(value).strip()
+                    )
+            if parsed is None:
+                parsed = tuple(
+                    value.strip() for value in re.split(r"[,;]", text) if value.strip()
+                )
+            if parsed:
+                return _normalise_levels(parsed)
     resolution = str(model.get("resolution", "")).strip()
     matches = []
     for item in sweep.resolutions:
@@ -240,34 +273,102 @@ def _selected_levels(sweep: Sweep, model: dict[str, Any]) -> tuple[str, ...]:
             matches.append(tuple(levels))
     if len(matches) != 1:
         raise ValueError(
-            f"Cannot resolve selected resolution {resolution!r} in the current sweep configuration."
+            f"Cannot resolve selected resolution {resolution!r}; the persisted model has no usable levels and the current sweep configuration does not contain exactly one matching resolution."
         )
     return tuple(str(level) for level in matches[0])
 
 
 def _abundance_scale(X: np.ndarray) -> str:
+    """Infer the coarse abundance scale used by a samples x features matrix.
+
+    A relative-abundance profile remains on the proportion scale after projection
+    onto a training feature universe even when the retained features sum to less
+    than one.  Treat such subcompositions as proportions instead of generic
+    non-negative abundance.
+    """
     values = np.asarray(X, dtype=float)
+    if values.ndim != 2:
+        raise ValueError(
+            f"Abundance-scale detection expects a 2-D matrix, got shape {values.shape!r}."
+        )
+    if not np.isfinite(values).all():
+        raise ValueError("Abundance-scale detection received NaN or infinite values.")
+    if np.any(values < 0):
+        raise ValueError("Abundance-scale detection received negative values.")
+
     totals = values.sum(axis=1)
     informative = totals > 0
     if not np.any(informative):
         return "zero"
-    values = values[informative]
-    totals = totals[informative]
-    positive = values[values > 0]
+
+    informative_values = values[informative]
+    informative_totals = totals[informative]
+    positive = informative_values[informative_values > 0]
     integer_fraction = (
         float(np.mean(np.isclose(positive, np.rint(positive), atol=1e-8)))
         if positive.size
         else 0.0
     )
-    proportion_fraction = float(np.mean(np.isclose(totals, 1.0, rtol=0.03, atol=0.03)))
-    percentage_fraction = float(np.mean(np.isclose(totals, 100.0, rtol=0.03, atol=2.0)))
+
+    proportion_fraction = float(
+        np.mean(np.isclose(informative_totals, 1.0, rtol=0.03, atol=0.03))
+    )
+    percentage_fraction = float(
+        np.mean(np.isclose(informative_totals, 100.0, rtol=0.03, atol=2.0))
+    )
+
+    # Exact/near-exact compositions.
     if proportion_fraction >= 0.80:
         return "proportion"
     if percentage_fraction >= 0.80:
         return "percentage"
-    if integer_fraction >= 0.98 and float(np.median(totals)) > 1.0:
+
+    # External profiles are commonly projected onto the training feature schema.
+    # Taxa absent from the training universe are then dropped, so a valid
+    # relative-abundance sample can sum to < 1.  The values are still fractions
+    # on the same scale and must not be rejected as "nonnegative_abundance".
+    proportion_upper = 1.0 + 0.03
+    projected_proportion_fraction = float(
+        np.mean(
+            (informative_totals <= proportion_upper)
+            & (np.max(informative_values, axis=1) <= proportion_upper)
+        )
+    )
+    if projected_proportion_fraction >= 0.80:
+        return "proportion"
+
+    if integer_fraction >= 0.98 and float(np.median(informative_totals)) > 1.0:
         return "counts"
     return "nonnegative_abundance"
+
+
+def _transformation_base_token(model: dict[str, Any]) -> str:
+    """Return a normalized base abundance-transformation name."""
+    identity = str(model.get("count_transformation", "")).strip()
+    if not identity:
+        return ""
+    base_identity, _ = _split_transformation_filter_identity(identity)
+    base, _ = _parse_transformation_identity(base_identity)
+    return re.sub(r"[^0-9a-z]+", "_", str(base).casefold()).strip("_")
+
+
+def _scale_validation_mode(
+    model: dict[str, Any],
+    training_scale: str,
+    inference_scale: str,
+) -> str:
+    """Describe whether raw-scale validation is required for this member.
+
+    Presence/absence discards abundance magnitude entirely, so rejecting an
+    otherwise schema-compatible external dataset because its raw abundance units
+    differ is unnecessary.  Other transformations retain the existing strict
+    scale check.
+    """
+    if _transformation_base_token(model) == "presence_absence":
+        return "skipped_presence_absence"
+    if training_scale == inference_scale:
+        return "matched"
+    return "mismatch"
 
 
 def _profile_resolution(
@@ -339,26 +440,154 @@ def _align_resolution(
     return np.asarray(aligned, dtype=np.float64), audit
 
 
-def _transformation_item(sweep: Sweep, blocks: Any, identity: str) -> Any:
+def _float_or_none(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if np.isfinite(out) else None
+
+
+def _filter_from_model(
+    model: dict[str, Any], filter_identity: str | None
+) -> PrevalenceFilter | None:
+    if not filter_identity or filter_identity.casefold() == "none":
+        return None
+    prevalence = _float_or_none(model.get("prevalence_threshold"))
+    detection = _float_or_none(model.get("detection_threshold"))
+    if prevalence is None:
+        match = re.search(
+            r"prevalence=([^,]+)(?:,detection=([^,]+))?", str(filter_identity)
+        )
+        if match is not None:
+            prevalence = _float_or_none(match.group(1))
+            if detection is None and match.group(2) is not None:
+                detection = _float_or_none(match.group(2))
+    if prevalence is None:
+        raise ValueError(
+            f"Cannot reconstruct persisted feature filter {filter_identity!r}."
+        )
+    return PrevalenceFilter(
+        threshold=prevalence,
+        detection_threshold=0.0 if detection is None else detection,
+    )
+
+
+def _transformation_item(sweep: Sweep, blocks: Any, model: dict[str, Any]) -> Any:
+    identity = str(model.get("count_transformation", "")).strip()
+    if not identity:
+        raise ValueError("Persisted model has no count_transformation.")
+    base_identity, filter_identity = _split_transformation_filter_identity(identity)
+    base, scope = _parse_transformation_identity(base_identity)
+    if transformation_label(base).category != "custom":
+        feature_filter = _filter_from_model(model, filter_identity)
+        spec = Transform(
+            base,
+            composition_scope=scope,
+            feature_filter=feature_filter,
+        )
+        if str(spec.identity) != identity:
+            raise ValueError(
+                f"Persisted transformation identity {identity!r} reconstructed as {spec.identity!r}."
+            )
+        return (identity, spec)
     matches = [
         item
         for item in _count_transformation_specs_for_blocks(
             sweep.count_transformations, blocks
         )
-        if str(item[0]) == str(identity)
+        if str(item[0]) == identity
     ]
     if len(matches) != 1:
         raise ValueError(
-            f"Cannot resolve selected abundance transformation {identity!r} in the current sweep configuration."
+            f"Persisted custom abundance transformation {identity!r} cannot be reconstructed without its callable in the current sweep configuration."
         )
     return matches[0]
 
 
-def _learner_item(sweep: Sweep, name: str) -> Any:
-    matches = [item for item in sweep.learners if _learner_name(item) == str(name)]
+def _import_class(path: str) -> type[Any]:
+    parts = str(path).strip().split(".")
+    for index in range(len(parts) - 1, 0, -1):
+        module_name = ".".join(parts[:index])
+        attrs = parts[index:]
+        try:
+            value: Any = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        for attr in attrs:
+            value = getattr(value, attr)
+        if not isinstance(value, type):
+            raise TypeError(f"Persisted learner class {path!r} is not a class.")
+        return value
+    raise ImportError(f"Cannot import persisted learner class {path!r}.")
+
+
+def _restore_persisted_value(value: Any) -> Any:
+    if isinstance(value, str):
+        if value == "nan":
+            return float("nan")
+        if value == "inf":
+            return float("inf")
+        if value == "-inf":
+            return float("-inf")
+        return value
+    if isinstance(value, list):
+        return [_restore_persisted_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    if set(value).issuperset({"class", "params"}) and isinstance(
+        value.get("params"), dict
+    ):
+        cls = _import_class(str(value["class"]))
+        params = {
+            str(key): _restore_persisted_value(item)
+            for key, item in value["params"].items()
+        }
+        direct = {key: item for key, item in params.items() if "__" not in key}
+        nested = {key: item for key, item in params.items() if "__" in key}
+        obj = cls(**direct)
+        if nested and callable(getattr(obj, "set_params", None)):
+            obj.set_params(**nested)
+        return obj
+    return {str(key): _restore_persisted_value(item) for key, item in value.items()}
+
+
+def _learner_item(sweep: Sweep, model: dict[str, Any]) -> Any:
+    name = str(model.get("learner", "")).strip()
+    class_path = str(model.get("learner_class", "")).strip()
+    raw_params = model.get("learner_params")
+    if class_path and raw_params is not None:
+        if isinstance(raw_params, str):
+            try:
+                parsed = json.loads(raw_params)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Persisted learner parameters for {name!r} are not valid JSON."
+                ) from exc
+        else:
+            parsed = raw_params
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                f"Persisted learner parameters for {name!r} must be a mapping."
+            )
+        cls = _import_class(class_path)
+        params = {
+            str(key): _restore_persisted_value(value) for key, value in parsed.items()
+        }
+        direct = {key: value for key, value in params.items() if "__" not in key}
+        nested = {key: value for key, value in params.items() if "__" in key}
+        estimator = cls(**direct)
+        if nested:
+            if not callable(getattr(estimator, "set_params", None)):
+                raise TypeError(
+                    f"Persisted learner {class_path!r} has nested parameters but no set_params()."
+                )
+            estimator.set_params(**nested)
+        return (name, estimator)
+    matches = [item for item in sweep.learners if _learner_name(item) == name]
     if len(matches) != 1:
         raise ValueError(
-            f"Cannot resolve selected learner {name!r} in the current sweep configuration."
+            f"Cannot reconstruct persisted learner {name!r}; learner_class/learner_params are unavailable and the current sweep configuration has no unique fallback."
         )
     return matches[0]
 
@@ -396,12 +625,10 @@ def _fit_member(
     levels = _selected_levels(sweep, model)
     train_X, train_names, blocks = materialize_mpdr_with_blocks(dataset, levels)
     test_raw, test_names = _profile_resolution(profile_X, profile_names, levels)
-    training_scale = _abundance_scale(np.asarray(train_X, dtype=float))
-    inference_scale = _abundance_scale(np.asarray(test_raw, dtype=float))
-    if training_scale != inference_scale:
-        raise ValueError(
-            f"Inference abundance scale differs from training for config {config_id!r}: training={training_scale!r}, inference={inference_scale!r}."
-        )
+
+    # First align the external matrix to the exact raw feature schema used by the
+    # persisted member.  Scale validation must compare equivalent matrices, not
+    # a training-resolution matrix with an unaligned external-resolution matrix.
     test_X, audit = _align_resolution(
         np.asarray(train_X, dtype=np.float64),
         list(train_names),
@@ -409,10 +636,19 @@ def _fit_member(
         test_names,
         policy=sweep.inference.feature_policy,
     )
-    if bundle is None:
-        ct_item = _transformation_item(
-            sweep, blocks, str(model["count_transformation"])
+
+    training_scale = _abundance_scale(np.asarray(train_X, dtype=float))
+    inference_scale = _abundance_scale(np.asarray(test_X, dtype=float))
+    scale_validation = _scale_validation_mode(model, training_scale, inference_scale)
+    if scale_validation == "mismatch":
+        raise ValueError(
+            f"Inference abundance scale differs from training for config {config_id!r}: "
+            f"training={training_scale!r}, inference={inference_scale!r}. "
+            "The external matrix has already been resolved and aligned to the "
+            "training feature schema, so this indicates a genuine unit/scale mismatch."
         )
+    if bundle is None:
+        ct_item = _transformation_item(sweep, blocks, model)
         _, factory = _count_transformation_factory(
             ct_item,
             random_state=int(sweep.evaluation.random_state),
@@ -422,7 +658,7 @@ def _fit_member(
         train_transformed, test_transformed = transformer.apply_pair(
             np.asarray(train_X, dtype=np.float64), test_X
         )
-        learner = _learner_item(sweep, str(model["learner"]))
+        learner = _learner_item(sweep, model)
         _, learner_factory = _learner_factory(learner, task=dataset.task)
         estimator = configure_estimator_threads(learner_factory(), 1)
         if dataset.task == "classification":
@@ -491,6 +727,7 @@ def _fit_member(
             "learner": str(model.get("learner", "")),
             "training_abundance_scale": training_scale,
             "inference_abundance_scale": inference_scale,
+            "abundance_scale_validation": scale_validation,
             "deployment_signature": signature,
             "bundle_path": str(bundle_path),
         }
@@ -625,12 +862,13 @@ def run_inference(
         if models is None
         else models
     )
+    models = hydrate_final_models(root, models)
     requested = tuple(
         "MPMA-B" if value == "mpma_b" else "MPMA-E" for value in sweep.inference.targets
     )
     if "MPMA-E" in requested and "MPMA-E" not in models:
         raise ValueError(
-            "MPMA-E inference was requested but the final ensemble specification is unavailable."
+            "MPMA-E inference was requested but the final ensemble specification is unavailable. Run --stage ensemble first."
         )
     selected_models = [models["MPMA-B"]]
     if "MPMA-E" in requested:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 from typing import Any
@@ -21,9 +22,9 @@ from scipy.stats import (
 )
 
 from .ancombc2_runtime import ANCOMBC_VERSION, run_ancombc2
-from .console import phase_progress
+from .console import info, phase_progress
+from .data import Dataset, dataset_fingerprint, load_dataset
 from .explainability_visuals import _plain_taxon_label
-from .data import Dataset, load_dataset
 from .storage import write_table
 from .style import (
     ACC,
@@ -96,6 +97,31 @@ def _clean_axis(ax: Any, *, y_grid: bool = False) -> None:
 
 def _feature_label(value: Any) -> str:
     return _plain_taxon_label(str(value).replace(";", "|"), 48)
+
+
+def _subset_dataset_rows(dataset: Dataset, mask: np.ndarray) -> Dataset:
+    keep = np.asarray(mask, dtype=bool).reshape(-1)
+    if len(keep) != len(dataset.sample_ids):
+        raise ValueError("Explore row mask does not match the dataset sample count.")
+    indices = np.flatnonzero(keep)
+    return Dataset(
+        X_by_level={
+            level: np.asarray(values)[indices]
+            for level, values in dataset.X_by_level.items()
+        },
+        feature_names_by_level={
+            level: list(values)
+            for level, values in dataset.feature_names_by_level.items()
+        },
+        y=np.asarray(dataset.y)[indices],
+        sample_ids=[dataset.sample_ids[int(index)] for index in indices],
+        subject_ids=[dataset.subject_ids[int(index)] for index in indices],
+        metadata=dataset.metadata.iloc[indices].reset_index(drop=True),
+        class_labels=list(dataset.class_labels),
+        positive_class=dataset.positive_class,
+        task=dataset.task,
+        target_name=dataset.target_name,
+    )
 
 
 def _relative_abundance(X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -2884,7 +2910,7 @@ def _explore_da_label(scale: str, explore: Any) -> str:
     return "differential abundance · CLR association"
 
 
-def run_explore(sweep: Any) -> dict[str, Any]:
+def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
     if getattr(sweep, "uses_modalities", False):
         raise ValueError("Explore currently requires a Data-based microbiome sweep.")
     if sweep.data is None:
@@ -2896,6 +2922,48 @@ def run_explore(sweep: Any) -> dict[str, Any]:
         phase.phase("loading and validating microbiome data")
         dataset = load_dataset(sweep.data, levels_needed=levels)
     ranks = _available_ranks(dataset, requested)
+    root = Path(sweep.root()) / "explore"
+    root.mkdir(parents=True, exist_ok=True)
+    manifest_path = root / "manifest.json"
+    current_dataset_fingerprint = dataset_fingerprint(dataset)
+    if manifest_path.exists() and not bool(redo):
+        try:
+            cached_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            cached_manifest = {}
+        stored_dataset_fingerprint = cached_manifest.get("dataset_fingerprint")
+        if stored_dataset_fingerprint is None:
+            experiment_manifest_path = Path(sweep.root()) / "manifest.json"
+            if experiment_manifest_path.exists():
+                try:
+                    experiment_manifest = json.loads(
+                        experiment_manifest_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError):
+                    experiment_manifest = {}
+                stored_dataset_fingerprint = experiment_manifest.get(
+                    "dataset_fingerprint"
+                )
+        cached_ranks = cached_manifest.get("ranks", [])
+        cached_rank_names = {
+            str(item.get("rank"))
+            for item in cached_ranks
+            if isinstance(item, dict) and item.get("rank") is not None
+        }
+        rank_manifests_exist = all(
+            (root / str(rank) / "manifest.json").exists() for rank in ranks
+        )
+        if (
+            str(stored_dataset_fingerprint) == str(current_dataset_fingerprint)
+            and set(ranks).issubset(cached_rank_names)
+            and rank_manifests_exist
+        ):
+            info("Explore · cached outputs reused")
+            return {
+                "manifest": manifest_path,
+                "ranks": cached_ranks,
+                "cached": True,
+            }
     available = tuple(
         level
         for level in TAXONOMIC_LEVELS
@@ -2905,19 +2973,44 @@ def run_explore(sweep: Any) -> dict[str, Any]:
     base_X = np.asarray(dataset.X_by_level[base_rank], dtype=float)
     base_names = list(dataset.feature_names_by_level[base_rank])
     clusters, cluster_source = _cluster_ids(sweep, dataset)
-    root = Path(sweep.root()) / "explore"
-    root.mkdir(parents=True, exist_ok=True)
     legacy_report = root / "index.html"
     if legacy_report.exists():
         legacy_report.unlink()
-    rank_outputs = []
     manifest_ranks = []
     phases_per_rank = 13
     with phase_progress("Explore", max(1, len(ranks) * phases_per_rank)) as phase:
         for rank_index, rank in enumerate(ranks, start=1):
             rank_prefix = f"rank {rank_index}/{len(ranks)} · {rank}"
             phase.phase(f"{rank_prefix} · preparing abundance geometry")
-            X = np.asarray(dataset.X_by_level[rank], dtype=float)
+            X_all = np.asarray(dataset.X_by_level[rank], dtype=float)
+            if X_all.ndim != 2 or base_X.ndim != 2:
+                raise ValueError("Explore abundance matrix must be two-dimensional.")
+            if not np.isfinite(X_all).all() or not np.isfinite(base_X).all():
+                raise ValueError(
+                    "Explore abundance matrix contains NaN or infinite values."
+                )
+            if np.any(X_all < 0) or np.any(base_X < 0):
+                raise ValueError("Explore abundance matrix contains negative values.")
+            rank_totals_all = X_all.sum(axis=1)
+            base_totals_all = base_X.sum(axis=1)
+            valid_mask = (rank_totals_all > 0) & (base_totals_all > 0)
+            if not np.any(valid_mask):
+                raise ValueError(
+                    f"Explore found no positive-total samples for rank {rank!r}."
+                )
+            excluded_indices = np.flatnonzero(~valid_mask)
+            excluded_ids = [
+                dataset.sample_ids[int(index)] for index in excluded_indices
+            ]
+            if excluded_ids:
+                info(
+                    f"Explore · {rank} · excluding {len(excluded_ids)} zero-total "
+                    f"sample(s) from compositional analyses: {excluded_ids[:10]}"
+                )
+            rank_dataset = _subset_dataset_rows(dataset, valid_mask)
+            rank_clusters = np.asarray(clusters)[valid_mask]
+            X = X_all[valid_mask]
+            rank_base_X = base_X[valid_mask]
             names = list(dataset.feature_names_by_level[rank])
             relative, totals = _relative_abundance(X)
             scale = _infer_scale(X, totals)
@@ -2931,14 +3024,18 @@ def run_explore(sweep: Any) -> dict[str, Any]:
 
             phase.phase(f"{rank_prefix} · alpha diversity")
             alpha = _alpha_table(
-                relative, dataset, clusters, cluster_source, explore.detection_limit
+                relative,
+                rank_dataset,
+                rank_clusters,
+                cluster_source,
+                explore.detection_limit,
             )
 
             phase.phase(
                 f"{rank_prefix} · alpha-diversity inference · "
                 f"{int(explore.bootstrap_replicates):,} bootstrap replicates"
             )
-            alpha_stats = _alpha_statistics(alpha, dataset, explore)
+            alpha_stats = _alpha_statistics(alpha, rank_dataset, explore)
 
             phase.phase(f"{rank_prefix} · beta-diversity distance matrices")
             distances = _distance_matrices(relative, clr, explore.detection_limit)
@@ -2949,12 +3046,40 @@ def run_explore(sweep: Any) -> dict[str, Any]:
                 f"{int(explore.bootstrap_replicates):,} bootstrap replicates"
             )
             beta_stats = _beta_statistics(
-                distances, _group_labels(dataset), clusters, explore
+                distances, _group_labels(rank_dataset), rank_clusters, explore
             )
 
             phase.phase(f"{rank_prefix} · taxon summaries and sample QC")
             summary = _taxon_summary(relative, names, explore.detection_limit)
-            qc = _sample_qc(X, relative, totals, dataset, explore.detection_limit)
+            qc = _sample_qc(X, relative, totals, rank_dataset, explore.detection_limit)
+            qc["compositional_analysis"] = "included"
+            if len(excluded_indices):
+                excluded_qc = pd.DataFrame(
+                    {
+                        "sample_id": [
+                            dataset.sample_ids[int(index)] for index in excluded_indices
+                        ],
+                        "target": _group_labels(dataset)[excluded_indices],
+                        "total_abundance": rank_totals_all[excluded_indices],
+                        "observed_features": np.zeros(len(excluded_indices), dtype=int),
+                        "zero_fraction": np.mean(X_all[excluded_indices] == 0, axis=1),
+                        "max_relative_abundance": np.full(
+                            len(excluded_indices), np.nan, dtype=float
+                        ),
+                        "compositional_analysis": "excluded_zero_total",
+                    }
+                )
+                qc = pd.concat([qc, excluded_qc], ignore_index=True)
+                sample_order = {
+                    str(sample_id): index
+                    for index, sample_id in enumerate(dataset.sample_ids)
+                }
+                qc["_sample_order"] = qc["sample_id"].astype(str).map(sample_order)
+                qc = (
+                    qc.sort_values("_sample_order")
+                    .drop(columns="_sample_order")
+                    .reset_index(drop=True)
+                )
 
             phase.phase(f"{rank_prefix} · Aitchison PCoA")
             coordinates, explained = _pcoa(distances["aitchison"])
@@ -2962,14 +3087,14 @@ def run_explore(sweep: Any) -> dict[str, Any]:
             phase.phase(f"{rank_prefix} · {_explore_da_label(scale, explore)}")
             da = _differential_abundance(
                 scale,
-                base_X,
+                rank_base_X,
                 base_names,
                 X,
                 relative,
                 clr,
                 names,
-                dataset,
-                clusters,
+                rank_dataset,
+                rank_clusters,
                 explore,
             )
 
@@ -3005,15 +3130,23 @@ def run_explore(sweep: Any) -> dict[str, Any]:
             for stale_name in ("composition.svg", "beta_diversity_statistics.svg"):
                 (figure_dir / stale_name).unlink(missing_ok=True)
             alpha_figure = _plot_alpha(
-                alpha, dataset, figure_dir / "alpha_diversity.svg"
+                alpha, rank_dataset, figure_dir / "alpha_diversity.svg"
             )
 
             phase.phase(f"{rank_prefix} · rendering ordination and CLR figures")
             pcoa_figure = _plot_pcoa(
-                coordinates, explained, dataset, figure_dir / "aitchison_pcoa.svg"
+                coordinates,
+                explained,
+                rank_dataset,
+                figure_dir / "aitchison_pcoa.svg",
             )
             heatmap_figure = _plot_heatmap(
-                clr, relative, names, dataset, explore, figure_dir / "clr_heatmap.svg"
+                clr,
+                relative,
+                names,
+                rank_dataset,
+                explore,
+                figure_dir / "clr_heatmap.svg",
             )
 
             phase.phase(f"{rank_prefix} · rendering differential-abundance figure")
@@ -3035,6 +3168,11 @@ def run_explore(sweep: Any) -> dict[str, Any]:
                 "scale": scale,
                 "zero_replacement_relative": zero_replacement,
                 "n_features": len(names),
+                "n_samples": len(dataset.sample_ids),
+                "n_samples_analyzed": len(rank_dataset.sample_ids),
+                "excluded_zero_total_sample_ids": [
+                    str(value) for value in excluded_ids
+                ],
                 "tables": {name: str(value) for name, value in tables.items()},
                 "figures": {
                     name: str(value) if value is not None else None
@@ -3049,21 +3187,14 @@ def run_explore(sweep: Any) -> dict[str, Any]:
                 },
             }
             dump_json_standard(payload, rank_dir / "manifest.json")
-            rank_outputs.append(
-                {
-                    "rank": rank,
-                    "alpha_statistics": alpha_stats,
-                    "beta_statistics": beta_stats,
-                    "differential_abundance": da,
-                    "figures": figures,
-                }
-            )
             manifest_ranks.append(payload)
     manifest = {
         "stage": "explore",
         "target": dataset.target_name,
         "task": dataset.task,
         "n_samples": len(dataset.sample_ids),
+        "dataset_fingerprint": current_dataset_fingerprint,
+        "dataset_fingerprint_algorithm": "sha256-model-input-v2",
         "n_dependence_clusters": int(pd.Series(clusters).nunique()),
         "dependence_cluster_source": cluster_source,
         "detection_limit_relative": float(explore.detection_limit),
@@ -3071,7 +3202,7 @@ def run_explore(sweep: Any) -> dict[str, Any]:
         "permutations": int(explore.permutations),
         "bootstrap_replicates": int(explore.bootstrap_replicates),
         "confidence_level": float(explore.confidence_level),
-        "zero_handling": "multiplicative_replacement_preserving_nonzero_ratios",
+        "zero_handling": "zero_total_samples_retained_in_dataset_and_excluded_from_compositional_explore",
         "primary_beta_distance": "aitchison",
         "sensitivity_beta_distances": ["bray_curtis", "jaccard"],
         "differential_abundance": str(explore.differential_abundance),
@@ -3079,9 +3210,9 @@ def run_explore(sweep: Any) -> dict[str, Any]:
         "multiple_testing": "method-specific; recorded for each rank",
         "ranks": manifest_ranks,
     }
-    manifest_path = root / "manifest.json"
     dump_json_standard(manifest, manifest_path)
     return {
         "manifest": manifest_path,
         "ranks": manifest_ranks,
+        "cached": False,
     }

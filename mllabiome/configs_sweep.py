@@ -64,9 +64,10 @@ from .sweep_types import MPMA as MPMA
 from .sweep_types import Ensemble as Ensemble
 from .sweep_types import Evaluation
 from .sweep_types import Explainability as Explainability
+from .sweep_types import Explore, Inference
 from .sweep_types import LocalExplanationMode as LocalExplanationMode
 from .sweep_types import LocalExplanations as LocalExplanations
-from .sweep_types import Explore, Inference, QualificationGate, Robustness, Sweep
+from .sweep_types import QualificationGate, Robustness, Sweep
 from .sweep_types import SweepTask as SweepTask
 from .sweep_types import (
     _effective_local_explanations_mode as _effective_local_explanations_mode,
@@ -260,26 +261,7 @@ def _evaluation_cache_payload(sweep: Sweep, dataset: Dataset) -> dict[str, Any]:
 
         split_manifest_digest = split_manifest_fingerprint(split_manifest)
     return {
-        "schema": "evaluation-cache-fingerprint-v3",
-        "source_tree_sha256": _source_tree_sha256(),
-        "package_version": __version__,
-        "python_version": platform.python_version(),
-        "model_runtime_dependencies": {
-            name: _installed_distribution_version(name)
-            for name in (
-                "numpy",
-                "pandas",
-                "scipy",
-                "scikit-learn",
-                "scikit-bio",
-                "xgboost",
-                "lightgbm",
-                "catboost",
-                "flaml",
-                "joblib",
-                "threadpoolctl",
-            )
-        },
+        "schema": "evaluation-cache-fingerprint-v4",
         "dataset_fingerprint": dataset_fingerprint(dataset),
         "task": str(dataset.task),
         "target": str(dataset.target_name),
@@ -389,6 +371,7 @@ def _incremental_context_payload_from_sweep(sweep: Sweep) -> dict[str, Any]:
             "inner_folds": int(plan.inner_folds),
             "repeats": int(plan.repeats),
             "random_state": int(plan.random_state),
+            "inner_grouping": str(plan.inner_grouping),
             "optimize_metric": _scientific_value(plan.optimize_metric),
         },
         "group_col": None if data is None else data.group_col,
@@ -420,8 +403,21 @@ def _incremental_context_payload_from_manifest(
     )
     if any(key not in evaluation for key in required):
         return None
+    keys = (
+        "protocol",
+        "benchmark_id",
+        "outer_folds",
+        "inner_folds",
+        "repeats",
+        "random_state",
+        "inner_grouping",
+        "optimize_metric",
+    )
+    evaluation_context = {key: evaluation.get(key) for key in keys}
+    if evaluation_context.get("inner_grouping") is None:
+        evaluation_context["inner_grouping"] = "auto"
     return {
-        "evaluation": {key: evaluation.get(key) for key in required},
+        "evaluation": evaluation_context,
         "group_col": data.get("group_col"),
         "stratify_col": data.get("stratify_col"),
         "gate": gate,
@@ -431,7 +427,7 @@ def _incremental_context_payload_from_manifest(
 def _validate_incremental_experiment_identity(
     root: Path,
     sweep: Sweep,
-    evaluation_cache_fingerprint: str,
+    dataset: Dataset,
     *,
     redo: bool,
 ) -> None:
@@ -442,40 +438,29 @@ def _validate_incremental_experiment_identity(
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError("Existing experiment manifest cannot be read.") from exc
-
-    stored_cache = payload.get("evaluation_cache_fingerprint")
-    if stored_cache is not None:
-        if str(stored_cache) != str(evaluation_cache_fingerprint):
-            raise ValueError(
-                "Existing experiment results do not match the current evaluation cache context. "
-                "The dataset, evaluation plan, grouping/stratification, gate, runtime, or package code changed. "
-                "Rerun with --redo or use a new experiment directory."
-            )
-        return
-
-    stored_legacy = payload.get("evaluation_fingerprint")
-    if stored_legacy is None:
-        if _has_evaluation_artifacts(root):
-            raise ValueError(
-                "Existing evaluation artifacts predate scientific cache fingerprinting. "
-                "Rerun with --redo or use a new experiment directory before reusing results."
-            )
-        return
-
+    stored_dataset = payload.get("dataset_fingerprint")
+    current_dataset = dataset_fingerprint(dataset)
+    if stored_dataset is not None and str(stored_dataset) != str(current_dataset):
+        raise ValueError(
+            "Existing experiment results were produced from different dataset content. "
+            "Use a new experiment directory or restore the original scientific inputs."
+        )
     stored_context = _incremental_context_payload_from_manifest(payload)
     current_context = _incremental_context_payload_from_sweep(sweep)
-    if stored_context is None or _scientific_digest(
-        stored_context
-    ) != _scientific_digest(current_context):
+    if stored_context is not None and (
+        _scientific_digest(stored_context) != _scientific_digest(current_context)
+    ):
         raise ValueError(
             "Existing experiment results use different evaluation, grouping/stratification, "
-            "or qualification-gate settings. Rerun with --redo or use a new experiment directory."
+            "or qualification-gate settings. Use a new experiment directory or rerun with --redo."
         )
     if _has_evaluation_artifacts(root):
-        info(
-            "Migrating legacy evaluation cache metadata: completed MPMA/split pairs will be reused; "
-            "new config IDs will be evaluated incrementally."
-        )
+        stored_cache = payload.get("evaluation_cache_fingerprint")
+        current_cache = _evaluation_cache_fingerprint(sweep, dataset)
+        if stored_cache is None or str(stored_cache) != str(current_cache):
+            info(
+                "Evaluation cache metadata updated; completed MPMA/split pairs will be reused and only pending configurations will run."
+            )
 
 
 def _scientifically_compatible_config(
@@ -2108,7 +2093,7 @@ def _prepare_regression_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
     cache_fingerprint = _evaluation_cache_fingerprint(sweep, dataset)
     evaluation_fingerprint = _evaluation_fingerprint(sweep, dataset, configs)
     _validate_incremental_experiment_identity(
-        root, sweep, cache_fingerprint, redo=bool(sweep.evaluation.redo)
+        root, sweep, dataset, redo=bool(sweep.evaluation.redo)
     )
     if sweep.evaluation.redo:
         _clear_evaluation_checkpoints(root)
@@ -2208,7 +2193,7 @@ def _prepare_classification_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
     cache_fingerprint = _evaluation_cache_fingerprint(sweep, dataset)
     evaluation_fingerprint = _evaluation_fingerprint(sweep, dataset, configs)
     _validate_incremental_experiment_identity(
-        root, sweep, cache_fingerprint, redo=bool(sweep.evaluation.redo)
+        root, sweep, dataset, redo=bool(sweep.evaluation.redo)
     )
     if sweep.evaluation.redo:
         _clear_evaluation_checkpoints(root)
@@ -3102,7 +3087,7 @@ def _write_manifest(
         else None,
         "evaluation_cache_fingerprint": evaluation_cache_fingerprint,
         "evaluation_cache_fingerprint_algorithm": (
-            "sha256-evaluation-cache-context-v1"
+            "sha256-evaluation-cache-context-v2"
             if evaluation_cache_fingerprint
             else None
         ),

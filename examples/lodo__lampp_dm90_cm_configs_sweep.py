@@ -3,9 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 
 from catboost import CatBoostClassifier
-from sklearn.ensemble import RandomForestClassifier
-
 from curated_microbiota.collections import lampp_dm90
+from sklearn.ensemble import (
+    GradientBoostingClassifier,
+    HistGradientBoostingClassifier,
+    RandomForestClassifier,
+)
+from sklearn.linear_model import LogisticRegression, RidgeClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.svm import SVC
+from xgboost import XGBClassifier
+
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
@@ -35,24 +43,61 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
-    ("class", ("class",)),
+    # ("phylum", ("phylum",)),
+    # ("class", ("class",)),
+    # ("order", ("order",)),
+    # ("family", ("family",)),
     ("genus", ("genus",)),
-    ("class-order", ("class", "order")),
+    ("species", ("species",)),
+    ("strain", ("strain",)),
+    # # # ("domain-phylum", ("domain", "phylum")),
+    # # ("domain-class", ("domain", "phylum", "class")),
+    # # # ("domain-order", ("domain", "phylum", "class", "order")),
+    # # ("domain-family", ("domain", "phylum", "class", "order", "family")),
+    # ("domain-genus", ("domain", "phylum", "class", "order", "family", "genus")),
+    # (
+    #     "domain-species",
+    #     ("domain", "phylum", "class", "order", "family", "genus", "species"),
+    # ),
+    # ("phylum-class", ("phylum", "class")),
+    # ("phylum-order", ("phylum", "class", "order")),
+    # # ("phylum-family", ("phylum", "class", "order", "family")),
+    # # ("phylum-genus", ("phylum", "class", "order", "family", "genus")),
+    # ("phylum-species", ("phylum", "class", "order", "family", "genus", "species")),
+    # # ("class-order", ("class", "order")),
+    # # ("class-family", ("class", "order", "family")),
+    # ("class-genus", ("class", "order", "family", "genus")),
+    # # ("class-species", ("class", "order", "family", "genus", "species")),
+    # ("order-family", ("order", "family")),
+    # ("order-genus", ("order", "family", "genus")),
+    # ("order-species", ("order", "family", "genus", "species")),
+    # ("family-genus", ("family", "genus")),
+    ("family-species", ("family", "genus", "species")),
+    ("genus-species", ("genus", "species")),
+    ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
     mll.Transformation("presence_absence"),
     mll.Transformation("identity"),
-    mll.Transformation("arcsine_sqrt", composition_scope="joint"),
-    mll.Transformation("yeo_johnson", composition_scope="joint"),
-    mll.Transformation(
-        "relative_abundance",
-        composition_scope="joint",
-        feature_filter=mll.PrevalenceFilter(
-            threshold=0.20,
-        ),
-    ),
-    mll.Transformation("log10", composition_scope="rank-wise"),
+    # mll.Transformation(
+    #     "identity",
+    #     feature_filter=mll.PrevalenceFilter(
+    #         threshold=0.10,
+    #     ),
+    # ),
+    # mll.Transformation("arcsine_sqrt", composition_scope="joint"),
+    # mll.Transformation("yeo_johnson", composition_scope="joint"),
+    # mll.Transformation(
+    #     "relative_abundance",
+    #     composition_scope="joint",
+    #     feature_filter=mll.PrevalenceFilter(
+    #         threshold=0.20,
+    #     ),
+    # ),
+    # mll.Transformation("log10", composition_scope="rank-wise"),
+    # mll.Transformation("clr", composition_scope="rank-wise"),
+    # mll.Transformation("clr", composition_scope="joint"),
 )
 
 MODELS = (
@@ -66,22 +111,162 @@ MODELS = (
         ),
     ),
     (
-        "CB_abundance_i300_d3",
-        CatBoostClassifier(
-            iterations=300,
-            learning_rate=0.04,
-            depth=3,
-            l2_leaf_reg=10,
-            random_strength=1.0,
-            rsm=0.60,
-            loss_function="Logloss",
-            eval_metric="Logloss",
-            random_seed=42,
-            thread_count=1,
-            verbose=False,
-            allow_writing_files=False,
+        "SVC_RBF_C2_g1p9_w1p2",
+        SVC(
+            C=2.0,
+            kernel="rbf",
+            gamma=1.9,
+            class_weight={0: 1.0, 1: 1.20},
+            cache_size=4000,
         ),
     ),
+    (
+        "SVC_C2",
+        SVC(C=2.0, kernel="precomputed", class_weight="balanced"),
+    ),
+    (
+        "SVC_RBF",
+        SVC(
+            C=1.5,
+            kernel="rbf",
+            gamma=1.875,
+            class_weight={0: 1.0, 1: 1.25},
+            cache_size=4000,
+        ),
+    ),
+    (
+        "MLP_128x32",
+        MLPClassifier(
+            hidden_layer_sizes=(128, 32),
+            alpha=0.01,
+            learning_rate_init=0.001,
+            max_iter=600,
+            early_stopping=True,
+            validation_fraction=0.15,
+            n_iter_no_change=30,
+            random_state=17,
+        ),
+    ),
+    (
+        "Ridge_alpha1_bal",
+        RidgeClassifier(
+            alpha=1.0,
+            class_weight="balanced",
+        ),
+    ),
+    (
+        "LogReg",
+        LogisticRegression(
+            C=10.0,
+            solver="liblinear",
+            class_weight="balanced",
+            max_iter=5000,
+        ),
+    ),
+    # (
+    #     "XGB_600_mcw10",
+    #     XGBClassifier(
+    #         n_estimators=600,
+    #         learning_rate=0.03,
+    #         max_depth=2,
+    #         min_child_weight=10,
+    #         subsample=0.8,
+    #         colsample_bytree=0.7,
+    #         reg_alpha=0.5,
+    #         reg_lambda=2,
+    #         eval_metric="logloss",
+    #         n_jobs=-1,
+    #         random_state=17,
+    #         tree_method="hist",
+    #     ),
+    # ),
+    # (
+    #     "XGB_500_mcw20",
+    #     XGBClassifier(
+    #         n_estimators=500,
+    #         learning_rate=0.03,
+    #         max_depth=2,
+    #         min_child_weight=20,
+    #         subsample=0.8,
+    #         colsample_bytree=0.7,
+    #         reg_lambda=2.0,
+    #         reg_alpha=0.5,
+    #         eval_metric="logloss",
+    #         n_jobs=-1,
+    #         random_state=17,
+    #     ),
+    # ),
+    # (
+    #     "CB_i300_d3",
+    #     CatBoostClassifier(
+    #         iterations=300,
+    #         learning_rate=0.04,
+    #         depth=3,
+    #         l2_leaf_reg=10,
+    #         random_strength=1.0,
+    #         rsm=0.60,
+    #         loss_function="Logloss",
+    #         eval_metric="Logloss",
+    #         random_seed=42,
+    #         thread_count=1,
+    #         verbose=False,
+    #         allow_writing_files=False,
+    #     ),
+    # ),
+    # (
+    #     "CB_i500_d6",
+    #     CatBoostClassifier(
+    #         iterations=500,
+    #         learning_rate=0.03,
+    #         depth=6,
+    #         l2_leaf_reg=5,
+    #         loss_function="Logloss",
+    #         random_strength=1,
+    #         random_seed=17,
+    #         thread_count=-1,
+    #         verbose=False,
+    #     ),
+    # ),
+    # (
+    #     "CB_i1600_d2",
+    #     CatBoostClassifier(
+    #         iterations=1600,
+    #         learning_rate=0.03,
+    #         depth=2,
+    #         l2_leaf_reg=5.03,
+    #         random_strength=2.8,
+    #         border_count=128,
+    #         rsm=0.6,
+    #         bootstrap_type="Bernoulli",
+    #         subsample=0.6,
+    #         loss_function="Logloss",
+    #         random_seed=17,
+    #         verbose=False,
+    #         allow_writing_files=False,
+    #     ),
+    # ),
+    # (
+    #     "HGB_i300_msl20",
+    #     HistGradientBoostingClassifier(
+    #         max_iter=300,
+    #         learning_rate=0.05,
+    #         max_leaf_nodes=15,
+    #         min_samples_leaf=20,
+    #         l2_regularization=0,
+    #         random_state=17,
+    #     ),
+    # ),
+    # (
+    #     "GB_e100",
+    #     GradientBoostingClassifier(
+    #         n_estimators=100,
+    #         learning_rate=0.1,
+    #         loss="log_loss",
+    #         max_features="sqrt",
+    #         subsample=0.8,
+    #         random_state=17,
+    #     ),
+    # ),
 )
 
 GATE = mll.QualificationGate(
@@ -91,7 +276,7 @@ GATE = mll.QualificationGate(
 )
 
 ENSEMBLE = mll.Ensemble(
-    max_sizes=(3,),
+    max_sizes=(25,),
     selection_strategies=(
         "top_k",
         "best_per_resolution",
@@ -104,7 +289,7 @@ ENSEMBLE = mll.Ensemble(
         "weighted_mean_proba",
         "median_proba",
     ),
-    optimize_metric="log_loss",
+    optimize_metric="MCC",
 )
 
 EXPLAINABILITY = mll.Explainability(

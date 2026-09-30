@@ -5,8 +5,8 @@ import shutil
 from pathlib import Path
 
 from . import explainability as _core
-from .console import info
 from .configs_sweep import Sweep
+from .console import info
 from .final_models import build_final_models
 from .mpma_e_explainability import explain_mpma_e
 from .storage import read_table, table_exists

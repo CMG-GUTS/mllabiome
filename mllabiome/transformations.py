@@ -479,13 +479,15 @@ class _BuiltinTransformer:
         else:
             self.n_features_out_ = int(raw.shape[1])
         if name == "log10_relative_abundance_half_min_pseudocount":
-            _matrix(X, nonnegative=True, nonzero_rows=True)
             rel = _relative_abundance(X)
+
             positive = rel[rel > 0]
             if positive.size == 0:
                 raise ValueError(
-                    "Cannot estimate a log-relative-abundance pseudocount without positive abundances."
+                    "Cannot estimate a log-relative-abundance pseudocount "
+                    "without positive abundances."
                 )
+
             self.pseudocount_ = float(positive.min()) / 2.0
         elif name == "standardize":
             self.scaler_ = StandardScaler().fit(raw)
@@ -613,7 +615,7 @@ class _BuiltinTransformer:
         if name == "log10_relative_abundance_half_min_pseudocount":
             if self.pseudocount_ is None:
                 raise RuntimeError("Transformation has not been fitted.")
-            _matrix(X, nonnegative=True, nonzero_rows=True)
+
             return _finite_output(
                 np.log10(_relative_abundance(X) + self.pseudocount_),
                 expected_shape=expected_shape,

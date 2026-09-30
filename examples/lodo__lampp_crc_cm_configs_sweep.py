@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from catboost import CatBoostClassifier
-from sklearn.ensemble import RandomForestClassifier
-
 from curated_microbiota.collections import lampp_crc
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
@@ -37,7 +38,13 @@ EXPLORE = mll.Explore(
 RESOLUTIONS = (
     ("class", ("class",)),
     ("genus", ("genus",)),
+    ("species", ("species",)),
+    ("strain", ("strain",)),
     ("class-order", ("class", "order")),
+    ("family-genus", ("family", "genus")),
+    ("family-species", ("family", "genus", "species")),
+    ("genus-species", ("genus", "species")),
+    ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
@@ -53,6 +60,8 @@ COUNT_TRANSFORMATIONS = (
         ),
     ),
     mll.Transformation("log10", composition_scope="rank-wise"),
+    mll.Transformation("clr", composition_scope="rank-wise"),
+    mll.Transformation("clr", composition_scope="joint"),
 )
 
 MODELS = (
@@ -63,6 +72,51 @@ MODELS = (
             min_samples_leaf=5,
             n_jobs=1,
             random_state=42,
+        ),
+    ),
+    (
+        "RF_82_msl4",
+        RandomForestClassifier(
+            n_estimators=82,
+            max_features=52,
+            min_samples_leaf=4,
+            min_samples_split=2,
+            class_weight="balanced_subsample",
+            criterion="gini",
+            bootstrap=True,
+            random_state=42,
+        ),
+    ),
+    (
+        "RF_82_msl4_1.3e-5",
+        RandomForestClassifier(
+            n_estimators=82,
+            max_features=52,
+            min_samples_leaf=4,
+            min_samples_split=2,
+            max_depth=26,
+            class_weight="balanced_subsample",
+            criterion="gini",
+            bootstrap=True,
+            min_impurity_decrease=1.3e-5,
+            ccp_alpha=0.000325,
+            random_state=42,
+        ),
+    ),
+    (
+        "RF_82_msl4_1.67e-5",
+        RandomForestClassifier(
+            n_estimators=82,
+            max_features=52,
+            min_samples_leaf=4,
+            min_samples_split=2,
+            max_depth=26,
+            class_weight="balanced_subsample",
+            criterion="gini",
+            bootstrap=True,
+            min_impurity_decrease=1.67e-5,
+            ccp_alpha=0.000245,
+            random_state=17,
         ),
     ),
     (
@@ -82,6 +136,19 @@ MODELS = (
             allow_writing_files=False,
         ),
     ),
+    (
+        "LR_4e-5_l2",
+        LogisticRegression(
+            C=4e-5,
+            penalty="l2",
+            solver="liblinear",
+            fit_intercept=True,
+            class_weight=None,
+            tol=1e-7,
+            max_iter=3000,
+            random_state=0,
+        ),
+    ),
 )
 
 GATE = mll.QualificationGate(
@@ -91,7 +158,7 @@ GATE = mll.QualificationGate(
 )
 
 ENSEMBLE = mll.Ensemble(
-    max_sizes=(3,),
+    max_sizes=(10,),
     selection_strategies=(
         "top_k",
         "best_per_resolution",

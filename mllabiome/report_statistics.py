@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
 import itertools
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 

@@ -36,6 +36,7 @@ venv/
 .ipynb_checkpoints/
 .DS_Store
 examples/_lampp_ibd_metadata_filtered.tsv
+examples/runs-old
 
 docs/node_modules/
 docs/.next/
@@ -96,4 +97,4 @@ manuscript
 manuscript-experiments
 TODO
 prepare_lampp_mllab.py
-harvest.py
+catboost_info

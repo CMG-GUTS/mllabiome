@@ -5,9 +5,14 @@ from pathlib import Path
 
 import pandas as pd
 from catboost import CatBoostClassifier
-from sklearn.ensemble import RandomForestClassifier
-
 from curated_microbiota.collections import lampp_ibd
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.neural_network import MLPClassifier
+from sklearn.svm import LinearSVC
+from xgboost import XGBClassifier
+
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
@@ -16,17 +21,6 @@ EXPERIMENT_DIR = HERE / "runs" / "LAMPP-IBD-LODO-CM"
 
 DATA = lampp_ibd.mllabiome()
 
-BAD_SAMPLES = {"SRR5936187"}  # all-zero sample
-
-meta = pd.read_csv(DATA.metadata_path, sep="\t", dtype=str)
-meta = meta[~meta[DATA.sample_id_col].isin(BAD_SAMPLES)].copy()
-
-filtered_metadata = HERE / "_lampp_ibd_metadata_filtered.tsv"
-meta.to_csv(filtered_metadata, sep="\t", index=False)
-
-DATA = replace(DATA, metadata_path=filtered_metadata)
-
-print(f"Excluded {BAD_SAMPLES}")
 
 EVALUATION = lampp_ibd.splits(
     benchmark="mllabiome-benchmark-v1",
@@ -49,54 +43,112 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
-    ("class", ("class",)),
-    ("genus", ("genus",)),
-    ("species", ("species",)),
-    ("class-order", ("class", "order")),
+    # ("class", ("class",)),
+    # ("genus", ("genus",)),
+    # ("species", ("species",)),
+    # ("class-order", ("class", "order")),
+    ("strain", ("strain",)),
 )
 
 COUNT_TRANSFORMATIONS = (
     mll.Transformation("presence_absence"),
     mll.Transformation("identity"),
-    mll.Transformation("arcsine_sqrt", composition_scope="joint"),
-    mll.Transformation("yeo_johnson", composition_scope="joint"),
-    mll.Transformation(
-        "relative_abundance",
-        composition_scope="joint",
-        feature_filter=mll.PrevalenceFilter(
-            threshold=0.20,
-        ),
-    ),
-    mll.Transformation("log10", composition_scope="rank-wise"),
+    # mll.Transformation("arcsine_sqrt", composition_scope="joint"),
+    # mll.Transformation("yeo_johnson", composition_scope="joint"),
+    # mll.Transformation(
+    #     "relative_abundance",
+    #     composition_scope="joint",
+    #     feature_filter=mll.PrevalenceFilter(
+    #         threshold=0.20,
+    #     ),
+    # ),
+    # mll.Transformation("log10", composition_scope="rank-wise"),
 )
 
 MODELS = (
     (
-        "RF_1000_msl5",
-        RandomForestClassifier(
-            n_estimators=1000,
-            min_samples_leaf=5,
-            n_jobs=1,
-            random_state=42,
+        "LinearSVC_sh",
+        LinearSVC(
+            C=5.5e-6,
+            loss="squared_hinge",
+            dual="auto",
+            tol=1e-8,
+            max_iter=30000,
+            random_state=0,
         ),
     ),
     (
-        "CB_abundance_i300_d3",
-        CatBoostClassifier(
-            iterations=300,
-            learning_rate=0.04,
-            depth=3,
-            l2_leaf_reg=10,
-            random_strength=1.0,
-            rsm=0.60,
-            loss_function="Logloss",
-            eval_metric="Logloss",
-            random_seed=42,
-            thread_count=1,
-            verbose=False,
-            allow_writing_files=False,
+        "LR_4e-5_l2",
+        LogisticRegression(
+            C=4e-5,
+            penalty="l2",
+            solver="liblinear",
+            fit_intercept=True,
+            class_weight=None,
+            tol=1e-7,
+            max_iter=3000,
+            random_state=0,
         ),
     ),
+    # (
+    #     "RF_1000_msl5",
+    #     RandomForestClassifier(
+    #         n_estimators=1000,
+    #         min_samples_leaf=5,
+    #         n_jobs=1,
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "MLP_h8",
+    #     MLPClassifier(
+    #         hidden_layer_sizes=(8,),
+    #         activation="relu",
+    #         solver="adam",
+    #         alpha=5e-4,
+    #         learning_rate_init=1e-2,
+    #         max_iter=15,
+    #         shuffle=False,
+    #         random_state=42,
+    #         early_stopping=False,
+    #         tol=0.0,
+    #         n_iter_no_change=100,
+    #     ),
+    # ),
+    # (
+    #     "XGB_600_mcw10",
+    #     XGBClassifier(
+    #         n_estimators=600,
+    #         learning_rate=0.03,
+    #         max_depth=2,
+    #         min_child_weight=10,
+    #         subsample=0.8,
+    #         colsample_bytree=0.7,
+    #         reg_alpha=0.5,
+    #         reg_lambda=2,
+    #         eval_metric="logloss",
+    #         n_jobs=-1,
+    #         random_state=17,
+    #         tree_method="hist",
+    #     ),
+    # ),
+    # (
+    #     "CB_abundance_i300_d3",
+    #     CatBoostClassifier(
+    #         iterations=300,
+    #         learning_rate=0.04,
+    #         depth=3,
+    #         l2_leaf_reg=10,
+    #         random_strength=1.0,
+    #         rsm=0.60,
+    #         loss_function="Logloss",
+    #         eval_metric="Logloss",
+    #         random_seed=42,
+    #         thread_count=1,
+    #         verbose=False,
+    #         allow_writing_files=False,
+    #     ),
+    # ),
 )
 
 GATE = mll.QualificationGate(
@@ -106,7 +158,7 @@ GATE = mll.QualificationGate(
 )
 
 ENSEMBLE = mll.Ensemble(
-    max_sizes=(3,),
+    max_sizes=(10,),
     selection_strategies=(
         "top_k",
         "best_per_resolution",

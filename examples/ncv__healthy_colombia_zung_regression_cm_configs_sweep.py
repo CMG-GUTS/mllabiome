@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from catboost import CatBoostRegressor
+from curated_microbiota.collections import healthy_colombia
 from sklearn.ensemble import RandomForestRegressor
 
-from curated_microbiota.collections import healthy_colombia
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent

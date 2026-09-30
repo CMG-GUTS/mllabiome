@@ -68,7 +68,9 @@ def main(argv: list[str] | None = None) -> None:
         help="Run only the exploratory microbiome analysis stage.",
     )
     parser.add_argument(
-        "--redo", action="store_true", help="Recompute completed evaluation outputs."
+        "--redo",
+        action="store_true",
+        help="Recompute completed outputs instead of reusing them.",
     )
     parser.add_argument(
         "--export-tsv",

@@ -3,18 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 
 from catboost import CatBoostClassifier
-from curated_microbiota.collections import lampp_dm7
+from curated_microbiota.collections import crc_multicohort
 from sklearn.ensemble import RandomForestClassifier
 
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
-TITLE = "LAMPP delivery mode <=7 days LODO mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "LAMPP-DM7-LODO-CM"
+TITLE = "CRC multicohort LODO mllabiome benchmark sweep"
+EXPERIMENT_DIR = HERE / "runs" / "CRC-MULTICOHORT-LODO-CM"
 
-DATA = lampp_dm7.mllabiome()
+DATA = crc_multicohort.mllabiome(target="crc")
 
-EVALUATION = lampp_dm7.splits(
+EVALUATION = crc_multicohort.splits(
+    target="crc",
     benchmark="mllabiome-benchmark-v1",
 ).mllabiome(
     optimize_metric="log_loss",
@@ -37,6 +38,9 @@ EXPLORE = mll.Explore(
 RESOLUTIONS = (
     ("class", ("class",)),
     ("genus", ("genus",)),
+    ("family", ("family",)),
+    ("order-family", ("order", "family")),
+    ("order-genus", ("order", "family", "genus")),
     ("class-order", ("class", "order")),
 )
 
@@ -125,17 +129,6 @@ ROBUSTNESS = mll.Robustness(
     top_k=30,
 )
 
-EXTERNAL_TEST = lampp_dm7.external_test
-
-if EXTERNAL_TEST is None:
-    raise RuntimeError("LAMPP external test set is unavailable")
-
-INFERENCE = EXTERNAL_TEST.mllabiome(
-    targets=("mpma_b", "mpma_e"),
-    feature_policy="strict",
-)
-
-
 SWEEP = mll.Sweep(
     data=DATA,
     experiment_dir=EXPERIMENT_DIR,
@@ -149,5 +142,4 @@ SWEEP = mll.Sweep(
     ensemble=ENSEMBLE,
     explainability=EXPLAINABILITY,
     robustness=ROBUSTNESS,
-    inference=INFERENCE,
 )

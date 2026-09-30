@@ -20,6 +20,7 @@ from .ensemble_aggregation import (
     effective_aggregation_weights,
 )
 from .ensemble_progress import EnsembleSearchProgress
+from .integrations import integration_modality_sets
 from .metrics import (
     _renormalize_proba,
     aggregate_validation_metric,
@@ -29,13 +30,12 @@ from .metrics import (
 from .metrics import metric_better as _metric_better
 from .metrics import metric_is_loss as _metric_is_loss
 from .metrics import metric_requires_probability_semantics
-from .integrations import integration_modality_sets
 from .mpma_e_figure import write_single_task_mpma_e_figure
 from .selection import _qualified_config_ids_for_splits, select_final_mpma_candidate
 from .storage import read_table, table_exists, write_table
 from .utils import TAXONOMIC_LEVELS, dump_json_standard
 
-_ENSEMBLE_SEARCH_SCHEMA = "mpmae_search_v5"
+_ENSEMBLE_SEARCH_SCHEMA = "mpmae_search_v6"
 _SUPER_LEARNER_WEIGHT_TOL = 1e-8
 _SUPER_LEARNER_OPT_MAXITER = 1000
 _SUPER_LEARNER_OPT_FTOL = 1e-12
@@ -881,8 +881,6 @@ def _candidate_from_simple_selector(
     max_size = int(spec["max_size"])
     if method == "top_k":
         members = _select_top_k(scores, max_size)
-        if len(members) != max_size:
-            return None
     elif method == "best_per_resolution":
         members = _select_best_per_resolution(scores, configs)[:max_size]
     elif method == "best_per_learner_type":
