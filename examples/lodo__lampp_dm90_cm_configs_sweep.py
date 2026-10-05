@@ -5,11 +5,9 @@ from pathlib import Path
 from catboost import CatBoostClassifier
 from curated_microbiota.collections import lampp_dm90
 from lightgbm import LGBMClassifier
-from sklearn.ensemble import (
-    GradientBoostingClassifier,
-    HistGradientBoostingClassifier,
-    RandomForestClassifier,
-)
+from sklearn.ensemble import (GradientBoostingClassifier,
+                              HistGradientBoostingClassifier,
+                              RandomForestClassifier)
 from sklearn.linear_model import LogisticRegression, RidgeClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC

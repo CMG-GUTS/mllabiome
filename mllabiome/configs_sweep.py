@@ -22,42 +22,26 @@ from joblib import delayed
 from sklearn.base import BaseEstimator
 from threadpoolctl import threadpool_limits
 
-from ._evaluation_protocols import is_hierarchical_lodo_protocol, is_lodo_protocol
+from ._evaluation_protocols import (is_hierarchical_lodo_protocol,
+                                    is_lodo_protocol)
 from ._version import __version__
 from .compute import ResourceTracker, machine_profile
 from .console import info, path_table, progress, stage, success, summary_table
 from .data import Dataset, dataset_fingerprint, load_dataset
 from .estimator_protocol import EstimatorLike, is_estimator_instance
 from .figures import _write_representation_impact_figure
-from .learners import (
-    _learner_factory,
-    _learner_name,
-    fit_classifier,
-    learner_display_label,
-)
+from .learners import (_learner_factory, _learner_name, fit_classifier,
+                       learner_display_label)
 from .metrics import _estimator_call
 from .metrics import _predict_proba_aligned as _metrics_predict_proba_aligned
-from .metrics import (
-    aggregate_validation_metric,
-    canonical_metric_name,
-    compute_metrics,
-    compute_regression_metrics,
-    grouped_log_loss,
-    metric_is_loss,
-)
-from .resolutions import (
-    FeatureBlocks,
-    _parse_resolution,
-    mask_feature_blocks,
-    materialize_mpdr_with_blocks,
-)
-from .runtime import (
-    ExecutionPlan,
-    configure_estimator_threads,
-    iter_parallel_tasks,
-    resolve_execution_plan,
-    thread_environment,
-)
+from .metrics import (aggregate_validation_metric, canonical_metric_name,
+                      compute_metrics, compute_regression_metrics,
+                      grouped_log_loss, metric_is_loss)
+from .resolutions import (FeatureBlocks, _parse_resolution,
+                          mask_feature_blocks, materialize_mpdr_with_blocks)
+from .runtime import (ExecutionPlan, configure_estimator_threads,
+                      iter_parallel_tasks, resolve_execution_plan,
+                      thread_environment)
 from .selection import write_mpma_b_selection_outputs
 from .storage import read_table, remove_table, table_exists, write_table
 from .sweep_types import MPDR
@@ -65,24 +49,23 @@ from .sweep_types import MPMA as MPMA
 from .sweep_types import Ensemble as Ensemble
 from .sweep_types import Evaluation
 from .sweep_types import Explainability as Explainability
-from .sweep_types import Explore, Inference
+from .sweep_types import Explore as Explore
+from .sweep_types import Inference as Inference
+from .sweep_types import Robustness as Robustness
 from .sweep_types import LocalExplanationMode as LocalExplanationMode
 from .sweep_types import LocalExplanations as LocalExplanations
-from .sweep_types import QualificationGate, Robustness, Sweep
+from .sweep_types import QualificationGate, Sweep
 from .sweep_types import SweepTask as SweepTask
-from .sweep_types import (
-    _effective_local_explanations_mode as _effective_local_explanations_mode,
-)
+from .sweep_types import \
+    _effective_local_explanations_mode as _effective_local_explanations_mode
 from .sweep_types import _normalise_sweep_task
 from .sweep_types import build_sweep_from_module as build_sweep_from_module
 from .sweep_types import sweep_task as sweep_task
 from .sweep_types import validate_sweep_class_count
-from .transformations import (
-    TRANSFORMATION_LABELS,
-    _count_transformation_factory,
-    _count_transformation_name,
-    _count_transformation_specs_for_blocks,
-)
+from .transformations import (TRANSFORMATION_LABELS,
+                              _count_transformation_factory,
+                              _count_transformation_name,
+                              _count_transformation_specs_for_blocks)
 from .utils import METRIC_COLUMNS, TAXONOMIC_LEVELS, dump_json_standard
 
 _MPDR_SEMANTICS = "select_then_transform_fold_local_rank_composition_v3"
@@ -1285,17 +1268,19 @@ from .data import Data as Data
 from .data import Metadata as Metadata
 from .evaluation_splits import _groups_from_metadata
 from .evaluation_splits import _inner_splits as _inner_splits
-from .evaluation_splits import _normalise_column_names as _normalise_column_names
+from .evaluation_splits import \
+    _normalise_column_names as _normalise_column_names
 from .evaluation_splits import _outer_splits as _outer_splits
-from .evaluation_splits import _regression_inner_splits as _regression_inner_splits
-from .evaluation_splits import _regression_outer_splits as _regression_outer_splits
+from .evaluation_splits import \
+    _regression_inner_splits as _regression_inner_splits
+from .evaluation_splits import \
+    _regression_outer_splits as _regression_outer_splits
 from .evaluation_splits import _resolved_evaluation_splits
 from .evaluation_splits import _safe_group_n_splits as _safe_group_n_splits
 from .evaluation_splits import _safe_n_splits as _safe_n_splits
 from .evaluation_splits import _strata_from_metadata
-from .evaluation_splits import (
-    _stratification_error_context as _stratification_error_context,
-)
+from .evaluation_splits import \
+    _stratification_error_context as _stratification_error_context
 from .evaluation_splits import _subject_safe_groups
 from .explainability_methods import ALE as ALE
 from .explainability_methods import SHAP as SHAP
@@ -1310,14 +1295,16 @@ from .modalities import Modality as Modality
 from .modalities import Samples as Samples
 from .splits import resolve_cv_splits as resolve_cv_splits
 from .sweep_types import _default_transformations as _default_transformations
-from .sweep_types import _legacy_local_explanations as _legacy_local_explanations
-from .sweep_types import (
-    _normalise_explainability_classes_config as _normalise_explainability_classes_config,
-)
-from .sweep_types import (
-    _normalise_explainability_targets_config as _normalise_explainability_targets_config,
-)
-from .target_sweeps import _explainability_for_target as _explainability_for_target
+from .sweep_types import \
+    _legacy_local_explanations as _legacy_local_explanations
+from .sweep_types import \
+    _normalise_explainability_classes_config as \
+    _normalise_explainability_classes_config
+from .sweep_types import \
+    _normalise_explainability_targets_config as \
+    _normalise_explainability_targets_config
+from .target_sweeps import \
+    _explainability_for_target as _explainability_for_target
 from .target_sweeps import _learners_for_target as _learners_for_target
 from .target_sweeps import _metric_for_target as _metric_for_target
 from .target_sweeps import _target_columns, _target_task, target_sweeps

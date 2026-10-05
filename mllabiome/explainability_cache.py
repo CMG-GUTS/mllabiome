@@ -11,16 +11,10 @@ import numpy as np
 import pandas as pd
 
 from .configs_sweep import _source_tree_sha256
-from .explainability_config import (
-    _EXPLAINABILITY_PIPELINE_SCHEMA,
-    _normalise_explainability_method_specs,
-)
-from .explainability_methods import (
-    method_has_global,
-    method_has_local,
-    method_name,
-    method_to_dict,
-)
+from .explainability_config import (_EXPLAINABILITY_PIPELINE_SCHEMA,
+                                    _normalise_explainability_method_specs)
+from .explainability_methods import (method_has_global, method_has_local,
+                                     method_name, method_to_dict)
 from .explainability_reporting import _class_slug, _plot_feature_importance
 from .storage import glob_tables, read_table, table_exists
 from .sweep_types import Sweep, _effective_local_explanations_mode

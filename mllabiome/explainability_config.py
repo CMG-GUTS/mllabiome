@@ -6,14 +6,13 @@ from typing import Any
 import numpy as np
 from sklearn.base import BaseEstimator
 
-from .explainability_methods import ALE, ALEInteractions, coerce_method, method_name
+from .explainability_methods import (ALE, ALEInteractions, coerce_method,
+                                     method_name)
 from .learners import _learner_factory
 from .sweep_types import Sweep
-from .transformations import (
-    CountTransformationAdapter,
-    _count_transformation_factory,
-    _count_transformation_specs_for_blocks,
-)
+from .transformations import (CountTransformationAdapter,
+                              _count_transformation_factory,
+                              _count_transformation_specs_for_blocks)
 
 _EXPLAINABILITY_METHODS = {"shap", "lime", "ale", "permutation", "interactions"}
 _EXPLAINABILITY_PIPELINE_SCHEMA = "oof-coordinate-reconstruction-v2"

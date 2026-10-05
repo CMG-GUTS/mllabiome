@@ -6,37 +6,21 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
-from ._evaluation_protocols import (
-    SUPPORTED_EVALUATION_PROTOCOLS,
-    is_lodo_protocol,
-    normalize_evaluation_protocol,
-)
+from ._evaluation_protocols import (SUPPORTED_EVALUATION_PROTOCOLS,
+                                    is_lodo_protocol,
+                                    normalize_evaluation_protocol)
 from .data import Data
-from .ensemble_aggregation import (
-    PROBABILITY_PRESERVING_AGGREGATIONS,
-    SUPPORTED_AGGREGATIONS,
-)
-from .explainability_methods import (
-    ALE,
-    SHAP,
-    Permutation,
-    apply_profile,
-    method_has_local,
-    normalise_profile,
-)
+from .ensemble_aggregation import (PROBABILITY_PRESERVING_AGGREGATIONS,
+                                   SUPPORTED_AGGREGATIONS)
+from .explainability_methods import (ALE, SHAP, Permutation, apply_profile,
+                                     method_has_local, normalise_profile)
 from .integrations import Integration
 from .learners import validate_model_specs
-from .metrics import (
-    canonical_metric_name,
-    metric_passes_threshold,
-    metric_requires_probability_semantics,
-)
+from .metrics import (canonical_metric_name, metric_passes_threshold,
+                      metric_requires_probability_semantics)
 from .modalities import Modality, Samples
-from .utils import (
-    CLASSIFICATION_METRIC_COLUMNS,
-    REGRESSION_METRIC_COLUMNS,
-    TAXONOMIC_LEVELS,
-)
+from .utils import (CLASSIFICATION_METRIC_COLUMNS, REGRESSION_METRIC_COLUMNS,
+                    TAXONOMIC_LEVELS)
 
 
 class SweepTask(str, Enum):

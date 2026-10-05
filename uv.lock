@@ -987,7 +987,7 @@ dependencies = [
     { name = "xgboost" },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
 benchmark = [
     { name = "curated-microbiota" },
 ]
@@ -999,7 +999,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "catboost", specifier = ">=1.2" },
-    { name = "curated-microbiota", marker = "extra == 'benchmark'", git = "https://github.com/CMG-GUTS/curated-microbiota?tag=v0.1.4" },
     { name = "flaml", specifier = ">=2" },
     { name = "lightgbm", specifier = ">=4" },
     { name = "lime", specifier = ">=0.2.0.1" },
@@ -1011,9 +1010,7 @@ requires-dist = [
     { name = "psutil", specifier = ">=7.2.2" },
     { name = "pyale", specifier = ">=1.2.0" },
     { name = "pyarrow", specifier = ">=12" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },
     { name = "rich", specifier = ">=13" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.7" },
     { name = "scikit-bio", specifier = ">=0.7.0" },
     { name = "scikit-learn", specifier = ">=1.6" },
     { name = "scipy", specifier = ">=1.9" },
@@ -1021,7 +1018,13 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.66" },
     { name = "xgboost", specifier = ">=2" },
 ]
-provides-extras = ["dev", "benchmark"]
+
+[package.metadata.requires-dev]
+benchmark = [{ name = "curated-microbiota", git = "https://github.com/CMG-GUTS/curated-microbiota?tag=v0.1.4" }]
+dev = [
+    { name = "pytest", specifier = ">=9.0.3" },
+    { name = "ruff", specifier = ">=0.16.7" },
+]
 
 [[package]]
 name = "narwhals"

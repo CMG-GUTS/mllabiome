@@ -7,7 +7,8 @@ import pytest
 from sklearn.dummy import DummyClassifier
 
 import mllabiome.configs_sweep as cs
-from mllabiome.configs_sweep import Evaluation, QualificationGate, Sweep, evaluate
+from mllabiome.configs_sweep import (Evaluation, QualificationGate, Sweep,
+                                     evaluate)
 from mllabiome.data import Data, Dataset
 from mllabiome.storage import read_table
 

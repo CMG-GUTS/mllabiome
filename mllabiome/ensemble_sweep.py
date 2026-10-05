@@ -13,25 +13,20 @@ from .compute import ResourceTracker
 from .configs_sweep import Ensemble, Sweep, sweep_task
 from .console import path_table, stage, success, summary_table
 from .data import _wide_csv_feature_columns, load_dataset, metadata_path
-from .ensemble_aggregation import (
-    PROBABILITY_PRESERVING_AGGREGATIONS,
-    SUPPORTED_AGGREGATIONS,
-    aggregate_member_predictions,
-    effective_aggregation_weights,
-)
+from .ensemble_aggregation import (PROBABILITY_PRESERVING_AGGREGATIONS,
+                                   SUPPORTED_AGGREGATIONS,
+                                   aggregate_member_predictions,
+                                   effective_aggregation_weights)
 from .ensemble_progress import EnsembleSearchProgress
 from .integrations import integration_modality_sets
-from .metrics import (
-    _renormalize_proba,
-    aggregate_validation_metric,
-    canonical_metric_name,
-    compute_metrics,
-)
+from .metrics import (_renormalize_proba, aggregate_validation_metric,
+                      canonical_metric_name, compute_metrics)
 from .metrics import metric_better as _metric_better
 from .metrics import metric_is_loss as _metric_is_loss
 from .metrics import metric_requires_probability_semantics
 from .mpma_e_figure import write_single_task_mpma_e_figure
-from .selection import _qualified_config_ids_for_splits, select_final_mpma_candidate
+from .selection import (_qualified_config_ids_for_splits,
+                        select_final_mpma_candidate)
 from .storage import read_table, table_exists, write_table
 from .utils import TAXONOMIC_LEVELS, dump_json_standard
 

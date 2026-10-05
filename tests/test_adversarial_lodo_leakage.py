@@ -10,7 +10,8 @@ import mllabiome.explainability as ex
 from mllabiome.configs_sweep import Ensemble
 from mllabiome.ensemble_sweep import select_mpma_e_by_outer_fold
 from mllabiome.selection import select_mpma_b_by_outer_fold
-from mllabiome.transformations import CountTransformation, _count_transformation_factory
+from mllabiome.transformations import (CountTransformation,
+                                       _count_transformation_factory)
 
 TRAIN_IDX = np.arange(8, dtype=int)
 TEST_IDX = np.arange(8, 12, dtype=int)

@@ -10,26 +10,15 @@ import numpy as np
 from sklearn import config_context, get_config
 from sklearn.base import BaseEstimator
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.discriminant_analysis import (
-    LinearDiscriminantAnalysis,
-    QuadraticDiscriminantAnalysis,
-)
-from sklearn.ensemble import (
-    ExtraTreesClassifier,
-    ExtraTreesRegressor,
-    HistGradientBoostingClassifier,
-    HistGradientBoostingRegressor,
-    RandomForestClassifier,
-    RandomForestRegressor,
-)
-from sklearn.linear_model import (
-    ElasticNet,
-    LogisticRegression,
-    PassiveAggressiveClassifier,
-    Ridge,
-    RidgeClassifier,
-    SGDClassifier,
-)
+from sklearn.discriminant_analysis import (LinearDiscriminantAnalysis,
+                                           QuadraticDiscriminantAnalysis)
+from sklearn.ensemble import (ExtraTreesClassifier, ExtraTreesRegressor,
+                              HistGradientBoostingClassifier,
+                              HistGradientBoostingRegressor,
+                              RandomForestClassifier, RandomForestRegressor)
+from sklearn.linear_model import (ElasticNet, LogisticRegression,
+                                  PassiveAggressiveClassifier, Ridge,
+                                  RidgeClassifier, SGDClassifier)
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 from sklearn.naive_bayes import BernoulliNB, GaussianNB, MultinomialNB
 from sklearn.neighbors import KNeighborsClassifier, NearestCentroid
@@ -37,7 +26,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC, LinearSVC
 from sklearn.tree import DecisionTreeClassifier
 
-from .estimator_protocol import EstimatorLike, clone_estimator, is_estimator_instance
+from .estimator_protocol import (EstimatorLike, clone_estimator,
+                                 is_estimator_instance)
 
 _COMPUTE_ONLY_DISPLAY_PARAMS = {
     "n_jobs",

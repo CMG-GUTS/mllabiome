@@ -679,17 +679,9 @@ def _write_representation_impact_figure(
     import matplotlib.transforms as mtransforms
     from matplotlib import gridspec
 
-    from .style import (
-        C_DARK,
-        C_MID,
-        C_SKY,
-        COL_W_2,
-        HMAP_CMAP,
-        NATURE_PANEL_LABEL_PT,
-        NATURE_TEXT_PT,
-        REPRESENTATION_RC,
-        save_svg,
-    )
+    from .style import (C_DARK, C_MID, C_SKY, COL_W_2, HMAP_CMAP,
+                        NATURE_PANEL_LABEL_PT, NATURE_TEXT_PT,
+                        REPRESENTATION_RC, save_svg)
 
     mpl.rcParams.update(REPRESENTATION_RC)
 

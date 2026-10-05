@@ -52,7 +52,7 @@ EXPLORE = mll.Explore(
 
 RESOLUTIONS = (
     # ("phylum", ("phylum",)),
-    ("class", ("class",)),
+    # ("class", ("class",)),
     # ("order", ("order",)),
     # ("family", ("family",)),
     ("genus", ("genus",)),
@@ -65,7 +65,7 @@ RESOLUTIONS = (
     # # ("phylum-order", ("phylum", "class", "order")),
     # ("phylum-family", ("phylum", "class", "order", "family")),
     # # ("phylum-genus", ("phylum", "class", "order", "family", "genus")),
-    ("class-order", ("class", "order")),
+    # ("class-order", ("class", "order")),
     # # ("class-family", ("class", "order", "family")),
     # ("class-genus", ("class", "order", "family", "genus")),
     # # ("order-family", ("order", "family")),
@@ -85,16 +85,16 @@ COUNT_TRANSFORMATIONS = (
     # mll.Transformation("hellinger", composition_scope="joint"),
     # # mll.Transformation("relative_abundance", composition_scope="rank-wise"),
     # mll.Transformation("relative_abundance", composition_scope="joint"),
-    mll.Transformation(
-        "relative_abundance",
-        composition_scope="joint",
-        feature_filter=mll.PrevalenceFilter(
-            threshold=0.20,
-        ),
-    ),
+    # mll.Transformation(
+    #     "relative_abundance",
+    #     composition_scope="joint",
+    #     feature_filter=mll.PrevalenceFilter(
+    #         threshold=0.20,
+    #     ),
+    # ),
     # mll.Transformation("clr", composition_scope="rank-wise"),
     # mll.Transformation("clr", composition_scope="joint"),
-    mll.Transformation("log10", composition_scope="rank-wise"),
+    # mll.Transformation("log10", composition_scope="rank-wise"),
     # mll.Transformation("log10", composition_scope="joint"),
 )
 

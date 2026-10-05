@@ -16,12 +16,8 @@ from skbio.stats.composition import clr as skbio_clr
 from skbio.stats.composition import ilr as skbio_ilr
 from skbio.stats.composition import multi_replace as skbio_multi_replace
 from sklearn.base import BaseEstimator, clone
-from sklearn.preprocessing import (
-    PowerTransformer,
-    QuantileTransformer,
-    RobustScaler,
-    StandardScaler,
-)
+from sklearn.preprocessing import (PowerTransformer, QuantileTransformer,
+                                   RobustScaler, StandardScaler)
 
 from .utils import _as_float_matrix
 

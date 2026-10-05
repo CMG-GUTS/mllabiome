@@ -5,7 +5,6 @@ import importlib
 import json
 import platform
 import re
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -20,30 +19,21 @@ from .data import Dataset, _taxonomic_rank, dataset_fingerprint, load_dataset
 from .data import metadata_path as training_metadata_path
 from .ensemble_aggregation import PROBABILITY_PRESERVING_AGGREGATIONS
 from .evaluation_splits import _groups_from_metadata
-from .final_models import (
-    aggregate_member_predictions,
-    build_final_models,
-    hydrate_final_models,
-)
+from .final_models import (aggregate_member_predictions, build_final_models,
+                           hydrate_final_models)
 from .learners import _learner_factory, _learner_name, fit_classifier
 from .metrics import _estimator_call, _predict_proba_aligned
-from .resolutions import (
-    _normalise_levels,
-    _parse_resolution,
-    materialize_mpdr_with_blocks,
-)
+from .resolutions import (_normalise_levels, _parse_resolution,
+                          materialize_mpdr_with_blocks)
 from .runtime import configure_estimator_threads
 from .storage import table_exists
-from .transformations import (
-    PrevalenceFilter,
-    Transform,
-    _count_transformation_factory,
-    _count_transformation_specs_for_blocks,
-    _parse_transformation_identity,
-    _split_transformation_filter_identity,
-    transformation_label,
-)
-from .utils import TAXONOMIC_LEVELS, dump_json_standard
+from .transformations import (PrevalenceFilter, Transform,
+                              _count_transformation_factory,
+                              _count_transformation_specs_for_blocks,
+                              _parse_transformation_identity,
+                              _split_transformation_filter_identity,
+                              transformation_label)
+from .utils import dump_json_standard
 
 _DEPLOYMENT_SCHEMA = 1
 _INFERENCE_SCHEMA = 1

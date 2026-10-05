@@ -8,17 +8,13 @@ import numpy as np
 import pandas as pd
 
 from .metrics import metric_is_loss
-from .oof_statistics import (
-    _lodo_cluster_subject_indices,
-    _mean_metric_dicts,
-    _oof_metrics,
-    _oof_metrics_arrays,
-    _point_oof_estimands,
-    _prepare_oof_frame,
-    _probability_columns,
-    _sample_lodo_cluster_indices,
-)
-from .statistics_common import _LODO_PROTOCOLS, _OOF_CONTRAST_METRICS, _stable_seed
+from .oof_statistics import (_lodo_cluster_subject_indices, _mean_metric_dicts,
+                             _oof_metrics, _oof_metrics_arrays,
+                             _point_oof_estimands, _prepare_oof_frame,
+                             _probability_columns,
+                             _sample_lodo_cluster_indices)
+from .statistics_common import (_LODO_PROTOCOLS, _OOF_CONTRAST_METRICS,
+                                _stable_seed)
 
 
 def _oof_design(frame: pd.DataFrame, protocol: str) -> dict[str, int]:

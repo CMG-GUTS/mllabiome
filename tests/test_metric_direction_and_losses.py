@@ -4,13 +4,9 @@ import numpy as np
 import pandas as pd
 
 from mllabiome.configs_sweep import _backfill_metrics_from_predictions
-from mllabiome.metrics import (
-    canonical_metric_name,
-    compute_metrics,
-    metric_better,
-    metric_is_loss,
-    metric_passes_threshold,
-)
+from mllabiome.metrics import (canonical_metric_name, compute_metrics,
+                               metric_better, metric_is_loss,
+                               metric_passes_threshold)
 
 
 def test_loss_metric_direction_is_lower_is_better():

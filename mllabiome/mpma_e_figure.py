@@ -21,11 +21,8 @@ from .storage import read_table, table_exists, write_table
 from .style import save_svg
 
 try:
-    from sklearn.preprocessing import (
-        PowerTransformer,
-        QuantileTransformer,
-        RobustScaler,
-    )
+    from sklearn.preprocessing import (PowerTransformer, QuantileTransformer,
+                                       RobustScaler)
 
 except Exception:
     PowerTransformer = None

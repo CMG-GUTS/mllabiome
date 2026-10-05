@@ -7,13 +7,11 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_curve as sklearn_roc_curve
 
-from .oof_statistics import (
-    _lodo_cluster_subject_indices,
-    _probability_columns,
-    _resample_subjects,
-    _sample_lodo_cluster_indices,
-)
-from .statistics_common import _LODO_PROTOCOLS, DIAGNOSTIC_METRICS, _stable_seed
+from .oof_statistics import (_lodo_cluster_subject_indices,
+                             _probability_columns, _resample_subjects,
+                             _sample_lodo_cluster_indices)
+from .statistics_common import (_LODO_PROTOCOLS, DIAGNOSTIC_METRICS,
+                                _stable_seed)
 
 
 def _validated_diagnostic_thresholds(values: Any) -> tuple[float, ...]:

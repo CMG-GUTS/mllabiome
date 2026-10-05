@@ -10,39 +10,18 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.lines import Line2D
-from matplotlib.patches import ConnectionPatch, Ellipse
+from matplotlib.patches import Ellipse
 from scipy.spatial.distance import pdist, squareform
-from scipy.stats import (
-    friedmanchisquare,
-    kruskal,
-    mannwhitneyu,
-    norm,
-    spearmanr,
-    wilcoxon,
-)
+from scipy.stats import (friedmanchisquare, kruskal, mannwhitneyu, norm,
+                         spearmanr, wilcoxon)
 
 from .ancombc2_runtime import ANCOMBC_VERSION, run_ancombc2
 from .console import info, phase_progress
 from .data import Dataset, dataset_fingerprint, load_dataset
 from .explainability_visuals import _plain_taxon_label
 from .storage import write_table
-from .style import (
-    ACC,
-    BG,
-    C_DARK,
-    C_MID,
-    C_NAVY,
-    C_SKY,
-    CORR_CMAP,
-    DIM,
-    HMAP_CMAP,
-    INK,
-    MID,
-    MM,
-    TRACK,
-    apply,
-    save_svg,
-)
+from .style import (ACC, BG, CORR_CMAP, DIM, HMAP_CMAP, INK, MID, MM, TRACK,
+                    apply, save_svg)
 from .utils import TAXONOMIC_LEVELS, dump_json_standard
 
 try:

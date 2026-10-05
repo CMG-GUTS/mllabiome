@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from lightgbm import LGBMClassifier
 import pandas as pd
 from catboost import CatBoostClassifier
 from curated_microbiota.collections import lampp_ibd
+from lightgbm import LGBMClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression

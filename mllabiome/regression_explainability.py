@@ -9,57 +9,30 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator
 
-from .configs_sweep import (
-    Sweep,
-    _effective_local_explanations_mode,
-    _groups_from_metadata,
-    _lodo_feature_pair,
-    _resolved_evaluation_splits,
-)
-from .console import (
-    info,
-    path_table,
-    phase_progress,
-    progress,
-    stage,
-    success,
-    summary_table,
-)
+from .configs_sweep import (Sweep, _effective_local_explanations_mode,
+                            _groups_from_metadata, _lodo_feature_pair,
+                            _resolved_evaluation_splits)
+from .console import (info, path_table, phase_progress, progress, stage,
+                      success, summary_table)
 from .data import load_dataset
-from .explainability import (
-    _ale_1d_effect_summary,
-    _ale_result_values,
-    _AleModelWrapper,
-    _auto_ale_bins,
-    _plot_ale_curves,
-    _project_input,
-    _projection_required,
-    _quiet_pyale_info,
-    _require_pyale,
-)
+from .explainability import (_ale_1d_effect_summary, _ale_result_values,
+                             _AleModelWrapper, _auto_ale_bins,
+                             _plot_ale_curves, _project_input,
+                             _projection_required, _quiet_pyale_info,
+                             _require_pyale)
 from .explainability_config import _configured_count_transformation_factory
-from .explainability_context import (
-    build_feature_relative_abundance_summary,
-    build_local_relative_abundance_context,
-)
-from .explainability_methods import (
-    ALE,
-    LIME,
-    SHAP,
-    ALEInteractions,
-    Permutation,
-    method_has_global,
-    method_has_local,
-    method_name,
-)
-from .explainability_visuals import (
-    plot_interaction_network,
-    plot_local_attributions,
-    plot_regression_feature_support,
-)
+from .explainability_context import (build_feature_relative_abundance_summary,
+                                     build_local_relative_abundance_context)
+from .explainability_methods import (ALE, LIME, SHAP, ALEInteractions,
+                                     Permutation, method_has_global,
+                                     method_has_local, method_name)
+from .explainability_visuals import (plot_interaction_network,
+                                     plot_local_attributions,
+                                     plot_regression_feature_support)
 from .final_models import build_final_models
 from .learners import _learner_factory
-from .metrics import _estimator_call, compute_regression_metrics, metric_is_loss
+from .metrics import (_estimator_call, compute_regression_metrics,
+                      metric_is_loss)
 from .regression_ensemble import aggregate_regression_predictions
 from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
 from .runtime import configure_estimator_threads

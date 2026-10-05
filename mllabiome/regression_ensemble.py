@@ -15,12 +15,10 @@ from .console import path_table, stage, success, summary_table
 from .ensemble_progress import EnsembleSearchProgress
 from .integrations import integration_modality_sets
 from .metrics import compute_regression_metrics, metric_better, metric_is_loss
-from .selection import (
-    _qualified_config_ids_for_splits,
-    select_final_mpma_candidate,
-    select_mpma_b_by_outer_fold,
-    selected_mpma_b_outer_predictions,
-)
+from .selection import (_qualified_config_ids_for_splits,
+                        select_final_mpma_candidate,
+                        select_mpma_b_by_outer_fold,
+                        selected_mpma_b_outer_predictions)
 from .storage import read_table, table_exists, write_table
 from .utils import dump_json_standard
 

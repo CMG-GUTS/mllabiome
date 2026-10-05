@@ -4,13 +4,8 @@ import pytest
 from sklearn.dummy import DummyClassifier
 
 import mllabiome.configs_sweep as cs
-from mllabiome.configs_sweep import (
-    Ensemble,
-    Evaluation,
-    QualificationGate,
-    Sweep,
-    evaluate,
-)
+from mllabiome.configs_sweep import (Ensemble, Evaluation, QualificationGate,
+                                     Sweep, evaluate)
 from mllabiome.data import Data, Dataset
 from mllabiome.ensemble_sweep import select_mpma_e_by_outer_fold
 from mllabiome.selection import select_mpma_b_by_outer_fold

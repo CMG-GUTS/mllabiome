@@ -15,11 +15,8 @@ from .modalities import load_modalities
 from .oof_statistics import _calibration_binary
 from .statistics_common import _LODO_PROTOCOLS, _repeat_id, _stable_seed
 from .storage import read_table, table_exists, write_table
-from .utils import (
-    CLASSIFICATION_METRIC_COLUMNS,
-    REGRESSION_METRIC_COLUMNS,
-    dump_json_standard,
-)
+from .utils import (CLASSIFICATION_METRIC_COLUMNS, REGRESSION_METRIC_COLUMNS,
+                    dump_json_standard)
 
 _CALIBRATION_METRICS = (
     "CalibrationInTheLarge",

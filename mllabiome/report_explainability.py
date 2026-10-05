@@ -10,7 +10,8 @@ from typing import Any
 import pandas as pd
 
 from .baseline_rf import resolve_baseline_rf_config_id
-from .explainability_visuals import plot_feature_support, plot_local_attributions
+from .explainability_visuals import (plot_feature_support,
+                                     plot_local_attributions)
 from .storage import glob_tables, read_table, table_exists
 from .utils import feature_tail_ellipsis as feature_tail_ellipsis
 

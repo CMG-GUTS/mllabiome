@@ -9,15 +9,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .data import (
-    Dataset,
-    _dataset_from_feature_matrix,
-    _encode_regression,
-    _encode_y,
-    _normalise_task,
-    _read_feature_by_sample_tsv,
-    dataset_fingerprint,
-)
+from .data import (Dataset, _dataset_from_feature_matrix, _encode_regression,
+                   _encode_y, _normalise_task, _read_feature_by_sample_tsv,
+                   dataset_fingerprint)
 
 
 @dataclass(frozen=True)

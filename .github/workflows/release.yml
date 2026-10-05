@@ -1,0 +1,107 @@
+name: Publish release to PyPI
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: "0.12.21"
+          enable-cache: false
+
+      - name: Verify tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' mllabiome/_version.py)"
+          test "$RELEASE_TAG" = "v$VERSION"
+
+      - name: Check lockfile
+        run: uv lock --check
+
+      - name: Install project
+        run: uv sync --locked --group dev
+
+      - name: Check synchronized metadata
+        run: uv run --locked python scripts/sync_version.py --check
+
+      - name: Lint
+        run: uv run --locked ruff check mllabiome tests scripts
+
+      - name: Test
+        run: uv run --locked pytest -q
+
+      - name: Build
+        run: uv build --no-sources
+
+      - name: Check package metadata
+        run: uvx --from twine==7.0.0 twine check dist/*
+
+      - name: Smoke test wheel
+        run: |
+          uv run \
+            --isolated \
+            --no-project \
+            --with dist/*.whl \
+            python -c 'import importlib.metadata as md, mllabiome; assert md.version("mllabiome") == mllabiome.__version__'
+
+      - name: Smoke test source distribution
+        run: |
+          uv run \
+            --isolated \
+            --no-project \
+            --with dist/*.tar.gz \
+            python -c 'import importlib.metadata as md, mllabiome; assert md.version("mllabiome") == mllabiome.__version__'
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+
+    environment:
+      name: pypi
+
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: "0.12.21"
+          enable-cache: false
+
+      - name: Download distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: dist
+          path: dist/
+
+      - name: Generate attestations
+        uses: astral-sh/attest-action@f589a42a7efb6fe400b4f400de60b4bc90390027
+
+      - name: Publish to PyPI
+        run: uv publish --trusted-publishing always dist/*

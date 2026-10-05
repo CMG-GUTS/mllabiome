@@ -53,13 +53,27 @@ def update_docs(text: str, version: str) -> str:
 
 
 def update_changelog(text: str, version: str) -> str:
+    existing = re.search(
+        rf"(?m)^## {re.escape(version)} - (?:Unreleased|\d{{4}}-\d{{2}}-\d{{2}})$",
+        text,
+    )
+    if existing is not None:
+        return text
+
     heading = f"## {version} - Unreleased"
-    updated, count = re.subn(r"(?m)^## .* - Unreleased$", heading, text, count=1)
+    updated, count = re.subn(
+        r"(?m)^## .* - Unreleased$",
+        heading,
+        text,
+        count=1,
+    )
     if count == 1:
         return updated
+
     match = re.search(r"(?m)^# Changelog\s*$", text)
     if match is None:
         raise RuntimeError(f"Unable to update {CHANGELOG_FILE}")
+
     insert_at = match.end()
     return text[:insert_at] + f"\n\n{heading}" + text[insert_at:]
 

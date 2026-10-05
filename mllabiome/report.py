@@ -21,12 +21,8 @@ from .metrics import canonical_metric_name, compute_metrics, metric_is_loss
 from .report_compute import run_compute_accounting
 from .report_statistics import run_report_statistics
 from .storage import read_table, table_exists, write_table
-from .utils import (
-    TAXONOMIC_LEVELS,
-    dump_json_standard,
-    prepare_report_html_path,
-    report_html_path,
-)
+from .utils import (TAXONOMIC_LEVELS, dump_json_standard,
+                    prepare_report_html_path, report_html_path)
 
 _METRICS = [
     ("AUROC", "AUROC"),
@@ -776,12 +772,8 @@ def _pick_deepest_single_rank(
     return {}
 
 
-from .report_explainability import (
-    _explainability_report_blocks,
-    _fig,
-    _read_json,
-    _read_table,
-)
+from .report_explainability import (_explainability_report_blocks, _fig,
+                                    _read_json, _read_table)
 
 
 def _representation_impact_note(metric: str, modality: bool = False) -> str:
@@ -2348,35 +2340,37 @@ def _multimodal_inclusion_html(manifest: dict[str, Any]) -> str:
 
 
 from .console import console as console
-from .explainability_visuals import plot_feature_support as plot_feature_support
-from .explainability_visuals import plot_local_attributions as plot_local_attributions
+from .explainability_visuals import \
+    plot_feature_support as plot_feature_support
+from .explainability_visuals import \
+    plot_local_attributions as plot_local_attributions
 from .report_explainability import _asset_uri as _asset_uri
 from .report_explainability import _inline_svg as _inline_svg
-from .report_explainability import (
-    _refresh_xai_support_figures as _refresh_xai_support_figures,
-)
-from .report_explainability import _target_dirs_by_label as _target_dirs_by_label
+from .report_explainability import \
+    _refresh_xai_support_figures as _refresh_xai_support_figures
+from .report_explainability import \
+    _target_dirs_by_label as _target_dirs_by_label
 from .report_explainability import _xai_class_slug as _xai_class_slug
-from .report_explainability import _xai_coordinate_column as _xai_coordinate_column
-from .report_explainability import _xai_figure_for_class as _xai_figure_for_class
+from .report_explainability import \
+    _xai_coordinate_column as _xai_coordinate_column
+from .report_explainability import \
+    _xai_figure_for_class as _xai_figure_for_class
 from .report_explainability import _xai_local_figure as _xai_local_figure
 from .report_explainability import _xai_local_mode as _xai_local_mode
 from .report_explainability import _xai_method_display as _xai_method_display
-from .report_explainability import _xai_method_global_text as _xai_method_global_text
+from .report_explainability import \
+    _xai_method_global_text as _xai_method_global_text
 from .report_explainability import _xai_target_metadata as _xai_target_metadata
-from .report_terminal import (
-    _compact_procedure_for_terminal as _compact_procedure_for_terminal,
-)
+from .report_terminal import \
+    _compact_procedure_for_terminal as _compact_procedure_for_terminal
 from .report_terminal import _feature_support_table
-from .report_terminal import _feature_support_terminal as _feature_support_terminal
-from .report_terminal import (
-    _hardware_summary_table,
-    _html_inline,
-    _print_report_summary,
-    _short_feature_label,
-)
+from .report_terminal import \
+    _feature_support_terminal as _feature_support_terminal
+from .report_terminal import (_hardware_summary_table, _html_inline,
+                              _print_report_summary, _short_feature_label)
 from .report_terminal import _strip_cell_markup as _strip_cell_markup
-from .report_terminal import _target_dirs_for_terminal as _target_dirs_for_terminal
+from .report_terminal import \
+    _target_dirs_for_terminal as _target_dirs_for_terminal
 from .report_terminal import _terminal_feature_label as _terminal_feature_label
 from .report_terminal import _terminal_table as _terminal_table
 from .storage import glob_tables as glob_tables
@@ -3242,12 +3236,8 @@ def _exploration_report_html(root: Path, report_dir: Path) -> str:
     ranks = manifest.get("ranks", [])
     if not isinstance(ranks, list) or not ranks:
         return ""
-    from .explore import (
-        _alpha_display_table,
-        _alpha_inference_context,
-        _beta_display_table,
-        _da_display_table,
-    )
+    from .explore import (_alpha_display_table, _alpha_inference_context,
+                          _beta_display_table, _da_display_table)
 
     confidence_level = float(manifest.get("confidence_level", 0.95))
     parts = [

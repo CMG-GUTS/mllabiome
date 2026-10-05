@@ -7,13 +7,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .ensemble_aggregation import (
-    PROBABILITY_PRESERVING_AGGREGATIONS,
-    SUPPORTED_AGGREGATIONS,
-)
-from .ensemble_aggregation import (
-    aggregate_member_predictions as _aggregate_member_predictions,
-)
+from .ensemble_aggregation import (PROBABILITY_PRESERVING_AGGREGATIONS,
+                                   SUPPORTED_AGGREGATIONS)
+from .ensemble_aggregation import \
+    aggregate_member_predictions as _aggregate_member_predictions
 from .ensemble_aggregation import effective_aggregation_weights
 from .metrics import aggregate_validation_metric, canonical_metric_name
 from .storage import read_table, table_exists

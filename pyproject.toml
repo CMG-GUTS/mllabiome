@@ -12,9 +12,8 @@ requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [
-  { name = "mllabiome contributors" }
+  { name = "Agata Polejowska" }
 ]
-
 keywords = [
   "microbiome",
   "microbiota",
@@ -86,21 +85,20 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/CMG-GUTS/mllabiome"
-Documentation = "https://github.com/CMG-GUTS/mllabiome#readme"
+Documentation = "https://cmg-guts.github.io/mllabiome/"
 Repository = "https://github.com/CMG-GUTS/mllabiome"
 Issues = "https://github.com/CMG-GUTS/mllabiome/issues"
+Changelog = "https://github.com/CMG-GUTS/mllabiome/blob/main/CHANGELOG.md"
 
-# Development dependencies
-# These packages are required for development, testing, and linting only.
-# They are deliberately excluded from the normal mllabiome installation.
-#   pip install -e ".[dev]"
-[project.optional-dependencies]
+
+[dependency-groups]
 dev = [
   "pytest>=9.0.3",
   "ruff>=0.16.7",
 ]
+
 benchmark = [
-    "curated-microbiota>=0.1.4",
+  "curated-microbiota>=0.1.4",
 ]
 
 [tool.uv.sources]
@@ -129,3 +127,9 @@ mllabiome = [
 # pytest configuration
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]

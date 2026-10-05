@@ -8,12 +8,11 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator
 
-from .explainability_config import (
-    ExplainabilityConfigurationError,
-    ExplainabilityDependencyError,
-)
+from .explainability_config import (ExplainabilityConfigurationError,
+                                    ExplainabilityDependencyError)
 from .explainability_methods import LIME, SHAP
-from .explainability_model import _explain_predict_proba, _project_input, _sample_rows
+from .explainability_model import (_explain_predict_proba, _project_input,
+                                   _sample_rows)
 from .utils import _as_float_matrix
 
 

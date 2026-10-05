@@ -1,13 +1,15 @@
 include README.md
 include LICENSE
+include CHANGELOG.md
+include CITATION.cff
 include pyproject.toml
-include .gitignore
 recursive-include tests *.py
 include mllabiome/py.typed
+recursive-include mllabiome/_r *.R
 global-exclude __pycache__
 global-exclude *.py[cod]
 global-exclude .DS_Store
-global-exclude ._* 
+global-exclude ._*
 prune build
 prune dist
 prune *.egg-info

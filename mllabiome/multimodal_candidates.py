@@ -9,7 +9,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .integrations import Integration, IntegrationModel, integration_modality_sets
+from .integrations import (Integration, IntegrationModel,
+                           integration_modality_sets)
 from .metrics import _estimator_call
 from .modalities import ModalityDataset
 from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
@@ -199,12 +200,8 @@ def build_modality_candidates(
     paths = _modality_paths(
         modality_names, representations, transformations, feature_blocks_by_path
     )
-    from .configs_sweep import (
-        _learner_fingerprint,
-        _learner_payload,
-        _scientific_digest,
-        _scientific_value,
-    )
+    from .configs_sweep import (_learner_fingerprint, _learner_payload,
+                                _scientific_digest, _scientific_value)
 
     learner_specs = [
         (learner_name_fn(item), _learner_fingerprint(item), _learner_payload(item))
