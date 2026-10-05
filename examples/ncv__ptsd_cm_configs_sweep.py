@@ -17,13 +17,13 @@ from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
 TITLE = "PRIME PTSD intervention mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "PTSD-NCV-grouped-CM"
+EXPERIMENT_DIR = HERE / "runs" / "PTSD-NCV-grouped-CM-v2"
 
 DATA = prime_ptsd.mllabiome(target="intervention")
 
 EVALUATION = prime_ptsd.splits(
     target="intervention",
-    benchmark="mllabiome-benchmark-v1",
+    benchmark="mllabiome-benchmark-v2",
 ).mllabiome(
     optimize_metric="log_loss",
     n_jobs="auto",

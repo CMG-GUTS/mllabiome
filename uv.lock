@@ -416,8 +416,8 @@ wheels = [
 
 [[package]]
 name = "curated-microbiota"
-version = "0.1.4"
-source = { git = "https://github.com/CMG-GUTS/curated-microbiota?tag=v0.1.4#5c7e7c2e6d462562b9dd2480d6aea834bf7ba455" }
+version = "0.2.0"
+source = { git = "https://github.com/CMG-GUTS/curated-microbiota?tag=v0.2.0#c35183847a4a8bae4514dc8f65225927ac56df87" }
 dependencies = [
     { name = "platformdirs" },
 ]
@@ -1020,7 +1020,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-benchmark = [{ name = "curated-microbiota", git = "https://github.com/CMG-GUTS/curated-microbiota?tag=v0.1.4" }]
+benchmark = [{ name = "curated-microbiota", git = "https://github.com/CMG-GUTS/curated-microbiota?tag=v0.2.0" }]
 dev = [
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "ruff", specifier = ">=0.16.7" },

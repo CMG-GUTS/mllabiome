@@ -98,11 +98,11 @@ dev = [
 ]
 
 benchmark = [
-  "curated-microbiota>=0.1.4",
+  "curated-microbiota>=0.2.0",
 ]
 
 [tool.uv.sources]
-curated-microbiota = { git = "https://github.com/CMG-GUTS/curated-microbiota", tag = "v0.1.4" }
+curated-microbiota = { git = "https://github.com/CMG-GUTS/curated-microbiota", tag = "v0.2.0" }
 
 [project.scripts]
 mllabiome = "mllabiome.cli:main"

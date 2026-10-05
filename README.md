@@ -72,9 +72,14 @@ or:
 pip install mllabiome
 ```
 
+To install every dependency:
+```bash
+uv sync --all-groups
+```
+
 To use benchmark datasets:
 ```bash
-pip install -e ".[benchmark]"
+uv pip install --group benchmark
 ```
 
 For development from a checked-out repository:
