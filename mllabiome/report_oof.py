@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from . import report as _report_module
+from ._evaluation_protocols import is_lodo_protocol
 from .console import console, path_table, phase_progress, stage, success
 from .final_models import load_final_models
 from .storage import read_table
@@ -1111,7 +1112,7 @@ def _methodology_html(manifest: dict[str, Any]) -> str:
         bootstrap = f"{int(n_bootstrap):,}"
     except (TypeError, ValueError):
         bootstrap = ""
-    if protocol in {"lodo", "leave_one_dataset_out"}:
+    if is_lodo_protocol(protocol):
         method = "two-stage cohort-and-subject bootstrap"
         estimand = "sample-weighted and equal-cohort held-out performance"
     else:
@@ -1373,7 +1374,7 @@ def _paired_contrast_note(manifest: dict[str, Any]) -> str:
     except (TypeError, ValueError):
         n_bootstrap = 0
     count = f"{n_bootstrap:,} " if n_bootstrap > 0 else ""
-    if protocol in {"lodo", "leave_one_dataset_out"}:
+    if is_lodo_protocol(protocol):
         sampling = "held-out cohorts and then subjects within sampled cohorts"
     else:
         sampling = "repeats and then subjects within sampled repeats"

@@ -15,6 +15,7 @@ import pandas as pd
 from joblib import delayed
 from threadpoolctl import threadpool_limits
 
+from ._evaluation_protocols import is_lodo_protocol
 from ._version import __version__
 from .compute import ResourceTracker, machine_profile
 from .configs_sweep import (
@@ -274,10 +275,7 @@ def _fit_classification_candidate_fold(
             classes,
             np.asarray(subject_ids, dtype=object)[eval_idx],
         )
-    if "cohort_macro_log_loss" in requested_metrics and str(protocol).lower() in {
-        "lodo",
-        "leave_one_dataset_out",
-    }:
+    if "cohort_macro_log_loss" in requested_metrics and is_lodo_protocol(protocol):
         metrics["cohort_macro_log_loss"] = float(metrics["log_loss"])
     return np.asarray(pred), np.asarray(proba), metrics
 

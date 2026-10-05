@@ -13,6 +13,7 @@ from sklearn.model_selection import (
     StratifiedKFold,
 )
 
+from ._evaluation_protocols import is_hierarchical_lodo_protocol, is_lodo_protocol
 from .splits import resolve_cv_splits
 from .sweep_types import Evaluation
 
@@ -21,7 +22,7 @@ def _regression_outer_splits(
     plan: Evaluation, n_samples: int, groups: np.ndarray | None
 ) -> list[dict[str, Any]]:
     protocol = plan.protocol.lower()
-    if protocol in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}:
+    if is_lodo_protocol(protocol):
         if groups is None:
             raise ValueError("LODO requires DATA.group_col.")
         out = []
@@ -77,7 +78,7 @@ def _regression_inner_splits(
 ) -> list[tuple[np.ndarray, np.ndarray]]:
     protocol = plan.protocol.lower()
     local_groups = None if groups is None else groups[outer_train_idx]
-    if protocol in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}:
+    if is_lodo_protocol(protocol):
         mode = plan.inner_grouping
         local_subjects = (
             None if subject_groups is None else subject_groups[outer_train_idx]
@@ -85,7 +86,7 @@ def _regression_inner_splits(
         repeated = local_subjects is not None and len(pd.unique(local_subjects)) < len(
             local_subjects
         )
-        if protocol == "hierarchical_lodo" and mode == "auto":
+        if is_hierarchical_lodo_protocol(protocol) and mode == "auto":
             mode = "subject"
         elif mode == "auto":
             mode = "subject" if repeated else "outer_group"
@@ -141,7 +142,7 @@ def _subject_safe_groups(
                 f"Repeated subjects map to multiple CV groups, which can leak a subject across train/test partitions: {bad!r}. Use a grouping column that is constant within subject."
             )
         return group_values, group_col
-    if protocol in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}:
+    if is_lodo_protocol(protocol):
         return None, group_col
     if repeated:
         return subject_ids, "__subject_id__"
@@ -322,7 +323,7 @@ def _outer_splits(
 ) -> list[dict[str, Any]]:
     protocol = plan.protocol.lower()
     out: list[dict[str, Any]] = []
-    if protocol in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}:
+    if is_lodo_protocol(protocol):
         if groups is None:
             raise ValueError("LODO requires DATA.group_col.")
         for i, g in enumerate(pd.unique(groups)):
@@ -392,7 +393,7 @@ def _inner_splits(
     )
     local_groups = None if groups is None else groups[outer_train_idx]
     protocol = plan.protocol.lower()
-    if protocol in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}:
+    if is_lodo_protocol(protocol):
         mode = plan.inner_grouping
         local_subjects = (
             None if subject_groups is None else subject_groups[outer_train_idx]
@@ -400,7 +401,7 @@ def _inner_splits(
         repeated = local_subjects is not None and len(pd.unique(local_subjects)) < len(
             local_subjects
         )
-        if protocol == "hierarchical_lodo" and mode == "auto":
+        if is_hierarchical_lodo_protocol(protocol) and mode == "auto":
             mode = "subject"
         elif mode == "auto":
             mode = "subject" if repeated else "outer_group"

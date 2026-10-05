@@ -6,6 +6,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
+from ._evaluation_protocols import (
+    SUPPORTED_EVALUATION_PROTOCOLS,
+    is_lodo_protocol,
+    normalize_evaluation_protocol,
+)
 from .data import Data
 from .ensemble_aggregation import (
     PROBABILITY_PRESERVING_AGGREGATIONS,
@@ -158,14 +163,8 @@ class Evaluation:
     redo: bool = False
 
     def __post_init__(self) -> None:
-        protocol = str(self.protocol).strip().casefold().replace("-", "_")
-        if protocol not in {
-            "repeated_nested_cv",
-            "nested_cv",
-            "lodo",
-            "leave_one_dataset_out",
-            "hierarchical_lodo",
-        }:
+        protocol = normalize_evaluation_protocol(self.protocol)
+        if protocol not in SUPPORTED_EVALUATION_PROTOCOLS:
             raise ValueError(f"Unsupported evaluation protocol {self.protocol!r}.")
         self.protocol = protocol
         if self.split_manifest is not None:
@@ -480,13 +479,9 @@ def _validate_metric(
                 f"{role}={metric!r} is not a supported classification metric. "
                 f"Supported metrics: {sorted(allowed)}."
             )
-        if canonical == "cohort_macro_log_loss" and protocol not in {
-            "lodo",
-            "leave_one_dataset_out",
-            "hierarchical_lodo",
-        }:
+        if canonical == "cohort_macro_log_loss" and not is_lodo_protocol(protocol):
             raise ValueError(
-                f"{role}='cohort_macro_log_loss' requires protocol='lodo' or 'leave_one_dataset_out'."
+                f"{role}='cohort_macro_log_loss' requires a LODO evaluation protocol."
             )
         if n_classes is not None and n_classes > 2:
             binary_only = {

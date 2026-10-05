@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from ._evaluation_protocols import is_lodo_protocol
 from .baseline_rf import resolve_baseline_rf_configs
 from .configs_sweep import Sweep
 from .console import path_table, phase_progress, stage, success
@@ -652,7 +653,7 @@ def _performance_methodology_html(protocol: Any, n_bootstrap: int = 2000) -> str
 
     key = str(protocol).strip().lower()
 
-    if key in {"lodo", "leave_one_dataset_out"}:
+    if is_lodo_protocol(key):
         uncertainty = (
             f"Held-out strategy performance is summarized across held-out datasets as mean ± SD. "
             f"The 95% confidence intervals are percentile intervals from {int(n_bootstrap):,} bootstrap replicates that resample held-out datasets with replacement."
@@ -679,7 +680,7 @@ def _inferential_layer_html(protocol: Any, metric: Any) -> str:
 
     metric_text = html.escape(_metric_display_label(metric))
 
-    if key in {"lodo", "leave_one_dataset_out"}:
+    if is_lodo_protocol(key):
         body = (
             f"For each strategy pair, {metric_text} values are matched by held-out dataset. "
             "The reported difference is Strategy A minus Strategy B, and its 95% confidence interval is obtained by paired bootstrap resampling of the matched held-out datasets. "
@@ -1988,13 +1989,13 @@ def _procedure_table(sweep: Sweep, root: Path) -> pd.DataFrame:
         [
             "Outer folds",
             ev.outer_folds
-            if ev.protocol not in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}
+            if not is_lodo_protocol(ev.protocol)
             else f"LODO ({ev.outer_folds} datasets)",
         ],
         [
             "Inner folds",
             f"{ev.inner_folds}-fold {str(ev.inner_grouping).replace('_', ' ')} inner CV"
-            if ev.protocol in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}
+            if is_lodo_protocol(ev.protocol)
             else ev.inner_folds,
         ],
         ["Repeats", ev.repeats],

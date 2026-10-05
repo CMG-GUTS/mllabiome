@@ -22,6 +22,7 @@ from joblib import delayed
 from sklearn.base import BaseEstimator
 from threadpoolctl import threadpool_limits
 
+from ._evaluation_protocols import is_hierarchical_lodo_protocol, is_lodo_protocol
 from ._version import __version__
 from .compute import ResourceTracker, machine_profile
 from .console import info, path_table, progress, stage, success, summary_table
@@ -594,7 +595,7 @@ def _lodo_feature_pair(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     X_train = np.asarray(X[train_idx])
     X_test = np.asarray(X[test_idx])
-    if str(protocol).lower() not in {"lodo", "leave_one_dataset_out"}:
+    if not is_lodo_protocol(protocol):
         return X_train, X_test, np.ones(X.shape[1], dtype=bool)
     mask = np.any(np.isfinite(X_train) & (X_train != 0), axis=0)
     if not np.any(mask):
@@ -605,9 +606,14 @@ def _lodo_feature_pair(
 
 
 def _inner_validation_label(plan: Evaluation) -> str | int:
-    if str(plan.protocol).lower() in {"lodo", "leave_one_dataset_out"}:
+    if not is_lodo_protocol(plan.protocol):
+        return plan.inner_folds
+    mode = str(plan.inner_grouping).strip().lower()
+    if is_hierarchical_lodo_protocol(plan.protocol) and mode == "auto":
+        mode = "subject"
+    if mode == "auto":
         return "leave-one-group-out across outer training groups"
-    return plan.inner_folds
+    return f"{plan.inner_folds}-fold {mode.replace('_', ' ')} inner CV"
 
 
 def _prediction_rows_values(
@@ -707,10 +713,7 @@ def _fit_classification_split_fold(
             classes,
             np.asarray(subject_ids, dtype=object)[eval_idx],
         )
-    if "cohort_macro_log_loss" in requested_metrics and str(protocol).lower() in {
-        "lodo",
-        "leave_one_dataset_out",
-    }:
+    if "cohort_macro_log_loss" in requested_metrics and is_lodo_protocol(protocol):
         metrics["cohort_macro_log_loss"] = float(metrics["log_loss"])
     metric_row = _metric_row(
         metrics,

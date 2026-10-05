@@ -10,12 +10,13 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from xgboost import XGBClassifier
 
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
 TITLE = "LAMPP schizophrenia mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "LAMPP-SCZ-NCV-CM"
+EXPERIMENT_DIR = HERE / "runs" / "LAMPP-SCZ-NCV-CM-official"
 
 DATA = lampp_scz.mllabiome()
 
@@ -45,7 +46,7 @@ RESOLUTIONS = (
     # ("order", ("order",)),
     # ("family", ("family",)),
     # ("genus", ("genus",)),
-    # ("species", ("species",)),
+    ("species", ("species",)),
     ("strain", ("strain",)),
     # # # ("domain-phylum", ("domain", "phylum")),
     # # ("domain-class", ("domain", "phylum", "class")),
@@ -76,7 +77,9 @@ RESOLUTIONS = (
 
 COUNT_TRANSFORMATIONS = (
     mll.Transformation("presence_absence"),
-    # mll.Transformation("identity"),
+    mll.Transformation("identity"),
+    mll.Transformation("clr", composition_scope="rank-wise"),
+    # mll.Transformation("clr", composition_scope="joint"),
     # mll.Transformation("arcsine_sqrt", composition_scope="joint"),
     # mll.Transformation("yeo_johnson", composition_scope="joint"),
     # mll.Transformation(
@@ -96,7 +99,7 @@ COUNT_TRANSFORMATIONS = (
     #         threshold=0.20,
     #     ),
     # ),
-    mll.Transformation("log10", composition_scope="rank-wise"),
+    # mll.Transformation("log10", composition_scope="rank-wise"),
 )
 
 MODELS = (
@@ -111,146 +114,226 @@ MODELS = (
             random_state=17,
         ),
     ),
-    #     (
-    #         "MLP_h4_a5_lr1e4",
-    #         Pipeline(
-    #             steps=(
-    #                 ("scaler", StandardScaler()),
-    #                 (
-    #                     "mlp",
-    #                     MLPClassifier(
-    #                         hidden_layer_sizes=(4,),
-    #                         activation="relu",
-    #                         solver="adam",
-    #                         alpha=5.0,
-    #                         batch_size="auto",
-    #                         learning_rate_init=1e-4,
-    #                         max_iter=1000,
-    #                         early_stopping=False,
-    #                         random_state=42,
-    #                     ),
-    #                 ),
-    #             ),
-    #         ),
-    #     ),
-    #  (
-    #         "MLP_h4_a5_lr2e4",
-    #         Pipeline(
-    #             steps=(
-    #                 ("scaler", StandardScaler()),
-    #                 (
-    #                     "mlp",
-    #                     MLPClassifier(
-    #                         hidden_layer_sizes=(4,),
-    #                         activation="relu",
-    #                         solver="adam",
-    #                         alpha=5.0,
-    #                         batch_size="auto",
-    #                         learning_rate_init=2e-4,
-    #                         max_iter=1000,
-    #                         early_stopping=False,
-    #                         random_state=42,
-    #                     ),
-    #                 ),
-    #             ),
-    #         ),
-    #     ),
-    #     (
-    #         "MLP_h4_relu_adam_a5",
-    #         Pipeline(
-    #             steps=(
-    #                 ("scaler", StandardScaler()),
-    #                 (
-    #                     "mlp",
-    #                     MLPClassifier(
-    #                         hidden_layer_sizes=(4,),
-    #                         activation="relu",
-    #                         solver="adam",
-    #                         alpha=5.0,
-    #                         batch_size=64,
-    #                         learning_rate_init=3e-4,
-    #                         max_iter=500,
-    #                         early_stopping=False,
-    #                         random_state=42,
-    #                     ),
-    #                 ),
-    #             ),
-    #         ),
-    #     ),
-    #     (
-    #         "Logistic_L2_C0002",
-    #         Pipeline(
-    #             steps=(
-    #                 ("scaler", StandardScaler()),
-    #                 (
-    #                     "logistic",
-    #                     LogisticRegression(
-    #                         penalty="l2",
-    #                         C=0.002,
-    #                         solver="liblinear",
-    #                         max_iter=5000,
-    #                         random_state=42,
-    #                     ),
-    #                 ),
-    #             ),
-    #         ),
-    #     ),
-    #     (
-    #         "RF_1000_msl5",
-    #         RandomForestClassifier(
-    #             n_estimators=1000,
-    #             min_samples_leaf=5,
-    #             n_jobs=1,
-    #             random_state=42,
-    #         ),
-    #     ),
-    #     (
-    #         "CB_abundance_i300_d3",
-    #         CatBoostClassifier(
-    #             iterations=300,
-    #             learning_rate=0.04,
-    #             depth=3,
-    #             l2_leaf_reg=10,
-    #             random_strength=1.0,
-    #             rsm=0.60,
-    #             loss_function="Logloss",
-    #             eval_metric="Logloss",
-    #             random_seed=42,
-    #             thread_count=1,
-    #             verbose=False,
-    #             allow_writing_files=False,
-    #         ),
-    #     ),
-    #     (
-    #         "LightGBM_e500",
-    #         LGBMClassifier(
-    #             objective="binary",
-    #             n_estimators=500,
-    #             learning_rate=0.03,
-    #             num_leaves=7,
-    #             min_child_samples=40,
-    #             reg_lambda=30.0,
-    #             reg_alpha=1.0,
-    #             colsample_bytree=0.80,
-    #             subsample=0.80,
-    #             subsample_freq=1,
-    #             random_state=42,
-    #             n_jobs=1,
-    #             verbosity=-1,
-    #         ),
-    #     ),
-    #     (
-    #         "GB_e100",
-    #         GradientBoostingClassifier(
-    #             n_estimators=100,
-    #             learning_rate=0.1,
-    #             loss="log_loss",
-    #             max_features="sqrt",
-    #             subsample=0.8,
-    #             random_state=17,
-    #         ),
-    #     ),
+    (
+        "XGB_e300_mcw0.25",
+        XGBClassifier(
+            n_estimators=300,
+            learning_rate=0.08,
+            max_depth=1,
+            min_child_weight=0.25,
+            subsample=0.9,
+            colsample_bytree=0.8,
+            reg_alpha=0,
+            reg_lambda=1,
+            scale_pos_weight=0.725,
+            tree_method="hist",
+            random_state=17,
+        ),
+    ),
+    (
+        "LGBM_e300",
+        LGBMClassifier(
+            n_estimators=300,
+            learning_rate=0.07,
+            num_leaves=7,
+            max_depth=3,
+            min_child_samples=3,
+            subsample=0.7,
+            subsample_freq=1,
+            colsample_bytree=0.6,
+            reg_alpha=0,
+            reg_lambda=0,
+            scale_pos_weight=1.0,
+            random_state=17,
+            verbosity=-1,
+        ),
+    ),
+    (
+        "CB_i300_d3",
+        CatBoostClassifier(
+            iterations=300,
+            learning_rate=0.04,
+            depth=3,
+            l2_leaf_reg=10,
+            random_strength=1.0,
+            rsm=0.60,
+            loss_function="Logloss",
+            eval_metric="Logloss",
+            random_seed=42,
+            thread_count=1,
+            verbose=False,
+            allow_writing_files=False,
+        ),
+    ),
+    (
+        "CB_i1600_d2",
+        CatBoostClassifier(
+            iterations=1600,
+            learning_rate=0.03,
+            depth=2,
+            l2_leaf_reg=5.03,
+            random_strength=2.8,
+            border_count=128,
+            rsm=0.6,
+            bootstrap_type="Bernoulli",
+            subsample=0.6,
+            loss_function="Logloss",
+            random_seed=17,
+            verbose=False,
+            allow_writing_files=False,
+        ),
+    ),
+    (
+        "RF_1000_msl5",
+        RandomForestClassifier(
+            n_estimators=1000,
+            min_samples_leaf=5,
+            n_jobs=1,
+            random_state=42,
+        ),
+    ),
 )
+
+#     (
+#         "MLP_h4_a5_lr1e4",
+#         Pipeline(
+#             steps=(
+#                 ("scaler", StandardScaler()),
+#                 (
+#                     "mlp",
+#                     MLPClassifier(
+#                         hidden_layer_sizes=(4,),
+#                         activation="relu",
+#                         solver="adam",
+#                         alpha=5.0,
+#                         batch_size="auto",
+#                         learning_rate_init=1e-4,
+#                         max_iter=1000,
+#                         early_stopping=False,
+#                         random_state=42,
+#                     ),
+#                 ),
+#             ),
+#         ),
+#     ),
+#  (
+#         "MLP_h4_a5_lr2e4",
+#         Pipeline(
+#             steps=(
+#                 ("scaler", StandardScaler()),
+#                 (
+#                     "mlp",
+#                     MLPClassifier(
+#                         hidden_layer_sizes=(4,),
+#                         activation="relu",
+#                         solver="adam",
+#                         alpha=5.0,
+#                         batch_size="auto",
+#                         learning_rate_init=2e-4,
+#                         max_iter=1000,
+#                         early_stopping=False,
+#                         random_state=42,
+#                     ),
+#                 ),
+#             ),
+#         ),
+#     ),
+#     (
+#         "MLP_h4_relu_adam_a5",
+#         Pipeline(
+#             steps=(
+#                 ("scaler", StandardScaler()),
+#                 (
+#                     "mlp",
+#                     MLPClassifier(
+#                         hidden_layer_sizes=(4,),
+#                         activation="relu",
+#                         solver="adam",
+#                         alpha=5.0,
+#                         batch_size=64,
+#                         learning_rate_init=3e-4,
+#                         max_iter=500,
+#                         early_stopping=False,
+#                         random_state=42,
+#                     ),
+#                 ),
+#             ),
+#         ),
+#     ),
+#     (
+#         "Logistic_L2_C0002",
+#         Pipeline(
+#             steps=(
+#                 ("scaler", StandardScaler()),
+#                 (
+#                     "logistic",
+#                     LogisticRegression(
+#                         penalty="l2",
+#                         C=0.002,
+#                         solver="liblinear",
+#                         max_iter=5000,
+#                         random_state=42,
+#                     ),
+#                 ),
+#             ),
+#         ),
+#     ),
+#     (
+#         "RF_1000_msl5",
+#         RandomForestClassifier(
+#             n_estimators=1000,
+#             min_samples_leaf=5,
+#             n_jobs=1,
+#             random_state=42,
+#         ),
+#     ),
+#     (
+#         "CB_abundance_i300_d3",
+#         CatBoostClassifier(
+#             iterations=300,
+#             learning_rate=0.04,
+#             depth=3,
+#             l2_leaf_reg=10,
+#             random_strength=1.0,
+#             rsm=0.60,
+#             loss_function="Logloss",
+#             eval_metric="Logloss",
+#             random_seed=42,
+#             thread_count=1,
+#             verbose=False,
+#             allow_writing_files=False,
+#         ),
+#     ),
+#     (
+#         "LightGBM_e500",
+#         LGBMClassifier(
+#             objective="binary",
+#             n_estimators=500,
+#             learning_rate=0.03,
+#             num_leaves=7,
+#             min_child_samples=40,
+#             reg_lambda=30.0,
+#             reg_alpha=1.0,
+#             colsample_bytree=0.80,
+#             subsample=0.80,
+#             subsample_freq=1,
+#             random_state=42,
+#             n_jobs=1,
+#             verbosity=-1,
+#         ),
+#     ),
+#     (
+#         "GB_e100",
+#         GradientBoostingClassifier(
+#             n_estimators=100,
+#             learning_rate=0.1,
+#             loss="log_loss",
+#             max_features="sqrt",
+#             subsample=0.8,
+#             random_state=17,
+#         ),
+#     ),
+# )
 
 GATE = mll.QualificationGate(
     enabled=False,

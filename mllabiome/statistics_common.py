@@ -6,6 +6,8 @@ from typing import Any
 
 import pandas as pd
 
+from ._evaluation_protocols import LODO_PROTOCOLS as _LODO_PROTOCOLS
+
 DIAGNOSTIC_METRICS = (
     "Sensitivity",
     "Specificity",
@@ -68,7 +70,6 @@ _OOF_CONTRAST_METRICS = (
     "brier_multiclass",
     "log_loss",
 )
-_LODO_PROTOCOLS = {"lodo", "leave_one_dataset_out"}
 
 
 def _ensure_outer_split_key(df: pd.DataFrame) -> pd.DataFrame:

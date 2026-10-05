@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use mllabiome in research, please cite this software release using these metadata."
 title: "mllabiome"
 type: software
-version: "0.1.0rc123"
+version: "0.1.0rc128"
 authors:
   - name: "Agata Polejowska"
 abstract: >-

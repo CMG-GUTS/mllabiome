@@ -628,19 +628,6 @@ def test_raw_relative_abundance_uses_exact_complete_original_feature_matrix():
     np.testing.assert_allclose(out, expected, rtol=1e-06, atol=1e-07)
 
 
-def test_compositional_log_transforms_reject_all_zero_samples():
-    X = np.array([[1.0, 2.0, 3.0], [0.0, 0.0, 0.0]], dtype=float)
-    for name in (
-        "centered_log_ratio_multiplicative_replacement",
-        "additive_log_ratio_training_reference_multiplicative_replacement",
-        "isometric_log_ratio_egozcue_multiplicative_replacement",
-        "standardized_centered_log_ratio_multiplicative_replacement",
-        "log10_relative_abundance_half_min_pseudocount",
-    ):
-        with pytest.raises(ValueError):
-            CountTransformation(name).fit_apply(X)
-
-
 def test_all_abundance_based_transforms_reject_negative_values():
     X = _train_matrix().copy()
     X[0, 0] = -1.0

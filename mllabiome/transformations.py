@@ -300,21 +300,42 @@ def _relative_abundance(X: np.ndarray) -> np.ndarray:
     return np.divide(out, sums, out=np.zeros_like(out), where=sums > 0)
 
 
-def _positive_composition(X: np.ndarray) -> np.ndarray:
-    raw = _matrix(X, nonnegative=True, nonzero_rows=True)
-    rel = raw / raw.sum(axis=1, keepdims=True)
-    out = np.asarray(skbio_multi_replace(skbio_closure(rel)), dtype=np.float64)
-    if out.ndim == 1 and raw.shape[0] == 1 and (out.shape[0] == raw.shape[1]):
-        out = out.reshape(1, -1)
-    if out.shape != raw.shape:
+def _positive_composition(
+    X: np.ndarray, *, allow_zero_rows: bool = False
+) -> np.ndarray:
+    raw = _matrix(X, nonnegative=True)
+    sums = raw.sum(axis=1)
+    zero_rows = sums <= 0
+    if np.any(zero_rows) and not allow_zero_rows:
         raise ValueError(
-            f"Multiplicative zero replacement changed the abundance matrix shape: expected {raw.shape}, got {out.shape}."
+            "Abundance transformations require every sample to contain at least one positive feature."
         )
+    if raw.shape[1] < 1:
+        raise ValueError("Compositional transformations require at least one feature.")
+    out = np.empty_like(raw, dtype=np.float64)
+    supported_rows = ~zero_rows
+    if np.any(supported_rows):
+        supported = raw[supported_rows]
+        rel = supported / supported.sum(axis=1, keepdims=True)
+        replaced = np.asarray(skbio_multi_replace(skbio_closure(rel)), dtype=np.float64)
+        if (
+            replaced.ndim == 1
+            and supported.shape[0] == 1
+            and replaced.shape[0] == supported.shape[1]
+        ):
+            replaced = replaced.reshape(1, -1)
+        if replaced.shape != supported.shape:
+            raise ValueError(
+                f"Multiplicative zero replacement changed the abundance matrix shape: expected {supported.shape}, got {replaced.shape}."
+            )
+        out[supported_rows] = replaced
+    if np.any(zero_rows):
+        out[zero_rows] = 1.0 / float(raw.shape[1])
     return out
 
 
-def _clr_matrix(X: np.ndarray) -> np.ndarray:
-    positive = _positive_composition(X)
+def _clr_matrix(X: np.ndarray, *, allow_zero_rows: bool = False) -> np.ndarray:
+    positive = _positive_composition(X, allow_zero_rows=allow_zero_rows)
     out = np.asarray(skbio_clr(positive), dtype=np.float64)
     if out.ndim == 1 and positive.shape[0] == 1 and (out.shape[0] == positive.shape[1]):
         out = out.reshape(1, -1)
@@ -350,8 +371,10 @@ def _select_alr_reference_index(X: np.ndarray) -> int:
     return int(order[0])
 
 
-def _alr_matrix(X: np.ndarray, ref_idx: int) -> np.ndarray:
-    positive = _positive_composition(X)
+def _alr_matrix(
+    X: np.ndarray, ref_idx: int, *, allow_zero_rows: bool = False
+) -> np.ndarray:
+    positive = _positive_composition(X, allow_zero_rows=allow_zero_rows)
     if positive.shape[1] < 2:
         raise ValueError("ALR requires at least two features.")
     ref_idx = int(ref_idx)
@@ -368,8 +391,10 @@ def _alr_matrix(X: np.ndarray, ref_idx: int) -> np.ndarray:
     return out
 
 
-def _ilr_matrix(X: np.ndarray, basis: np.ndarray) -> np.ndarray:
-    positive = _positive_composition(X)
+def _ilr_matrix(
+    X: np.ndarray, basis: np.ndarray, *, allow_zero_rows: bool = False
+) -> np.ndarray:
+    positive = _positive_composition(X, allow_zero_rows=allow_zero_rows)
     if positive.shape[1] < 2:
         raise ValueError("ILR requires at least two features.")
     out = np.asarray(skbio_ilr(positive, basis=basis), dtype=np.float64)
@@ -425,7 +450,9 @@ class _BuiltinTransformer:
         self.n_features_in_: int | None = None
         self.n_features_out_: int | None = None
 
-    def _base_transform(self, X: np.ndarray) -> np.ndarray:
+    def _base_transform(
+        self, X: np.ndarray, *, allow_zero_rows: bool = False
+    ) -> np.ndarray:
         name = self.name
         if name == "identity":
             return _matrix(X)
@@ -438,15 +465,17 @@ class _BuiltinTransformer:
         if name == "arcsine_sqrt":
             return np.arcsin(np.sqrt(_relative_abundance(X)))
         if name == "centered_log_ratio_multiplicative_replacement":
-            return _clr_matrix(X)
+            return _clr_matrix(X, allow_zero_rows=allow_zero_rows)
         if name == "additive_log_ratio_training_reference_multiplicative_replacement":
             if self.alr_reference_index_ is None:
                 raise RuntimeError("Transformation has not been fitted.")
-            return _alr_matrix(X, self.alr_reference_index_)
+            return _alr_matrix(
+                X, self.alr_reference_index_, allow_zero_rows=allow_zero_rows
+            )
         if name == "isometric_log_ratio_egozcue_multiplicative_replacement":
             if self.basis_ is None:
                 raise RuntimeError("Transformation has not been fitted.")
-            return _ilr_matrix(X, self.basis_)
+            return _ilr_matrix(X, self.basis_, allow_zero_rows=allow_zero_rows)
         if name == "within_sample_fractional_rank":
             raw = _matrix(X, nonnegative=True)
             if raw.shape[1] == 0:
@@ -569,7 +598,7 @@ class _BuiltinTransformer:
             "within_sample_fractional_rank",
         }:
             return _finite_output(
-                self._base_transform(X),
+                self._base_transform(X, allow_zero_rows=True),
                 expected_shape=expected_shape,
                 context=f"Built-in transformation {name!r}",
             )
@@ -624,7 +653,7 @@ class _BuiltinTransformer:
         if name == "standardized_centered_log_ratio_multiplicative_replacement":
             if self.scaler_ is None:
                 raise RuntimeError("Transformation has not been fitted.")
-            base = _clr_matrix(X)
+            base = _clr_matrix(X, allow_zero_rows=True)
             return _finite_output(
                 self.scaler_.transform(base),
                 expected_shape=expected_shape,

@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import t as student_t
 
-_LODO_PROTOCOLS = frozenset({"lodo", "leave_one_dataset_out"})
+from ._evaluation_protocols import is_lodo_protocol
 
 
 def _repeat_id(split_key: str) -> str:
@@ -33,8 +33,7 @@ def _paired_bootstrap_difference(
     if frame.empty:
         return float("nan"), float("nan")
     frame["diff"] = frame[metric_a] - frame[metric_b]
-    protocol_key = str(protocol).lower()
-    if protocol_key in _LODO_PROTOCOLS:
+    if is_lodo_protocol(protocol):
         differences = frame["diff"].to_numpy(dtype=float)
         n = len(differences)
         indices = rng.integers(0, n, size=(int(n_bootstrap), n))

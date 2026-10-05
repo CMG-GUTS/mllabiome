@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from . import report as _report
+from ._evaluation_protocols import is_lodo_protocol
 from .configs_sweep import Sweep, _normalise_sweep_task, _target_task, target_sweeps
 from .console import info, path_table, phase_progress, stage, success
 from .final_models import build_final_models
@@ -177,7 +178,7 @@ def _prepare_regression_oof(frame: pd.DataFrame, protocol: str) -> pd.DataFrame:
     )
     out = out.loc[valid].copy()
     key = str(protocol).strip().lower()
-    if key in {"lodo", "leave_one_dataset_out"}:
+    if is_lodo_protocol(key):
         out["_cluster"] = out["outer_split_key"]
         out["_repeat"] = "r0"
         subject_cohorts = out.groupby("_subject_id", sort=False)["_cluster"].nunique()
@@ -218,7 +219,7 @@ def _regression_point_estimands(
     frame: pd.DataFrame, protocol: str
 ) -> dict[str, dict[str, float]]:
     key = str(protocol).strip().lower()
-    if key in {"lodo", "leave_one_dataset_out"}:
+    if is_lodo_protocol(key):
         cohort_metrics = [
             _regression_oof_metrics(group)
             for _, group in frame.groupby("_cluster", sort=True)
@@ -253,7 +254,7 @@ def _regression_bootstrap_estimands(
     key = str(protocol).strip().lower()
     names = (
         ("pooled_sample_weighted", "cohort_macro_equal_weight")
-        if key in {"lodo", "leave_one_dataset_out"}
+        if is_lodo_protocol(key)
         else ("mean_repeat_pooled_oof",)
     )
     storage = {
@@ -265,7 +266,7 @@ def _regression_bootstrap_estimands(
     }
     if frame.empty:
         return storage
-    if key in {"lodo", "leave_one_dataset_out"}:
+    if is_lodo_protocol(key):
         cohorts = [
             group.reset_index(drop=True)
             for _, group in frame.groupby("_cluster", sort=True)
@@ -349,7 +350,7 @@ def _paired_regression_oof_ci(
         return float(values.get(metric, np.nan))
 
     key = str(protocol).strip().lower()
-    if key in {"lodo", "leave_one_dataset_out"}:
+    if is_lodo_protocol(key):
         estimate = metric_value(merged, "y_pred_a") - metric_value(merged, "y_pred_b")
     else:
         differences = []
@@ -360,7 +361,7 @@ def _paired_regression_oof_ci(
         estimate = float(np.mean(differences)) if differences else float("nan")
     rng = np.random.default_rng(int(seed))
     draws = np.full(int(n_bootstrap), np.nan, dtype=float)
-    if key in {"lodo", "leave_one_dataset_out"}:
+    if is_lodo_protocol(key):
         cohorts = [
             group.reset_index(drop=True)
             for _, group in merged.groupby("_cluster", sort=True)
@@ -533,7 +534,7 @@ def _regression_statistics(
                         np.random.default_rng(seed + 5000 + len(pair_rows) * 101),
                     )
 
-                if str(protocol).strip().lower() in {"lodo", "leave_one_dataset_out"}:
+                if is_lodo_protocol(protocol):
                     _, p_value, test = _exact_sign_flip_test(
                         diff, seed + 9000 + len(pair_rows) * 101
                     )
@@ -550,12 +551,10 @@ def _regression_statistics(
                         "difference_ci_low": low,
                         "difference_ci_high": high,
                         "effect_estimand": "pooled_sample_weighted_oof"
-                        if str(protocol).strip().lower()
-                        in {"lodo", "leave_one_dataset_out"}
+                        if is_lodo_protocol(protocol)
                         else "mean_repeat_pooled_oof",
                         "test_estimand": "paired_outer_cohort_metrics"
-                        if str(protocol).strip().lower()
-                        in {"lodo", "leave_one_dataset_out"}
+                        if is_lodo_protocol(protocol)
                         else "paired_outer_fold_metrics_corrected_resampled_t",
                         "n_matched_outer_units": len(diff),
                         "test": test,
@@ -893,7 +892,7 @@ def _regression_performance_note(protocol: Any, n_bootstrap: int = 2000) -> str:
 
     key = str(protocol).strip().lower()
 
-    if key in {"lodo", "leave_one_dataset_out"}:
+    if is_lodo_protocol(key):
         uncertainty = f"Regression metrics are calculated directly from held-out out-of-fold predictions. Both pooled sample-weighted and equal-cohort macro estimands are reported. Their 95% percentile confidence intervals and displayed bootstrap standard deviations use {int(n_bootstrap):,} two-stage replicates that resample held-out cohorts and then subjects within each sampled cohort."
 
     else:
@@ -945,15 +944,13 @@ def _regression_procedure(sweep: Sweep, root: Path) -> pd.DataFrame:
             [
                 "Outer folds",
                 ev.outer_folds
-                if ev.protocol
-                not in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}
+                if not is_lodo_protocol(ev.protocol)
                 else f"LODO ({ev.outer_folds} datasets)",
             ],
             [
                 "Inner folds",
                 ev.inner_folds
-                if ev.protocol
-                not in {"lodo", "leave_one_dataset_out", "hierarchical_lodo"}
+                if not is_lodo_protocol(ev.protocol)
                 else f"{ev.inner_folds}-fold {str(ev.inner_grouping).replace('_', ' ')} inner CV",
             ],
             ["Repeats", ev.repeats],
@@ -1747,7 +1744,7 @@ def write_multi_target_report(
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>mllabiome report</title><link rel="icon" type="image/svg+xml" href="{_report._favicon_href()}"><style>{css}</style></head>
 <body>{_report._report_nav_html()}
 <div class="report-shell"><main id="top" class="report-content"><h2 id="performance-evaluation" class="first-section">Task definition and evaluation procedure</h2>{_report._procedure_grid_html(procedure)}
-<h2 id="performance-summary">Target performance overview</h2><p>Every target retains its task-appropriate primary metric. Values are mean ± SD across {"held-out datasets" if str(sweep.evaluation.protocol).strip().lower() in {"lodo", "leave_one_dataset_out"} else "outer test folds"}. Classification and regression metrics are intentionally not collapsed into a single heterogeneous score.</p>{_report._html_table(overview)}{_report._html_table(macro) if not macro.empty else ""}
+<h2 id="performance-summary">Target performance overview</h2><p>Every target retains its task-appropriate primary metric. Values are mean ± SD across {"held-out datasets" if is_lodo_protocol(sweep.evaluation.protocol) else "outer test folds"}. Classification and regression metrics are intentionally not collapsed into a single heterogeneous score.</p>{_report._html_table(overview)}{_report._html_table(macro) if not macro.empty else ""}
 {sections}{_report._abbreviations_html()}{_report._report_footer_html()}</main></div></body></html>'''
 
     html_text = _report._sanitize_report_html(html_text)

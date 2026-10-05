@@ -18,7 +18,9 @@
 
 <b>E</b>valuate, <b>e</b>nsemble, <b>e</b>xplain machine learning for microbiota data analysis in single-modality and multimodality scenarios.
 
-**Leakage-controlled machine learning for microbiome data.**
+> An integrated leakage-controlled framework for microbiome machine learning that jointly handles compositional preprocessing and taxonomic representation selection, subject/cohort-aware nested evaluation, inner-OOF ensemble and multimodal model construction, cross-fitted explanation, and uncertainty/robustness analysis.
+
+> mllabiome addresses a methodological gap between general-purpose machine-learning libraries and microbiome-specific analytical workflows. Its distinguishing feature is an evaluation architecture in which microbiome representation, preprocessing, model optimization, ensemble construction, and multimodal integration can be evaluated within the same nested, group-aware resampling hierarchy. This design allows analytical choices that are commonly fixed before cross-validation to be treated as model-selection decisions while maintaining an untouched outer evaluation set. The framework additionally propagates this separation to model interpretation and robustness analyses, providing a common provenance structure from preprocessing through prediction and explanation.
 
 `mllabiome` is a Python library for **microbiome machine learning**, designed for rigorous phenotype prediction, model benchmarking, ensemble learning, multimodal integration, explainable AI, and cross-cohort validation.
 
