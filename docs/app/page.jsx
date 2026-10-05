@@ -3479,7 +3479,7 @@ export default function Home() {
         <main>
             <section className="lp-hero lp-section">
                 <div className="lp-hero-copy">
-                    <div className="lp-version">mllabiome <span>0.1.0rc123</span></div>
+                    <div className="lp-version">mllabiome <span>0.1.0</span></div>
                     <h1>Machine learning for microbiome research</h1>
                     <p className="lp-hero-lead">Build, compare, combine and explain predictive models from microbiome abundance data.</p>
                     <p className="lp-hero-detail">A research library for finding reproducible patterns in microbiome data and testing whether modelling choices generalize beyond the samples used to build them.</p>
