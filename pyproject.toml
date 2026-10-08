@@ -8,7 +8,7 @@ name = "mllabiome"
 dynamic = ["version"]
 description = "Machine learning, ensemble learning, multimodal modeling, and explainable AI for microbiome data with end to end evaluation."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [
@@ -100,6 +100,64 @@ dev = [
 benchmark = [
   "curated-microbiota>=0.2.0",
 ]
+
+[project.optional-dependencies]
+tabpfn = [
+  "tabpfn==9.1.0",
+]
+
+waypoint = [
+  "waypoint-bio==1.0.2",
+  "torch>=2.0.1",
+  "transformers>=4.33.3,<5",
+  "filelock>=3.13",
+]
+
+mgm = [
+  "microformer-mgm==0.5.8",
+  "torch>=2.0.1",
+  "transformers>=4.33.3,<5",
+  "filelock>=3.13",
+]
+
+mgm2 = [
+  "torch>=2.0.1",
+  "transformers>=4.33.3,<5",
+  "pytorch-lightning>=2.0.6,<3",
+  "h5py>=3.8",
+  "huggingface-hub>=0.23",
+  "biopython>=1.81",
+  "filelock>=3.13",
+]
+
+foundation = [
+  "waypoint-bio==1.0.2",
+  "microformer-mgm==0.5.8",
+  "torch>=2.0.1",
+  "transformers>=4.33.3,<5",
+  "pytorch-lightning>=2.0.6,<3",
+  "h5py>=3.8",
+  "huggingface-hub>=0.23",
+  "biopython>=1.81",
+  "filelock>=3.13",
+]
+
+[tool.uv]
+environments = [
+  "python_version >= '3.10' and python_version < '3.14'",
+]
+override-dependencies = [
+  "numpy>=1.24.3,<3",
+  "pandas>=2.0.3,<3",
+  "pytorch-lightning>=2.0.6,<3",
+  "scikit-learn>=1.6,<2",
+  "setuptools>=82",
+  "torch>=2.0.1",
+  "tqdm>=4.66",
+  "transformers>=4.33.3,<5",
+  "accelerate>=0.20.1",
+]
+
 
 [tool.uv.sources]
 curated-microbiota = { git = "https://github.com/CMG-GUTS/curated-microbiota", tag = "v0.2.0" }

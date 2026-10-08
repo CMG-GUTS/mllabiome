@@ -3,9 +3,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from mllabiome.report_statistics import (_paired_resample_indices,
-                                         _prepare_oof_frame,
-                                         _resample_subjects)
+from mllabiome.report_statistics import (
+    _paired_resample_indices,
+    _prepare_oof_frame,
+    _resample_subjects,
+)
 
 
 def _repeated_frame():

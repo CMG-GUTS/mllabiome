@@ -4,12 +4,21 @@ import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr
 from sklearn.base import BaseEstimator
-from sklearn.metrics import (accuracy_score, auc, average_precision_score,
-                             explained_variance_score, f1_score,
-                             mean_absolute_error, mean_squared_error,
-                             median_absolute_error, precision_recall_curve,
-                             precision_score, r2_score, recall_score,
-                             roc_auc_score)
+from sklearn.metrics import (
+    accuracy_score,
+    auc,
+    average_precision_score,
+    explained_variance_score,
+    f1_score,
+    mean_absolute_error,
+    mean_squared_error,
+    median_absolute_error,
+    precision_recall_curve,
+    precision_score,
+    r2_score,
+    recall_score,
+    roc_auc_score,
+)
 
 from .utils import METRIC_COLUMNS, REGRESSION_METRIC_COLUMNS
 
@@ -148,10 +157,13 @@ def aggregate_validation_metric(rows: pd.DataFrame, metric: str) -> tuple[float,
 
 
 def _coerce_X_for_estimator(clf: BaseEstimator, X):
-    names = getattr(clf, "feature_names_in_", None)
-    if names is None:
+    raw_names = getattr(clf, "feature_names_in_", None)
+    if raw_names is None:
         return X
-    names = [str(c) for c in list(names)]
+    names_array = np.asarray(raw_names, dtype=object)
+    if names_array.ndim != 1:
+        return X
+    names = [str(c) for c in names_array.tolist()]
     if isinstance(X, pd.DataFrame):
         if list(map(str, X.columns)) == names:
             return X
@@ -160,7 +172,7 @@ def _coerce_X_for_estimator(clf: BaseEstimator, X):
         arr = np.asarray(X)
     if arr.ndim == 1:
         arr = arr.reshape(1, -1)
-    if arr.shape[1] != len(names):
+    if arr.ndim != 2 or arr.shape[1] != len(names):
         return X
     return pd.DataFrame(arr, columns=names)
 

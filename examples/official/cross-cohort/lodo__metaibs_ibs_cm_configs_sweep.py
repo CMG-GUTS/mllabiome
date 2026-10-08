@@ -3,20 +3,20 @@ from __future__ import annotations
 from pathlib import Path
 
 from catboost import CatBoostClassifier
-from curated_microbiota.collections import crc_multicohort
+from curated_microbiota.collections import metaibs_ibs
 from sklearn.ensemble import RandomForestClassifier
 
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
-TITLE = "CRC multicohort LODO mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "CRC-MULTICOHORT-LODO-CM"
+TITLE = "MetaIBS fecal IBS LODO mllabiome benchmark sweep"
+EXPERIMENT_DIR = HERE / "runs" / "METAIBS-IBS-LODO-CM-v2"
 
-DATA = crc_multicohort.mllabiome(target="crc")
+DATA = metaibs_ibs.mllabiome(target="ibs")
 
-EVALUATION = crc_multicohort.splits(
-    target="crc",
-    benchmark="mllabiome-benchmark-v1",
+EVALUATION = metaibs_ibs.splits(
+    target="ibs",
+    benchmark="mllabiome-benchmark-v2",
 ).mllabiome(
     optimize_metric="log_loss",
     n_jobs="auto",

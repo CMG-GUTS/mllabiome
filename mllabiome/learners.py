@@ -10,15 +10,26 @@ import numpy as np
 from sklearn import config_context, get_config
 from sklearn.base import BaseEstimator
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.discriminant_analysis import (LinearDiscriminantAnalysis,
-                                           QuadraticDiscriminantAnalysis)
-from sklearn.ensemble import (ExtraTreesClassifier, ExtraTreesRegressor,
-                              HistGradientBoostingClassifier,
-                              HistGradientBoostingRegressor,
-                              RandomForestClassifier, RandomForestRegressor)
-from sklearn.linear_model import (ElasticNet, LogisticRegression,
-                                  PassiveAggressiveClassifier, Ridge,
-                                  RidgeClassifier, SGDClassifier)
+from sklearn.discriminant_analysis import (
+    LinearDiscriminantAnalysis,
+    QuadraticDiscriminantAnalysis,
+)
+from sklearn.ensemble import (
+    ExtraTreesClassifier,
+    ExtraTreesRegressor,
+    HistGradientBoostingClassifier,
+    HistGradientBoostingRegressor,
+    RandomForestClassifier,
+    RandomForestRegressor,
+)
+from sklearn.linear_model import (
+    ElasticNet,
+    LogisticRegression,
+    PassiveAggressiveClassifier,
+    Ridge,
+    RidgeClassifier,
+    SGDClassifier,
+)
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 from sklearn.naive_bayes import BernoulliNB, GaussianNB, MultinomialNB
 from sklearn.neighbors import KNeighborsClassifier, NearestCentroid
@@ -26,8 +37,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC, LinearSVC
 from sklearn.tree import DecisionTreeClassifier
 
-from .estimator_protocol import (EstimatorLike, clone_estimator,
-                                 is_estimator_instance)
+from .estimator_protocol import EstimatorLike, clone_estimator, is_estimator_instance
 
 _COMPUTE_ONLY_DISPLAY_PARAMS = {
     "n_jobs",
@@ -41,6 +51,7 @@ _COMPUTE_ONLY_DISPLAY_PARAMS = {
     "max_iter",
     "tol",
     "time_budget",
+    "n_preprocessing_jobs",
 }
 
 _DISPLAY_PARAM_PRIORITY = (
@@ -100,6 +111,7 @@ _LEARNER_DISPLAY_NAMES = {
     "QuadraticDiscriminantAnalysis": "Quadratic discriminant analysis",
     "SGDClassifier": "Stochastic gradient descent",
     "FLAMLClassifier": "FLAML",
+    "TabPFNClassifier": "TabPFN",
     "XGBClassifier": "XGBoost",
     "XGBRegressor": "XGBoost",
     "LGBMClassifier": "LightGBM",
@@ -309,6 +321,7 @@ class GroupAwareCalibratedClassifier(BaseEstimator):
     def fit(self, X, y, groups=None):
         splits = self._splits(X, y, groups)
         base_estimator = clone_estimator(self.estimator)
+        _restore_class_weight_keys(base_estimator, y)
         fit_params = {}
         if groups is not None:
             try:
@@ -382,6 +395,40 @@ def _estimator_children(estimator: Any) -> list[Any]:
                 else:
                     stack.append(item)
     return children
+
+
+def _restore_class_weight_keys(
+    estimator: Any, y: Any, seen: set[int] | None = None
+) -> None:
+    if seen is None:
+        seen = set()
+    marker = id(estimator)
+    if marker in seen:
+        return
+    seen.add(marker)
+    classes = np.unique(np.asarray(y))
+    class_weight = getattr(estimator, "class_weight", None)
+    if isinstance(class_weight, dict):
+        restored = {}
+        for key, weight in class_weight.items():
+            matches = []
+            for klass in classes:
+                try:
+                    if key == klass:
+                        matches = [klass]
+                        break
+                except Exception:
+                    pass
+                if str(key) == str(klass):
+                    matches.append(klass)
+            restored_key = matches[0] if len(matches) == 1 else key
+            restored[restored_key] = weight
+        if callable(getattr(estimator, "set_params", None)):
+            estimator.set_params(class_weight=restored)
+        else:
+            estimator.class_weight = restored
+    for child in _estimator_children(estimator):
+        _restore_class_weight_keys(child, y, seen)
 
 
 def _first_group_sensitive_descendant(
@@ -654,6 +701,7 @@ def _pipeline_group_fit_params(
 
 
 def fit_classifier(estimator: EstimatorLike, X, y, groups=None) -> EstimatorLike:
+    _restore_class_weight_keys(estimator, y)
     groups_array = None if groups is None else np.asarray(groups)
     if groups_array is not None and groups_array.shape[0] != len(y):
         raise ValueError("groups must contain exactly one value per training sample.")
@@ -957,6 +1005,10 @@ def build_learner(name: str, task: str = "classification") -> BaseEstimator:
         return FLAMLClassifier(
             time_budget=600, metric="roc_auc", n_jobs=1, random_state=42
         )
+    if base in {"tabpfn", "tabpfn_latest", "tabpfn3"}:
+        from .tabpfn import TabPFNClassifier
+
+        return TabPFNClassifier(random_state=42)
     if base == "siamcat":
         from .siamcat import SIAMCATClassifier
 

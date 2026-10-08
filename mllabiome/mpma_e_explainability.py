@@ -13,9 +13,11 @@ from . import explainability as _core
 from .configs_sweep import _lodo_feature_pair
 from .console import info, progress, success, summary_table
 from .data import load_dataset
-from .ensemble_aggregation import (LINEAR_PROBABILITY_AGGREGATIONS,
-                                   aggregate_member_predictions,
-                                   effective_aggregation_weights)
+from .ensemble_aggregation import (
+    LINEAR_PROBABILITY_AGGREGATIONS,
+    aggregate_member_predictions,
+    effective_aggregation_weights,
+)
 from .final_models import build_final_models
 from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
 from .storage import read_table, table_exists, write_table
@@ -179,6 +181,7 @@ def _fit_oof_members_fold_task(
     stored: pd.DataFrame,
     aggregation: str,
     weighted_input: list[float] | None,
+    aggregation_parameters: dict[str, Any],
     threads_per_worker: int,
 ) -> tuple[int, dict[str, Any] | None, list[dict[str, Any]]]:
     train_idx = np.asarray(split["train_idx"], dtype=int)
@@ -204,6 +207,7 @@ def _fit_oof_members_fold_task(
             spec["transformation_key"],
             feature_blocks,
             resolution_feature_blocks=spec["feature_blocks"],
+            feature_names=names,
         )()
         X_train, X_test = ct.apply_pair(X_train_raw, X_test_raw)
         coordinate_metadata = ct.coordinate_metadata(names)
@@ -266,7 +270,9 @@ def _fit_oof_members_fold_task(
             }
         )
     stack = np.stack(member_proba, axis=0)
-    ensemble_proba = aggregate_member_predictions(stack, aggregation, weighted_input)
+    ensemble_proba = aggregate_member_predictions(
+        stack, aggregation, weighted_input, aggregation_parameters
+    )
     fold = {
         "split_key": str(split["split_key"]),
         "train_idx": train_idx,
@@ -301,6 +307,7 @@ def _fit_oof_members(
     weighted_input = (
         linear_weights.tolist() if aggregation == "weighted_mean_proba" else None
     )
+    aggregation_parameters = mpma_e.get("aggregation_parameters", {})
     execution = _core._xai_execution_plan(sweep, len(splits))
     tasks = [
         (
@@ -314,6 +321,7 @@ def _fit_oof_members(
                 stored,
                 aggregation,
                 weighted_input,
+                aggregation_parameters,
                 int(execution.threads_per_worker),
             ),
             {},
@@ -539,14 +547,32 @@ def _write_prediction_tables(
 
         if stack.shape[0] > 1:
             for member_index, member in enumerate(fold["members"]):
-                reduced_stack = np.delete(stack, member_index, axis=0)
                 reduced_weights = None
-                if aggregation == "weighted_mean_proba":
-                    assert linear_weights is not None
-                    reduced_weights = np.delete(linear_weights, member_index)
-                reduced = aggregate_member_predictions(
-                    reduced_stack, aggregation, reduced_weights
-                )
+                if aggregation in {
+                    "logistic_stacking",
+                    "elastic_net_stacking",
+                    "cohort_robust_stacking",
+                    "rf_stacking",
+                    "extra_trees_stacking",
+                    "boosted_stacking",
+                    "gated_stacking",
+                    "hierarchical_dirichlet_stacking",
+                    "temperature_scaled_mean_proba",
+                    "sigmoid_calibrated_mean_proba",
+                }:
+                    reduced_stack = np.asarray(stack, dtype=float).copy()
+                    reduced_stack[member_index, :, :] = 1.0 / float(stack.shape[2])
+                    reduced = aggregate_member_predictions(
+                        reduced_stack, aggregation, None, aggregation_parameters
+                    )
+                else:
+                    reduced_stack = np.delete(stack, member_index, axis=0)
+                    if aggregation == "weighted_mean_proba":
+                        assert linear_weights is not None
+                        reduced_weights = np.delete(linear_weights, member_index)
+                    reduced = aggregate_member_predictions(
+                        reduced_stack, aggregation, reduced_weights
+                    )
                 delta = ensemble - reduced
                 for local_i, global_i in enumerate(test_idx):
                     for class_index, label in enumerate(dataset.class_labels):

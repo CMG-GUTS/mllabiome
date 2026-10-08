@@ -4,8 +4,13 @@ import pytest
 from sklearn.dummy import DummyClassifier
 
 import mllabiome.configs_sweep as cs
-from mllabiome.configs_sweep import (Ensemble, Evaluation, QualificationGate,
-                                     Sweep, evaluate)
+from mllabiome.configs_sweep import (
+    Ensemble,
+    Evaluation,
+    QualificationGate,
+    Sweep,
+    evaluate,
+)
 from mllabiome.data import Data, Dataset
 from mllabiome.ensemble_sweep import select_mpma_e_by_outer_fold
 from mllabiome.selection import select_mpma_b_by_outer_fold
@@ -326,12 +331,26 @@ class _ConstantEstimator:
 class _AuditTransformer:
     def __init__(self, calls):
         self.calls = calls
+        self.n_features_in_ = None
 
     def apply_pair(self, X_train, X_test):
         train = np.asarray(X_train, dtype=float).copy()
         test = np.asarray(X_test, dtype=float).copy()
+        self.n_features_in_ = int(train.shape[1])
         self.calls.append((train, test))
         return train, test
+
+    def feature_filter_metadata(self):
+        if self.n_features_in_ is None:
+            raise RuntimeError("AuditTransformer has not been fitted")
+        return {
+            "feature_filter": "none",
+            "prevalence_threshold": float("nan"),
+            "detection_threshold": float("nan"),
+            "prevalence_min_samples": 0,
+            "n_features_before_filter": self.n_features_in_,
+            "n_features_after_filter": self.n_features_in_,
+        }
 
 
 def _feature_dataset():
@@ -423,7 +442,7 @@ def test_evaluate_lodo_applies_fold_local_feature_vocabulary_before_transformati
     monkeypatch.setattr(
         cs,
         "_count_transformation_factory",
-        lambda item, random_state, feature_blocks=None: (
+        lambda item, random_state, feature_blocks=None, feature_names=None: (
             "identity",
             lambda: _AuditTransformer(calls),
         ),

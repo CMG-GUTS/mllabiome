@@ -19,20 +19,29 @@ from .data import Dataset, _taxonomic_rank, dataset_fingerprint, load_dataset
 from .data import metadata_path as training_metadata_path
 from .ensemble_aggregation import PROBABILITY_PRESERVING_AGGREGATIONS
 from .evaluation_splits import _groups_from_metadata
-from .final_models import (aggregate_member_predictions, build_final_models,
-                           hydrate_final_models)
+from .final_models import (
+    aggregate_member_predictions,
+    build_final_models,
+    hydrate_final_models,
+)
 from .learners import _learner_factory, _learner_name, fit_classifier
 from .metrics import _estimator_call, _predict_proba_aligned
-from .resolutions import (_normalise_levels, _parse_resolution,
-                          materialize_mpdr_with_blocks)
+from .resolutions import (
+    _normalise_levels,
+    _parse_resolution,
+    materialize_mpdr_with_blocks,
+)
 from .runtime import configure_estimator_threads
 from .storage import table_exists
-from .transformations import (PrevalenceFilter, Transform,
-                              _count_transformation_factory,
-                              _count_transformation_specs_for_blocks,
-                              _parse_transformation_identity,
-                              _split_transformation_filter_identity,
-                              transformation_label)
+from .transformations import (
+    PrevalenceFilter,
+    Transform,
+    _count_transformation_factory,
+    _count_transformation_specs_for_blocks,
+    _parse_transformation_identity,
+    _split_transformation_filter_identity,
+    transformation_label,
+)
 from .utils import dump_json_standard
 
 _DEPLOYMENT_SCHEMA = 1
@@ -643,6 +652,7 @@ def _fit_member(
             ct_item,
             random_state=int(sweep.evaluation.random_state),
             feature_blocks=blocks,
+            feature_names=list(train_names),
         )
         transformer = factory()
         train_transformed, test_transformed = transformer.apply_pair(
@@ -766,7 +776,9 @@ def _strategy_predictions(
             float(member.get("aggregation_weight", member.get("weight")))
             for member in unit["members"]
         ]
-    predictions = aggregate_member_predictions(stack, aggregation, weights)
+    predictions = aggregate_member_predictions(
+        stack, aggregation, weights, unit.get("aggregation_parameters", {})
+    )
     if dataset.task == "classification" and aggregation in set(
         PROBABILITY_PRESERVING_AGGREGATIONS
     ):

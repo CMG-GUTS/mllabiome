@@ -1,15 +1,3 @@
-IBS
-
-@article{carcy2024metaibs,
-  title={{MetaIBS-large-scale amplicon-based meta analysis of irritable bowel syndrome}},
-  author={Carcy, Salom{\'e} and Ostner, Johannes and Tran, Viet and Menden, Michael and M{\"u}ller, Christian L},
-  journal={bioRxiv},
-  pages={2024--01},
-  year={2024},
-  publisher={{Cold Spring Harbor Laboratory}}
-}
-
-
 PTSD
 
 @article{voigt2025prebiotics,

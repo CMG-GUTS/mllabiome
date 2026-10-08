@@ -2,23 +2,24 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from catboost import CatBoostClassifier
-from curated_microbiota.collections import lampp_dm7
-from sklearn.ensemble import RandomForestClassifier
+from curated_microbiota.collections import lampp_ghs
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.naive_bayes import ComplementNB
+from sklearn.svm import LinearSVC
 
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
-TITLE = "LAMPP delivery mode <=7 days LODO mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "LAMPP-DM7-LODO-CM"
+TITLE = "LAMPP general health status LODO mllabiome benchmark sweep"
+EXPERIMENT_DIR = HERE / "runs" / "LAMPP-GHS-LODO-CM-official-v2"
 
-DATA = lampp_dm7.mllabiome()
+DATA = lampp_ghs.mllabiome()
 
-EVALUATION = lampp_dm7.splits(
-    benchmark="mllabiome-benchmark-v1",
+EVALUATION = lampp_ghs.splits(
+    benchmark="mllabiome-benchmark-v2",
 ).mllabiome(
     optimize_metric="log_loss",
-    n_jobs="auto",
+    n_jobs=1,
 )
 
 EXPLORE = mll.Explore(
@@ -35,54 +36,35 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
-    ("class", ("class",)),
-    ("genus", ("genus",)),
-    ("class-order", ("class", "order")),
+    ("species", ("species",)),
+    ("strain", ("strain",)),
 )
 
-COUNT_TRANSFORMATIONS = (
-    mll.Transformation("presence_absence"),
-    mll.Transformation("identity"),
-    mll.Transformation("arcsine_sqrt", composition_scope="joint"),
-    mll.Transformation("yeo_johnson", composition_scope="joint"),
-    mll.Transformation(
-        "relative_abundance",
-        composition_scope="joint",
-        feature_filter=mll.PrevalenceFilter(
-            threshold=0.20,
-        ),
-    ),
-    mll.Transformation("log10", composition_scope="rank-wise"),
-)
+COUNT_TRANSFORMATIONS = (mll.Transformation("presence_absence"),)
 
 MODELS = (
     (
-        "RF_1000_msl5",
-        RandomForestClassifier(
-            n_estimators=1000,
-            min_samples_leaf=5,
-            n_jobs=1,
-            random_state=42,
+        "CNB_1.6e7",
+        ComplementNB(
+            alpha=1.6e-7,
+            norm=True,
+            force_alpha=True,
         ),
     ),
-    (
-        "CB_abundance_i300_d3",
-        CatBoostClassifier(
-            iterations=300,
-            learning_rate=0.04,
-            depth=3,
-            l2_leaf_reg=10,
-            random_strength=1.0,
-            rsm=0.60,
-            loss_function="Logloss",
-            eval_metric="Logloss",
-            random_seed=42,
-            thread_count=1,
-            verbose=False,
-            allow_writing_files=False,
-        ),
-    ),
+    # (
+    #     "LinearSVC_c1.1e-6_cw5.4",
+    #     LinearSVC(
+    #         C=1.1e-6,
+    #         loss="squared_hinge",
+    #         dual="auto",
+    #         class_weight={"0": 1.0, "1": 5.4},
+    #         tol=1e-8,
+    #         max_iter=30000,
+    #         random_state=17,
+    #     ),
+    # ),
 )
+
 
 GATE = mll.QualificationGate(
     enabled=False,
@@ -91,7 +73,7 @@ GATE = mll.QualificationGate(
 )
 
 ENSEMBLE = mll.Ensemble(
-    max_sizes=(3,),
+    max_sizes=(10,),
     selection_strategies=(
         "top_k",
         "best_per_resolution",
@@ -104,7 +86,7 @@ ENSEMBLE = mll.Ensemble(
         "weighted_mean_proba",
         "median_proba",
     ),
-    optimize_metric="log_loss",
+    optimize_metric="MCC",
 )
 
 EXPLAINABILITY = mll.Explainability(
@@ -125,7 +107,7 @@ ROBUSTNESS = mll.Robustness(
     top_k=30,
 )
 
-EXTERNAL_TEST = lampp_dm7.external_test
+EXTERNAL_TEST = lampp_ghs.external_test
 
 if EXTERNAL_TEST is None:
     raise RuntimeError("LAMPP external test set is unavailable")
@@ -134,7 +116,6 @@ INFERENCE = EXTERNAL_TEST.mllabiome(
     targets=("mpma_b", "mpma_e"),
     feature_policy="strict",
 )
-
 
 SWEEP = mll.Sweep(
     data=DATA,

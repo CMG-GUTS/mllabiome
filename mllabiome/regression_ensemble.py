@@ -15,15 +15,18 @@ from .console import path_table, stage, success, summary_table
 from .ensemble_progress import EnsembleSearchProgress
 from .integrations import integration_modality_sets
 from .metrics import compute_regression_metrics, metric_better, metric_is_loss
-from .selection import (_qualified_config_ids_for_splits,
-                        select_final_mpma_candidate,
-                        select_mpma_b_by_outer_fold,
-                        selected_mpma_b_outer_predictions)
+from .selection import (
+    _qualified_config_ids_for_splits,
+    select_final_mpma_candidate,
+    select_mpma_b_by_outer_fold,
+    selected_mpma_b_outer_predictions,
+)
 from .storage import read_table, table_exists, write_table
 from .utils import dump_json_standard
 
-_REGRESSION_SEARCH_SCHEMA = "mpmae_regression_search_v2"
+_REGRESSION_SEARCH_SCHEMA = "mpmae_regression_search_v3"
 _WEIGHT_TOL = 1e-8
+_MIN_EFFECTIVE_WEIGHT = 0.01
 _OPT_MAXITER = 1000
 _OPT_FTOL = 1e-12
 
@@ -490,6 +493,21 @@ def _evaluate_candidate(
     weights: np.ndarray | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if len(members) < 2 or len(set(members)) != len(members):
+        raise ValueError(
+            "Regression MPMA-E must contain at least two distinct members."
+        )
+    if stack.shape[0] != len(members):
+        raise ValueError("Regression MPMA-E prediction stack and members disagree.")
+    if weights is not None:
+        values = np.asarray(weights, dtype=float)
+        if (
+            values.shape != (len(members),)
+            or not np.isfinite(values).all()
+            or np.any(values < 0.0)
+            or int(np.count_nonzero(values > _WEIGHT_TOL)) < 2
+        ):
+            raise ValueError("Regression MPMA-E requires two positive-weight members.")
     pred = aggregate_regression_predictions(
         stack, str(spec["aggregation_strategy"]), weights
     )
@@ -580,43 +598,63 @@ def _fit_convex_regression_weights(
     y_true: np.ndarray,
     metric: str,
     start: np.ndarray | None = None,
+    min_weight: float = 0.0,
 ) -> np.ndarray:
     n = int(stack.shape[0])
     if n < 2:
         raise ValueError("Convex regression weighting requires at least two members.")
+    floor = float(min_weight)
+    if not np.isfinite(floor) or floor < 0.0 or floor * n >= 1.0:
+        raise ValueError("Infeasible convex regression weight floor.")
+    x0 = (
+        np.full(n, 1.0 / n, dtype=float)
+        if start is None
+        else np.asarray(start, dtype=float)
+    )
+    if x0.shape != (n,) or not np.isfinite(x0).all() or np.any(x0 < 0.0):
+        raise ValueError("Initial convex regression weights are invalid.")
+    if float(x0.sum()) <= 0.0:
+        raise ValueError("Initial convex regression weights must have positive mass.")
+    x0 = x0 / float(x0.sum())
+    scale = 1.0 - floor * n
+    if floor:
+        x0 = np.maximum(x0 - floor, 0.0)
+        x0 = x0 / float(x0.sum()) if float(x0.sum()) > 0.0 else np.full(n, 1.0 / n)
 
-    def objective(weights: np.ndarray) -> float:
+    def objective(values: np.ndarray) -> float:
+        weights = floor + scale * values
         pred = aggregate_regression_predictions(
             stack, "weighted_mean_prediction", weights
         )
         score = _metric_value(y_true, pred, metric)
         return float(score if metric_is_loss(metric) else -score)
 
-    x0 = (
-        np.full(n, 1.0 / n, dtype=float)
-        if start is None
-        else np.asarray(start, dtype=float)
-    )
-    x0 = np.clip(x0, 0.0, None)
-    if not np.isfinite(x0).all() or float(x0.sum()) <= 0.0:
-        raise ValueError("Initial convex regression weights are invalid.")
-    x0 /= float(x0.sum())
     result = minimize(
         objective,
         x0,
         method="SLSQP",
         bounds=[(0.0, 1.0)] * n,
-        constraints=[{"type": "eq", "fun": lambda w: float(np.sum(w) - 1.0)}],
+        constraints=[
+            {
+                "type": "eq",
+                "fun": lambda w: float(np.sum(w) - 1.0),
+                "jac": lambda w: np.ones_like(w),
+            }
+        ],
         options={"maxiter": _OPT_MAXITER, "ftol": _OPT_FTOL, "disp": False},
     )
     if not bool(result.success):
         raise RuntimeError(
             f"Regression Super Learner optimization failed: {result.message}"
         )
-    values = np.clip(np.asarray(result.x, dtype=float), 0.0, None)
-    if not np.isfinite(values).all() or float(values.sum()) <= 0.0:
+    values = np.maximum(np.asarray(result.x, dtype=float), 0.0)
+    if not np.all(np.isfinite(values)) or float(values.sum()) <= 0.0:
         raise RuntimeError("Regression Super Learner returned invalid weights.")
-    return values / float(values.sum())
+    values /= float(values.sum())
+    weights = floor + scale * values
+    if not np.isfinite(weights).all() or np.any(weights < floor):
+        raise RuntimeError("Regression Super Learner returned infeasible weights.")
+    return weights
 
 
 def _fit_super_learner(
@@ -626,19 +664,42 @@ def _fit_super_learner(
     metric: str,
     max_members: int,
 ) -> tuple[list[str], np.ndarray]:
+    if len(library) < 2 or len(set(library)) != len(library) or max_members < 2:
+        raise ValueError("Regression Super Learner requires two distinct members.")
+    if stack.shape[0] != len(library):
+        raise ValueError("Regression Super Learner library and stack disagree.")
     full = _fit_convex_regression_weights(stack, y_true, metric)
-    keep = np.flatnonzero(full > _WEIGHT_TOL).tolist()
+    ranked = sorted(
+        range(len(library)),
+        key=lambda index: (-float(full[index]), str(library[index])),
+    )
+    anchor = ranked[0]
+    keep = [anchor] + [
+        index for index in ranked[1:] if float(full[index]) >= _MIN_EFFECTIVE_WEIGHT
+    ]
+    keep = keep[: min(max_members, len(library))]
     if len(keep) < 2:
-        keep = sorted(
-            range(len(library)), key=lambda i: (-float(full[i]), str(library[i]))
-        )[: min(2, len(library))]
-    if len(keep) > max_members:
-        keep = sorted(keep, key=lambda i: (-float(full[i]), str(library[i])))[
-            :max_members
-        ]
+        partners: list[tuple[float, str, int]] = []
+        for index in range(len(library)):
+            if index == anchor:
+                continue
+            predictions = (1.0 - _MIN_EFFECTIVE_WEIGHT) * stack[
+                anchor
+            ] + _MIN_EFFECTIVE_WEIGHT * stack[index]
+            value = _metric_value(y_true, predictions, metric)
+            partners.append(
+                (
+                    float(value if metric_is_loss(metric) else -value),
+                    str(library[index]),
+                    index,
+                )
+            )
+        keep.append(min(partners)[2])
     keep = sorted(keep)
-    weights = _fit_convex_regression_weights(stack[keep], y_true, metric, full[keep])
-    return [library[i] for i in keep], weights
+    weights = _fit_convex_regression_weights(
+        stack[keep], y_true, metric, full[keep], min_weight=_MIN_EFFECTIVE_WEIGHT
+    )
+    return [library[index] for index in keep], weights
 
 
 def _late_fusion_members(
@@ -745,9 +806,9 @@ def _candidate_from_late_fusion(
         )
         return _evaluate_candidate(spec, members, stack, y_true, metric, weights, extra)
     if integration == "late_super_learner":
-        weights = _fit_convex_regression_weights(stack, y_true, metric)
-        if int(np.count_nonzero(weights > _WEIGHT_TOL)) < 2:
-            return None
+        weights = _fit_convex_regression_weights(
+            stack, y_true, metric, min_weight=_MIN_EFFECTIVE_WEIGHT
+        )
         extra.update(
             {
                 "weight_source": f"late_convex_{metric}",

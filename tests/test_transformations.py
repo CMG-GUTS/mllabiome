@@ -7,17 +7,23 @@ from skbio.stats.composition import clr as skbio_clr
 from skbio.stats.composition import ilr as skbio_ilr
 from skbio.stats.composition import multi_replace as skbio_multi_replace
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import (PowerTransformer, QuantileTransformer,
-                                   RobustScaler, StandardScaler)
+from sklearn.preprocessing import (
+    PowerTransformer,
+    QuantileTransformer,
+    RobustScaler,
+    StandardScaler,
+)
 
 from mllabiome.configs_sweep import build_sweep_configs
 from mllabiome.data import Dataset
 from mllabiome.resolutions import _parse_resolution, materialize_mpdr
-from mllabiome.transformations import (TRANSFORMATION_LABELS,
-                                       CountTransformation,
-                                       CountTransformationAdapter,
-                                       Transformation,
-                                       transformation_space_table)
+from mllabiome.transformations import (
+    TRANSFORMATION_LABELS,
+    CountTransformation,
+    CountTransformationAdapter,
+    Transformation,
+    transformation_space_table,
+)
 
 EXPECTED_TRANSFORMATIONS = {
     "identity",

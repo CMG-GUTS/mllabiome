@@ -10,9 +10,16 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .siamcat_runtime import (BIOCONDUCTOR_VERSION, R_VERSION, _cache_root,
-                              _choose_rscript, _installation_lock, _r_env,
-                              _r_version, _run)
+from .siamcat_runtime import (
+    BIOCONDUCTOR_VERSION,
+    R_VERSION,
+    _cache_root,
+    _choose_rscript,
+    _installation_lock,
+    _r_env,
+    _r_version,
+    _run,
+)
 
 ANCOMBC_VERSION = "2.14.0"
 

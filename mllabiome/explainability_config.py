@@ -6,16 +6,17 @@ from typing import Any
 import numpy as np
 from sklearn.base import BaseEstimator
 
-from .explainability_methods import (ALE, ALEInteractions, coerce_method,
-                                     method_name)
+from .explainability_methods import ALE, ALEInteractions, coerce_method, method_name
 from .learners import _learner_factory
 from .sweep_types import Sweep
-from .transformations import (CountTransformationAdapter,
-                              _count_transformation_factory,
-                              _count_transformation_specs_for_blocks)
+from .transformations import (
+    CountTransformationAdapter,
+    _count_transformation_factory,
+    _count_transformation_specs_for_blocks,
+)
 
 _EXPLAINABILITY_METHODS = {"shap", "lime", "ale", "permutation", "interactions"}
-_EXPLAINABILITY_PIPELINE_SCHEMA = "oof-coordinate-reconstruction-v2"
+_EXPLAINABILITY_PIPELINE_SCHEMA = "oof-coordinate-reconstruction-v3-taxon-proxy"
 
 
 class ExplainabilityConfigurationError(RuntimeError):
@@ -164,6 +165,7 @@ def _configured_count_transformation_factory(
     feature_blocks: Any = None,
     *,
     resolution_feature_blocks: Any = None,
+    feature_names: Any = None,
 ) -> Callable[[], CountTransformationAdapter]:
     reference_blocks = (
         feature_blocks
@@ -187,6 +189,7 @@ def _configured_count_transformation_factory(
         item,
         random_state=sweep.evaluation.random_state,
         feature_blocks=feature_blocks,
+        feature_names=feature_names,
     )
     if str(resolved_name) != str(key):
         raise ExplainabilityConfigurationError(

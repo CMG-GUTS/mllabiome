@@ -6,21 +6,38 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
-from ._evaluation_protocols import (SUPPORTED_EVALUATION_PROTOCOLS,
-                                    is_lodo_protocol,
-                                    normalize_evaluation_protocol)
+from .advanced_ensemble import ADVANCED_AGGREGATIONS
+from ._evaluation_protocols import (
+    SUPPORTED_EVALUATION_PROTOCOLS,
+    is_lodo_protocol,
+    normalize_evaluation_protocol,
+)
 from .data import Data
-from .ensemble_aggregation import (PROBABILITY_PRESERVING_AGGREGATIONS,
-                                   SUPPORTED_AGGREGATIONS)
-from .explainability_methods import (ALE, SHAP, Permutation, apply_profile,
-                                     method_has_local, normalise_profile)
+from .ensemble_aggregation import (
+    PROBABILITY_PRESERVING_AGGREGATIONS,
+    SUPPORTED_AGGREGATIONS,
+)
+from .explainability_methods import (
+    ALE,
+    SHAP,
+    Permutation,
+    apply_profile,
+    method_has_local,
+    normalise_profile,
+)
 from .integrations import Integration
 from .learners import validate_model_specs
-from .metrics import (canonical_metric_name, metric_passes_threshold,
-                      metric_requires_probability_semantics)
+from .metrics import (
+    canonical_metric_name,
+    metric_passes_threshold,
+    metric_requires_probability_semantics,
+)
 from .modalities import Modality, Samples
-from .utils import (CLASSIFICATION_METRIC_COLUMNS, REGRESSION_METRIC_COLUMNS,
-                    TAXONOMIC_LEVELS)
+from .utils import (
+    CLASSIFICATION_METRIC_COLUMNS,
+    REGRESSION_METRIC_COLUMNS,
+    TAXONOMIC_LEVELS,
+)
 
 
 class SweepTask(str, Enum):
@@ -211,7 +228,7 @@ class Ensemble:
     include_model_ensembles: bool = True
     late_integrations: tuple[Integration, ...] = ()
 
-    include_inactive: bool = True
+    include_inactive: bool = False
 
     threshold_score: float = 0.30
     threshold_max_members: int = 50
@@ -540,8 +557,17 @@ def _validate_sweep_configuration(sweep: Any) -> None:
         "top_k",
         "best_per_resolution",
         "best_per_learner_type",
+        "quality_diversity",
+        "diversity",
+        "performance_diversity",
         "caruana",
+        "bagged_caruana",
+        "caruana_multistart",
+        "beam",
         "super_learner",
+        "adaptive_super_learner",
+        "safe_super_learner",
+        "regularized_super_learner",
     }
     if sweep.ensemble.include_model_ensembles:
         unknown_selection = sorted(
@@ -553,7 +579,13 @@ def _validate_sweep_configuration(sweep: Any) -> None:
             )
         learned = set(sweep.ensemble.selection_strategies) & {
             "caruana",
+            "bagged_caruana",
+            "caruana_multistart",
+            "beam",
             "super_learner",
+            "adaptive_super_learner",
+            "safe_super_learner",
+            "regularized_super_learner",
         }
         simple = set(sweep.ensemble.selection_strategies) - learned
     else:
@@ -596,7 +628,7 @@ def _validate_sweep_configuration(sweep: Any) -> None:
                 and "weighted_mean_proba" not in sweep.ensemble.aggregation_strategies
             ):
                 raise ValueError(
-                    "Caruana and Super Learner require 'weighted_mean_proba' in Ensemble.aggregation_strategies."
+                    "Learned ensemble selectors require 'weighted_mean_proba' in Ensemble.aggregation_strategies."
                 )
             if simple and not any(
                 aggregation != "weighted_mean_proba"
@@ -618,6 +650,39 @@ def _validate_sweep_configuration(sweep: Any) -> None:
                 f"Unsupported classification late integration(s): {invalid_late}."
             )
     else:
+        classification_only_selection = {
+            "quality_diversity",
+            "diversity",
+            "performance_diversity",
+            "bagged_caruana",
+            "caruana_multistart",
+            "beam",
+            "adaptive_super_learner",
+            "safe_super_learner",
+            "regularized_super_learner",
+        }
+        invalid_selection = sorted(
+            set(sweep.ensemble.selection_strategies) & classification_only_selection
+        )
+        if invalid_selection:
+            raise ValueError(
+                f"Classification-only ensemble selection strategy(s) cannot be used for regression: {invalid_selection}."
+            )
+        classification_only_aggregation = {
+            "trimmed_mean",
+            "logit_mean",
+            "logistic_stacking",
+            "elastic_net_stacking",
+            "cohort_robust_stacking",
+            *ADVANCED_AGGREGATIONS,
+        }
+        invalid_aggregation = sorted(
+            set(sweep.ensemble.aggregation_strategies) & classification_only_aggregation
+        )
+        if invalid_aggregation:
+            raise ValueError(
+                f"Classification-only ensemble aggregation strategy(s) cannot be used for regression: {invalid_aggregation}."
+            )
         allowed_late = {
             "late_mean_prediction",
             "late_weighted_mean_prediction",

@@ -145,6 +145,26 @@ def _logical_cpu_count() -> int:
     return max(1, int(cpu_count()))
 
 
+def _optional_positive_integer_environment(name: str) -> int | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer.") from exc
+    if value < 1:
+        raise ValueError(f"{name} must be a positive integer.")
+    return value
+
+
+def _native_thread_budget(threads: int) -> int:
+    requested = max(1, int(threads))
+    if platform.system() == "Darwin":
+        return 1
+    return requested
+
+
 def resolve_execution_plan(
     n_jobs: int | str,
     task_count: int,
@@ -157,11 +177,12 @@ def resolve_execution_plan(
     physical = _physical_cpu_count()
     memory = available_memory_bytes()
     count = max(1, int(task_count))
+    macos = platform.system() == "Darwin"
     if isinstance(n_jobs, str):
         text = n_jobs.strip().lower()
         if text not in {"auto", "all"}:
             raise ValueError("Evaluation.n_jobs must be an integer, 'auto', or 'all'.")
-        desired = min(physical, 8) if text == "auto" else logical
+        desired = min(physical, 4 if macos else 8) if text == "auto" else logical
     else:
         requested = int(n_jobs)
         if requested == 0:
@@ -172,13 +193,16 @@ def resolve_execution_plan(
             desired = max(1, logical + 1 + requested)
         else:
             desired = min(logical, max(1, requested))
+    cap = _optional_positive_integer_environment("MLLABIOME_MAX_WORKERS")
+    if cap is not None:
+        desired = min(desired, cap)
     memory_cap = desired
     if memory is not None and min_worker_memory_gib > 0:
         usable = max(1, int(float(memory) * float(memory_fraction)))
         per_worker = max(1, int(float(min_worker_memory_gib) * (1024**3)))
         memory_cap = max(1, usable // per_worker)
     workers = max(1, min(desired, count, memory_cap))
-    threads = max(1, physical // workers)
+    threads = _native_thread_budget(physical // workers)
     return ExecutionPlan(
         logical_cpus=logical,
         physical_cpus=physical,
@@ -210,18 +234,19 @@ def iter_parallel_tasks(tasks: list[Any], execution: ExecutionPlan):
             wave = items[start : start + workers]
             wave_workers = max(1, min(workers, len(wave)))
             token = next(_WAVE_COUNTER)
-            yield from Parallel(
-                n_jobs=wave_workers,
-                backend="loky",
-                return_as="generator_unordered",
-                pre_dispatch=wave_workers,
-                batch_size=1,
-                max_nbytes="1M",
-                mmap_mode="r",
-                inner_max_num_threads=max(1, int(execution.threads_per_worker)),
-                initializer=_loky_wave_initializer,
-                initargs=(token,),
-            )(wave)
+            with thread_environment(execution.threads_per_worker):
+                yield from Parallel(
+                    n_jobs=wave_workers,
+                    backend="loky",
+                    return_as="generator_unordered",
+                    pre_dispatch=wave_workers,
+                    batch_size=1,
+                    max_nbytes="1M",
+                    mmap_mode="r",
+                    inner_max_num_threads=max(1, int(execution.threads_per_worker)),
+                    initializer=_loky_wave_initializer,
+                    initargs=(token,),
+                )(wave)
         return
     with parallel_backend(str(execution.backend), n_jobs=workers):
         yield from Parallel(
@@ -265,7 +290,14 @@ def configure_estimator_threads(estimator: Any, threads: int) -> Any:
         params = estimator.get_params(deep=True)
     except Exception:
         return estimator
-    names = {"n_jobs", "nthread", "thread_count", "num_threads", "n_threads"}
+    names = {
+        "n_jobs",
+        "nthread",
+        "thread_count",
+        "num_threads",
+        "n_threads",
+        "n_preprocessing_jobs",
+    }
     updates = {}
     for key in params:
         leaf = key.rsplit("__", 1)[-1]
@@ -275,7 +307,13 @@ def configure_estimator_threads(estimator: Any, threads: int) -> Any:
         owner = params.get(owner_key, estimator) if owner_key else estimator
         if leaf == "n_jobs" and owner.__class__.__name__ == "LogisticRegression":
             continue
-        updates[key] = int(max(1, threads))
+        module = type(owner).__module__.split(".", 1)[0]
+        budget = (
+            _native_thread_budget(threads)
+            if module in {"lightgbm", "xgboost"}
+            else max(1, int(threads))
+        )
+        updates[key] = int(budget)
     if updates:
         try:
             estimator.set_params(**updates)

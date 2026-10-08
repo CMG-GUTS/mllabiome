@@ -22,26 +22,42 @@ from joblib import delayed
 from sklearn.base import BaseEstimator
 from threadpoolctl import threadpool_limits
 
-from ._evaluation_protocols import (is_hierarchical_lodo_protocol,
-                                    is_lodo_protocol)
+from ._evaluation_protocols import is_hierarchical_lodo_protocol, is_lodo_protocol
 from ._version import __version__
 from .compute import ResourceTracker, machine_profile
 from .console import info, path_table, progress, stage, success, summary_table
 from .data import Dataset, dataset_fingerprint, load_dataset
 from .estimator_protocol import EstimatorLike, is_estimator_instance
 from .figures import _write_representation_impact_figure
-from .learners import (_learner_factory, _learner_name, fit_classifier,
-                       learner_display_label)
+from .learners import (
+    _learner_factory,
+    _learner_name,
+    fit_classifier,
+    learner_display_label,
+)
 from .metrics import _estimator_call
 from .metrics import _predict_proba_aligned as _metrics_predict_proba_aligned
-from .metrics import (aggregate_validation_metric, canonical_metric_name,
-                      compute_metrics, compute_regression_metrics,
-                      grouped_log_loss, metric_is_loss)
-from .resolutions import (FeatureBlocks, _parse_resolution,
-                          mask_feature_blocks, materialize_mpdr_with_blocks)
-from .runtime import (ExecutionPlan, configure_estimator_threads,
-                      iter_parallel_tasks, resolve_execution_plan,
-                      thread_environment)
+from .metrics import (
+    aggregate_validation_metric,
+    canonical_metric_name,
+    compute_metrics,
+    compute_regression_metrics,
+    grouped_log_loss,
+    metric_is_loss,
+)
+from .resolutions import (
+    FeatureBlocks,
+    _parse_resolution,
+    mask_feature_blocks,
+    materialize_mpdr_with_blocks,
+)
+from .runtime import (
+    ExecutionPlan,
+    configure_estimator_threads,
+    iter_parallel_tasks,
+    resolve_execution_plan,
+    thread_environment,
+)
 from .selection import write_mpma_b_selection_outputs
 from .storage import read_table, remove_table, table_exists, write_table
 from .sweep_types import MPDR
@@ -56,16 +72,19 @@ from .sweep_types import LocalExplanationMode as LocalExplanationMode
 from .sweep_types import LocalExplanations as LocalExplanations
 from .sweep_types import QualificationGate, Sweep
 from .sweep_types import SweepTask as SweepTask
-from .sweep_types import \
-    _effective_local_explanations_mode as _effective_local_explanations_mode
+from .sweep_types import (
+    _effective_local_explanations_mode as _effective_local_explanations_mode,
+)
 from .sweep_types import _normalise_sweep_task
 from .sweep_types import build_sweep_from_module as build_sweep_from_module
 from .sweep_types import sweep_task as sweep_task
 from .sweep_types import validate_sweep_class_count
-from .transformations import (TRANSFORMATION_LABELS,
-                              _count_transformation_factory,
-                              _count_transformation_name,
-                              _count_transformation_specs_for_blocks)
+from .transformations import (
+    TRANSFORMATION_LABELS,
+    _count_transformation_factory,
+    _count_transformation_name,
+    _count_transformation_specs_for_blocks,
+)
 from .utils import METRIC_COLUMNS, TAXONOMIC_LEVELS, dump_json_standard
 
 _MPDR_SEMANTICS = "select_then_transform_fold_local_rank_composition_v3"
@@ -508,7 +527,7 @@ def build_sweep_configs(
             res_name, levels, feature_blocks
         )
         transformation_specs = _count_transformation_specs_for_blocks(
-            count_transformations, feature_blocks
+            count_transformations, feature_blocks, resolution=res_name
         )
         for ct_name, ct_spec in transformation_specs:
             transformation_fingerprint = _transformation_fingerprint(ct_name, ct_spec)
@@ -643,6 +662,7 @@ class _ClassificationFoldOutput:
 
 def _fit_classification_split_fold(
     X_base: np.ndarray,
+    feature_names: Sequence[str],
     feature_blocks: Any,
     y: np.ndarray,
     groups: np.ndarray | None,
@@ -672,10 +692,16 @@ def _fit_classification_split_fold(
         X_base, fit_idx, eval_idx, protocol
     )
     fold_blocks = mask_feature_blocks(feature_blocks, feature_mask)
+    fold_names = [
+        str(name)
+        for name, keep in zip(feature_names, np.asarray(feature_mask, dtype=bool))
+        if bool(keep)
+    ]
     _, transformation_factory = transformation_factory_builder(
         ct_item,
         random_state=random_state,
         feature_blocks=fold_blocks,
+        feature_names=fold_names,
     )
     fitted = transformation_factory()
     X_fit_transformed, X_eval_transformed = fitted.apply_pair(X_fit, X_eval)
@@ -737,6 +763,7 @@ def _evaluate_classification_inner_splits(
     score_rows: list[dict[str, Any]],
     *,
     X_base: np.ndarray,
+    feature_names: Sequence[str],
     feature_blocks: Any,
     y: np.ndarray,
     groups: np.ndarray | None,
@@ -771,6 +798,7 @@ def _evaluate_classification_inner_splits(
         try:
             output = _fit_classification_split_fold(
                 X_base,
+                feature_names,
                 feature_blocks,
                 y,
                 groups,
@@ -865,6 +893,7 @@ def _evaluate_classification_outer_split(
     result: dict[str, Any],
     *,
     X_base: np.ndarray,
+    feature_names: Sequence[str],
     feature_blocks: Any,
     y: np.ndarray,
     groups: np.ndarray | None,
@@ -890,6 +919,7 @@ def _evaluate_classification_outer_split(
     try:
         output = _fit_classification_split_fold(
             X_base,
+            feature_names,
             feature_blocks,
             y,
             groups,
@@ -934,6 +964,7 @@ def _evaluate_classification_outer_split(
 
 def _evaluate_mpma_split_task(
     X_base: np.ndarray,
+    feature_names: Sequence[str],
     feature_blocks: Any,
     y: np.ndarray,
     groups: np.ndarray | None,
@@ -997,6 +1028,7 @@ def _evaluate_mpma_split_task(
             result,
             score_rows,
             X_base=X_base,
+            feature_names=feature_names,
             feature_blocks=feature_blocks,
             y=y,
             groups=groups,
@@ -1039,6 +1071,7 @@ def _evaluate_mpma_split_task(
             _evaluate_classification_outer_split(
                 result,
                 X_base=X_base,
+                feature_names=feature_names,
                 feature_blocks=feature_blocks,
                 y=y,
                 groups=groups,
@@ -1268,19 +1301,17 @@ from .data import Data as Data
 from .data import Metadata as Metadata
 from .evaluation_splits import _groups_from_metadata
 from .evaluation_splits import _inner_splits as _inner_splits
-from .evaluation_splits import \
-    _normalise_column_names as _normalise_column_names
+from .evaluation_splits import _normalise_column_names as _normalise_column_names
 from .evaluation_splits import _outer_splits as _outer_splits
-from .evaluation_splits import \
-    _regression_inner_splits as _regression_inner_splits
-from .evaluation_splits import \
-    _regression_outer_splits as _regression_outer_splits
+from .evaluation_splits import _regression_inner_splits as _regression_inner_splits
+from .evaluation_splits import _regression_outer_splits as _regression_outer_splits
 from .evaluation_splits import _resolved_evaluation_splits
 from .evaluation_splits import _safe_group_n_splits as _safe_group_n_splits
 from .evaluation_splits import _safe_n_splits as _safe_n_splits
 from .evaluation_splits import _strata_from_metadata
-from .evaluation_splits import \
-    _stratification_error_context as _stratification_error_context
+from .evaluation_splits import (
+    _stratification_error_context as _stratification_error_context,
+)
 from .evaluation_splits import _subject_safe_groups
 from .explainability_methods import ALE as ALE
 from .explainability_methods import SHAP as SHAP
@@ -1295,16 +1326,14 @@ from .modalities import Modality as Modality
 from .modalities import Samples as Samples
 from .splits import resolve_cv_splits as resolve_cv_splits
 from .sweep_types import _default_transformations as _default_transformations
-from .sweep_types import \
-    _legacy_local_explanations as _legacy_local_explanations
-from .sweep_types import \
-    _normalise_explainability_classes_config as \
-    _normalise_explainability_classes_config
-from .sweep_types import \
-    _normalise_explainability_targets_config as \
-    _normalise_explainability_targets_config
-from .target_sweeps import \
-    _explainability_for_target as _explainability_for_target
+from .sweep_types import _legacy_local_explanations as _legacy_local_explanations
+from .sweep_types import (
+    _normalise_explainability_classes_config as _normalise_explainability_classes_config,
+)
+from .sweep_types import (
+    _normalise_explainability_targets_config as _normalise_explainability_targets_config,
+)
+from .target_sweeps import _explainability_for_target as _explainability_for_target
 from .target_sweeps import _learners_for_target as _learners_for_target
 from .target_sweeps import _metric_for_target as _metric_for_target
 from .target_sweeps import _target_columns, _target_task, target_sweeps
@@ -1366,6 +1395,7 @@ class _RegressionFoldOutput:
 
 def _fit_regression_split_fold(
     X_base: np.ndarray,
+    feature_names: Sequence[str],
     feature_blocks: Any,
     y: np.ndarray,
     sample_ids: Sequence[str],
@@ -1392,10 +1422,16 @@ def _fit_regression_split_fold(
         X_base, fit_idx, eval_idx, protocol
     )
     fold_blocks = mask_feature_blocks(feature_blocks, feature_mask)
+    fold_names = [
+        str(name)
+        for name, keep in zip(feature_names, np.asarray(feature_mask, dtype=bool))
+        if bool(keep)
+    ]
     _, transformation_factory = transformation_factory_builder(
         ct_item,
         random_state=random_state,
         feature_blocks=fold_blocks,
+        feature_names=fold_names,
     )
     fitted = transformation_factory()
     X_fit_transformed, X_eval_transformed = fitted.apply_pair(X_fit, X_eval)
@@ -1440,6 +1476,7 @@ def _evaluate_regression_inner_splits(
     score_rows: list[dict[str, Any]],
     *,
     X_base: np.ndarray,
+    feature_names: Sequence[str],
     feature_blocks: Any,
     y: np.ndarray,
     sample_ids: Sequence[str],
@@ -1471,6 +1508,7 @@ def _evaluate_regression_inner_splits(
         try:
             output = _fit_regression_split_fold(
                 X_base,
+                feature_names,
                 feature_blocks,
                 y,
                 sample_ids,
@@ -1563,6 +1601,7 @@ def _evaluate_regression_outer_split(
     result: dict[str, Any],
     *,
     X_base: np.ndarray,
+    feature_names: Sequence[str],
     feature_blocks: Any,
     y: np.ndarray,
     sample_ids: Sequence[str],
@@ -1585,6 +1624,7 @@ def _evaluate_regression_outer_split(
     try:
         output = _fit_regression_split_fold(
             X_base,
+            feature_names,
             feature_blocks,
             y,
             sample_ids,
@@ -1626,6 +1666,7 @@ def _evaluate_regression_outer_split(
 
 def _evaluate_regression_split_task(
     X_base: np.ndarray,
+    feature_names: Sequence[str],
     feature_blocks: Any,
     y: np.ndarray,
     sample_ids: Sequence[str],
@@ -1683,6 +1724,7 @@ def _evaluate_regression_split_task(
             result,
             score_rows,
             X_base=X_base,
+            feature_names=feature_names,
             feature_blocks=feature_blocks,
             y=y,
             sample_ids=sample_ids,
@@ -1722,6 +1764,7 @@ def _evaluate_regression_split_task(
             _evaluate_regression_outer_split(
                 result,
                 X_base=X_base,
+                feature_names=feature_names,
                 feature_blocks=feature_blocks,
                 y=y,
                 sample_ids=sample_ids,
@@ -1820,7 +1863,7 @@ _ScheduledEvaluationTask: TypeAlias = tuple[str, str, _DelayedEvaluationTask]
 _ResolutionSpec: TypeAlias = tuple[str, tuple[str, ...]]
 _LearnerFactory: TypeAlias = Callable[[], EstimatorLike]
 _LearnerFactories: TypeAlias = list[tuple[str, _LearnerFactory]]
-_MpdrCache: TypeAlias = dict[str, tuple[np.ndarray, FeatureBlocks]]
+_MpdrCache: TypeAlias = dict[str, tuple[np.ndarray, tuple[str, ...], FeatureBlocks]]
 _TransformationSpecs: TypeAlias = dict[str, tuple[tuple[str, Any | None], ...]]
 _OuterSplits: TypeAlias = list[dict[str, Any]]
 _InnerSplitsByOuter: TypeAlias = dict[str, list[tuple[np.ndarray, np.ndarray]]]
@@ -1947,6 +1990,35 @@ def _persist_evaluation_rows(
         existing=dict(existing),
         gate_enabled=bool(gate_enabled),
     )
+    outer_path = root / "results" / "outer_results.parquet"
+    if not table_exists(outer_path):
+        return
+    outer = read_table(outer_path)
+    if outer.empty or "ok" not in outer.columns:
+        return
+    ok = pd.to_numeric(outer["ok"], errors="coerce").fillna(0).astype(int)
+    if bool((ok == 1).any()):
+        return
+    columns = [
+        name
+        for name in ("count_transformation", "resolution", "learner", "error")
+        if name in outer.columns
+    ]
+    failures = outer.loc[:, columns].drop_duplicates()
+    details = []
+    for record in failures.head(8).to_dict(orient="records"):
+        label = " / ".join(
+            str(record.get(name, ""))
+            for name in ("count_transformation", "resolution", "learner")
+            if str(record.get(name, ""))
+        )
+        error = str(record.get("error", "evaluation failed"))
+        details.append(f"{label}: {error}" if label else error)
+    message = "\n".join(details)
+    raise RuntimeError(
+        "All outer evaluation configurations failed. The failed rows were written to "
+        f"{outer_path}.\n{message}"
+    )
 
 
 def _write_selection_artifacts(
@@ -2043,6 +2115,41 @@ def _available_memory_label(execution: ExecutionPlan) -> str:
     return f"{execution.memory_bytes / (1024**3):.1f} GiB"
 
 
+def _prewarm_foundation_representations(
+    sweep: Sweep,
+    resolutions: Sequence[tuple[str, tuple[str, ...]]],
+    mpdr_cache: _MpdrCache,
+) -> None:
+    if is_lodo_protocol(sweep.evaluation.protocol):
+        return
+    for resolution_name, _ in resolutions:
+        X_base, feature_names, feature_blocks = mpdr_cache[resolution_name]
+        specifications = _count_transformation_specs_for_blocks(
+            sweep.count_transformations,
+            feature_blocks,
+            resolution=resolution_name,
+        )
+        for transformation_name, spec in specifications:
+            reference = getattr(spec, "reference", None)
+            if not bool(getattr(spec, "foundation_model", False)):
+                continue
+            _, factory = _count_transformation_factory(
+                spec,
+                random_state=int(sweep.evaluation.random_state),
+                feature_blocks=feature_blocks,
+                feature_names=feature_names,
+            )
+            info(
+                f"Materializing frozen {getattr(reference, 'key', 'foundation')} representation · {resolution_name}"
+            )
+            try:
+                factory().fit_apply(np.asarray(X_base, dtype=np.float64))
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Foundation-model preflight failed for {transformation_name!r} at resolution {resolution_name!r}: {type(exc).__name__}: {exc}"
+                ) from exc
+
+
 def _prepare_regression_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
     root = sweep.root()
     _prepare_dirs(root)
@@ -2063,14 +2170,20 @@ def _prepare_regression_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
     }
     mpdr_cache: _MpdrCache = {}
     for name, resolution_levels in resolutions:
-        matrix, _, blocks = materialize_mpdr_with_blocks(dataset, resolution_levels)
-        mpdr_cache[name] = (np.asarray(matrix, dtype=np.float32), blocks)
+        matrix, names, blocks = materialize_mpdr_with_blocks(dataset, resolution_levels)
+        mpdr_cache[name] = (
+            np.asarray(matrix, dtype=np.float32),
+            tuple(str(x) for x in names),
+            blocks,
+        )
     feature_blocks_by_resolution = {
-        name: blocks for name, (_, blocks) in mpdr_cache.items()
+        name: blocks for name, (_, _, blocks) in mpdr_cache.items()
     }
     transformation_specs = {
         name: _count_transformation_specs_for_blocks(
-            sweep.count_transformations, feature_blocks_by_resolution[name]
+            sweep.count_transformations,
+            feature_blocks_by_resolution[name],
+            resolution=name,
         )
         for name, _ in resolutions
     }
@@ -2087,6 +2200,7 @@ def _prepare_regression_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
     )
     if sweep.evaluation.redo:
         _clear_evaluation_checkpoints(root)
+    _prewarm_foundation_representations(sweep, resolutions, mpdr_cache)
     _write_config_table(root, configs)
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
     outer_splits, inner_splits_by_outer = _resolved_evaluation_splits(
@@ -2163,14 +2277,20 @@ def _prepare_classification_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
     }
     mpdr_cache: _MpdrCache = {}
     for name, resolution_levels in resolutions:
-        matrix, _, blocks = materialize_mpdr_with_blocks(dataset, resolution_levels)
-        mpdr_cache[name] = (np.asarray(matrix, dtype=np.float32), blocks)
+        matrix, names, blocks = materialize_mpdr_with_blocks(dataset, resolution_levels)
+        mpdr_cache[name] = (
+            np.asarray(matrix, dtype=np.float32),
+            tuple(str(x) for x in names),
+            blocks,
+        )
     feature_blocks_by_resolution = {
-        name: blocks for name, (_, blocks) in mpdr_cache.items()
+        name: blocks for name, (_, _, blocks) in mpdr_cache.items()
     }
     transformation_specs = {
         name: _count_transformation_specs_for_blocks(
-            sweep.count_transformations, feature_blocks_by_resolution[name]
+            sweep.count_transformations,
+            feature_blocks_by_resolution[name],
+            resolution=name,
         )
         for name, _ in resolutions
     }
@@ -2187,6 +2307,7 @@ def _prepare_classification_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
     )
     if sweep.evaluation.redo:
         _clear_evaluation_checkpoints(root)
+    _prewarm_foundation_representations(sweep, resolutions, mpdr_cache)
     _write_config_table(root, configs)
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
     strata = _strata_from_metadata(dataset.metadata, dataset.y, sweep.data.stratify_col)
@@ -2275,7 +2396,7 @@ def _build_regression_tasks(
             f"{split_key}__i{inner_no}" for inner_no in range(len(inner_splits))
         ]
         for resolution_name, levels in context.resolutions:
-            X_base, feature_blocks = context.mpdr_cache[resolution_name]
+            X_base, feature_names, feature_blocks = context.mpdr_cache[resolution_name]
             resolution_fingerprint = _resolution_fingerprint(
                 resolution_name, levels, feature_blocks
             )
@@ -2315,6 +2436,7 @@ def _build_regression_tasks(
                         continue
                     task = delayed(_evaluate_regression_split_task)(
                         X_base,
+                        feature_names,
                         feature_blocks,
                         dataset.y,
                         tuple(dataset.sample_ids),
@@ -2374,7 +2496,7 @@ def _build_classification_tasks(
             f"{split_key}__i{inner_no}" for inner_no in range(len(inner_splits))
         ]
         for resolution_name, levels in context.resolutions:
-            X_base, feature_blocks = context.mpdr_cache[resolution_name]
+            X_base, feature_names, feature_blocks = context.mpdr_cache[resolution_name]
             resolution_fingerprint = _resolution_fingerprint(
                 resolution_name, levels, feature_blocks
             )
@@ -2414,6 +2536,7 @@ def _build_classification_tasks(
                         continue
                     task = delayed(_evaluate_mpma_split_task)(
                         X_base,
+                        feature_names,
                         feature_blocks,
                         y,
                         context.groups,
@@ -2960,6 +3083,14 @@ _PROVENANCE_DISTRIBUTIONS = (
     "psutil",
     "joblib",
     "threadpoolctl",
+    "torch",
+    "transformers",
+    "huggingface-hub",
+    "h5py",
+    "biopython",
+    "pytorch-lightning",
+    "waypoint-bio",
+    "microformer-mgm",
     "ruff",
 )
 
@@ -3042,6 +3173,62 @@ def _software_provenance() -> dict[str, Any]:
     }
 
 
+def _foundation_model_manifest_entries(items: Sequence[Any]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for item in items:
+        spec = item[1] if isinstance(item, tuple) and len(item) == 2 else item
+        reference = getattr(spec, "reference", None)
+        if reference is None:
+            continue
+        if hasattr(reference, "__dataclass_fields__"):
+            reference_payload = asdict(reference)
+        else:
+            reference_payload = _scientific_value(reference)
+        configuration = {}
+        for key in (
+            "model",
+            "model_path",
+            "tokenizer",
+            "phylogeny",
+            "species_reference",
+            "source_path",
+            "pooling",
+            "embedding_strategy",
+            "batch_size",
+            "max_length",
+            "top_k_otus",
+            "device",
+            "taxonomy_format",
+            "resolutions",
+            "repo_id",
+            "revision",
+            "source_revision",
+            "source_dir",
+            "cache",
+            "cache_dir",
+            "resource_dir",
+        ):
+            if hasattr(spec, key):
+                configuration[key] = getattr(spec, key)
+        runtime_provenance = getattr(spec, "runtime_provenance", None)
+        runtime = runtime_provenance() if callable(runtime_provenance) else None
+        entries.append(
+            {
+                "identity": str(
+                    getattr(
+                        spec, "identity", getattr(spec, "name", type(spec).__name__)
+                    )
+                ),
+                "class": f"{type(spec).__module__}.{type(spec).__qualname__}",
+                "frozen": True,
+                "configuration": configuration,
+                "runtime": runtime,
+                "reference": reference_payload,
+            }
+        )
+    return entries
+
+
 def _write_manifest(
     root: Path,
     sweep: Sweep,
@@ -3089,6 +3276,9 @@ def _write_manifest(
         else None,
         "cv_splits": "tables/cv_splits.parquet",
         "transformations": [label.key for label in TRANSFORMATION_LABELS],
+        "foundation_models": _foundation_model_manifest_entries(
+            sweep.count_transformations
+        ),
         "mpdr_semantics": _MPDR_SEMANTICS,
     }
     dump_json_standard(manifest, root / "manifest.json")

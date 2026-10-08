@@ -82,6 +82,12 @@ To use benchmark datasets:
 uv pip install --group benchmark
 ```
 
+To use FMs and benchmark datasets:
+```bash
+uv sync --extra foundation --group benchmark
+uv sync --extra foundation --extra tabpfn --group benchmark
+uv sync --all-extras --all-groups
+```
 For development from a checked-out repository:
 
 ```bash

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from catboost import CatBoostClassifier
+from curated_microbiota.collections import prime_ptsd
 from lightgbm import LGBMClassifier
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
@@ -15,26 +16,17 @@ from xgboost import XGBClassifier
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
-TITLE = "PTSD intervention within-dataset subject-grouped MPMA sweep"
-EXPERIMENT_DIR = HERE / "runs" / "PTSD-NCV-grouped-paths"
+TITLE = "PRIME PTSD intervention mllabiome benchmark sweep"
+EXPERIMENT_DIR = HERE / "runs" / "PTSD-NCV-grouped-CM-v2-fm"
 
-METADATA = mll.Metadata(
-    metadata_path=HERE / "data" / "PTSD" / "PTSD_metadata.tsv",
-    biological_sex="host_sex",
-)
+DATA = prime_ptsd.mllabiome(target="intervention")
 
-DATA = mll.Data(
-    abundance_path=HERE / "data" / "PTSD" / "PTSD_profiles.tsv",
-    metadata=METADATA,
-    format="metaphlan_tsv",
-    sample_id_col="sampleId",
-    target_col="group",
-    task="classification",
-    class_labels=("Placebo", "Active"),
-    positive_class="Active",
-    group_col="Participant_Id",
-    subject_id_col="Participant_Id",
-    stratify_col="Time_Point",
+EVALUATION = prime_ptsd.splits(
+    target="intervention",
+    benchmark="mllabiome-benchmark-v2",
+).mllabiome(
+    optimize_metric="log_loss",
+    n_jobs="auto",
 )
 
 EXPLORE = mll.Explore(
@@ -75,16 +67,23 @@ RESOLUTIONS = (
 )
 
 COUNT_TRANSFORMATIONS = (
+    mll.WaypointEmbedding(
+        model="outpost-bio/Waypoint-6m",
+        pooling="last_token",
+        batch_size=32,
+        max_length=512,
+        taxonomy_format="full",
+    ),
     mll.Transformation("presence_absence"),
-    mll.Transformation("identity"),
-    # mll.Transformation("arcsine_sqrt", composition_scope="rank-wise"),
+    # mll.Transformation("identity"),
+    # # mll.Transformation("arcsine_sqrt", composition_scope="rank-wise"),
     mll.Transformation("arcsine_sqrt", composition_scope="joint"),
-    # # mll.Transformation("yeo_johnson", composition_scope="rank-wise"),
-    mll.Transformation("yeo_johnson", composition_scope="joint"),
-    # mll.Transformation("hellinger", composition_scope="rank-wise"),
-    # mll.Transformation("hellinger", composition_scope="joint"),
-    # # mll.Transformation("relative_abundance", composition_scope="rank-wise"),
-    # mll.Transformation("relative_abundance", composition_scope="joint"),
+    # # # mll.Transformation("yeo_johnson", composition_scope="rank-wise"),
+    # mll.Transformation("yeo_johnson", composition_scope="joint"),
+    # # mll.Transformation("hellinger", composition_scope="rank-wise"),
+    # # mll.Transformation("hellinger", composition_scope="joint"),
+    # # # mll.Transformation("relative_abundance", composition_scope="rank-wise"),
+    # # mll.Transformation("relative_abundance", composition_scope="joint"),
     # mll.Transformation(
     #     "relative_abundance",
     #     composition_scope="joint",
@@ -92,10 +91,10 @@ COUNT_TRANSFORMATIONS = (
     #         threshold=0.20,
     #     ),
     # ),
-    # mll.Transformation("clr", composition_scope="rank-wise"),
-    # mll.Transformation("clr", composition_scope="joint"),
+    # # mll.Transformation("clr", composition_scope="rank-wise"),
+    # # mll.Transformation("clr", composition_scope="joint"),
     # mll.Transformation("log10", composition_scope="rank-wise"),
-    # mll.Transformation("log10", composition_scope="joint"),
+    # # mll.Transformation("log10", composition_scope="joint"),
 )
 
 
@@ -110,7 +109,7 @@ MODELS = (
         ),
     ),
     (
-        "CB_abundance_i300_d3",
+        "CB_i300_d3",
         CatBoostClassifier(
             iterations=300,
             learning_rate=0.04,
@@ -138,28 +137,28 @@ MODELS = (
     #         shrinkage="auto",
     #     ),
     # ),
-    # (
-    #     "MLP_32_relu_lbfgs",
-    #     Pipeline(
-    #         steps=(
-    #             (
-    #                 "scaler",
-    #                 StandardScaler(),
-    #             ),
-    #             (
-    #                 "mlp",
-    #                 MLPClassifier(
-    #                     hidden_layer_sizes=(32,),
-    #                     activation="relu",
-    #                     solver="lbfgs",
-    #                     alpha=1e-3,
-    #                     max_iter=2000,
-    #                     random_state=42,
-    #                 ),
-    #             ),
-    #         ),
-    #     ),
-    # ),
+    (
+        "MLP_32_relu_lbfgs",
+        Pipeline(
+            steps=(
+                (
+                    "scaler",
+                    StandardScaler(),
+                ),
+                (
+                    "mlp",
+                    MLPClassifier(
+                        hidden_layer_sizes=(32,),
+                        activation="relu",
+                        solver="lbfgs",
+                        alpha=1e-3,
+                        max_iter=2000,
+                        random_state=42,
+                    ),
+                ),
+            ),
+        ),
+    ),
     # (
     #     "LightGBM_100_lr0.1_msl20_md20_sub0.8_col0.8",
     #     LGBMClassifier(
@@ -199,24 +198,24 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
-    # (
-    #     "logreg_scaler_saga_c1.0",
-    #     Pipeline(
-    #         steps=(
-    #             ("scaler", StandardScaler()),
-    #             (
-    #                 "model",
-    #                 LogisticRegression(
-    #                     solver="saga",
-    #                     C=1.0,
-    #                     l1_ratio=0.5,
-    #                     max_iter=10000,
-    #                     random_state=42,
-    #                 ),
-    #             ),
-    #         ),
-    #     ),
-    # ),
+    (
+        "LR_scaler_saga_c1.0",
+        Pipeline(
+            steps=(
+                ("scaler", StandardScaler()),
+                (
+                    "model",
+                    LogisticRegression(
+                        solver="saga",
+                        C=1.0,
+                        l1_ratio=0.5,
+                        max_iter=10000,
+                        random_state=42,
+                    ),
+                ),
+            ),
+        ),
+    ),
     # (
     #     "ExtraTrees_1000_msl5",
     #     ExtraTreesClassifier(
@@ -229,11 +228,6 @@ MODELS = (
     # ),
 )
 
-EVALUATION = mll.Evaluation.benchmark(
-    optimize_metric="log_loss",
-    n_jobs="auto",
-)
-
 GATE = mll.QualificationGate(
     enabled=False,
     metric="MCC",
@@ -241,7 +235,7 @@ GATE = mll.QualificationGate(
 )
 
 ENSEMBLE = mll.Ensemble(
-    max_sizes=(3,),
+    max_sizes=(10,),
     selection_strategies=(
         "top_k",
         "best_per_resolution",

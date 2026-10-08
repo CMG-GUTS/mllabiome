@@ -7,8 +7,7 @@ import pytest
 from sklearn.dummy import DummyClassifier
 
 import mllabiome.configs_sweep as cs
-from mllabiome.configs_sweep import (Evaluation, QualificationGate, Sweep,
-                                     evaluate)
+from mllabiome.configs_sweep import Evaluation, QualificationGate, Sweep, evaluate
 from mllabiome.data import Data, Dataset
 from mllabiome.storage import read_table
 
@@ -50,12 +49,26 @@ class SignalEstimator:
 class AuditTransformer:
     def __init__(self, calls):
         self.calls = calls
+        self.n_features_in_ = None
 
     def apply_pair(self, X_tr, X_te):
         a = np.asarray(X_tr, dtype=float).copy()
         b = np.asarray(X_te, dtype=float).copy()
+        self.n_features_in_ = int(a.shape[1])
         self.calls.append((a, b))
         return a, b
+
+    def feature_filter_metadata(self):
+        if self.n_features_in_ is None:
+            raise RuntimeError("AuditTransformer has not been fitted")
+        return {
+            "feature_filter": "none",
+            "prevalence_threshold": float("nan"),
+            "detection_threshold": float("nan"),
+            "prevalence_min_samples": 0,
+            "n_features_before_filter": self.n_features_in_,
+            "n_features_after_filter": self.n_features_in_,
+        }
 
 
 def _dataset(n=12, y=None, outer_feature_shift=None):
@@ -397,7 +410,10 @@ def test_evaluate_passes_only_inner_training_to_inner_transform_and_only_outer_t
     calls = []
     seeds = []
 
-    def transformation_factory(item, *, random_state, feature_blocks=None):
+    def transformation_factory(
+        item, *, random_state, feature_blocks=None, feature_names=None
+    ):
+        assert feature_names is not None
         seeds.append(int(random_state))
         name = str(item[0]) if isinstance(item, tuple) else str(item)
         return name, lambda: AuditTransformer(calls)

@@ -17,15 +17,27 @@ import pandas as pd
 from sklearn.base import BaseEstimator
 
 from .baseline_rf import resolve_baseline_rf_config_id
-from .configs_sweep import (Sweep, _effective_local_explanations_mode,
-                            _groups_from_metadata, _lodo_feature_pair,
-                            _resolved_evaluation_splits, _strata_from_metadata)
-from .console import info, path_table, progress, stage, success, summary_table
+from .configs_sweep import (
+    Sweep,
+    _effective_local_explanations_mode,
+    _groups_from_metadata,
+    _lodo_feature_pair,
+    _resolved_evaluation_splits,
+    _strata_from_metadata,
+)
+from .console import info, path_table, progress, stage, success, summary_table, warn
 from .data import Dataset, load_dataset
 from .explainability_context import build_local_relative_abundance_context
-from .explainability_methods import (ALE, LIME, SHAP, Permutation,
-                                     method_has_global, method_has_local,
-                                     method_name, method_to_dict)
+from .explainability_methods import (
+    ALE,
+    LIME,
+    SHAP,
+    Permutation,
+    method_has_global,
+    method_has_local,
+    method_name,
+    method_to_dict,
+)
 from .explainability_visuals import plot_local_attributions
 from .learners import fit_classifier
 from .metrics import _predict_proba_aligned, metric_is_loss
@@ -40,112 +52,129 @@ for _logger_name in ("PyALE", "PyALE._ALE_generic"):
 
 
 from .configs_sweep import _source_tree_sha256 as _source_tree_sha256
-from .explainability_algorithms import \
-    _ale_1d_effect_summary as _ale_1d_effect_summary
-from .explainability_algorithms import (_ale_feature_importance,
-                                        _ale_interactions)
+from .explainability_algorithms import _ale_1d_effect_summary as _ale_1d_effect_summary
+from .explainability_algorithms import _ale_feature_importance, _ale_interactions
 from .explainability_algorithms import _ale_result_values as _ale_result_values
 from .explainability_algorithms import _AleModelWrapper as _AleModelWrapper
-from .explainability_algorithms import \
-    _candidate_pairs_from_scores as _candidate_pairs_from_scores
+from .explainability_algorithms import (
+    _candidate_pairs_from_scores as _candidate_pairs_from_scores,
+)
 from .explainability_algorithms import _combine_feature_importance
 from .explainability_algorithms import _interp_unique as _interp_unique
-from .explainability_algorithms import (_permutation_feature_importance,
-                                        _plot_ale_curves)
+from .explainability_algorithms import _permutation_feature_importance, _plot_ale_curves
 from .explainability_algorithms import _require_pyale as _require_pyale
 from .explainability_algorithms import _same_lineage_pair as _same_lineage_pair
-from .explainability_algorithms import \
-    _single_method_support_table as _single_method_support_table
-from .explainability_algorithms import (_write_fold_feature_importance,
-                                        _write_method_outputs)
-from .explainability_cache import (_cached_method_frame,
-                                   _copy_explainability_cache,
-                                   _existing_explainability_outputs,
-                                   _existing_method_outputs,
-                                   _explainability_cache_complete,
-                                   _explainability_config_payload,
-                                   _explainability_config_signature,
-                                   _explainability_source_signature,
-                                   _legacy_method_cache_valid,
-                                   _load_method_cache_entry,
-                                   _method_cache_entry,
-                                   _method_cache_entry_status,
-                                   _method_cache_files_complete)
-from .explainability_cache import \
-    _method_cache_sidecar_path as _method_cache_sidecar_path
-from .explainability_cache import (_method_cache_signature,
-                                   _persist_method_cache_entry)
-from .explainability_cache import \
-    _refresh_target_visuals as _refresh_target_visuals
+from .explainability_algorithms import (
+    _single_method_support_table as _single_method_support_table,
+)
+from .explainability_algorithms import (
+    _write_fold_feature_importance,
+    _write_method_outputs,
+)
+from .explainability_cache import (
+    _cached_method_frame,
+    _copy_explainability_cache,
+    _existing_explainability_outputs,
+    _existing_method_outputs,
+    _explainability_cache_complete,
+    _explainability_config_payload,
+    _explainability_config_signature,
+    _explainability_source_signature,
+    _legacy_method_cache_valid,
+    _load_method_cache_entry,
+    _method_cache_entry,
+    _method_cache_entry_status,
+    _method_cache_files_complete,
+)
+from .explainability_cache import (
+    _method_cache_sidecar_path as _method_cache_sidecar_path,
+)
+from .explainability_cache import _method_cache_signature, _persist_method_cache_entry
+from .explainability_cache import _refresh_target_visuals as _refresh_target_visuals
 from .explainability_cache import _safe_cache_name, _signature_hash
 from .explainability_cache import _signature_value as _signature_value
-from .explainability_cache import \
-    _source_config_compatible as _source_config_compatible
+from .explainability_cache import _source_config_compatible as _source_config_compatible
 from .explainability_cache import _visual_class_labels as _visual_class_labels
-from .explainability_cache import \
-    refresh_explainability_visuals as refresh_explainability_visuals
-from .explainability_config import (_EXPLAINABILITY_PIPELINE_SCHEMA,
-                                    ExplainabilityConfigurationError)
-from .explainability_config import \
-    ExplainabilityDependencyError as ExplainabilityDependencyError
+from .explainability_cache import (
+    refresh_explainability_visuals as refresh_explainability_visuals,
+)
+from .explainability_config import (
+    _EXPLAINABILITY_PIPELINE_SCHEMA,
+    ExplainabilityConfigurationError,
+)
+from .explainability_config import (
+    ExplainabilityDependencyError as ExplainabilityDependencyError,
+)
 from .explainability_config import _auto_ale_bins as _auto_ale_bins
-from .explainability_config import (_configured_count_transformation_factory,
-                                    _configured_learner_factory)
+from .explainability_config import (
+    _configured_count_transformation_factory,
+    _configured_learner_factory,
+)
 from .explainability_config import _method_spec as _method_spec
-from .explainability_config import (_normalise_explainability_method_specs,
-                                    _normalise_explainability_methods,
-                                    _preflight_explainability_dependencies,
-                                    _resolve_explainability_classes)
-from .explainability_context import \
-    build_feature_relative_abundance_summary as \
-    build_feature_relative_abundance_summary
+from .explainability_config import (
+    _normalise_explainability_method_specs,
+    _normalise_explainability_methods,
+    _preflight_explainability_dependencies,
+    _resolve_explainability_classes,
+)
+from .explainability_context import (
+    build_feature_relative_abundance_summary as build_feature_relative_abundance_summary,
+)
 from .explainability_methods import ALEInteractions as ALEInteractions
 from .explainability_methods import coerce_method as coerce_method
-from .explainability_model import \
-    _aggregate_member_proba as _aggregate_member_proba
-from .explainability_model import \
-    _explain_predict_class_probability as _explain_predict_class_probability
-from .explainability_model import \
-    _explain_predict_proba as _explain_predict_proba
+from .explainability_model import _aggregate_member_proba as _aggregate_member_proba
+from .explainability_model import (
+    _explain_predict_class_probability as _explain_predict_class_probability,
+)
+from .explainability_model import _explain_predict_proba as _explain_predict_proba
 from .explainability_model import _FittedMpmaEnsemble
 from .explainability_model import _project_input as _project_input
 from .explainability_model import _projection_required
 from .explainability_model import _sample_rows as _sample_rows
+from .explainability_proxy import fit_taxon_probability_proxy
 from .explainability_reporting import _class_slug
-from .explainability_reporting import \
-    _collapse_duplicate_feature_importance as \
-    _collapse_duplicate_feature_importance
-from .explainability_reporting import (_ensure_interaction_network_outputs,
-                                       _feature_distribution_stats)
-from .explainability_reporting import \
-    _interaction_distribution_stats_for_class as \
-    _interaction_distribution_stats_for_class
+from .explainability_reporting import (
+    _collapse_duplicate_feature_importance as _collapse_duplicate_feature_importance,
+)
+from .explainability_reporting import (
+    _ensure_interaction_network_outputs,
+    _feature_distribution_stats,
+)
+from .explainability_reporting import (
+    _interaction_distribution_stats_for_class as _interaction_distribution_stats_for_class,
+)
 from .explainability_reporting import _method_display as _method_display
 from .explainability_reporting import _method_support_table
 from .explainability_reporting import _plain_taxon_label as _plain_taxon_label
 from .explainability_reporting import _plot_feature_importance
-from .explainability_reporting import \
-    _plot_interaction_network as _plot_interaction_network
-from .explainability_reporting import \
-    _rank_support_from_importance as _rank_support_from_importance
-from .explainability_reporting import \
-    _standardized_group_shift as _standardized_group_shift
-from .explainability_reporting import \
-    _terminal_taxon_label as _terminal_taxon_label
-from .explainability_reporting import \
-    _write_unavailable_interaction_network as \
-    _write_unavailable_interaction_network
-from .explainability_runtime import (_parallel_progress_results,
-                                     _progress_callback,
-                                     _queued_progress_callback)
+from .explainability_reporting import (
+    _plot_interaction_network as _plot_interaction_network,
+)
+from .explainability_reporting import (
+    _rank_support_from_importance as _rank_support_from_importance,
+)
+from .explainability_reporting import (
+    _standardized_group_shift as _standardized_group_shift,
+)
+from .explainability_reporting import _terminal_taxon_label as _terminal_taxon_label
+from .explainability_reporting import (
+    _write_unavailable_interaction_network as _write_unavailable_interaction_network,
+)
+from .explainability_runtime import (
+    _parallel_progress_results,
+    _progress_callback,
+    _queued_progress_callback,
+)
 from .explainability_runtime import _quiet_pyale_info as _quiet_pyale_info
 from .explainability_runtime import _run_xai_task as _run_xai_task
 from .explainability_runtime import _xai_execution_plan, _xai_task_iterator
 from .explainability_support import top_k_rank_support as top_k_rank_support
-from .explainability_values import (_aggregate_fold_feature_importance,
-                                    _lime_values_for_data,
-                                    _shap_values_for_data,
-                                    _value_frame_for_fold)
+from .explainability_values import (
+    _aggregate_fold_feature_importance,
+    _lime_values_for_data,
+    _shap_values_for_data,
+    _value_frame_for_fold,
+)
 from .learners import _learner_factory as _learner_factory
 from .runtime import iter_parallel_tasks as iter_parallel_tasks
 from .runtime import resolve_execution_plan as resolve_execution_plan
@@ -160,10 +189,10 @@ from .style import INK as INK
 from .style import MID as MID
 from .style import TRACK as TRACK
 from .style import save_all as save_all
-from .transformations import \
-    CountTransformationAdapter as CountTransformationAdapter
-from .transformations import \
-    _count_transformation_factory as _count_transformation_factory
+from .transformations import CountTransformationAdapter as CountTransformationAdapter
+from .transformations import (
+    _count_transformation_factory as _count_transformation_factory,
+)
 from .utils import _as_float_matrix as _as_float_matrix
 from .utils import feature_tail_ellipsis as feature_tail_ellipsis
 
@@ -286,6 +315,7 @@ def _fit_oof_single_fold_task(
     ct_factory: Callable[[], Any],
     learner_factory: Callable[[], BaseEstimator],
     threads_per_worker: int,
+    proxy_random_state: int,
 ) -> tuple[int, dict[str, Any] | None]:
     train_idx = np.asarray(split["train_idx"], dtype=int)
     test_idx = np.asarray(split["test_idx"], dtype=int)
@@ -305,20 +335,27 @@ def _fit_oof_single_fold_task(
         if bool(keep)
     ]
     ct = ct_factory()
-    X_train, X_test = ct.apply_pair(X_train_raw, X_test_raw)
-    coordinate_metadata = list(ct.coordinate_metadata(kept_feature_names))
-    transformed_feature_names = [str(item.name) for item in coordinate_metadata]
-    if X_train.shape[1] != len(transformed_feature_names) or X_test.shape[1] != len(
-        transformed_feature_names
-    ):
+    X_train_representation, X_test_representation = ct.apply_pair(
+        X_train_raw, X_test_raw
+    )
+    representation_metadata = list(ct.coordinate_metadata(kept_feature_names))
+    representation_feature_names = [str(item.name) for item in representation_metadata]
+    if X_train_representation.shape[1] != len(
+        representation_feature_names
+    ) or X_test_representation.shape[1] != len(representation_feature_names):
         raise ExplainabilityConfigurationError(
             f"Transformation metadata does not match the reconstructed outer split {split['split_key']!r}."
         )
     clf = configure_estimator_threads(learner_factory(), threads_per_worker)
     fit_classifier(
-        clf, X_train, y[train_idx], None if groups is None else groups[train_idx]
+        clf,
+        X_train_representation,
+        y[train_idx],
+        None if groups is None else groups[train_idx],
     )
-    proba = _predict_proba_aligned(clf, X_test, np.arange(int(class_count), dtype=int))
+    classes = np.arange(int(class_count), dtype=int)
+    teacher_train_proba = _predict_proba_aligned(clf, X_train_representation, classes)
+    teacher_test_proba = _predict_proba_aligned(clf, X_test_representation, classes)
     geometry = (
         ct.perturbation_geometry()
         if hasattr(ct, "perturbation_geometry")
@@ -329,22 +366,55 @@ def _fit_oof_single_fold_task(
         if _projection_required(geometry) and hasattr(ct, "project_model_input")
         else None
     )
-    return int(split_no), {
+    foundation_embedding = any(
+        str(item.coordinate_type) == "foundation_embedding"
+        for item in representation_metadata
+    )
+    fold = {
         "split_key": str(split["split_key"]),
         "train_idx": train_idx,
         "test_idx": test_idx,
         "feature_mask": expected_feature_mask,
         "input_feature_names": kept_feature_names,
-        "feature_names": transformed_feature_names,
-        "coordinate_metadata": coordinate_metadata,
-        "X_train": np.asarray(X_train, dtype=float),
-        "X_test": np.asarray(X_test, dtype=float),
+        "feature_names": representation_feature_names,
+        "coordinate_metadata": representation_metadata,
+        "X_train": np.asarray(X_train_representation, dtype=float),
+        "X_test": np.asarray(X_test_representation, dtype=float),
         "y_test": y[test_idx],
         "estimator": clf,
-        "proba": np.asarray(proba, dtype=float),
+        "proba": np.asarray(teacher_test_proba, dtype=float),
         "input_projector": projector,
         "perturbation_geometry": geometry,
+        "explanation_backend": "direct",
     }
+    if not foundation_embedding:
+        return int(split_no), fold
+    proxy = fit_taxon_probability_proxy(
+        X_train_raw,
+        X_test_raw,
+        teacher_train_proba,
+        teacher_test_proba,
+        kept_feature_names,
+        random_state=int(proxy_random_state) + int(split_no) * 1009,
+    )
+    fold.update(
+        {
+            "representation_feature_names": representation_feature_names,
+            "representation_coordinate_metadata": representation_metadata,
+            "representation_width": int(X_train_representation.shape[1]),
+            "feature_names": list(proxy["feature_names"]),
+            "coordinate_metadata": list(proxy["coordinate_metadata"]),
+            "X_train": np.asarray(proxy["X_train"], dtype=float),
+            "X_test": np.asarray(proxy["X_test"], dtype=float),
+            "estimator": proxy["estimator"],
+            "input_projector": proxy["input_projector"],
+            "perturbation_geometry": str(proxy["perturbation_geometry"]),
+            "proxy_proba": np.asarray(proxy["proxy_proba"], dtype=float),
+            "proxy_fidelity": dict(proxy["proxy_fidelity"]),
+            "explanation_backend": "taxon_proxy",
+        }
+    )
+    return int(split_no), fold
 
 
 def _coordinate_semantic_key(item: Any) -> tuple[Any, ...]:
@@ -537,8 +607,7 @@ def _fit_oof_single_for_explainability(
     row: pd.Series,
 ) -> dict[str, Any]:
     if getattr(sweep, "uses_modalities", False):
-        from .multimodal_sweep import \
-            fit_modality_candidate_oof_for_explainability
+        from .multimodal_sweep import fit_modality_candidate_oof_for_explainability
 
         return fit_modality_candidate_oof_for_explainability(sweep, row)
     levels = tuple(str(row["levels"]).split(","))
@@ -565,11 +634,17 @@ def _fit_oof_single_for_explainability(
                 X_base, train_idx, test_idx, str(sweep.evaluation.protocol)
             )
         fold_blocks = mask_feature_blocks(feature_blocks, feature_mask)
+        fold_names = [
+            str(name)
+            for name, keep in zip(feature_names, np.asarray(feature_mask, dtype=bool))
+            if bool(keep)
+        ]
         ct_factory = _configured_count_transformation_factory(
             sweep,
             transformation_key,
             fold_blocks,
             resolution_feature_blocks=feature_blocks,
+            feature_names=fold_names,
         )
         tasks.append(
             (
@@ -587,6 +662,7 @@ def _fit_oof_single_for_explainability(
                     ct_factory,
                     learner_factory,
                     int(execution.threads_per_worker),
+                    int(sweep.explainability.random_state),
                 ),
                 {},
             )
@@ -615,6 +691,44 @@ def _fit_oof_single_for_explainability(
     geometries = {
         str(fold.get("perturbation_geometry", "unverified_custom")) for fold in folds
     }
+    explanation_backends = sorted(
+        {str(fold.get("explanation_backend", "direct")) for fold in folds}
+    )
+    proxy_fidelity: list[dict[str, Any]] = []
+    representation_coordinates: list[dict[str, Any]] = []
+    for fold in folds:
+        fidelity = fold.get("proxy_fidelity")
+        if isinstance(fidelity, dict):
+            proxy_fidelity.append(
+                {
+                    "split_key": str(fold.get("split_key", "")),
+                    "n_train": int(
+                        len(np.asarray(fold.get("train_idx", []), dtype=int))
+                    ),
+                    "n_test": int(len(np.asarray(fold.get("test_idx", []), dtype=int))),
+                    "proxy_feature_count": int(np.asarray(fold["X_train"]).shape[1]),
+                    "representation_width": int(fold.get("representation_width", 0)),
+                    **{str(k): float(v) for k, v in fidelity.items()},
+                }
+            )
+        for item in fold.get("representation_coordinate_metadata", []):
+            representation_coordinates.append(
+                {
+                    "split_key": str(fold.get("split_key", "")),
+                    "coordinate": str(item.name),
+                    "coordinate_type": str(item.coordinate_type),
+                    "anchor_feature": ""
+                    if item.anchor_feature is None
+                    else str(item.anchor_feature),
+                    "exact_feature_identity": bool(item.exact_feature_identity),
+                    "components": json.dumps(
+                        list(item.components), separators=(",", ":")
+                    ),
+                    "coefficients": json.dumps(
+                        [float(x) for x in item.coefficients], separators=(",", ":")
+                    ),
+                }
+            )
     return {
         "dataset": dataset,
         "X_base": X_reference,
@@ -623,6 +737,9 @@ def _fit_oof_single_for_explainability(
         "coordinate_metadata_by_fold": coordinate_rows,
         "prediction_reproduction": reproduction,
         "perturbation_geometry": sorted(geometries),
+        "explanation_backends": explanation_backends,
+        "proxy_fidelity": proxy_fidelity,
+        "representation_coordinate_metadata_by_fold": representation_coordinates,
         "folds": folds,
         "execution": execution,
     }
@@ -664,7 +781,10 @@ def _mpma_e_reference_and_folds(
             f"|{r.get('config_id', member_i)!s}"
         )
         ct_ref = _configured_count_transformation_factory(
-            sweep, transformation_key, blocks_member
+            sweep,
+            transformation_key,
+            blocks_member,
+            feature_names=list(names_member),
         )()
         X_ref_member, _ = ct_ref.apply_pair(X_base_member, X_base_member)
         transformed_names = ct_ref.get_feature_names_out(list(names_member))
@@ -688,11 +808,28 @@ def _mpma_e_reference_and_folds(
                 "levels": levels,
                 "X_base": X_base_member,
                 "feature_blocks": blocks_member,
+                "feature_names": [str(x) for x in names_member],
                 "n_features": X_base_member.shape[1],
                 "transformation_key": transformation_key,
                 "learner_key": learner_key,
+                "foundation_embedding": any(
+                    str(item.coordinate_type) == "foundation_embedding"
+                    for item in transformed_metadata
+                ),
             }
         )
+
+    proxy_enabled = any(
+        bool(item.get("foundation_embedding")) for item in member_materialized
+    )
+    proxy_X_base = None
+    proxy_feature_names: list[str] = []
+    if proxy_enabled:
+        proxy_X_base, proxy_feature_names, _ = materialize_mpdr_with_blocks(
+            dataset, tuple(all_levels)
+        )
+        proxy_X_base = np.asarray(proxy_X_base)
+        proxy_feature_names = [str(x) for x in proxy_feature_names]
 
     X_reference = (
         np.concatenate(reference_blocks, axis=1)
@@ -724,6 +861,7 @@ def _mpma_e_reference_and_folds(
                 spec["transformation_key"],
                 spec["feature_blocks"],
                 resolution_feature_blocks=spec["feature_blocks"],
+                feature_names=spec["feature_names"],
             )()
             X_train_member, X_test_member = ct.apply_pair(
                 spec["X_base"][train_idx], spec["X_base"][test_idx]
@@ -750,21 +888,62 @@ def _mpma_e_reference_and_folds(
         X_train = np.concatenate(X_train_blocks, axis=1)
         X_test = np.concatenate(X_test_blocks, axis=1)
         ensemble = _FittedMpmaEnsemble(fitted_members, aggregation=aggregation)
-        proba = _predict_proba_aligned(
-            ensemble, X_test, np.arange(len(dataset.class_labels), dtype=int)
-        )
-        folds.append(
-            {
-                "split_key": str(split["split_key"]),
-                "train_idx": train_idx,
-                "test_idx": test_idx,
-                "X_train": X_train,
-                "X_test": X_test,
-                "y_test": dataset.y[test_idx],
-                "estimator": ensemble,
-                "proba": proba,
-            }
-        )
+        classes = np.arange(len(dataset.class_labels), dtype=int)
+        train_proba = _predict_proba_aligned(ensemble, X_train, classes)
+        proba = _predict_proba_aligned(ensemble, X_test, classes)
+        fold = {
+            "split_key": str(split["split_key"]),
+            "train_idx": train_idx,
+            "test_idx": test_idx,
+            "X_train": X_train,
+            "X_test": X_test,
+            "y_test": dataset.y[test_idx],
+            "estimator": ensemble,
+            "proba": proba,
+            "explanation_backend": "direct",
+        }
+        if proxy_enabled and proxy_X_base is not None:
+            proxy_train_raw, proxy_test_raw, proxy_mask = _lodo_feature_pair(
+                proxy_X_base,
+                train_idx,
+                test_idx,
+                str(sweep.evaluation.protocol),
+            )
+            proxy_names = [
+                str(name)
+                for name, keep in zip(proxy_feature_names, proxy_mask)
+                if bool(keep)
+            ]
+            proxy = fit_taxon_probability_proxy(
+                proxy_train_raw,
+                proxy_test_raw,
+                train_proba,
+                proba,
+                proxy_names,
+                random_state=int(sweep.explainability.random_state)
+                + len(folds) * 1009
+                + 1009,
+            )
+            fold.update(
+                {
+                    "representation_feature_names": list(feature_names),
+                    "representation_coordinate_metadata": list(
+                        reference_coordinate_metadata
+                    ),
+                    "representation_width": int(X_train.shape[1]),
+                    "feature_names": list(proxy["feature_names"]),
+                    "coordinate_metadata": list(proxy["coordinate_metadata"]),
+                    "X_train": np.asarray(proxy["X_train"], dtype=float),
+                    "X_test": np.asarray(proxy["X_test"], dtype=float),
+                    "estimator": proxy["estimator"],
+                    "input_projector": proxy["input_projector"],
+                    "perturbation_geometry": str(proxy["perturbation_geometry"]),
+                    "proxy_proba": np.asarray(proxy["proxy_proba"], dtype=float),
+                    "proxy_fidelity": dict(proxy["proxy_fidelity"]),
+                    "explanation_backend": "taxon_proxy",
+                }
+            )
+        folds.append(fold)
     if not folds:
         raise ExplainabilityConfigurationError(
             "No outer fold could be fitted for MPMA-E out-of-fold explainability."
@@ -779,6 +958,10 @@ def _mpma_e_reference_and_folds(
             "learner": "MPMA-E",
         }
     )
+    if proxy_enabled:
+        X_reference, feature_names, reference_coordinate_metadata, _ = (
+            _align_oof_single_coordinates(folds, len(dataset.sample_ids))
+        )
     return (
         dataset,
         X_reference,
@@ -1034,6 +1217,7 @@ def _compact_local_explanations(
                     "class_index": true_class,
                     "class_label": str(dataset.class_labels[true_class]),
                     "prediction": float(row.get("p_class", np.nan)),
+                    "proxy_prediction": float(row.get("proxy_p_class", np.nan)),
                     "feature": str(row_feature_names[j]),
                     "feature_value": float(feature_values[j])
                     if j < len(feature_values)
@@ -1287,9 +1471,15 @@ def _local_value_rows_for_fold(
     test_idx = np.asarray(fold["test_idx"], dtype=int)
     X_test = np.asarray(fold["X_test"], dtype=float)
     proba = np.asarray(fold.get("proba"), dtype=float)
+    proxy_proba = np.asarray(fold.get("proxy_proba", []), dtype=float)
     pred = (
         np.argmax(proba, axis=1)
         if proba.ndim == 2 and proba.shape[0] == len(test_idx)
+        else np.full(len(test_idx), -1)
+    )
+    proxy_pred = (
+        np.argmax(proxy_proba, axis=1)
+        if proxy_proba.ndim == 2 and proxy_proba.shape[0] == len(test_idx)
         else np.full(len(test_idx), -1)
     )
     arr = np.asarray(values, dtype=float)
@@ -1319,6 +1509,13 @@ def _local_value_rows_for_fold(
                 if proba.ndim == 2 and int(class_index) < proba.shape[1]
                 else float("nan")
             )
+            proxy_p_class = (
+                float(proxy_proba[int(local_test_row), int(class_index)])
+                if proxy_proba.ndim == 2
+                and int(local_test_row) < proxy_proba.shape[0]
+                and int(class_index) < proxy_proba.shape[1]
+                else float("nan")
+            )
             rows.append(
                 {
                     "split_key": str(fold.get("split_key", "")),
@@ -1328,9 +1525,13 @@ def _local_value_rows_for_fold(
                     "predicted_class": int(pred[int(local_test_row)])
                     if int(local_test_row) < len(pred)
                     else -1,
+                    "proxy_predicted_class": int(proxy_pred[int(local_test_row)])
+                    if int(local_test_row) < len(proxy_pred)
+                    else -1,
                     "class_index": int(class_index),
                     "class_label": str(class_labels[int(class_index)]),
                     "p_class": p_class,
+                    "proxy_p_class": proxy_p_class,
                     "feature_names": _fold_feature_names(fold, ()),
                     "feature_values": X_test[int(local_test_row)].copy(),
                     "values": np.asarray(local_values, dtype=float).copy(),
@@ -1523,6 +1724,10 @@ class _ExplainabilityUnits:
     coordinate_metadata_path: Path | None
     coordinate_metadata_by_fold_path: Path | None
     prediction_reproduction_path: Path | None
+    proxy_fidelity_path: Path | None
+    proxy_fidelity_summary_path: Path | None
+    representation_coordinate_metadata_by_fold_path: Path | None
+    explanation_backends: list[str]
     geometries: list[str]
     projection_applied: bool
     perturbation_policy: dict[str, Any]
@@ -1749,6 +1954,9 @@ def _prepare_explainability_units(
     coordinate_metadata: list[Any] = []
     coordinate_metadata_by_fold: list[dict[str, Any]] = []
     prediction_reproduction: list[dict[str, Any]] = []
+    proxy_fidelity: list[dict[str, Any]] = []
+    representation_coordinate_metadata_by_fold: list[dict[str, Any]] = []
+    explanation_backends: list[str] = ["direct"]
     row = target.row
     if target.ensemble:
         info("Preparing selected MPMA-E outer-fold units for OOF explanation")
@@ -1771,9 +1979,63 @@ def _prepare_explainability_units(
             bundle.get("coordinate_metadata_by_fold", [])
         )
         prediction_reproduction = list(bundle.get("prediction_reproduction", []))
+        proxy_fidelity = list(bundle.get("proxy_fidelity", []))
+        representation_coordinate_metadata_by_fold = list(
+            bundle.get("representation_coordinate_metadata_by_fold", [])
+        )
+        explanation_backends = list(bundle.get("explanation_backends", ["direct"]))
         oof_folds = bundle["folds"]
     feature_names = list(feature_names)
     oof_folds = list(oof_folds)
+    explanation_backends = sorted(
+        {str(fold.get("explanation_backend", "direct")) for fold in oof_folds}
+    )
+    if not proxy_fidelity:
+        for fold in oof_folds:
+            fidelity = fold.get("proxy_fidelity")
+            if isinstance(fidelity, dict):
+                proxy_fidelity.append(
+                    {
+                        "split_key": str(fold.get("split_key", "")),
+                        "n_train": int(
+                            len(np.asarray(fold.get("train_idx", []), dtype=int))
+                        ),
+                        "n_test": int(
+                            len(np.asarray(fold.get("test_idx", []), dtype=int))
+                        ),
+                        "proxy_feature_count": int(
+                            np.asarray(fold["X_train"]).shape[1]
+                        ),
+                        "representation_width": int(
+                            fold.get("representation_width", 0)
+                        ),
+                        **{str(k): float(v) for k, v in fidelity.items()},
+                    }
+                )
+    if not representation_coordinate_metadata_by_fold:
+        for fold in oof_folds:
+            for item in fold.get("representation_coordinate_metadata", []):
+                if isinstance(item, dict):
+                    record = dict(item)
+                    record.setdefault("coordinate", str(record.get("name", "")))
+                else:
+                    record = {
+                        "coordinate": str(item.name),
+                        "coordinate_type": str(item.coordinate_type),
+                        "anchor_feature": ""
+                        if item.anchor_feature is None
+                        else str(item.anchor_feature),
+                        "exact_feature_identity": bool(item.exact_feature_identity),
+                        "components": json.dumps(
+                            list(item.components), separators=(",", ":")
+                        ),
+                        "coefficients": json.dumps(
+                            [float(x) for x in item.coefficients], separators=(",", ":")
+                        ),
+                    }
+                representation_coordinate_metadata_by_fold.append(
+                    {"split_key": str(fold.get("split_key", "")), **record}
+                )
     for fold in oof_folds:
         if "feature_names" not in fold:
             fold["feature_names"] = list(feature_names)
@@ -1791,6 +2053,7 @@ def _prepare_explainability_units(
     projection_applied = any(
         fold.get("input_projector") is not None for fold in oof_folds
     )
+    proxy_active = "taxon_proxy" in explanation_backends
     perturbation_policy = {
         "geometry": geometries,
         "projection_applied": bool(projection_applied),
@@ -1800,8 +2063,13 @@ def _prepare_explainability_units(
             for name in plan.global_methods
             if name in {"shap", "lime", "ale", "permutation", "interactions"}
         ],
-        "interpretation": "predictive model-coordinate attribution under geometry-preserving perturbations; not a causal or isolated biological effect",
+        "interpretation": (
+            "taxon-space surrogate attribution of the frozen foundation-representation predictive model under simplex-preserving perturbations; proxy fidelity is measured on outer-test teacher probabilities; not a causal or isolated biological effect"
+            if proxy_active
+            else "predictive model-coordinate attribution under geometry-preserving perturbations; not a causal or isolated biological effect"
+        ),
         "tree_shap_policy": "disabled for constrained projected inputs because TreeSHAP cannot apply the projection operator to masked samples",
+        "explanation_backend": explanation_backends,
     }
     perturbation_policy_path = target.target_dir / "perturbation_policy.json"
     dump_json_standard(perturbation_policy, perturbation_policy_path)
@@ -1837,6 +2105,9 @@ def _prepare_explainability_units(
     coordinate_metadata_path: Path | None = None
     coordinate_metadata_by_fold_path: Path | None = None
     prediction_reproduction_path: Path | None = None
+    proxy_fidelity_path: Path | None = None
+    proxy_fidelity_summary_path: Path | None = None
+    representation_coordinate_metadata_by_fold_path: Path | None = None
     if coordinate_metadata:
         coordinate_metadata_path = target.target_dir / "coordinate_metadata.parquet"
         write_table(
@@ -1855,6 +2126,70 @@ def _prepare_explainability_units(
             target.target_dir / "prediction_reproduction.parquet"
         )
         write_table(prediction_reproduction_path, pd.DataFrame(prediction_reproduction))
+    if proxy_fidelity:
+        proxy_fidelity_path = target.target_dir / "proxy_fidelity_by_outer_fold.parquet"
+        proxy_frame = pd.DataFrame(proxy_fidelity)
+        write_table(proxy_fidelity_path, proxy_frame)
+        metric_columns = [
+            "probability_mae",
+            "probability_rmse",
+            "probability_max_abs_error",
+            "probability_r2",
+            "probability_pearson",
+            "probability_spearman",
+            "predicted_class_agreement",
+        ]
+        summary_rows: list[dict[str, Any]] = []
+        for metric in metric_columns:
+            values = pd.to_numeric(proxy_frame.get(metric), errors="coerce").dropna()
+            if values.empty:
+                continue
+            summary_rows.append(
+                {
+                    "metric": metric,
+                    "mean": float(values.mean()),
+                    "sd": float(values.std(ddof=1)) if len(values) > 1 else 0.0,
+                    "median": float(values.median()),
+                    "minimum": float(values.min()),
+                    "maximum": float(values.max()),
+                    "n_outer_folds": int(len(values)),
+                }
+            )
+        proxy_fidelity_summary_path = (
+            target.target_dir / "proxy_fidelity_summary.parquet"
+        )
+        write_table(proxy_fidelity_summary_path, pd.DataFrame(summary_rows))
+        mae = pd.to_numeric(proxy_frame["probability_mae"], errors="coerce").mean()
+        r2 = pd.to_numeric(proxy_frame["probability_r2"], errors="coerce").mean()
+        agreement = pd.to_numeric(
+            proxy_frame["predicted_class_agreement"], errors="coerce"
+        ).mean()
+        summary_table(
+            "Taxon-space proxy fidelity",
+            {
+                "outer folds": len(proxy_frame),
+                "probability MAE": f"{float(mae):.4f}" if np.isfinite(mae) else "n/a",
+                "probability R²": f"{float(r2):.4f}" if np.isfinite(r2) else "n/a",
+                "class agreement": f"{float(agreement):.4f}"
+                if np.isfinite(agreement)
+                else "n/a",
+            },
+        )
+        if (np.isfinite(mae) and float(mae) > 0.05) or (
+            np.isfinite(r2) and float(r2) < 0.90
+        ):
+            warn(
+                "Foundation-model taxon proxy has limited held-out fidelity in at least one aggregate criterion; interpret taxon-level explanations together with proxy_fidelity_by_outer_fold.parquet."
+            )
+    if representation_coordinate_metadata_by_fold:
+        representation_coordinate_metadata_by_fold_path = (
+            target.target_dir
+            / "representation_coordinate_metadata_by_outer_fold.parquet"
+        )
+        write_table(
+            representation_coordinate_metadata_by_fold_path,
+            pd.DataFrame(representation_coordinate_metadata_by_fold),
+        )
     source_signature = _explainability_source_signature(
         target.slug, row, oof_folds, feature_names, dataset.class_labels
     )
@@ -1868,6 +2203,10 @@ def _prepare_explainability_units(
             coordinate_metadata_path=coordinate_metadata_path,
             coordinate_metadata_by_fold_path=coordinate_metadata_by_fold_path,
             prediction_reproduction_path=prediction_reproduction_path,
+            proxy_fidelity_path=proxy_fidelity_path,
+            proxy_fidelity_summary_path=proxy_fidelity_summary_path,
+            representation_coordinate_metadata_by_fold_path=representation_coordinate_metadata_by_fold_path,
+            explanation_backends=explanation_backends,
             geometries=geometries,
             projection_applied=projection_applied,
             perturbation_policy=perturbation_policy,
@@ -3046,6 +3385,25 @@ def _write_explained_unit_metadata(
                 for index in units.class_indices
             ],
             "class_target": "class_probability",
+            "explanation_backend": list(units.explanation_backends),
+            "biological_feature_space": "taxon_relative_abundance_proxy"
+            if "taxon_proxy" in units.explanation_backends
+            else "fitted_model_coordinates",
+            "proxy_fidelity_file": (
+                None
+                if units.proxy_fidelity_path is None
+                else units.proxy_fidelity_path.name
+            ),
+            "proxy_fidelity_summary_file": (
+                None
+                if units.proxy_fidelity_summary_path is None
+                else units.proxy_fidelity_summary_path.name
+            ),
+            "representation_coordinate_metadata_file": (
+                None
+                if units.representation_coordinate_metadata_by_fold_path is None
+                else units.representation_coordinate_metadata_by_fold_path.name
+            ),
             "explanation_layers": [
                 *(["global", "cross_fold_stability"] if plan.global_methods else []),
                 *(["local"] if plan.local_enabled else []),
@@ -3136,6 +3494,14 @@ def _finalize_explainability_run(
         )
     if units.prediction_reproduction_path is not None:
         outputs["prediction_reproduction"] = units.prediction_reproduction_path
+    if units.proxy_fidelity_path is not None:
+        outputs["proxy_fidelity_by_outer_fold"] = units.proxy_fidelity_path
+    if units.proxy_fidelity_summary_path is not None:
+        outputs["proxy_fidelity_summary"] = units.proxy_fidelity_summary_path
+    if units.representation_coordinate_metadata_by_fold_path is not None:
+        outputs["representation_coordinate_metadata_by_outer_fold"] = (
+            units.representation_coordinate_metadata_by_fold_path
+        )
     outputs.update(class_figure_paths)
     outputs.update(state.method_outputs)
     outputs.update(state.interaction_outputs)

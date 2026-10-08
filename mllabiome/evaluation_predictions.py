@@ -8,8 +8,7 @@ import pandas as pd
 
 from .baseline_rf import resolve_baseline_rf_configs
 from .metrics import canonical_metric_name
-from .selection import (select_mpma_b_by_outer_fold,
-                        selected_mpma_b_outer_predictions)
+from .selection import select_mpma_b_by_outer_fold, selected_mpma_b_outer_predictions
 from .storage import read_table, table_exists
 
 _RANK_PRIORITY = (

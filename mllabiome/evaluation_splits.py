@@ -6,11 +6,14 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import (GroupKFold, KFold, StratifiedGroupKFold,
-                                     StratifiedKFold)
+from sklearn.model_selection import (
+    GroupKFold,
+    KFold,
+    StratifiedGroupKFold,
+    StratifiedKFold,
+)
 
-from ._evaluation_protocols import (is_hierarchical_lodo_protocol,
-                                    is_lodo_protocol)
+from ._evaluation_protocols import is_hierarchical_lodo_protocol, is_lodo_protocol
 from .splits import resolve_cv_splits
 from .sweep_types import Evaluation
 

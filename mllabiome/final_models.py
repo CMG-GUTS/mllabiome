@@ -7,10 +7,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .ensemble_aggregation import (PROBABILITY_PRESERVING_AGGREGATIONS,
-                                   SUPPORTED_AGGREGATIONS)
-from .ensemble_aggregation import \
-    aggregate_member_predictions as _aggregate_member_predictions
+from .ensemble_aggregation import (
+    PROBABILITY_PRESERVING_AGGREGATIONS,
+    SUPPORTED_AGGREGATIONS,
+)
+from .ensemble_aggregation import (
+    aggregate_member_predictions as _aggregate_member_predictions,
+)
 from .ensemble_aggregation import effective_aggregation_weights
 from .metrics import aggregate_validation_metric, canonical_metric_name
 from .storage import read_table, table_exists
@@ -263,6 +266,8 @@ def _stored_weights(unit: dict[str, Any], member_ids: list[str]) -> list[float] 
             "Stored MPMA-E weights must be finite, non-negative, and have positive total weight"
         )
     arr = arr / float(arr.sum())
+    if int(np.count_nonzero(arr > 1e-8)) < 2:
+        raise ValueError("Weighted MPMA-E requires at least two effective members")
     return [float(value) for value in arr]
 
 
@@ -325,6 +330,19 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
             aggregation, len(member_ids), stored_weights
         )
 
+    effective_count = (
+        int(np.count_nonzero(np.asarray(stored_weights, dtype=float) > 1e-8))
+        if stored_weights is not None
+        else len(member_ids)
+    )
+    if effective_count < 2:
+        raise ValueError("Final MPMA-E must have at least two effective members")
+    declared_effective = int(unit.get("effective_member_count", effective_count))
+    if declared_effective != effective_count:
+        raise ValueError(
+            "Final MPMA-E effective member count does not match stored weights"
+        )
+
     members: list[dict[str, Any]] = []
     for index, config_id in enumerate(member_ids):
         row = configs[configs["config_id"].astype(str).eq(config_id)].iloc[0]
@@ -340,19 +358,25 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
         unit.get("member_count", unit.get("ensemble_size", len(member_ids)))
     )
     max_size = int(unit.get("max_size", realised_size))
+    aggregation_parameters = unit.get("aggregation_parameters", {})
+    if isinstance(aggregation_parameters, str):
+        text = aggregation_parameters.strip()
+        aggregation_parameters = json.loads(text) if text else {}
+    if not isinstance(aggregation_parameters, dict):
+        raise ValueError("Final MPMA-E aggregation_parameters must be a JSON object")
+
     result: dict[str, Any] = {
         "ensemble_config_id": str(unit.get("ensemble_config_id", "")).strip(),
         "task": str(unit.get("task", "classification")),
         "selection_strategy": selection_strategy,
         "aggregation_strategy": aggregation,
+        "aggregation_parameters": aggregation_parameters,
         "selection_metric": selection_metric,
         "member_score_metric": member_score_metric,
         "max_size": max_size,
         "ensemble_size": len(member_ids),
         "member_count": len(member_ids),
-        "effective_member_count": int(
-            unit.get("effective_member_count", len(member_ids))
-        ),
+        "effective_member_count": effective_count,
         "members": members,
     }
     if "aggregation_weight_source" in unit:
@@ -462,9 +486,12 @@ def load_final_models(root: Path | str) -> dict[str, Any]:
 
 
 def aggregate_member_predictions(
-    stack: np.ndarray, aggregation: str, weights: list[float] | None = None
+    stack: np.ndarray,
+    aggregation: str,
+    weights: list[float] | None = None,
+    parameters: dict[str, Any] | None = None,
 ) -> np.ndarray:
-    return _aggregate_member_predictions(stack, aggregation, weights)
+    return _aggregate_member_predictions(stack, aggregation, weights, parameters)
 
 
 def _outer_predictions(root: Path) -> pd.DataFrame:
@@ -511,6 +538,7 @@ def fixed_strategy_predictions(root: Path | str, strategy: str) -> pd.DataFrame:
         if aggregation == "weighted_mean_proba"
         else None
     )
+    aggregation_parameters = unit.get("aggregation_parameters", {})
     pcols = [column for column in outer.columns if column.startswith("proba_")]
     if not pcols:
         raise ValueError("outer_predictions.parquet has no probability columns")
@@ -555,7 +583,9 @@ def fixed_strategy_predictions(root: Path | str, strategy: str) -> pd.DataFrame:
         stack = np.stack(
             [frame[pcols].to_numpy(dtype=float) for frame in member_frames], axis=0
         )
-        proba = aggregate_member_predictions(stack, aggregation, weights)
+        proba = aggregate_member_predictions(
+            stack, aggregation, weights, aggregation_parameters
+        )
         base = member_frames[0].copy()
         drop_columns = [
             column for column in base.columns if column.startswith("proba_")

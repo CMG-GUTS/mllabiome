@@ -3,20 +3,24 @@ from __future__ import annotations
 from pathlib import Path
 
 from catboost import CatBoostClassifier
-from curated_microbiota.collections import ibd_multiclass
-from sklearn.ensemble import RandomForestClassifier
+from curated_microbiota.collections import lampp_scz
+from lightgbm import LGBMClassifier
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from xgboost import XGBClassifier
 
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
-TITLE = "Cross-cohort multiclass IBD phenotype LODO mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "IBD-MULTICLASS-LODO-CM"
+TITLE = "LAMPP schizophrenia mllabiome benchmark sweep"
+EXPERIMENT_DIR = HERE / "runs" / "LAMPP-SCZ-NCV-CM-official-v2"
 
-DATA = ibd_multiclass.mllabiome(target="ibd_phenotype")
+DATA = lampp_scz.mllabiome()
 
-EVALUATION = ibd_multiclass.splits(
-    target="ibd_phenotype",
-    benchmark="mllabiome-benchmark-v1",
+EVALUATION = lampp_scz.splits(
+    benchmark="mllabiome-benchmark-v2",
 ).mllabiome(
     optimize_metric="log_loss",
     n_jobs="auto",
@@ -36,41 +40,48 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
-    ("phylum", ("phylum",)),
-    ("class", ("class",)),
-    ("order", ("order",)),
-    ("family", ("family",)),
-    ("genus", ("genus",)),
-    ("phylum-genus", ("phylum", "class", "order", "family", "genus")),
+    ("species", ("species",)),
+    ("strain", ("strain",)),
+    ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
     mll.Transformation("presence_absence"),
-    mll.Transformation("identity"),
-    mll.Transformation("arcsine_sqrt", composition_scope="rank-wise"),
-    mll.Transformation("yeo_johnson", composition_scope="rank-wise"),
-    mll.Transformation(
-        "relative_abundance",
-        composition_scope="rank-wise",
-        feature_filter=mll.PrevalenceFilter(
-            threshold=0.20,
-        ),
-    ),
-    mll.Transformation("log10", composition_scope="rank-wise"),
+    # mll.Transformation("identity"),
+    # mll.Transformation("clr", composition_scope="rank-wise"),
 )
 
 MODELS = (
     (
-        "RF_1000_msl5",
-        RandomForestClassifier(
-            n_estimators=1000,
-            min_samples_leaf=5,
-            n_jobs=1,
+        "LR_L2_C0002",
+        LogisticRegression(
+            penalty="l2",
+            C=0.002,
+            solver="liblinear",
+            max_iter=5000,
             random_state=42,
         ),
     ),
     (
-        "CB_multiclass_i300_d3",
+        "LGBM_e300",
+        LGBMClassifier(
+            n_estimators=300,
+            learning_rate=0.07,
+            num_leaves=7,
+            max_depth=3,
+            min_child_samples=3,
+            subsample=0.7,
+            subsample_freq=1,
+            colsample_bytree=0.6,
+            reg_alpha=0,
+            reg_lambda=0,
+            scale_pos_weight=1.0,
+            random_state=17,
+            verbosity=-1,
+        ),
+    ),
+    (
+        "CB_i300_d3",
         CatBoostClassifier(
             iterations=300,
             learning_rate=0.04,
@@ -78,8 +89,8 @@ MODELS = (
             l2_leaf_reg=10,
             random_strength=1.0,
             rsm=0.60,
-            loss_function="MultiClass",
-            eval_metric="MultiClass",
+            loss_function="Logloss",
+            eval_metric="Logloss",
             random_seed=42,
             thread_count=1,
             verbose=False,
@@ -88,6 +99,7 @@ MODELS = (
     ),
 )
 
+
 GATE = mll.QualificationGate(
     enabled=False,
     metric="MCC",
@@ -95,7 +107,7 @@ GATE = mll.QualificationGate(
 )
 
 ENSEMBLE = mll.Ensemble(
-    max_sizes=(3,),
+    max_sizes=(10,),
     selection_strategies=(
         "top_k",
         "best_per_resolution",
@@ -129,6 +141,16 @@ ROBUSTNESS = mll.Robustness(
     top_k=30,
 )
 
+EXTERNAL_TEST = lampp_scz.external_test
+
+if EXTERNAL_TEST is None:
+    raise RuntimeError("LAMPP external test set is unavailable")
+
+INFERENCE = EXTERNAL_TEST.mllabiome(
+    targets=("mpma_b", "mpma_e"),
+    feature_policy="strict",
+)
+
 SWEEP = mll.Sweep(
     data=DATA,
     experiment_dir=EXPERIMENT_DIR,
@@ -142,4 +164,5 @@ SWEEP = mll.Sweep(
     ensemble=ENSEMBLE,
     explainability=EXPLAINABILITY,
     robustness=ROBUSTNESS,
+    inference=INFERENCE,
 )

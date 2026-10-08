@@ -9,30 +9,59 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator
 
-from .configs_sweep import (Sweep, _effective_local_explanations_mode,
-                            _groups_from_metadata, _lodo_feature_pair,
-                            _resolved_evaluation_splits)
-from .console import (info, path_table, phase_progress, progress, stage,
-                      success, summary_table)
+from .configs_sweep import (
+    Sweep,
+    _effective_local_explanations_mode,
+    _groups_from_metadata,
+    _lodo_feature_pair,
+    _resolved_evaluation_splits,
+)
+from .console import (
+    info,
+    path_table,
+    phase_progress,
+    progress,
+    stage,
+    success,
+    summary_table,
+    warn,
+)
 from .data import load_dataset
-from .explainability import (_ale_1d_effect_summary, _ale_result_values,
-                             _AleModelWrapper, _auto_ale_bins,
-                             _plot_ale_curves, _project_input,
-                             _projection_required, _quiet_pyale_info,
-                             _require_pyale)
+from .explainability import (
+    _ale_1d_effect_summary,
+    _ale_result_values,
+    _AleModelWrapper,
+    _auto_ale_bins,
+    _plot_ale_curves,
+    _project_input,
+    _projection_required,
+    _quiet_pyale_info,
+    _require_pyale,
+)
 from .explainability_config import _configured_count_transformation_factory
-from .explainability_context import (build_feature_relative_abundance_summary,
-                                     build_local_relative_abundance_context)
-from .explainability_methods import (ALE, LIME, SHAP, ALEInteractions,
-                                     Permutation, method_has_global,
-                                     method_has_local, method_name)
-from .explainability_visuals import (plot_interaction_network,
-                                     plot_local_attributions,
-                                     plot_regression_feature_support)
+from .explainability_proxy import fit_taxon_regression_proxy
+from .explainability_context import (
+    build_feature_relative_abundance_summary,
+    build_local_relative_abundance_context,
+)
+from .explainability_methods import (
+    ALE,
+    LIME,
+    SHAP,
+    ALEInteractions,
+    Permutation,
+    method_has_global,
+    method_has_local,
+    method_name,
+)
+from .explainability_visuals import (
+    plot_interaction_network,
+    plot_local_attributions,
+    plot_regression_feature_support,
+)
 from .final_models import build_final_models
 from .learners import _learner_factory
-from .metrics import (_estimator_call, compute_regression_metrics,
-                      metric_is_loss)
+from .metrics import _estimator_call, compute_regression_metrics, metric_is_loss
 from .regression_ensemble import aggregate_regression_predictions
 from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
 from .runtime import configure_estimator_threads
@@ -254,36 +283,91 @@ def _fit_individual_folds(
             transform_key,
             fold_blocks,
             resolution_feature_blocks=feature_blocks,
+            feature_names=names,
         )
         transform = transform_factory()
-        X_train, X_test = transform.apply_pair(X_train0, X_test0)
-        coordinate_metadata = _coordinate_metadata_rows(transform, names)
-        names = transform.get_feature_names_out(names)
+        X_train_representation, X_test_representation = transform.apply_pair(
+            X_train0, X_test0
+        )
+        representation_coordinate_metadata = _coordinate_metadata_rows(transform, names)
+        representation_names = transform.get_feature_names_out(names)
         model = configure_estimator_threads(learners[learner_key](), 1)
-        model.fit(X_train, dataset.y[train_idx])
+        model.fit(X_train_representation, dataset.y[train_idx])
+        train_pred = np.asarray(
+            _estimator_call(model, "predict", X_train_representation), dtype=float
+        ).reshape(-1)
         pred = np.asarray(
-            _estimator_call(model, "predict", X_test), dtype=float
+            _estimator_call(model, "predict", X_test_representation), dtype=float
         ).reshape(-1)
         geometry = transform.perturbation_geometry()
         projector = (
             transform.project_model_input if _projection_required(geometry) else None
         )
-        folds.append(
-            {
-                "split_key": str(split["split_key"]),
-                "train_idx": train_idx,
-                "test_idx": test_idx,
-                "X_train": np.asarray(X_train, dtype=float),
-                "X_test": np.asarray(X_test, dtype=float),
-                "feature_names": names,
-                "coordinate_metadata": coordinate_metadata,
-                "y_test": np.asarray(dataset.y[test_idx], dtype=float),
-                "y_pred": pred,
-                "estimator": model,
-                "input_projector": projector,
-                "perturbation_geometry": geometry,
-            }
+        fold = {
+            "split_key": str(split["split_key"]),
+            "train_idx": train_idx,
+            "test_idx": test_idx,
+            "X_train": np.asarray(X_train_representation, dtype=float),
+            "X_test": np.asarray(X_test_representation, dtype=float),
+            "feature_names": representation_names,
+            "coordinate_metadata": representation_coordinate_metadata,
+            "y_test": np.asarray(dataset.y[test_idx], dtype=float),
+            "y_pred": pred,
+            "estimator": model,
+            "input_projector": projector,
+            "perturbation_geometry": geometry,
+            "explanation_backend": "direct",
+        }
+        foundation_embedding = any(
+            str(item.get("coordinate_type", "")) == "foundation_embedding"
+            for item in representation_coordinate_metadata
         )
+        if foundation_embedding:
+            proxy = fit_taxon_regression_proxy(
+                X_train0,
+                X_test0,
+                train_pred,
+                pred,
+                names,
+                random_state=int(sweep.explainability.random_state) + fold_no * 1009,
+            )
+            fold.update(
+                {
+                    "representation_feature_names": list(representation_names),
+                    "representation_coordinate_metadata": representation_coordinate_metadata,
+                    "representation_width": int(X_train_representation.shape[1]),
+                    "X_train": np.asarray(proxy["X_train"], dtype=float),
+                    "X_test": np.asarray(proxy["X_test"], dtype=float),
+                    "feature_names": list(proxy["feature_names"]),
+                    "coordinate_metadata": [
+                        {
+                            "coordinate": str(item.name),
+                            "coordinate_type": str(item.coordinate_type),
+                            "anchor_feature": ""
+                            if item.anchor_feature is None
+                            else str(item.anchor_feature),
+                            "exact_feature_identity": bool(item.exact_feature_identity),
+                            "components": json.dumps(
+                                list(item.components), separators=(",", ":")
+                            ),
+                            "coefficients": json.dumps(
+                                [float(x) for x in item.coefficients],
+                                separators=(",", ":"),
+                            ),
+                        }
+                        for item in proxy["coordinate_metadata"]
+                    ],
+                    "estimator": proxy["estimator"],
+                    "input_projector": proxy["input_projector"],
+                    "perturbation_geometry": str(proxy["perturbation_geometry"]),
+                    "proxy_prediction": np.asarray(
+                        proxy["proxy_prediction"], dtype=float
+                    ),
+                    "proxy_fidelity": dict(proxy["proxy_fidelity"]),
+                    "explanation_backend": "taxon_proxy",
+                }
+            )
+        folds.append(fold)
         if progress_callback is not None:
             progress_callback(fold_no, len(splits), str(split["split_key"]))
     return dataset, folds
@@ -331,6 +415,11 @@ def _fit_ensemble_folds(
         materialized.append(
             (row, np.asarray(X_base), [str(x) for x in names], feature_blocks)
         )
+    proxy_X_base, proxy_feature_names, _ = materialize_mpdr_with_blocks(
+        dataset, tuple(all_levels or ["all"])
+    )
+    proxy_X_base = np.asarray(proxy_X_base)
+    proxy_feature_names = [str(x) for x in proxy_feature_names]
     aggregation = str(unit.get("aggregation_strategy", "mean_prediction"))
     raw_weights = unit.get("weights")
     weights = None
@@ -351,6 +440,7 @@ def _fit_ensemble_folds(
         coordinate_metadata: list[dict[str, Any]] = []
         fitted: list[dict[str, Any]] = []
         projection_blocks: list[tuple[slice, Any]] = []
+        foundation_embedding = False
         start = 0
         for row, X_base, names, feature_blocks in materialized:
             X_train0, X_test0, mask = _lodo_feature_pair(
@@ -365,6 +455,7 @@ def _fit_ensemble_folds(
                 transform_key,
                 fold_blocks,
                 resolution_feature_blocks=feature_blocks,
+                feature_names=kept_names,
             )
             transform = transform_factory()
             X_train_member, X_test_member = transform.apply_pair(X_train0, X_test0)
@@ -378,8 +469,13 @@ def _fit_ensemble_folds(
                 f"{row['resolution']}|{transform_key}|{learner_key}|{row['config_id']}"
             )
             feature_names.extend([f"{prefix}|{name}" for name in transformed_names])
-            coordinate_metadata.extend(
-                _coordinate_metadata_rows(transform, kept_names, prefix)
+            member_coordinate_metadata = _coordinate_metadata_rows(
+                transform, kept_names, prefix
+            )
+            coordinate_metadata.extend(member_coordinate_metadata)
+            foundation_embedding = foundation_embedding or any(
+                str(item.get("coordinate_type", "")) == "foundation_embedding"
+                for item in member_coordinate_metadata
             )
             train_blocks.append(np.asarray(X_train_member, dtype=float))
             test_blocks.append(np.asarray(X_test_member, dtype=float))
@@ -387,25 +483,82 @@ def _fit_ensemble_folds(
         X_train = np.concatenate(train_blocks, axis=1)
         X_test = np.concatenate(test_blocks, axis=1)
         ensemble = _FittedRegressionEnsemble(fitted, aggregation, weights)
+        train_pred = ensemble.predict(X_train)
         pred = ensemble.predict(X_test)
         block_projector = _RegressionBlockProjector(projection_blocks)
         projector = block_projector if block_projector.requires_projection() else None
-        folds.append(
-            {
-                "split_key": str(split["split_key"]),
-                "train_idx": train_idx,
-                "test_idx": test_idx,
-                "X_train": X_train,
-                "X_test": X_test,
-                "feature_names": feature_names,
-                "coordinate_metadata": coordinate_metadata,
-                "y_test": np.asarray(dataset.y[test_idx], dtype=float),
-                "y_pred": pred,
-                "estimator": ensemble,
-                "input_projector": projector,
-                "perturbation_geometry": block_projector.geometry(),
-            }
-        )
+        fold = {
+            "split_key": str(split["split_key"]),
+            "train_idx": train_idx,
+            "test_idx": test_idx,
+            "X_train": X_train,
+            "X_test": X_test,
+            "feature_names": feature_names,
+            "coordinate_metadata": coordinate_metadata,
+            "y_test": np.asarray(dataset.y[test_idx], dtype=float),
+            "y_pred": pred,
+            "estimator": ensemble,
+            "input_projector": projector,
+            "perturbation_geometry": block_projector.geometry(),
+            "explanation_backend": "direct",
+        }
+        if foundation_embedding:
+            proxy_train_raw, proxy_test_raw, proxy_mask = _lodo_feature_pair(
+                proxy_X_base,
+                train_idx,
+                test_idx,
+                sweep.evaluation.protocol,
+            )
+            proxy_names = [
+                str(name)
+                for name, keep in zip(proxy_feature_names, proxy_mask)
+                if bool(keep)
+            ]
+            proxy = fit_taxon_regression_proxy(
+                proxy_train_raw,
+                proxy_test_raw,
+                train_pred,
+                pred,
+                proxy_names,
+                random_state=int(sweep.explainability.random_state) + fold_no * 1009,
+            )
+            fold.update(
+                {
+                    "representation_feature_names": list(feature_names),
+                    "representation_coordinate_metadata": list(coordinate_metadata),
+                    "representation_width": int(X_train.shape[1]),
+                    "X_train": np.asarray(proxy["X_train"], dtype=float),
+                    "X_test": np.asarray(proxy["X_test"], dtype=float),
+                    "feature_names": list(proxy["feature_names"]),
+                    "coordinate_metadata": [
+                        {
+                            "coordinate": str(item.name),
+                            "coordinate_type": str(item.coordinate_type),
+                            "anchor_feature": ""
+                            if item.anchor_feature is None
+                            else str(item.anchor_feature),
+                            "exact_feature_identity": bool(item.exact_feature_identity),
+                            "components": json.dumps(
+                                list(item.components), separators=(",", ":")
+                            ),
+                            "coefficients": json.dumps(
+                                [float(x) for x in item.coefficients],
+                                separators=(",", ":"),
+                            ),
+                        }
+                        for item in proxy["coordinate_metadata"]
+                    ],
+                    "estimator": proxy["estimator"],
+                    "input_projector": proxy["input_projector"],
+                    "perturbation_geometry": str(proxy["perturbation_geometry"]),
+                    "proxy_prediction": np.asarray(
+                        proxy["proxy_prediction"], dtype=float
+                    ),
+                    "proxy_fidelity": dict(proxy["proxy_fidelity"]),
+                    "explanation_backend": "taxon_proxy",
+                }
+            )
+        folds.append(fold)
         if progress_callback is not None:
             progress_callback(fold_no, len(splits), str(split["split_key"]))
     return dataset, folds
@@ -1335,6 +1488,8 @@ def _explain_target(
     target_dir = root / "explainability" / slug
     target_dir.mkdir(parents=True, exist_ok=True)
     coordinate_rows: list[dict[str, Any]] = []
+    representation_coordinate_rows: list[dict[str, Any]] = []
+    proxy_fidelity_rows: list[dict[str, Any]] = []
     for fold_no, fold in enumerate(folds, start=1):
         for item in fold.get("coordinate_metadata", []):
             coordinate_rows.append(
@@ -1344,10 +1499,102 @@ def _explain_target(
                     **item,
                 }
             )
+        for item in fold.get("representation_coordinate_metadata", []):
+            representation_coordinate_rows.append(
+                {
+                    "fold_no": int(fold_no),
+                    "split_key": str(fold.get("split_key", "")),
+                    **item,
+                }
+            )
+        fidelity = fold.get("proxy_fidelity")
+        if isinstance(fidelity, dict):
+            proxy_fidelity_rows.append(
+                {
+                    "fold_no": int(fold_no),
+                    "split_key": str(fold.get("split_key", "")),
+                    "n_train": int(
+                        len(np.asarray(fold.get("train_idx", []), dtype=int))
+                    ),
+                    "n_test": int(len(np.asarray(fold.get("test_idx", []), dtype=int))),
+                    "proxy_feature_count": int(np.asarray(fold["X_train"]).shape[1]),
+                    "representation_width": int(fold.get("representation_width", 0)),
+                    **{str(k): float(v) for k, v in fidelity.items()},
+                }
+            )
     coordinate_path: Path | None = None
     if coordinate_rows:
         coordinate_path = target_dir / "coordinate_metadata.parquet"
         write_table(coordinate_path, pd.DataFrame(coordinate_rows).drop_duplicates())
+    representation_coordinate_path: Path | None = None
+    if representation_coordinate_rows:
+        representation_coordinate_path = (
+            target_dir / "representation_coordinate_metadata_by_outer_fold.parquet"
+        )
+        write_table(
+            representation_coordinate_path,
+            pd.DataFrame(representation_coordinate_rows).drop_duplicates(),
+        )
+    proxy_fidelity_path: Path | None = None
+    proxy_fidelity_summary_path: Path | None = None
+    if proxy_fidelity_rows:
+        proxy_fidelity_path = target_dir / "proxy_fidelity_by_outer_fold.parquet"
+        proxy_frame = pd.DataFrame(proxy_fidelity_rows)
+        write_table(proxy_fidelity_path, proxy_frame)
+        metric_columns = [
+            "prediction_mae",
+            "prediction_rmse",
+            "prediction_max_abs_error",
+            "prediction_r2",
+            "prediction_pearson",
+            "prediction_spearman",
+        ]
+        summary_rows: list[dict[str, Any]] = []
+        for metric in metric_columns:
+            values = pd.to_numeric(proxy_frame[metric], errors="coerce").dropna()
+            if values.empty:
+                continue
+            summary_rows.append(
+                {
+                    "metric": metric,
+                    "mean": float(values.mean()),
+                    "sd": float(values.std(ddof=1)) if len(values) > 1 else 0.0,
+                    "median": float(values.median()),
+                    "minimum": float(values.min()),
+                    "maximum": float(values.max()),
+                    "n_outer_folds": int(len(values)),
+                }
+            )
+        proxy_fidelity_summary_path = target_dir / "proxy_fidelity_summary.parquet"
+        write_table(proxy_fidelity_summary_path, pd.DataFrame(summary_rows))
+        mae = pd.to_numeric(proxy_frame["prediction_mae"], errors="coerce").mean()
+        r2 = pd.to_numeric(proxy_frame["prediction_r2"], errors="coerce").mean()
+        summary_table(
+            "Taxon-space proxy fidelity",
+            {
+                "outer folds": len(proxy_frame),
+                "prediction MAE": f"{float(mae):.4f}" if np.isfinite(mae) else "n/a",
+                "prediction R²": f"{float(r2):.4f}" if np.isfinite(r2) else "n/a",
+            },
+        )
+        teacher_scale = float(
+            np.nanstd(
+                np.concatenate(
+                    [np.asarray(fold.get("y_pred", []), dtype=float) for fold in folds]
+                )
+            )
+        )
+        relative_mae = (
+            float(mae / teacher_scale)
+            if np.isfinite(mae) and teacher_scale > 0
+            else float("nan")
+        )
+        if (np.isfinite(relative_mae) and relative_mae > 0.10) or (
+            np.isfinite(r2) and float(r2) < 0.90
+        ):
+            warn(
+                "Foundation-model taxon proxy has limited held-out fidelity in at least one aggregate criterion; interpret taxon-level explanations together with proxy_fidelity_by_outer_fold.parquet."
+            )
     methods = tuple(method_name(method) for method in sweep.explainability.methods)
     global_methods = tuple(
         method_name(method)
@@ -1536,6 +1783,14 @@ def _explain_target(
         }
         if coordinate_path is not None:
             outputs["coordinate_metadata"] = coordinate_path
+        if representation_coordinate_path is not None:
+            outputs["representation_coordinate_metadata_by_outer_fold"] = (
+                representation_coordinate_path
+            )
+        if proxy_fidelity_path is not None:
+            outputs["proxy_fidelity_by_outer_fold"] = proxy_fidelity_path
+        if proxy_fidelity_summary_path is not None:
+            outputs["proxy_fidelity_summary"] = proxy_fidelity_summary_path
         local_table = (
             pd.concat(local_frames, ignore_index=True, sort=False)
             if local_frames
@@ -1635,12 +1890,21 @@ def _explain_target(
         }
     )
     projection_applied = any(fold.get("input_projector") is not None for fold in folds)
+    explanation_backends = sorted(
+        {str(fold.get("explanation_backend", "direct")) for fold in folds}
+    )
+    proxy_active = "taxon_proxy" in explanation_backends
     perturbation_policy = {
         "geometry": perturbation_geometries,
         "projection_applied": bool(projection_applied),
         "projection_scope": "generated perturbations are projected onto the fitted model-input geometry before prediction when a supported constraint is known",
-        "interpretation": "predictive model-coordinate attribution under geometry-preserving perturbations; not a causal or isolated biological effect",
+        "interpretation": (
+            "taxon-space surrogate attribution of the frozen foundation-representation regression model under simplex-preserving perturbations; proxy fidelity is measured on outer-test teacher predictions; not a causal or isolated biological effect"
+            if proxy_active
+            else "predictive model-coordinate attribution under geometry-preserving perturbations; not a causal or isolated biological effect"
+        ),
         "tree_shap_policy": "disabled for constrained projected inputs because TreeSHAP cannot apply the projection operator to masked samples",
+        "explanation_backend": explanation_backends,
     }
     perturbation_path = target_dir / "perturbation_policy.json"
     dump_json_standard(perturbation_policy, perturbation_path)
@@ -1663,9 +1927,20 @@ def _explain_target(
         "representative_quantiles": [
             float(x) for x in sweep.explainability.local.regression_quantiles
         ],
-        "explanation_space": explanation_spaces[0]
-        if len(explanation_spaces) == 1
-        else explanation_spaces,
+        "explanation_space": (
+            "taxon_relative_abundance_proxy"
+            if proxy_active
+            else explanation_spaces[0]
+            if len(explanation_spaces) == 1
+            else explanation_spaces
+        ),
+        "explanation_backend": explanation_backends,
+        "proxy_fidelity_file": None
+        if proxy_fidelity_path is None
+        else proxy_fidelity_path.name,
+        "proxy_fidelity_summary_file": None
+        if proxy_fidelity_summary_path is None
+        else proxy_fidelity_summary_path.name,
         "perturbation_geometry": perturbation_geometries,
         "geometry_projection_applied": bool(projection_applied),
         "perturbation_interpretation": perturbation_policy["interpretation"],

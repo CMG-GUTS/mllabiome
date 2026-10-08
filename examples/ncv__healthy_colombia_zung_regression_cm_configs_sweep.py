@@ -16,7 +16,7 @@ DATA = healthy_colombia.mllabiome(target="zung_depression")
 
 EVALUATION = healthy_colombia.splits(
     target="zung_depression",
-    benchmark="mllabiome-benchmark-v1",
+    benchmark="mllabiome-benchmark-v2",
 ).mllabiome(
     optimize_metric="RMSE",
     n_jobs="auto",

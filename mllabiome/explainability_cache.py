@@ -11,10 +11,16 @@ import numpy as np
 import pandas as pd
 
 from .configs_sweep import _source_tree_sha256
-from .explainability_config import (_EXPLAINABILITY_PIPELINE_SCHEMA,
-                                    _normalise_explainability_method_specs)
-from .explainability_methods import (method_has_global, method_has_local,
-                                     method_name, method_to_dict)
+from .explainability_config import (
+    _EXPLAINABILITY_PIPELINE_SCHEMA,
+    _normalise_explainability_method_specs,
+)
+from .explainability_methods import (
+    method_has_global,
+    method_has_local,
+    method_name,
+    method_to_dict,
+)
 from .explainability_reporting import _class_slug, _plot_feature_importance
 from .storage import glob_tables, read_table, table_exists
 from .sweep_types import Sweep, _effective_local_explanations_mode
@@ -504,6 +510,20 @@ def _explainability_cache_complete(
         return False
     if str(meta.get("pipeline_schema", "")) != _EXPLAINABILITY_PIPELINE_SCHEMA:
         return False
+    backend_raw = meta.get("explanation_backend", [])
+    if isinstance(backend_raw, str):
+        backends = [backend_raw]
+    else:
+        backends = [str(x) for x in backend_raw]
+    if "taxon_proxy" in backends:
+        if not table_exists(target_dir / "proxy_fidelity_by_outer_fold.parquet"):
+            return False
+        if not table_exists(target_dir / "proxy_fidelity_summary.parquet"):
+            return False
+        if not table_exists(
+            target_dir / "representation_coordinate_metadata_by_outer_fold.parquet"
+        ):
+            return False
     if str(
         meta.get("explainability_config_signature", "")
     ) != _explainability_config_signature(explainability):
@@ -566,6 +586,11 @@ def _existing_explainability_outputs(target_dir: Path) -> dict[str, Path]:
         "coordinate_metadata_by_outer_fold": target_dir
         / "coordinate_metadata_by_outer_fold.parquet",
         "prediction_reproduction": target_dir / "prediction_reproduction.parquet",
+        "proxy_fidelity_by_outer_fold": target_dir
+        / "proxy_fidelity_by_outer_fold.parquet",
+        "proxy_fidelity_summary": target_dir / "proxy_fidelity_summary.parquet",
+        "representation_coordinate_metadata_by_outer_fold": target_dir
+        / "representation_coordinate_metadata_by_outer_fold.parquet",
     }
     for key, path in candidates.items():
         if path.exists():

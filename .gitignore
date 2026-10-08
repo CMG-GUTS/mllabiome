@@ -77,6 +77,7 @@ Thumbs.db
 *.log
 
 # Generated package outputs
+# Potential inputs and custom files
 outputs/
 reports/
 results/
@@ -84,8 +85,7 @@ examples/runs/
 runs/
 mllabiome.zip
 examples-local
-
-# Potential inputs and custom files
+internal-manuscript
 sandbox/
 examples/data/IBS/IBS_lodo_mllabiome.csv
 examples/gutbrain_multiview_regression_configs_sweep_rc26.py

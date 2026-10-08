@@ -16,8 +16,12 @@ from skbio.stats.composition import clr as skbio_clr
 from skbio.stats.composition import ilr as skbio_ilr
 from skbio.stats.composition import multi_replace as skbio_multi_replace
 from sklearn.base import BaseEstimator, clone
-from sklearn.preprocessing import (PowerTransformer, QuantileTransformer,
-                                   RobustScaler, StandardScaler)
+from sklearn.preprocessing import (
+    PowerTransformer,
+    QuantileTransformer,
+    RobustScaler,
+    StandardScaler,
+)
 
 from .utils import _as_float_matrix
 
@@ -1295,12 +1299,17 @@ def _effective_count_transformation_spec(
 
 
 def _count_transformation_specs_for_blocks(
-    items: Any, feature_blocks: Any = None
+    items: Any, feature_blocks: Any = None, resolution: str | None = None
 ) -> tuple[tuple[str, Any | None], ...]:
     out: list[tuple[str, Any | None]] = []
     seen: set[str] = set()
     for item in items:
         name, spec = _effective_count_transformation_spec(item, feature_blocks)
+        resolutions = getattr(spec, "resolutions", None)
+        if resolution is not None and resolutions is not None:
+            allowed = {str(value) for value in resolutions}
+            if str(resolution) not in allowed:
+                continue
         if name in seen:
             continue
         seen.add(name)
@@ -1364,6 +1373,7 @@ class CountTransformationAdapter:
         *,
         random_state: int = 42,
         feature_blocks: Any = None,
+        feature_names: Any = None,
         composition_scope: str | None = None,
     ):
         raw_identity, encoded_filter_identity = _split_transformation_filter_identity(
@@ -1399,6 +1409,9 @@ class CountTransformationAdapter:
         self.spec = spec
         self.random_state = int(random_state)
         self.feature_blocks = feature_blocks
+        self.feature_names = (
+            None if feature_names is None else [str(x) for x in list(feature_names)]
+        )
         self.obj: Any | None = None
         self.block_objects_: list[tuple[str, tuple[int, ...], Any]] | None = None
         self.feature_filter_: PrevalenceFilter | None = None
@@ -1443,8 +1456,21 @@ class CountTransformationAdapter:
             )
         return self.spec
 
-    def _fit_single(self, X: np.ndarray) -> Any:
+    def _fit_single(
+        self,
+        X: np.ndarray,
+        *,
+        feature_names: Any = None,
+        feature_blocks: Any = None,
+    ) -> Any:
         obj = self._make()
+        bind_schema = getattr(obj, "bind_schema", None)
+        if callable(bind_schema):
+            if feature_names is None:
+                raise ValueError(
+                    f"Transformation {self.identity!r} requires taxonomic feature names, but none were provided."
+                )
+            bind_schema(feature_names, feature_blocks=feature_blocks)
         if hasattr(obj, "fit"):
             obj.fit(X)
         return obj
@@ -1455,6 +1481,11 @@ class CountTransformationAdapter:
         self.n_features_in_ = n_features
         filtered = X_float
         filtered_blocks = self.feature_blocks
+        filtered_names = self.feature_names
+        if filtered_names is not None and len(filtered_names) != n_features:
+            raise ValueError(
+                f"Feature-name count differs from the abundance matrix: expected {n_features}, got {len(filtered_names)}."
+            )
         if self.feature_filter is not None:
             fitted_filter = self.feature_filter.fresh().fit(X_float)
             if fitted_filter.feature_mask_ is None:
@@ -1467,6 +1498,12 @@ class CountTransformationAdapter:
             filtered_blocks = _mask_feature_blocks(
                 self.feature_blocks, self.feature_mask_
             )
+            if filtered_names is not None:
+                filtered_names = [
+                    name
+                    for name, keep in zip(filtered_names, self.feature_mask_)
+                    if bool(keep)
+                ]
         else:
             self.feature_filter_ = None
             self.feature_mask_ = np.ones(n_features, dtype=bool)
@@ -1498,7 +1535,16 @@ class CountTransformationAdapter:
                 if self.name in _LOG_RATIO_BLOCK_TRANSFORMS and len(indices) < 2:
                     continue
                 block = filtered[:, np.asarray(indices, dtype=int)]
-                obj = self._fit_single(block)
+                block_names = (
+                    None
+                    if filtered_names is None
+                    else [filtered_names[index] for index in indices]
+                )
+                obj = self._fit_single(
+                    block,
+                    feature_names=block_names,
+                    feature_blocks=((block_name, tuple(range(len(indices)))),),
+                )
                 n_out = getattr(obj, "n_features_out_", None)
                 total_out += int(n_out) if n_out is not None else len(indices)
                 fitted_blocks.append((block_name, indices, obj))
@@ -1510,7 +1556,11 @@ class CountTransformationAdapter:
             self.obj = None
             self.n_features_out_ = int(total_out)
             return self
-        obj = self._fit_single(filtered)
+        obj = self._fit_single(
+            filtered,
+            feature_names=filtered_names,
+            feature_blocks=filtered_blocks,
+        )
         self.obj = obj
         self.block_objects_ = None
         n_features_out = getattr(obj, "n_features_out_", None)
@@ -1747,6 +1797,42 @@ class CountTransformationAdapter:
                 "Two-array custom transformation callables are not supported because they can inspect held-out data while fitting."
             )
         self.fit(X_tr)
+        if self.block_objects_ is None and self.obj is not None:
+            apply_fitted_pair = getattr(self.obj, "apply_fitted_pair", None)
+            if callable(apply_fitted_pair):
+                X_tr_float = np.asarray(_as_float_matrix(X_tr), dtype=np.float64)
+                X_te_float = np.asarray(_as_float_matrix(X_te), dtype=np.float64)
+                X_tr_filtered = (
+                    self.feature_filter_.transform(X_tr_float)
+                    if self.feature_filter_ is not None
+                    else X_tr_float
+                )
+                X_te_filtered = (
+                    self.feature_filter_.transform(X_te_float)
+                    if self.feature_filter_ is not None
+                    else X_te_float
+                )
+                transformed_tr, transformed_te = apply_fitted_pair(
+                    X_tr_filtered, X_te_filtered
+                )
+                return (
+                    _finite_output(
+                        transformed_tr,
+                        expected_shape=(
+                            int(X_tr_float.shape[0]),
+                            int(self.n_features_out_),
+                        ),
+                        context=f"Count transformation {self.identity!r}",
+                    ),
+                    _finite_output(
+                        transformed_te,
+                        expected_shape=(
+                            int(X_te_float.shape[0]),
+                            int(self.n_features_out_),
+                        ),
+                        context=f"Count transformation {self.identity!r}",
+                    ),
+                )
         return (self.apply(X_tr), self.apply(X_te))
 
     def feature_filter_metadata(self) -> dict[str, Any]:
@@ -1832,6 +1918,7 @@ def _count_transformation_factory(
     *,
     random_state: int,
     feature_blocks: Any = None,
+    feature_names: Any = None,
 ) -> tuple[str, Callable[[], CountTransformationAdapter]]:
     if isinstance(item, Transform) or (
         hasattr(item, "name") and hasattr(item, "apply")
@@ -1839,12 +1926,13 @@ def _count_transformation_factory(
         name = _count_transformation_name(item)
         return (
             name,
-            lambda item=item, name=name, random_state=random_state, feature_blocks=feature_blocks: (
+            lambda item=item, name=name, random_state=random_state, feature_blocks=feature_blocks, feature_names=feature_names: (
                 CountTransformationAdapter(
                     name,
                     item,
                     random_state=random_state,
                     feature_blocks=feature_blocks,
+                    feature_names=feature_names,
                 )
             ),
         )
@@ -1855,23 +1943,25 @@ def _count_transformation_factory(
         )
         return (
             name,
-            lambda name=name, spec=spec, random_state=random_state, feature_blocks=feature_blocks: (
+            lambda name=name, spec=spec, random_state=random_state, feature_blocks=feature_blocks, feature_names=feature_names: (
                 CountTransformationAdapter(
                     name,
                     spec,
                     random_state=random_state,
                     feature_blocks=feature_blocks,
+                    feature_names=feature_names,
                 )
             ),
         )
     name = _count_transformation_name(item)
     return (
         name,
-        lambda name=name, random_state=random_state, feature_blocks=feature_blocks: (
+        lambda name=name, random_state=random_state, feature_blocks=feature_blocks, feature_names=feature_names: (
             CountTransformationAdapter(
                 name,
                 random_state=random_state,
                 feature_blocks=feature_blocks,
+                feature_names=feature_names,
             )
         ),
     )

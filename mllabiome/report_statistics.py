@@ -10,23 +10,42 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .diagnostic_statistics import (_confusion_rows, _decision_curve_grid,
-                                    _decision_curve_rows,
-                                    _operating_confusion_rows, _roc_curve_rows,
-                                    _threshold_metric_rows,
-                                    _validated_diagnostic_thresholds)
-from .evaluation_predictions import (evaluation_prediction_metadata,
-                                     load_evaluation_predictions)
-from .metrics import (_renormalize_proba, canonical_metric_name,
-                      compute_metrics, metric_is_loss)
-from .oof_statistics import (_calibration_coefficient_rows, _performance_rows,
-                             _prepare_oof_frame, _probability_columns,
-                             _probability_semantics, _reliability_rows)
-from .paired_statistics import (_coverage_row, _oof_design,
-                                _paired_contrast_rows)
-from .statistics_common import (_LODO_PROTOCOLS, _OOF_CONTRAST_METRICS,
-                                OOF_METRIC_ORDER, _ensure_outer_split_key,
-                                _repeat_id, _stable_seed)
+from .diagnostic_statistics import (
+    _confusion_rows,
+    _decision_curve_grid,
+    _decision_curve_rows,
+    _operating_confusion_rows,
+    _roc_curve_rows,
+    _threshold_metric_rows,
+    _validated_diagnostic_thresholds,
+)
+from .evaluation_predictions import (
+    evaluation_prediction_metadata,
+    load_evaluation_predictions,
+)
+from .metrics import (
+    _renormalize_proba,
+    canonical_metric_name,
+    compute_metrics,
+    metric_is_loss,
+)
+from .oof_statistics import (
+    _calibration_coefficient_rows,
+    _performance_rows,
+    _prepare_oof_frame,
+    _probability_columns,
+    _probability_semantics,
+    _reliability_rows,
+)
+from .paired_statistics import _coverage_row, _oof_design, _paired_contrast_rows
+from .statistics_common import (
+    _LODO_PROTOCOLS,
+    _OOF_CONTRAST_METRICS,
+    OOF_METRIC_ORDER,
+    _ensure_outer_split_key,
+    _repeat_id,
+    _stable_seed,
+)
 from .storage import read_table, resolve_table_path, table_exists, write_table
 from .utils import dump_json_standard
 
@@ -266,41 +285,42 @@ def _summary_rows(
 
 
 from .diagnostic_statistics import _binary_confusion as _binary_confusion
-from .diagnostic_statistics import \
-    _binary_threshold_counts as _binary_threshold_counts
-from .diagnostic_statistics import \
-    _bootstrap_decision_curve as _bootstrap_decision_curve
-from .diagnostic_statistics import \
-    _bootstrap_threshold_estimands as _bootstrap_threshold_estimands
-from .diagnostic_statistics import \
-    _confusion_components as _confusion_components
+from .diagnostic_statistics import _binary_threshold_counts as _binary_threshold_counts
+from .diagnostic_statistics import (
+    _bootstrap_decision_curve as _bootstrap_decision_curve,
+)
+from .diagnostic_statistics import (
+    _bootstrap_threshold_estimands as _bootstrap_threshold_estimands,
+)
+from .diagnostic_statistics import _confusion_components as _confusion_components
 from .diagnostic_statistics import _confusion_estimands as _confusion_estimands
-from .diagnostic_statistics import \
-    _decision_curve_point_estimands as _decision_curve_point_estimands
-from .diagnostic_statistics import \
-    _decision_curve_values as _decision_curve_values
-from .diagnostic_statistics import \
-    _diagnostic_values_from_counts as _diagnostic_values_from_counts
-from .diagnostic_statistics import \
-    _mean_decision_vectors as _mean_decision_vectors
-from .diagnostic_statistics import \
-    _mean_diagnostic_vectors as _mean_diagnostic_vectors
+from .diagnostic_statistics import (
+    _decision_curve_point_estimands as _decision_curve_point_estimands,
+)
+from .diagnostic_statistics import _decision_curve_values as _decision_curve_values
+from .diagnostic_statistics import (
+    _diagnostic_values_from_counts as _diagnostic_values_from_counts,
+)
+from .diagnostic_statistics import _mean_decision_vectors as _mean_decision_vectors
+from .diagnostic_statistics import _mean_diagnostic_vectors as _mean_diagnostic_vectors
 from .diagnostic_statistics import _nanmean_vectors as _nanmean_vectors
-from .diagnostic_statistics import \
-    _operating_confusion_estimands as _operating_confusion_estimands
-from .diagnostic_statistics import \
-    _operating_confusion_matrix as _operating_confusion_matrix
+from .diagnostic_statistics import (
+    _operating_confusion_estimands as _operating_confusion_estimands,
+)
+from .diagnostic_statistics import (
+    _operating_confusion_matrix as _operating_confusion_matrix,
+)
 from .diagnostic_statistics import _safe_ratio_array as _safe_ratio_array
-from .diagnostic_statistics import \
-    _threshold_diagnostic_values as _threshold_diagnostic_values
-from .diagnostic_statistics import \
-    _threshold_point_estimands as _threshold_point_estimands
+from .diagnostic_statistics import (
+    _threshold_diagnostic_values as _threshold_diagnostic_values,
+)
+from .diagnostic_statistics import (
+    _threshold_point_estimands as _threshold_point_estimands,
+)
 from .oof_statistics import _binary_auc_pr_auc_ap as _binary_auc_pr_auc_ap
-from .oof_statistics import \
-    _bootstrap_oof_estimands as _bootstrap_oof_estimands
+from .oof_statistics import _bootstrap_oof_estimands as _bootstrap_oof_estimands
 from .oof_statistics import _calibration_binary as _calibration_binary
-from .oof_statistics import \
-    _fast_classification_metrics as _fast_classification_metrics
+from .oof_statistics import _fast_classification_metrics as _fast_classification_metrics
 from .oof_statistics import _mean_metric_dicts as _mean_metric_dicts
 from .oof_statistics import _oof_metrics as _oof_metrics
 from .oof_statistics import _point_oof_estimands as _point_oof_estimands
@@ -309,17 +329,17 @@ from .oof_statistics import _resample_subjects as _resample_subjects
 from .oof_statistics import _sigmoid as _sigmoid
 from .paired_statistics import _match_key_columns as _match_key_columns
 from .paired_statistics import _matched_frames as _matched_frames
-from .paired_statistics import \
-    _paired_bootstrap_advantages as _paired_bootstrap_advantages
-from .paired_statistics import \
-    _paired_point_estimands as _paired_point_estimands
-from .paired_statistics import \
-    _paired_resample_indices as _paired_resample_indices
-from .paired_statistics import \
-    _subject_cluster_indices as _subject_cluster_indices
-from .statistical_tests import (_corrected_resampled_t_test,
-                                _exact_sign_flip_test,
-                                _paired_bootstrap_difference)
+from .paired_statistics import (
+    _paired_bootstrap_advantages as _paired_bootstrap_advantages,
+)
+from .paired_statistics import _paired_point_estimands as _paired_point_estimands
+from .paired_statistics import _paired_resample_indices as _paired_resample_indices
+from .paired_statistics import _subject_cluster_indices as _subject_cluster_indices
+from .statistical_tests import (
+    _corrected_resampled_t_test,
+    _exact_sign_flip_test,
+    _paired_bootstrap_difference,
+)
 from .statistics_common import DIAGNOSTIC_METRICS as DIAGNOSTIC_METRICS
 
 

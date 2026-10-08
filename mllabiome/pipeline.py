@@ -3,8 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .configs_sweep import (Sweep, _target_task, evaluate, sweep_task,
-                            target_sweeps)
+from .configs_sweep import Sweep, _target_task, evaluate, sweep_task, target_sweeps
 from .console import info
 from .ensemble_sweep import sweep_ensemble
 from .explore import run_explore as execute_explore

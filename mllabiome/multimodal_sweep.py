@@ -18,72 +18,103 @@ from threadpoolctl import threadpool_limits
 from ._evaluation_protocols import is_lodo_protocol
 from ._version import __version__
 from .compute import ResourceTracker, machine_profile
-from .configs_sweep import (MPDR, QualificationGate,
-                            _backfill_metrics_from_predictions,
-                            _backfill_regression_metrics_from_predictions,
-                            _checkpoint_result, _clear_evaluation_checkpoints,
-                            _count_transformation_factory, _done_pairs,
-                            _existing_inner_scores, _existing_outputs,
-                            _experiment_fingerprint, _failed_metric_row,
-                            _groups_from_metadata, _learner_factory,
-                            _learner_name, _load_existing_evaluation,
-                            _lodo_feature_pair, _metric_row,
-                            _outer_pair_complete, _predict_proba_aligned,
-                            _prediction_rows_values, _prepare_dirs,
-                            _qualification_map, _regression_metric_row,
-                            _regression_prediction_rows,
-                            _resolved_evaluation_splits, _scientific_digest,
-                            _scientific_value, _software_provenance,
-                            _source_tree_sha256, _strata_from_metadata,
-                            _subject_safe_groups,
-                            _validate_experiment_identity, _write_config_table,
-                            _write_rankings_and_figures, _write_tables,
-                            write_mpma_b_selection_outputs)
+from .configs_sweep import (
+    MPDR,
+    QualificationGate,
+    _backfill_metrics_from_predictions,
+    _backfill_regression_metrics_from_predictions,
+    _checkpoint_result,
+    _clear_evaluation_checkpoints,
+    _count_transformation_factory,
+    _done_pairs,
+    _existing_inner_scores,
+    _existing_outputs,
+    _experiment_fingerprint,
+    _failed_metric_row,
+    _groups_from_metadata,
+    _learner_factory,
+    _learner_name,
+    _load_existing_evaluation,
+    _lodo_feature_pair,
+    _metric_row,
+    _outer_pair_complete,
+    _predict_proba_aligned,
+    _prediction_rows_values,
+    _prepare_dirs,
+    _qualification_map,
+    _regression_metric_row,
+    _regression_prediction_rows,
+    _resolved_evaluation_splits,
+    _scientific_digest,
+    _scientific_value,
+    _software_provenance,
+    _source_tree_sha256,
+    _strata_from_metadata,
+    _subject_safe_groups,
+    _validate_experiment_identity,
+    _write_config_table,
+    _write_rankings_and_figures,
+    _write_tables,
+    write_mpma_b_selection_outputs,
+)
 from .console import path_table, progress, stage, success, summary_table
 from .estimator_protocol import EstimatorLike
 from .figures import _write_representation_impact_figure
 from .integrations import Integration
 from .integrations import IntegrationModel as IntegrationModel
-from .integrations import \
-    integration_modality_sets as integration_modality_sets
+from .integrations import integration_modality_sets as integration_modality_sets
 from .learners import fit_classifier
-from .metrics import (_estimator_call, aggregate_validation_metric,
-                      canonical_metric_name, compute_metrics,
-                      compute_regression_metrics, grouped_log_loss)
-from .modalities import (ModalityDataset, load_modalities,
-                         modality_dataset_fingerprint, modality_fingerprints,
-                         modality_source_fingerprints)
+from .metrics import (
+    _estimator_call,
+    aggregate_validation_metric,
+    canonical_metric_name,
+    compute_metrics,
+    compute_regression_metrics,
+    grouped_log_loss,
+)
+from .modalities import (
+    ModalityDataset,
+    load_modalities,
+    modality_dataset_fingerprint,
+    modality_fingerprints,
+    modality_source_fingerprints,
+)
 from .multimodal_candidates import CandidateSpec
 from .multimodal_candidates import ModalityPath as ModalityPath
 from .multimodal_candidates import _candidate_id as _candidate_id
 from .multimodal_candidates import _canonical as _canonical
-from .multimodal_candidates import (_IntegratedClassificationPredictor,
-                                    _IntegratedRegressionPredictor)
-from .multimodal_candidates import \
-    _materialize_modality_representation as \
-    _materialize_modality_representation
+from .multimodal_candidates import (
+    _IntegratedClassificationPredictor,
+    _IntegratedRegressionPredictor,
+)
+from .multimodal_candidates import (
+    _materialize_modality_representation as _materialize_modality_representation,
+)
 from .multimodal_candidates import _modality_paths as _modality_paths
-from .multimodal_candidates import (_ModalityInputProjector,
-                                    _normalise_modality_transformations,
-                                    _prepare_candidate_pair,
-                                    _prepare_candidate_pair_details,
-                                    _representation_cache)
-from .multimodal_candidates import \
-    _representation_specs as _representation_specs
-from .multimodal_candidates import \
-    _transformation_specs as _transformation_specs
+from .multimodal_candidates import (
+    _ModalityInputProjector,
+    _normalise_modality_transformations,
+    _prepare_candidate_pair,
+    _prepare_candidate_pair_details,
+    _representation_cache,
+)
+from .multimodal_candidates import _representation_specs as _representation_specs
+from .multimodal_candidates import _transformation_specs as _transformation_specs
 from .multimodal_candidates import build_modality_candidates
 from .resolutions import FeatureBlocks
 from .resolutions import mask_feature_blocks as mask_feature_blocks
-from .resolutions import \
-    materialize_mpdr_with_blocks as materialize_mpdr_with_blocks
-from .runtime import (ExecutionPlan, configure_estimator_threads,
-                      iter_parallel_tasks, resolve_execution_plan,
-                      thread_environment)
+from .resolutions import materialize_mpdr_with_blocks as materialize_mpdr_with_blocks
+from .runtime import (
+    ExecutionPlan,
+    configure_estimator_threads,
+    iter_parallel_tasks,
+    resolve_execution_plan,
+    thread_environment,
+)
 from .sweep_types import Sweep, validate_sweep_class_count
-from .transformations import \
-    _count_transformation_specs_for_blocks as \
-    _count_transformation_specs_for_blocks
+from .transformations import (
+    _count_transformation_specs_for_blocks as _count_transformation_specs_for_blocks,
+)
 from .utils import dump_json_standard
 
 _RepresentationKey: TypeAlias = tuple[str, str, tuple[str, ...]]
@@ -1688,11 +1719,17 @@ def candidate_from_row(
 
 
 def fit_modality_candidate_oof_for_explainability(sweep, row):
-    from .configs_sweep import (_learner_factory, _predict_proba_aligned,
-                                _resolved_evaluation_splits,
-                                _strata_from_metadata)
-    from .explainability import (ExplainabilityConfigurationError,
-                                 _xai_execution_plan, _xai_task_iterator)
+    from .configs_sweep import (
+        _learner_factory,
+        _predict_proba_aligned,
+        _resolved_evaluation_splits,
+        _strata_from_metadata,
+    )
+    from .explainability import (
+        ExplainabilityConfigurationError,
+        _xai_execution_plan,
+        _xai_task_iterator,
+    )
 
     dataset, spec, matrices, names = candidate_from_row(sweep, row)
     groups = (
@@ -1717,8 +1754,7 @@ def fit_modality_candidate_oof_for_explainability(sweep, row):
     execution = _xai_execution_plan(sweep, len(splits))
 
     def fit_fold(split_no, split, threads_per_worker):
-        from .configs_sweep import (_count_transformation_factory,
-                                    _lodo_feature_pair)
+        from .configs_sweep import _count_transformation_factory, _lodo_feature_pair
 
         train_idx = np.asarray(split["train_idx"], dtype=int)
         test_idx = np.asarray(split["test_idx"], dtype=int)
@@ -1821,9 +1857,12 @@ def fit_modality_candidate_oof_for_explainability(sweep, row):
 
 
 def fit_modality_regression_candidate_folds(sweep, row, progress_callback=None):
-    from .configs_sweep import (_count_transformation_factory,
-                                _learner_factory, _lodo_feature_pair,
-                                _resolved_evaluation_splits)
+    from .configs_sweep import (
+        _count_transformation_factory,
+        _learner_factory,
+        _lodo_feature_pair,
+        _resolved_evaluation_splits,
+    )
 
     dataset, spec, matrices, names = candidate_from_row(sweep, row)
     groups = (

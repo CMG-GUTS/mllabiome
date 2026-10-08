@@ -31,6 +31,7 @@ def test_update_changelog_version():
         == "# Changelog\n\n## 0.1.0rc2 - Unreleased\n\n## 0.1.0 - 2026-06-11\n"
     )
 
+
 def test_update_changelog_accepts_released_version():
     text = "# Changelog\n\n## 0.1.0 - 2026-10-05\n"
     assert SYNC_VERSION.update_changelog(text, "0.1.0") == text

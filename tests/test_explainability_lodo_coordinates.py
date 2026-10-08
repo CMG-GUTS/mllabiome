@@ -60,6 +60,7 @@ def test_single_fold_refit_uses_lodo_training_feature_mask(protocol):
         IdentityCoordinateTransform,
         lambda: LogisticRegression(random_state=7),
         1,
+        7,
     )
     assert fold is not None
     np.testing.assert_array_equal(fold["feature_mask"], mask)

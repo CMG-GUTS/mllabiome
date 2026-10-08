@@ -10,20 +10,24 @@ import pandas as pd
 
 from . import report as _report
 from ._evaluation_protocols import is_lodo_protocol
-from .configs_sweep import (Sweep, _normalise_sweep_task, _target_task,
-                            target_sweeps)
+from .configs_sweep import Sweep, _normalise_sweep_task, _target_task, target_sweeps
 from .console import info, path_table, phase_progress, stage, success
 from .final_models import build_final_models
 from .metrics import compute_regression_metrics, metric_is_loss
 from .regression_explainability import _write_regression_explainability_figures
 from .report_compute import compute_display, run_compute_accounting
 from .report_oof import _mpma_b_composition, oof_section_html, write_report
-from .report_statistics import (_corrected_resampled_t_test,
-                                _exact_sign_flip_test,
-                                _paired_bootstrap_difference)
+from .report_statistics import (
+    _corrected_resampled_t_test,
+    _exact_sign_flip_test,
+    _paired_bootstrap_difference,
+)
 from .storage import read_table, table_exists, write_table
-from .utils import (REGRESSION_METRIC_COLUMNS, dump_json_standard,
-                    prepare_report_html_path)
+from .utils import (
+    REGRESSION_METRIC_COLUMNS,
+    dump_json_standard,
+    prepare_report_html_path,
+)
 
 _REGRESSION_DISPLAY_METRICS = (
     "RMSE",

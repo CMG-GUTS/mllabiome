@@ -5,35 +5,80 @@ from .threading import configure_thread_limits
 configure_thread_limits()
 
 from ._version import __version__
-from .configs_sweep import (MPDR, MPMA, Ensemble, Evaluation, Explainability,
-                            Explore, Inference, LocalExplanationMode,
-                            LocalExplanations, QualificationGate, Robustness,
-                            Sweep, SweepTask, build_sweep_configs,
-                            build_sweep_from_module, evaluate)
+from .configs_sweep import (
+    MPDR,
+    MPMA,
+    Ensemble,
+    Evaluation,
+    Explainability,
+    Explore,
+    Inference,
+    LocalExplanationMode,
+    LocalExplanations,
+    QualificationGate,
+    Robustness,
+    Sweep,
+    SweepTask,
+    build_sweep_configs,
+    build_sweep_from_module,
+    evaluate,
+)
 from .data import Data, Dataset, Metadata, load_dataset
 from .ensemble_sweep import sweep_ensemble
-from .explainability import (ExplainabilityConfigurationError,
-                             ExplainabilityDependencyError)
-from .explainability_methods import (ALE, LIME, SHAP, ALEInteractions,
-                                     Permutation)
+from .explainability import (
+    ExplainabilityConfigurationError,
+    ExplainabilityDependencyError,
+)
+from .explainability_methods import ALE, LIME, SHAP, ALEInteractions, Permutation
 from .final_explainability import explain
+from .foundation_models import (
+    MBEMBED_REFERENCE,
+    MGM2_REFERENCE,
+    MGM_REFERENCE,
+    WAYPOINT_REFERENCE,
+    FoundationModelDependencyError,
+    FoundationModelReference,
+    MBEmbed,
+    MGM2Embedding,
+    MGMEmbedding,
+    WaypointEmbedding,
+    foundation_model_references,
+)
 from .integrations import IntegratedCoordinate, Integration, IntegrationModel
 from .learners import FLAMLClassifier, build_learner, validate_model_specs
 from .metrics import compute_metrics, compute_regression_metrics
-from .modalities import (Modality, ModalityDataset, ModalityMatrix, Samples,
-                         load_modalities)
+from .modalities import (
+    Modality,
+    ModalityDataset,
+    ModalityMatrix,
+    Samples,
+    load_modalities,
+)
 from .pipeline import run_all, run_explore, run_inference, run_robustness
 from .report import write_report
 from .resolutions import materialize_mpdr
 from .siamcat import SIAMCATClassifier
-from .transformations import (TRANSFORMATION_LABELS, TRANSFORMATION_SPACE,
-                              CountTransformation, CountTransformationAdapter,
-                              PrevalenceFilter, Transform, Transformation,
-                              TransformationCoordinate, TransformationLabel,
-                              build_count_transformations,
-                              transformation_label, transformation_space_table)
-from .utils import (CLASSIFICATION_METRIC_COLUMNS, METRIC_COLUMNS,
-                    REGRESSION_METRIC_COLUMNS, TAXONOMIC_LEVELS)
+from .tabpfn import TabPFNClassifier, TabPFNDependencyError
+from .transformations import (
+    TRANSFORMATION_LABELS,
+    TRANSFORMATION_SPACE,
+    CountTransformation,
+    CountTransformationAdapter,
+    PrevalenceFilter,
+    Transform,
+    Transformation,
+    TransformationCoordinate,
+    TransformationLabel,
+    build_count_transformations,
+    transformation_label,
+    transformation_space_table,
+)
+from .utils import (
+    CLASSIFICATION_METRIC_COLUMNS,
+    METRIC_COLUMNS,
+    REGRESSION_METRIC_COLUMNS,
+    TAXONOMIC_LEVELS,
+)
 
 __all__ = [
     "ALE",
@@ -59,6 +104,14 @@ __all__ = [
     "ExplainabilityDependencyError",
     "Inference",
     "FLAMLClassifier",
+    "FoundationModelDependencyError",
+    "FoundationModelReference",
+    "MBEmbed",
+    "MBEMBED_REFERENCE",
+    "MGM2Embedding",
+    "MGM2_REFERENCE",
+    "MGMEmbedding",
+    "MGM_REFERENCE",
     "IntegratedCoordinate",
     "Integration",
     "IntegrationModel",
@@ -72,6 +125,8 @@ __all__ = [
     "QualificationGate",
     "Robustness",
     "SIAMCATClassifier",
+    "TabPFNClassifier",
+    "TabPFNDependencyError",
     "Samples",
     "Sweep",
     "SweepTask",
@@ -79,6 +134,8 @@ __all__ = [
     "Transformation",
     "TransformationCoordinate",
     "TransformationLabel",
+    "WAYPOINT_REFERENCE",
+    "WaypointEmbedding",
     "build_count_transformations",
     "build_learner",
     "build_sweep_configs",
@@ -88,6 +145,7 @@ __all__ = [
     "configure_thread_limits",
     "evaluate",
     "explain",
+    "foundation_model_references",
     "load_dataset",
     "load_modalities",
     "materialize_mpdr",

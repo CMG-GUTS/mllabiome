@@ -7,9 +7,13 @@ import numpy as np
 import pandas as pd
 
 from .metrics import _renormalize_proba
-from .statistics_common import (_LODO_PROTOCOLS, OOF_METRIC_ORDER,
-                                _ensure_outer_split_key, _repeat_id,
-                                _stable_seed)
+from .statistics_common import (
+    _LODO_PROTOCOLS,
+    OOF_METRIC_ORDER,
+    _ensure_outer_split_key,
+    _repeat_id,
+    _stable_seed,
+)
 
 
 def _probability_columns(frame: pd.DataFrame) -> list[str]:

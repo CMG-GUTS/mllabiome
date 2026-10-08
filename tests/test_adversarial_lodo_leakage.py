@@ -10,8 +10,7 @@ import mllabiome.explainability as ex
 from mllabiome.configs_sweep import Ensemble
 from mllabiome.ensemble_sweep import select_mpma_e_by_outer_fold
 from mllabiome.selection import select_mpma_b_by_outer_fold
-from mllabiome.transformations import (CountTransformation,
-                                       _count_transformation_factory)
+from mllabiome.transformations import CountTransformation, _count_transformation_factory
 
 TRAIN_IDX = np.arange(8, dtype=int)
 TEST_IDX = np.arange(8, 12, dtype=int)
@@ -200,6 +199,9 @@ def _run_candidate(X, y, config_id, invert):
     )
     return cs._evaluate_mpma_split_task(
         X_base=np.asarray(X, dtype=float),
+        feature_names=tuple(
+            ["g__signal", "g__shared", "g__nuisance", "g__heldout_only"][: X.shape[1]]
+        ),
         feature_blocks=feature_blocks,
         y=np.asarray(y, dtype=int),
         groups=None,
@@ -379,6 +381,7 @@ def test_heldout_only_feature_cannot_enter_oof_xai_coordinates(transformation):
         lambda: CountTransformation(transformation, random_state=29),
         lambda: _SignalEstimator(),
         1,
+        29,
     )
     _, adv_fold = ex._fit_oof_single_fold_task(
         1,
@@ -393,6 +396,7 @@ def test_heldout_only_feature_cannot_enter_oof_xai_coordinates(transformation):
         lambda: CountTransformation(transformation, random_state=29),
         lambda: _SignalEstimator(),
         1,
+        29,
     )
     assert base_fold is not None
     assert adv_fold is not None

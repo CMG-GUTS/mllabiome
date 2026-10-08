@@ -3,20 +3,20 @@ from __future__ import annotations
 from pathlib import Path
 
 from catboost import CatBoostClassifier
-from curated_microbiota.collections import metaibs_ibs
+from curated_microbiota.collections import lampp_crc
+from lightgbm import LGBMClassifier
 from sklearn.ensemble import RandomForestClassifier
 
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
-TITLE = "MetaIBS fecal IBS LODO mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "METAIBS-IBS-LODO-CM"
+TITLE = "LAMPP colorectal cancer LODO mllabiome benchmark sweep"
+EXPERIMENT_DIR = HERE / "runs" / "LAMPP-CRC-LODO-CM-official-v3"
 
-DATA = metaibs_ibs.mllabiome(target="ibs")
+DATA = lampp_crc.mllabiome()
 
-EVALUATION = metaibs_ibs.splits(
-    target="ibs",
-    benchmark="mllabiome-benchmark-v1",
+EVALUATION = lampp_crc.splits(
+    benchmark="mllabiome-benchmark-v2",
 ).mllabiome(
     optimize_metric="log_loss",
     n_jobs="auto",
@@ -36,41 +36,16 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
-    ("class", ("class",)),
-    ("genus", ("genus",)),
-    ("family", ("family",)),
-    ("order-family", ("order", "family")),
-    ("order-genus", ("order", "family", "genus")),
-    ("class-order", ("class", "order")),
+    ("species", ("species",)),
+    ("strain", ("strain",)),
+    ("raw", ("all",)),
 )
 
-COUNT_TRANSFORMATIONS = (
-    mll.Transformation("presence_absence"),
-    mll.Transformation("identity"),
-    mll.Transformation("arcsine_sqrt", composition_scope="joint"),
-    mll.Transformation("yeo_johnson", composition_scope="joint"),
-    mll.Transformation(
-        "relative_abundance",
-        composition_scope="joint",
-        feature_filter=mll.PrevalenceFilter(
-            threshold=0.20,
-        ),
-    ),
-    mll.Transformation("log10", composition_scope="rank-wise"),
-)
+COUNT_TRANSFORMATIONS = (mll.Transformation("presence_absence"),)
 
 MODELS = (
     (
-        "RF_1000_msl5",
-        RandomForestClassifier(
-            n_estimators=1000,
-            min_samples_leaf=5,
-            n_jobs=1,
-            random_state=42,
-        ),
-    ),
-    (
-        "CB_abundance_i300_d3",
+        "CB_i300_d3",
         CatBoostClassifier(
             iterations=300,
             learning_rate=0.04,
@@ -86,7 +61,39 @@ MODELS = (
             allow_writing_files=False,
         ),
     ),
+    (
+        "RF_82_msl4",
+        RandomForestClassifier(
+            n_estimators=82,
+            max_features=52,
+            min_samples_leaf=4,
+            min_samples_split=2,
+            class_weight="balanced_subsample",
+            criterion="gini",
+            bootstrap=True,
+            random_state=42,
+        ),
+    ),
+    (
+        "LightGBM_e500",
+        LGBMClassifier(
+            objective="binary",
+            n_estimators=500,
+            learning_rate=0.03,
+            num_leaves=7,
+            min_child_samples=40,
+            reg_lambda=30.0,
+            reg_alpha=1.0,
+            colsample_bytree=0.80,
+            subsample=0.80,
+            subsample_freq=1,
+            random_state=42,
+            n_jobs=1,
+            verbosity=-1,
+        ),
+    ),
 )
+
 
 GATE = mll.QualificationGate(
     enabled=False,
@@ -95,7 +102,7 @@ GATE = mll.QualificationGate(
 )
 
 ENSEMBLE = mll.Ensemble(
-    max_sizes=(3,),
+    max_sizes=(10,),
     selection_strategies=(
         "top_k",
         "best_per_resolution",
@@ -129,6 +136,16 @@ ROBUSTNESS = mll.Robustness(
     top_k=30,
 )
 
+EXTERNAL_TEST = lampp_crc.external_test
+
+if EXTERNAL_TEST is None:
+    raise RuntimeError("LAMPP external test set is unavailable")
+
+INFERENCE = EXTERNAL_TEST.mllabiome(
+    targets=("mpma_b", "mpma_e"),
+    feature_policy="strict",
+)
+
 SWEEP = mll.Sweep(
     data=DATA,
     experiment_dir=EXPERIMENT_DIR,
@@ -142,4 +159,5 @@ SWEEP = mll.Sweep(
     ensemble=ENSEMBLE,
     explainability=EXPLAINABILITY,
     robustness=ROBUSTNESS,
+    inference=INFERENCE,
 )

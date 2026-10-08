@@ -9,18 +9,22 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator
 
-from .explainability_config import (ExplainabilityConfigurationError,
-                                    ExplainabilityDependencyError,
-                                    _auto_ale_bins)
+from .explainability_config import (
+    ExplainabilityConfigurationError,
+    ExplainabilityDependencyError,
+    _auto_ale_bins,
+)
 from .explainability_methods import ALE, ALEInteractions, Permutation
-from .explainability_model import (_explain_predict_class_probability,
-                                   _project_input)
-from .explainability_reporting import (_class_slug,
-                                       _collapse_duplicate_feature_importance,
-                                       _feature_distribution_stats,
-                                       _method_display, _plain_taxon_label,
-                                       _plot_feature_importance,
-                                       _rank_support_from_importance)
+from .explainability_model import _explain_predict_class_probability, _project_input
+from .explainability_reporting import (
+    _class_slug,
+    _collapse_duplicate_feature_importance,
+    _feature_distribution_stats,
+    _method_display,
+    _plain_taxon_label,
+    _plot_feature_importance,
+    _rank_support_from_importance,
+)
 from .explainability_runtime import _quiet_pyale_info
 from .metrics import _predict_proba_aligned
 from .storage import write_table

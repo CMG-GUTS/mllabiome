@@ -4,19 +4,22 @@ from pathlib import Path
 
 from catboost import CatBoostClassifier
 from curated_microbiota.collections import brown_mdd
+from lightgbm import LGBMClassifier
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.naive_bayes import ComplementNB
+from sklearn.svm import LinearSVC
 
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
 TITLE = "Brown MDD binary classification mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "BROWN-MDD-BINARY-NCV-CM"
+EXPERIMENT_DIR = HERE / "runs" / "BROWN-MDD-BINARY-NCV-CM-v2"
 
 DATA = brown_mdd.mllabiome(target="mdd")
 
 EVALUATION = brown_mdd.splits(
     target="mdd",
-    benchmark="mllabiome-benchmark-v1",
+    benchmark="mllabiome-benchmark-v2",
 ).mllabiome(
     optimize_metric="log_loss",
     n_jobs="auto",
@@ -38,26 +41,47 @@ EXPLORE = mll.Explore(
 RESOLUTIONS = (
     ("raw", ("raw",)),
     # ("class", ("class",)),
-    # ("genus", ("genus",)),
+    ("genus", ("genus",)),
+    ("species", ("species",)),
     # ("class-order", ("class", "order")),
 )
 
 COUNT_TRANSFORMATIONS = (
-    # mll.Transformation("presence_absence"),
+    mll.Transformation("presence_absence"),
     mll.Transformation("identity"),
-    # mll.Transformation("arcsine_sqrt", composition_scope="joint"),
-    # mll.Transformation("yeo_johnson", composition_scope="joint"),
-    # mll.Transformation(
-    #     "relative_abundance",
-    #     composition_scope="joint",
-    #     feature_filter=mll.PrevalenceFilter(
-    #         threshold=0.20,
-    #     ),
-    # ),
-    # mll.Transformation("log10", composition_scope="rank-wise"),
+    mll.Transformation("arcsine_sqrt", composition_scope="joint"),
+    mll.Transformation("yeo_johnson", composition_scope="joint"),
+    mll.Transformation(
+        "relative_abundance",
+        composition_scope="joint",
+        feature_filter=mll.PrevalenceFilter(
+            threshold=0.20,
+        ),
+    ),
+    mll.Transformation("log10", composition_scope="rank-wise"),
 )
 
 MODELS = (
+    (
+        "CNB_1.6e7",
+        ComplementNB(
+            alpha=1.6e-7,
+            norm=True,
+            force_alpha=True,
+        ),
+    ),
+    (
+        "LinearSVC_c1.1e-6_cw5.4",
+        LinearSVC(
+            C=1.1e-6,
+            loss="squared_hinge",
+            dual="auto",
+            class_weight={"0": 1.0, "1": 5.4},
+            tol=1e-8,
+            max_iter=30000,
+            random_state=17,
+        ),
+    ),
     (
         "RF_1000_msl5",
         RandomForestClassifier(
@@ -68,7 +92,7 @@ MODELS = (
         ),
     ),
     (
-        "CB_abundance_i300_d3",
+        "CB_i300_d3",
         CatBoostClassifier(
             iterations=300,
             learning_rate=0.04,
@@ -85,12 +109,43 @@ MODELS = (
         ),
     ),
     (
-        "SIAMCAT",
-        mll.SIAMCATClassifier(
+        "RF_82_msl4",
+        RandomForestClassifier(
+            n_estimators=82,
+            max_features=52,
+            min_samples_leaf=4,
+            min_samples_split=2,
+            class_weight="balanced_subsample",
+            criterion="gini",
+            bootstrap=True,
             random_state=42,
-            runtime="auto",
         ),
     ),
+    (
+        "LightGBM_e500",
+        LGBMClassifier(
+            objective="binary",
+            n_estimators=500,
+            learning_rate=0.03,
+            num_leaves=7,
+            min_child_samples=40,
+            reg_lambda=30.0,
+            reg_alpha=1.0,
+            colsample_bytree=0.80,
+            subsample=0.80,
+            subsample_freq=1,
+            random_state=42,
+            n_jobs=1,
+            verbosity=-1,
+        ),
+    ),
+    # (
+    #     "SIAMCAT",
+    #     mll.SIAMCATClassifier(
+    #         random_state=42,
+    #         runtime="auto",
+    #     ),
+    # ),
 )
 
 GATE = mll.QualificationGate(
@@ -100,7 +155,7 @@ GATE = mll.QualificationGate(
 )
 
 ENSEMBLE = mll.Ensemble(
-    max_sizes=(3,),
+    max_sizes=(10,),
     selection_strategies=(
         "top_k",
         "best_per_resolution",

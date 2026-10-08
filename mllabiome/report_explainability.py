@@ -10,8 +10,7 @@ from typing import Any
 import pandas as pd
 
 from .baseline_rf import resolve_baseline_rf_config_id
-from .explainability_visuals import (plot_feature_support,
-                                     plot_local_attributions)
+from .explainability_visuals import plot_feature_support, plot_local_attributions
 from .storage import glob_tables, read_table, table_exists
 from .utils import feature_tail_ellipsis as feature_tail_ellipsis
 
@@ -753,6 +752,17 @@ def _explainability_report_blocks(
 
         local_mode = _xai_local_mode(target_dir)
 
+        meta = _read_json(target_dir / "explained_unit.json")
+
+        backend_raw = meta.get("explanation_backend", [])
+
+        if isinstance(backend_raw, str):
+            explanation_backends = [backend_raw]
+        else:
+            explanation_backends = [str(x) for x in backend_raw]
+
+        proxy_mode = "taxon_proxy" in explanation_backends
+
         coordinate_mode = _xai_coordinate_column(target_dir) == "Model coordinate"
 
         unit_singular = "model coordinate" if coordinate_mode else "feature"
@@ -785,6 +795,31 @@ def _explainability_report_blocks(
             influence_block = _mpma_e_member_influence_block(target_dir)
             if influence_block:
                 parts.append(influence_block)
+
+        if proxy_mode:
+            fidelity = _read_table(target_dir / "proxy_fidelity_summary.parquet")
+            fidelity_text = ""
+            if not fidelity.empty and {"metric", "mean"}.issubset(fidelity.columns):
+                lookup = dict(
+                    zip(
+                        fidelity["metric"].astype(str),
+                        pd.to_numeric(fidelity["mean"], errors="coerce"),
+                    )
+                )
+                mae = lookup.get("probability_mae", lookup.get("prediction_mae"))
+                r2 = lookup.get("probability_r2", lookup.get("prediction_r2"))
+                bits = []
+                if mae is not None and pd.notna(mae):
+                    bits.append(f"held-out proxy MAE {float(mae):.3f}")
+                if r2 is not None and pd.notna(r2):
+                    bits.append(f"held-out proxy R² {float(r2):.3f}")
+                if bits:
+                    fidelity_text = " " + "; ".join(bits) + "."
+            parts.append(
+                "<p><strong>Taxon-space proxy explanation.</strong> The predictive model uses a frozen latent microbiome representation. The reported SHAP, LIME, permutation, ALE and interaction features are generated from a fold-local taxon-space surrogate trained only on outer-training teacher predictions; the original FM + learner remains the predictive model."
+                + html.escape(fidelity_text)
+                + "</p>"
+            )
 
         parts.append("<h4>Global explanations</h4>")
 
