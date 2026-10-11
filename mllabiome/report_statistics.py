@@ -482,7 +482,10 @@ def _run_oof_statistics(
     for strategy, frame in frames.items():
         if progress_callback is not None:
             progress_callback(f"prepare OOF statistics · {strategy}", 0, 1)
-        current = _prepare_oof_frame(frame, protocol)
+        try:
+            current = _prepare_oof_frame(frame, protocol)
+        except ValueError as exc:
+            raise ValueError(f"Out-of-fold strategy {strategy}: {exc}") from exc
         if current.empty:
             continue
         current_pcols = _probability_columns(current)

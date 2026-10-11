@@ -106,8 +106,8 @@ def _sweep(
     learner_specs = tuple(
         item
         if isinstance(item, tuple)
-        else (str(item), DummyClassifier(strategy="prior"))
-        for item in learners
+        else (str(item), DummyClassifier(strategy="constant", constant=index))
+        for index, item in enumerate(learners)
     )
     return Sweep(
         data=Data(abundance_path="unused"),

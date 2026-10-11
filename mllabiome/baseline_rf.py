@@ -77,10 +77,12 @@ def baseline_rf_mask(frame: pd.DataFrame, *, active_only: bool = True) -> pd.Ser
     return mask.fillna(False)
 
 
-def resolve_baseline_rf_configs(frame: pd.DataFrame) -> pd.DataFrame:
+def resolve_baseline_rf_configs(
+    frame: pd.DataFrame, *, active_only: bool = True
+) -> pd.DataFrame:
     if frame.empty:
         return frame.iloc[0:0].copy()
-    candidates = frame[baseline_rf_mask(frame, active_only=True)].copy()
+    candidates = frame[baseline_rf_mask(frame, active_only=active_only)].copy()
     if candidates.empty:
         return candidates
     ranks = baseline_rf_single_rank(candidates)

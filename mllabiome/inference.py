@@ -752,7 +752,13 @@ def _strategy_predictions(
             member_cache[config_id] = _fit_member(
                 sweep, dataset, profile_X, profile_names, model, deployment_dir
             )
-        return member_cache[config_id][1], [member_cache[config_id][2]]
+        probabilities = member_cache[config_id][1]
+        alpha = float(model.get("probability_softening_alpha", 0.0))
+        if alpha > 0.0:
+            from .mpma_vnext import soften_probabilities
+
+            probabilities = soften_probabilities(probabilities, alpha)
+        return probabilities, [member_cache[config_id][2]]
     unit = models.get("MPMA-E")
     if not isinstance(unit, dict):
         raise ValueError(

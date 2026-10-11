@@ -46,6 +46,8 @@ from .foundation_models import (
 )
 from .integrations import IntegratedCoordinate, Integration, IntegrationModel
 from .learners import FLAMLClassifier, build_learner, validate_model_specs
+from .ridge_softmax import RidgeSoftmaxClassifier
+from .rank_calibration import GroupedRankCalibratedClassifier
 from .metrics import compute_metrics, compute_regression_metrics
 from .modalities import (
     Modality,
@@ -65,6 +67,7 @@ from .transformations import (
     CountTransformation,
     CountTransformationAdapter,
     PrevalenceFilter,
+    ScopedTransformation,
     Transform,
     Transformation,
     TransformationCoordinate,
@@ -122,8 +125,11 @@ __all__ = [
     "ModalityMatrix",
     "Permutation",
     "PrevalenceFilter",
+    "ScopedTransformation",
     "QualificationGate",
     "Robustness",
+    "RidgeSoftmaxClassifier",
+    "GroupedRankCalibratedClassifier",
     "SIAMCATClassifier",
     "TabPFNClassifier",
     "TabPFNDependencyError",

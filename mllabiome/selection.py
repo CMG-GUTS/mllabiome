@@ -15,7 +15,8 @@ from .metrics import (
 )
 from .storage import read_table, table_exists, write_table
 from .transformations import _count_transformation_name
-from .utils import dump_json_standard
+from .utils import CLASSIFICATION_METRIC_COLUMNS, dump_json_standard
+from .mpma_vnext import consensus_medoid, choose_softening, soften_probabilities
 
 
 def _eligible_config_ids(configs: pd.DataFrame, plan: Any | None = None) -> set[str]:
@@ -46,6 +47,19 @@ def _eligible_config_ids(configs: pd.DataFrame, plan: Any | None = None) -> set[
             frame = frame[
                 ~frame["count_transformation"].astype(str).isin(exclude_transformations)
             ]
+    candidates = (
+        tuple(getattr(plan, "mpma_b_candidate_learners", ()))
+        if plan is not None
+        else ()
+    )
+    if candidates:
+        if "learner" not in frame.columns:
+            raise ValueError("MPMA-B learner selection requires learner metadata.")
+        available = set(frame["learner"].astype(str))
+        unknown = sorted(set(candidates) - available)
+        if unknown:
+            raise ValueError(f"Unknown MPMA-B candidate learners: {unknown}.")
+        frame = frame[frame["learner"].astype(str).isin(candidates)]
     return set(frame["config_id"].astype(str))
 
 
@@ -158,6 +172,7 @@ def select_mpma_b_by_outer_fold(
     metric: str,
     plan: Any | None = None,
     qualification: pd.DataFrame | None = None,
+    inner_predictions: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     metric = canonical_metric_name(metric)
     eligible_ids = _eligible_config_ids(configs, plan)
@@ -178,6 +193,21 @@ def select_mpma_b_by_outer_fold(
             .iloc[0]
             .to_dict()
         )
+        if (
+            getattr(plan, "mpma_b_selection", "legacy") == "consensus_medoid7"
+            and metric == "log_loss"
+        ):
+            if inner_predictions is None:
+                raise ValueError(
+                    "Consensus-medoid selection requires inner-OOF predictions"
+                )
+            within = inner_predictions[
+                inner_predictions["outer_split_key"]
+                .astype(str)
+                .eq(str(outer_split_key))
+            ]
+            chosen = consensus_medoid(within, group["config_id"].astype(str).tolist())
+            winner = group[group["config_id"].astype(str).eq(chosen)].iloc[0].to_dict()
         meta = metadata.get(str(winner["config_id"]), {})
         row = {
             "outer_split_key": str(outer_split_key),
@@ -201,6 +231,27 @@ def select_mpma_b_by_outer_fold(
         ):
             if key in meta:
                 row[key] = meta[key]
+        if getattr(
+            plan, "mpma_b_softening", "none"
+        ) == "discrimination_oof" and metric in set(CLASSIFICATION_METRIC_COLUMNS) - {
+            "log_loss",
+            "brier",
+            "subject_macro_log_loss",
+            "cohort_macro_log_loss",
+        }:
+            if inner_predictions is None:
+                raise ValueError("OOF probability softening requires inner predictions")
+            within = inner_predictions[
+                inner_predictions["outer_split_key"]
+                .astype(str)
+                .eq(str(outer_split_key))
+            ]
+            if any(str(column).startswith("proba_") for column in within.columns):
+                row["probability_softening_alpha"] = choose_softening(
+                    within, str(winner["config_id"])
+                )
+        if getattr(plan, "mpma_b_selection", "legacy") != "legacy":
+            row["mpma_b_selection_strategy"] = str(plan.mpma_b_selection)
         selected.append(row)
     return pd.DataFrame(selected)
 
@@ -211,6 +262,7 @@ def select_final_mpma_candidate(
     metric: str,
     plan: Any | None = None,
     qualification: pd.DataFrame | None = None,
+    inner_predictions: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     metric = canonical_metric_name(metric)
     eligible_ids = _eligible_config_ids(configs, plan)
@@ -264,6 +316,18 @@ def select_final_mpma_candidate(
         kind="mergesort",
     )
     best = ranked.iloc[0].to_dict()
+    if (
+        getattr(plan, "mpma_b_selection", "legacy") == "consensus_medoid7"
+        and metric == "log_loss"
+    ):
+        if inner_predictions is None:
+            raise ValueError(
+                "Consensus-medoid selection requires inner-OOF predictions"
+            )
+        chosen = consensus_medoid(
+            inner_predictions, ranked["config_id"].astype(str).tolist()
+        )
+        best = ranked[ranked["config_id"].astype(str).eq(chosen)].iloc[0].to_dict()
     meta = _config_metadata(configs).get(str(best["config_id"]), {})
     out = {
         "config_id": str(best["config_id"]),
@@ -282,6 +346,24 @@ def select_final_mpma_candidate(
     ):
         if key in meta:
             out[key] = meta[key]
+    if getattr(
+        plan, "mpma_b_softening", "none"
+    ) == "discrimination_oof" and metric in set(CLASSIFICATION_METRIC_COLUMNS) - {
+        "log_loss",
+        "brier",
+        "subject_macro_log_loss",
+        "cohort_macro_log_loss",
+    }:
+        if inner_predictions is None:
+            raise ValueError("OOF probability softening requires inner predictions")
+        if any(
+            str(column).startswith("proba_") for column in inner_predictions.columns
+        ):
+            out["probability_softening_alpha"] = choose_softening(
+                inner_predictions, str(best["config_id"])
+            )
+    if getattr(plan, "mpma_b_selection", "legacy") != "legacy":
+        out["mpma_b_selection_strategy"] = str(plan.mpma_b_selection)
     return out
 
 
@@ -325,10 +407,27 @@ def selected_mpma_b_outer_predictions(
             "inner_score",
             "inner_score_std",
             "n_inner_folds",
+            "probability_softening_alpha",
         )
         if c in sel.columns
     ]
     out = pred.merge(sel[keep], on=key_cols, how="inner", validate="many_to_one")
+    if "probability_softening_alpha" in out.columns:
+        pcols = [
+            str(column) for column in out.columns if str(column).startswith("proba_")
+        ]
+        if pcols:
+            for alpha, indices in out.groupby(
+                "probability_softening_alpha", dropna=False
+            ).groups.items():
+                if pd.notna(alpha) and float(alpha) > 0.0:
+                    out.loc[indices, pcols] = soften_probabilities(
+                        out.loc[indices, pcols].to_numpy(dtype=float), float(alpha)
+                    )
+                    if len(pcols) == 2 and "y_proba_pos" in out.columns:
+                        out.loc[indices, "y_proba_pos"] = out.loc[
+                            indices, pcols[1]
+                        ].to_numpy(dtype=float)
     expected_splits = set(sel["outer_split_key"].astype(str))
     observed_splits = set(out["outer_split_key"].astype(str))
     missing_splits = sorted(expected_splits - observed_splits)
@@ -434,6 +533,15 @@ def write_mpma_b_selection_outputs(
     ):
         return {}
     inner = read_table(inner_path)
+    use_oof = (
+        getattr(plan, "mpma_b_selection", "legacy") == "consensus_medoid7"
+        or getattr(plan, "mpma_b_softening", "none") == "discrimination_oof"
+    )
+    inner_predictions = (
+        read_table(root / "inner_predictions" / "inner_predictions.parquet")
+        if use_oof
+        else None
+    )
     outer_predictions = read_table(outer_pred_path)
     configs = read_table(configs_path)
     qualification_path = root / "tables" / "qualification_gate.parquet"
@@ -446,6 +554,7 @@ def write_mpma_b_selection_outputs(
         metric,
         plan=plan,
         qualification=qualification,
+        inner_predictions=inner_predictions,
     )
     selected_predictions = selected_mpma_b_outer_predictions(
         selection, outer_predictions
@@ -453,7 +562,12 @@ def write_mpma_b_selection_outputs(
     fold_metrics = mpma_b_fold_metrics(selected_predictions)
     summary = summarize_mpma_b_strategy(fold_metrics)
     final_candidate = select_final_mpma_candidate(
-        inner, configs, metric, plan=plan, qualification=qualification
+        inner,
+        configs,
+        metric,
+        plan=plan,
+        qualification=qualification,
+        inner_predictions=inner_predictions,
     )
     tables_dir = root / "tables"
     predictions_dir = root / "predictions"

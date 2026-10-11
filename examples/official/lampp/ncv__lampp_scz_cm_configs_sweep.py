@@ -120,7 +120,7 @@ ENSEMBLE = mll.Ensemble(
         "weighted_mean_proba",
         "median_proba",
     ),
-    optimize_metric="log_loss",
+    optimize_metric="MCC",
 )
 
 EXPLAINABILITY = mll.Explainability(
@@ -144,7 +144,7 @@ ROBUSTNESS = mll.Robustness(
 EXTERNAL_TEST = lampp_scz.external_test
 
 if EXTERNAL_TEST is None:
-    raise RuntimeError("LAMPP external test set is unavailable")
+    raise RuntimeError("External test set is unavailable")
 
 INFERENCE = EXTERNAL_TEST.mllabiome(
     targets=("mpma_b", "mpma_e"),

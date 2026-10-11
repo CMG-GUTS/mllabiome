@@ -11,6 +11,7 @@ from mllabiome.data import (
     _dataset_from_feature_matrix,
     _taxonomic_rank,
     load_dataset,
+    metadata_path,
 )
 from mllabiome.resolutions import (
     _manual_range,
@@ -20,11 +21,6 @@ from mllabiome.resolutions import (
 )
 from mllabiome.utils import TAXONOMIC_LEVELS
 
-ROOT = Path(__file__).resolve().parents[1]
-PTSD_PROFILE = ROOT / "examples" / "data" / "PTSD" / "PTSD_profiles.tsv"
-PTSD_METADATA = ROOT / "examples" / "data" / "PTSD" / "PTSD_metadata.tsv"
-AGP_PROFILE = ROOT / "examples" / "data" / "IBS" / "AGP-2021_profiles.tsv"
-AGP_METADATA = ROOT / "examples" / "data" / "IBS" / "AGP-2021_metadata.tsv"
 
 EXPECTED_LEVELS = (
     "domain",
@@ -38,76 +34,36 @@ EXPECTED_LEVELS = (
 )
 
 
-def _require_example_data():
-    missing = [
-        path
-        for path in (PTSD_PROFILE, PTSD_METADATA, AGP_PROFILE, AGP_METADATA)
-        if not path.exists()
-    ]
-    assert not missing, f"Missing repository example data: {missing}"
+@pytest.fixture(scope="module")
+def ptsd_spec():
+    from curated_microbiota.collections import prime_ptsd
+
+    return prime_ptsd.mllabiome(target="intervention")
 
 
 @pytest.fixture(scope="module")
-def ptsd_dataset():
-    _require_example_data()
-    return load_dataset(
-        Data(
-            abundance_path=PTSD_PROFILE,
-            metadata_path=PTSD_METADATA,
-            format="metaphlan_tsv",
-            sample_id_col="sampleId",
-            target_col="group",
-            class_labels=("Placebo", "Active"),
-        ),
-        EXPECTED_LEVELS,
+def ptsd_dataset(ptsd_spec):
+    return load_dataset(ptsd_spec, EXPECTED_LEVELS)
+
+
+def _direct_ptsd_matrix(ptsd_spec):
+    profile = Path(ptsd_spec.abundance_path)
+    meta_path = metadata_path(ptsd_spec)
+    assert meta_path is not None
+    bio = pd.read_csv(profile, sep="\t", index_col=0, low_memory=False)
+    meta = pd.read_csv(meta_path, sep="\t", dtype=str)
+    meta[ptsd_spec.sample_id_col] = (
+        meta[ptsd_spec.sample_id_col].astype(str).str.strip()
     )
-
-
-@pytest.fixture(scope="module")
-def agp_dataset():
-    _require_example_data()
-    return load_dataset(
-        Data(
-            abundance_path=AGP_PROFILE,
-            metadata_path=AGP_METADATA,
-            format="metaphlan_tsv",
-            sample_id_col="Name",
-            target_col="host_disease",
-        ),
-        EXPECTED_LEVELS,
-    )
-
-
-def _direct_ptsd_matrix():
-    bio = pd.read_csv(PTSD_PROFILE, sep="\t", index_col=0, low_memory=False)
-    meta = pd.read_csv(PTSD_METADATA, sep="\t", dtype=str)
-    meta["sampleId"] = meta["sampleId"].astype(str).str.strip()
     bio.columns = bio.columns.astype(str).str.strip()
-    ids = [sid for sid in meta["sampleId"].tolist() if sid in set(bio.columns)]
+    ids = [
+        sid for sid in meta[ptsd_spec.sample_id_col].tolist() if sid in set(bio.columns)
+    ]
     return (
         bio[ids].T.to_numpy(dtype=np.float32),
         bio.index.astype(str).str.strip().tolist(),
         ids,
     )
-
-
-def _direct_agp_matrix():
-    meta = pd.read_csv(AGP_METADATA, sep="\t", dtype=str)
-    ids = meta["Name"].astype(str).str.strip().tolist()
-    first = AGP_PROFILE.read_text(encoding="utf-8").splitlines()[0].split("\t")
-    if first[0].lstrip("#").strip().lower() == "clade_name":
-        bio = pd.read_csv(AGP_PROFILE, sep="\t", index_col=0, low_memory=False)
-        bio.columns = bio.columns.astype(str).str.strip()
-        selected = [sid for sid in ids if sid in set(bio.columns)]
-        bio.index = bio.index.astype(str).str.strip()
-        return bio[selected].T.to_numpy(dtype=np.float32), bio.index.tolist(), selected
-    bio = pd.read_csv(AGP_PROFILE, sep="\t", header=None, index_col=0, low_memory=False)
-    if bio.shape[1] != len(ids):
-        raise ValueError(
-            "Headerless AGP profile width does not match metadata row count."
-        )
-    bio.index = bio.index.astype(str).str.strip()
-    return bio.to_numpy(dtype=np.float32).T, bio.index.tolist(), ids
 
 
 def _assert_exact_rank_partition(dataset):
@@ -276,74 +232,50 @@ def test_domain_and_kingdom_aliases_cannot_create_duplicate_top_rank():
         _parse_resolution(("domain+kingdom", ("domain", "kingdom")))
 
 
-def test_ptsd_real_profile_is_headered():
-    _require_example_data()
-    first = PTSD_PROFILE.read_text(encoding="utf-8").splitlines()[0].split("\t")
+def test_ptsd_real_profile_is_headered(ptsd_spec):
+    profile = Path(ptsd_spec.abundance_path)
+    meta_path = metadata_path(ptsd_spec)
+    assert meta_path is not None
+    first = profile.read_text(encoding="utf-8").splitlines()[0].split("\t")
     assert first[0] == "clade_name"
-    meta = pd.read_csv(PTSD_METADATA, sep="\t", dtype=str)
-    assert set(first[1:]) == set(meta["sampleId"].astype(str))
+    meta = pd.read_csv(meta_path, sep="\t", dtype=str)
+    assert set(first[1:]) == set(meta[ptsd_spec.sample_id_col].astype(str))
 
 
-def test_agp_real_profile_header_contract_matches_checked_in_file():
-    _require_example_data()
-    with AGP_PROFILE.open("r", encoding="utf-8") as handle:
-        first = handle.readline().rstrip("\r\n").split("\t")
-    meta = pd.read_csv(AGP_METADATA, sep="\t", dtype=str)
-    if first[0].lstrip("#").strip().lower() == "clade_name":
-        assert first[1:]
-        assert set(first[1:]).issubset(set(meta["Name"].astype(str)))
-    else:
-        assert _taxonomic_rank(first[0]) is not None
-        assert len(first) - 1 == len(meta)
+def test_ptsd_curated_collection_has_subject_identifiers(ptsd_dataset):
+    assert len(ptsd_dataset.sample_ids) == 169
+    assert len(set(ptsd_dataset.subject_ids)) == 75
+    assert len(set(ptsd_dataset.sample_ids)) == 169
+    assert len(set(ptsd_dataset.y)) == 2
 
 
-def test_ptsd_real_parser_preserves_raw_matrix_exactly(ptsd_dataset):
-    expected_X, expected_names, expected_ids = _direct_ptsd_matrix()
+def test_ptsd_real_parser_preserves_raw_matrix_exactly(ptsd_dataset, ptsd_spec):
+    expected_X, expected_names, expected_ids = _direct_ptsd_matrix(ptsd_spec)
     assert ptsd_dataset.sample_ids == expected_ids
     assert ptsd_dataset.feature_names_by_level["all"] == expected_names
     np.testing.assert_array_equal(ptsd_dataset.X_by_level["all"], expected_X)
-
-
-def test_agp_real_parser_preserves_raw_matrix_exactly(agp_dataset):
-    expected_X, expected_names, expected_ids = _direct_agp_matrix()
-    assert agp_dataset.sample_ids == expected_ids
-    assert agp_dataset.feature_names_by_level["all"] == expected_names
-    assert agp_dataset.feature_names_by_level["all"][0] == expected_names[0]
-    np.testing.assert_array_equal(agp_dataset.X_by_level["all"], expected_X)
 
 
 def test_ptsd_real_rank_partition_is_selection_only_without_aggregation(ptsd_dataset):
     _assert_exact_rank_partition(ptsd_dataset)
 
 
-def test_agp_real_rank_partition_is_selection_only_without_aggregation(agp_dataset):
-    _assert_exact_rank_partition(agp_dataset)
-
-
 @pytest.mark.parametrize("level", EXPECTED_LEVELS)
-def test_real_parser_rank_values_are_exact_subsets_of_raw(
-    level, ptsd_dataset, agp_dataset
-):
-    for dataset in (ptsd_dataset, agp_dataset):
-        names = dataset.feature_names_by_level["all"]
-        idx = [i for i, name in enumerate(names) if _taxonomic_rank(name) == level]
-        if not idx:
-            continue
-        np.testing.assert_array_equal(
-            dataset.X_by_level[level], dataset.X_by_level["all"][:, idx]
-        )
+def test_real_parser_rank_values_are_exact_subsets_of_raw(level, ptsd_dataset):
+    dataset = ptsd_dataset
+    names = dataset.feature_names_by_level["all"]
+    idx = [i for i, name in enumerate(names) if _taxonomic_rank(name) == level]
+    if not idx:
+        return
+    np.testing.assert_array_equal(
+        dataset.X_by_level[level], dataset.X_by_level["all"][:, idx]
+    )
 
 
 def test_real_raw_resolution_returns_complete_original_ptsd_matrix(ptsd_dataset):
     X, names = materialize_mpdr(ptsd_dataset, ("raw",))
     np.testing.assert_array_equal(X, ptsd_dataset.X_by_level["all"])
     assert names == ptsd_dataset.feature_names_by_level["all"]
-
-
-def test_real_raw_resolution_returns_complete_original_agp_matrix(agp_dataset):
-    X, names = materialize_mpdr(agp_dataset, ("raw",))
-    np.testing.assert_array_equal(X, agp_dataset.X_by_level["all"])
-    assert names == agp_dataset.feature_names_by_level["all"]
 
 
 def test_real_multirank_resolution_concatenates_existing_rows_without_aggregation(

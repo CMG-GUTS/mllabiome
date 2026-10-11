@@ -16,7 +16,7 @@ import pandas as pd
 from ._evaluation_protocols import is_lodo_protocol
 from .baseline_rf import resolve_baseline_rf_configs
 from .configs_sweep import Sweep
-from .console import path_table, phase_progress, stage, success
+from .console import info, path_table, phase_progress, stage, success
 from .metrics import canonical_metric_name, compute_metrics, metric_is_loss
 from .report_compute import run_compute_accounting
 from .report_statistics import run_report_statistics
@@ -1471,6 +1471,16 @@ def _strategy_rows(
 
         sort_ascending = metric_is_loss(sort_metric)
 
+        configs = _read_table(root / "configs.parquet")
+        if {"config_id", "learner_class"}.issubset(configs.columns):
+            class_metadata = configs[["config_id", "learner_class"]].copy()
+            class_metadata["config_id"] = class_metadata["config_id"].astype(str)
+            class_metadata = class_metadata.drop_duplicates("config_id", keep="last")
+            base["config_id"] = base["config_id"].astype(str)
+            base = base.merge(
+                class_metadata, on="config_id", how="left", validate="many_to_one"
+            )
+
         learner = base.get(
             "learner", pd.Series("", index=base.index, dtype=str)
         ).astype(str)
@@ -1501,8 +1511,7 @@ def _strategy_rows(
         if automl:
             by_strategy["AutoML"] = {"Strategy": "AutoML", "source": "mpma", **automl}
 
-        configs = _read_table(root / "configs.parquet")
-        baseline_configs = resolve_baseline_rf_configs(configs)
+        baseline_configs = resolve_baseline_rf_configs(configs, active_only=False)
         baseline = {}
         if not baseline_configs.empty and "config_id" in baseline_configs.columns:
             baseline_id = str(baseline_configs.iloc[0]["config_id"])
@@ -1521,14 +1530,39 @@ def _strategy_rows(
                 **baseline,
             }
 
-        siamcat_mask = learner.str.fullmatch("SIAMCAT", case=False).fillna(False)
+        from .evaluation_predictions import (
+            comparator_config_ids,
+            load_evaluation_predictions,
+        )
+
+        siamcat_ids = comparator_config_ids(root, "SIAMCAT")
+        siamcat_mask = learner.str.fullmatch(r"SIAMCAT(?:[_ -].*)?", case=False).fillna(
+            False
+        )
         siamcat_mask |= learner_class.str.endswith("SIAMCATClassifier", na=False)
         siamcat = _pick(
             siamcat_mask
             & transform.str.fullmatch("identity", case=False).fillna(False)
             & resolution.str.fullmatch("raw", case=False).fillna(False)
+            & base["config_id"].astype(str).isin(siamcat_ids)
         )
 
+        if siamcat:
+            try:
+                load_evaluation_predictions(root, "SIAMCAT", selection_metric)
+            except ValueError as exc:
+                message = str(exc)
+                incomplete = (
+                    "No complete outer-fold inner-validation selections" in message
+                    or "do not match the persisted outer-test split set" in message
+                    or "prediction and selection outer splits differ" in message
+                )
+                if not incomplete:
+                    raise
+                info(
+                    f"SIAMCAT excluded from report until evaluation is complete: {message}"
+                )
+                siamcat = {}
         if siamcat:
             by_strategy["SIAMCAT"] = {
                 "Strategy": "SIAMCAT",
@@ -1547,7 +1581,7 @@ def _baseline_rf_report_note(rows: list[dict[str, Any]]) -> str:
     if not any(str(row.get("Strategy", "")) == "Baseline RF" for row in rows):
         return ""
     return (
-        "<p><strong>Baseline RF protocol.</strong> Deepest active eligible single taxonomic rank (strain, species, or genus); "
+        "<p><strong>Baseline RF protocol.</strong> Deepest eligible completed single taxonomic rank (strain, species, or genus); "
         "within-rank relative abundance followed by arcsine-square-root transformation; no prevalence filtering; "
         "RandomForestClassifier with 1,000 trees and minimum leaf size 5. All remaining random-forest "
         "hyperparameters use scikit-learn defaults; no dataset-specific random-forest hyperparameter tuning is performed.</p>"

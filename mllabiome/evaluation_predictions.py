@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -275,7 +276,7 @@ def _comparator_configs(configs: pd.DataFrame, strategy: str) -> pd.DataFrame:
     frame = configs.copy()
     if "config_id" not in frame.columns:
         raise ValueError("configs.parquet must contain config_id.")
-    if "active" in frame.columns:
+    if strategy == "AutoML" and "active" in frame.columns:
         active = pd.to_numeric(frame["active"], errors="coerce").fillna(0).astype(int)
         frame = frame[active.eq(1)].copy()
     learner = frame.get("learner", pd.Series("", index=frame.index)).astype(str)
@@ -302,15 +303,22 @@ def _comparator_configs(configs: pd.DataFrame, strategy: str) -> pd.DataFrame:
                 return ranked.drop(columns=["_single_rank"])
         return frame.iloc[0:0].drop(columns=["_single_rank"])
     if strategy == "Baseline RF":
-        return resolve_baseline_rf_configs(frame)
+        return resolve_baseline_rf_configs(frame, active_only=False)
     if strategy == "SIAMCAT":
-        siamcat = learner.str.fullmatch("SIAMCAT", case=False).fillna(False)
+        siamcat = learner.str.fullmatch(r"SIAMCAT(?:[_ -].*)?", case=False).fillna(
+            False
+        )
         siamcat |= learner_class.str.endswith("SIAMCATClassifier", na=False)
-        return frame[
+        eligible = frame[
             siamcat
             & transform.str.fullmatch("identity", case=False).fillna(False)
             & resolution.str.fullmatch("raw", case=False).fillna(False)
         ].copy()
+        if "active" in eligible.columns:
+            active = pd.to_numeric(eligible["active"], errors="coerce").eq(1)
+            if active.any():
+                eligible = eligible.loc[active].copy()
+        return eligible
     raise ValueError(f"Unsupported comparator strategy {strategy!r}.")
 
 
@@ -330,9 +338,58 @@ def _metric_column(frame: pd.DataFrame, metric: str) -> str:
     return resolved
 
 
+def _align_softened_mpma_b_positive_probability(
+    predictions: pd.DataFrame,
+) -> pd.DataFrame:
+    pcols = [
+        str(column)
+        for column in predictions.columns
+        if str(column).startswith("proba_")
+    ]
+    if len(pcols) != 2 or "y_proba_pos" not in predictions.columns:
+        return predictions
+    positive = pd.to_numeric(predictions["y_proba_pos"], errors="coerce").to_numpy(
+        dtype=float
+    )
+    expected = pd.to_numeric(predictions[pcols[1]], errors="coerce").to_numpy(
+        dtype=float
+    )
+    mismatch = (
+        np.isfinite(positive)
+        & np.isfinite(expected)
+        & ~np.isclose(positive, expected, atol=1e-7, rtol=1e-7)
+    )
+    if not bool(np.any(mismatch)):
+        return predictions
+    if "probability_softening_alpha" not in predictions.columns:
+        raise ValueError(
+            "MPMA-B positive-probability mismatch has no softening provenance."
+        )
+    alpha = pd.to_numeric(
+        predictions["probability_softening_alpha"], errors="coerce"
+    ).to_numpy(dtype=float)
+    affected = alpha[mismatch]
+    if (
+        not np.isfinite(affected).all()
+        or np.any(affected <= 0.0)
+        or np.any(affected >= 1.0)
+    ):
+        raise ValueError(
+            "MPMA-B positive-probability mismatch cannot be attributed to OOF softening."
+        )
+    original = (expected[mismatch] - affected / 2.0) / (1.0 - affected)
+    if not np.allclose(positive[mismatch], original, atol=1e-7, rtol=1e-7):
+        raise ValueError(
+            "MPMA-B positive-probability mismatch is not explained by saved OOF softening."
+        )
+    result = predictions.copy()
+    result.loc[mismatch, "y_proba_pos"] = expected[mismatch]
+    return result
+
+
 def _load_mpma_b(root: Path) -> pd.DataFrame:
-    predictions = _read_required_table(
-        root / "predictions" / "mpma_b_outer_predictions.parquet"
+    predictions = _align_softened_mpma_b_positive_probability(
+        _read_required_table(root / "predictions" / "mpma_b_outer_predictions.parquet")
     )
     selection = _read_required_table(root / "tables" / "mpma_b_outer_selection.parquet")
     return _validate_selected_predictions(
@@ -380,6 +437,7 @@ def _load_comparator(root: Path, strategy: str, metric: str) -> pd.DataFrame:
         inner,
         candidates,
         selection_metric,
+        plan=SimpleNamespace(include_inactive=True),
         qualification=qualification,
     )
     if selection.empty:

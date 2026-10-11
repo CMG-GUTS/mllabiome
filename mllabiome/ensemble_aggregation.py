@@ -24,6 +24,10 @@ SUPPORTED_AGGREGATIONS: tuple[str, ...] = (
     "logistic_stacking",
     "elastic_net_stacking",
     "cohort_robust_stacking",
+    "ecdf_logistic_stacking",
+    "ecdf_grouped_stacking",
+    "ecdf_weighted_quantile",
+    "ecdf_learned_quantile",
     *sorted(ADVANCED_AGGREGATIONS),
 )
 
@@ -32,6 +36,8 @@ LEARNED_AGGREGATIONS = frozenset(
         "logistic_stacking",
         "elastic_net_stacking",
         "cohort_robust_stacking",
+        "ecdf_logistic_stacking",
+        "ecdf_grouped_stacking",
         *ADVANCED_AGGREGATIONS,
     }
 )
@@ -49,6 +55,10 @@ PROBABILITY_PRESERVING_AGGREGATIONS = frozenset(
         "logistic_stacking",
         "elastic_net_stacking",
         "cohort_robust_stacking",
+        "ecdf_logistic_stacking",
+        "ecdf_grouped_stacking",
+        "ecdf_weighted_quantile",
+        "ecdf_learned_quantile",
         *ADVANCED_AGGREGATIONS,
     }
 )
@@ -106,6 +116,34 @@ def stacking_features(stack: np.ndarray, clip: float = 1e-6) -> np.ndarray:
     return np.transpose(transformed, (1, 0, 2)).reshape(values.shape[1], -1)
 
 
+def ecdf_stacking_features(
+    stack: np.ndarray, references: list[list[float]]
+) -> np.ndarray:
+    values = np.asarray(stack, dtype=float)
+    if values.ndim != 3 or values.shape[2] != 2 or len(references) != values.shape[0]:
+        raise ValueError(
+            "ECDF stacking requires binary probabilities and one reference per member."
+        )
+    columns = []
+    for member_index, reference in enumerate(references):
+        sorted_values = np.asarray(reference, dtype=float)
+        if (
+            sorted_values.ndim != 1
+            or len(sorted_values) < 2
+            or not np.isfinite(sorted_values).all()
+        ):
+            raise ValueError(
+                "ECDF references must contain finite training probabilities."
+            )
+        if np.any(sorted_values[1:] < sorted_values[:-1]):
+            raise ValueError("ECDF references must be sorted.")
+        scores = values[member_index, :, 1]
+        left = np.searchsorted(sorted_values, scores, side="left")
+        right = np.searchsorted(sorted_values, scores, side="right")
+        columns.append((left + right) / (2.0 * float(len(sorted_values))))
+    return np.column_stack(columns)
+
+
 def _stacking_parameters(parameters: Mapping[str, Any] | None) -> dict[str, Any]:
     if parameters is None:
         raise ValueError("Learned stacking aggregation requires stored parameters.")
@@ -127,7 +165,11 @@ def _apply_stacking(
         raise ValueError(
             "Stored stacking parameters do not match the member prediction shape."
         )
-    features = stacking_features(stack, float(values.get("clip", 1e-6)))
+    features = (
+        ecdf_stacking_features(stack, values["ecdf_references"])
+        if "ecdf_references" in values
+        else stacking_features(stack, float(values.get("clip", 1e-6)))
+    )
     coef = np.asarray(values["coef"], dtype=float)
     intercept = np.asarray(values["intercept"], dtype=float).reshape(-1)
     classes = np.asarray(values["classes"], dtype=int).reshape(-1)
@@ -152,6 +194,38 @@ def _apply_stacking(
     for source, target in enumerate(classes):
         proba[:, int(target)] = raw[:, source]
     return proba
+
+
+def ecdf_weighted_quantile(
+    stack: np.ndarray, parameters: Mapping[str, Any] | None
+) -> np.ndarray:
+    if parameters is None:
+        raise ValueError(
+            "ECDF weighted quantile aggregation requires fitted references."
+        )
+    values = np.asarray(stack, dtype=float)
+    if values.ndim != 3 or values.shape[2] != 2 or values.shape[0] < 2:
+        raise ValueError(
+            "ECDF weighted quantile aggregation requires binary predictions from at least two members."
+        )
+    references = parameters.get("ecdf_references")
+    if references is None:
+        raise ValueError(
+            "ECDF weighted quantile aggregation requires reference distributions."
+        )
+    transformed = ecdf_stacking_features(values, references)
+    weights = normalise_weights(parameters.get("member_weights", ()), values.shape[0])
+    reference_index = int(parameters.get("reference_member_index", -1))
+    if reference_index < 0 or reference_index >= values.shape[0]:
+        raise ValueError("ECDF reference member index is invalid.")
+    reference = np.asarray(references[reference_index], dtype=float)
+    score = transformed @ weights
+    positions = (np.arange(len(reference), dtype=float) + 0.5) / len(reference)
+    positive = np.interp(
+        score, positions, reference, left=reference[0], right=reference[-1]
+    )
+    positive = np.clip(positive, 0.0, 1.0)
+    return np.column_stack([1.0 - positive, positive])
 
 
 def aggregate_member_predictions(
@@ -221,6 +295,8 @@ def aggregate_member_predictions(
         clipped = np.clip(stack, 1e-8, 1.0)
         log_pool = np.mean(np.log(clipped), axis=0)
         proba = softmax(log_pool, axis=1)
+    elif method in {"ecdf_weighted_quantile", "ecdf_learned_quantile"}:
+        proba = ecdf_weighted_quantile(stack, parameters)
     elif method in ADVANCED_AGGREGATIONS:
         proba = apply_advanced_aggregation(stack, parameters)
     else:

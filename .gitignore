@@ -83,6 +83,7 @@ reports/
 results/
 examples/runs/
 runs/
+examples/official/lampp
 mllabiome.zip
 examples-local
 internal-manuscript
@@ -98,3 +99,4 @@ manuscript-experiments
 TODO
 prepare_lampp_mllab.py
 catboost_info
+examples/official/

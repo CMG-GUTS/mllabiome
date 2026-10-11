@@ -225,6 +225,12 @@ def _build_mpma_b(root: Path, configs: pd.DataFrame) -> dict[str, Any]:
     ).strip()
     if metric:
         result["selection_metric"] = metric
+    if "probability_softening_alpha" in source:
+        result["probability_softening_alpha"] = float(
+            source["probability_softening_alpha"]
+        )
+    if "mpma_b_selection_strategy" in source:
+        result["mpma_b_selection_strategy"] = str(source["mpma_b_selection_strategy"])
     for key in ("score", "inner_validation_score", "inner_score"):
         if key in source:
             try:
@@ -330,13 +336,37 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
             aggregation, len(member_ids), stored_weights
         )
 
-    effective_count = (
-        int(np.count_nonzero(np.asarray(stored_weights, dtype=float) > 1e-8))
-        if stored_weights is not None
-        else len(member_ids)
-    )
-    if effective_count < 2:
-        raise ValueError("Final MPMA-E must have at least two effective members")
+    aggregation_parameters = unit.get("aggregation_parameters", {})
+    if isinstance(aggregation_parameters, str):
+        text = aggregation_parameters.strip()
+        aggregation_parameters = json.loads(text) if text else {}
+    if not isinstance(aggregation_parameters, dict):
+        raise ValueError("Final MPMA-E aggregation_parameters must be a JSON object")
+
+    if aggregation == "ecdf_learned_quantile":
+        learned_weights = np.asarray(
+            aggregation_parameters.get("member_weights", ()), dtype=float
+        )
+        if learned_weights.ndim != 1 or len(learned_weights) != len(member_ids):
+            raise ValueError("Learned MPMA-E member weights do not match the members")
+        if (
+            not np.isfinite(learned_weights).all()
+            or np.any(learned_weights < 0.0)
+            or float(learned_weights.sum()) <= 0.0
+        ):
+            raise ValueError(
+                "Learned MPMA-E member weights must be nonnegative and finite"
+            )
+        learned_weights = learned_weights / float(learned_weights.sum())
+        effective_count = int(np.count_nonzero(learned_weights > 1e-12))
+    else:
+        effective_count = (
+            int(np.count_nonzero(np.asarray(stored_weights, dtype=float) > 1e-8))
+            if stored_weights is not None
+            else len(member_ids)
+        )
+    if effective_count < (1 if aggregation == "ecdf_learned_quantile" else 2):
+        raise ValueError("Final MPMA-E must have sufficient effective members")
     declared_effective = int(unit.get("effective_member_count", effective_count))
     if declared_effective != effective_count:
         raise ValueError(
@@ -358,13 +388,6 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
         unit.get("member_count", unit.get("ensemble_size", len(member_ids)))
     )
     max_size = int(unit.get("max_size", realised_size))
-    aggregation_parameters = unit.get("aggregation_parameters", {})
-    if isinstance(aggregation_parameters, str):
-        text = aggregation_parameters.strip()
-        aggregation_parameters = json.loads(text) if text else {}
-    if not isinstance(aggregation_parameters, dict):
-        raise ValueError("Final MPMA-E aggregation_parameters must be a JSON object")
-
     result: dict[str, Any] = {
         "ensemble_config_id": str(unit.get("ensemble_config_id", "")).strip(),
         "task": str(unit.get("task", "classification")),
@@ -522,6 +545,15 @@ def fixed_strategy_predictions(root: Path | str, strategy: str) -> pd.DataFrame:
             raise ValueError(
                 f"Final MPMA-B config_id {config_id!r} has no held-out predictions"
             )
+        alpha = float(models["MPMA-B"].get("probability_softening_alpha", 0.0))
+        if alpha > 0.0:
+            from .mpma_vnext import soften_probabilities
+
+            pcols = [column for column in out.columns if column.startswith("proba_")]
+            if pcols:
+                out.loc[:, pcols] = soften_probabilities(
+                    out[pcols].to_numpy(dtype=float), alpha
+                )
         return out
     if strategy != "MPMA-E":
         raise ValueError(f"Unsupported final strategy {strategy!r}")

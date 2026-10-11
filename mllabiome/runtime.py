@@ -230,23 +230,20 @@ def iter_parallel_tasks(tasks: list[Any], execution: ExecutionPlan):
             yield fn(*args, **kwargs)
         return
     if str(execution.backend) == "loky":
-        for start in range(0, len(items), workers):
-            wave = items[start : start + workers]
-            wave_workers = max(1, min(workers, len(wave)))
-            token = next(_WAVE_COUNTER)
-            with thread_environment(execution.threads_per_worker):
-                yield from Parallel(
-                    n_jobs=wave_workers,
-                    backend="loky",
-                    return_as="generator_unordered",
-                    pre_dispatch=wave_workers,
-                    batch_size=1,
-                    max_nbytes="1M",
-                    mmap_mode="r",
-                    inner_max_num_threads=max(1, int(execution.threads_per_worker)),
-                    initializer=_loky_wave_initializer,
-                    initargs=(token,),
-                )(wave)
+        token = next(_WAVE_COUNTER)
+        with thread_environment(execution.threads_per_worker):
+            yield from Parallel(
+                n_jobs=workers,
+                backend="loky",
+                return_as="generator_unordered",
+                pre_dispatch=workers,
+                batch_size=1,
+                max_nbytes="1M",
+                mmap_mode="r",
+                inner_max_num_threads=max(1, int(execution.threads_per_worker)),
+                initializer=_loky_wave_initializer,
+                initargs=(token,),
+            )(items)
         return
     with parallel_backend(str(execution.backend), n_jobs=workers):
         yield from Parallel(

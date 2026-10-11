@@ -23,6 +23,7 @@ from .ensemble_aggregation import (
     aggregate_member_predictions,
     effective_aggregation_weights,
     stacking_features,
+    ecdf_stacking_features,
 )
 from .ensemble_progress import EnsembleSearchProgress
 from .integrations import integration_modality_sets
@@ -36,7 +37,9 @@ from .metrics import metric_better as _metric_better
 from .metrics import metric_is_loss as _metric_is_loss
 from .metrics import metric_requires_probability_semantics
 from .mpma_e_figure import write_single_task_mpma_e_figure
+from .ensemble_quantile_learning import fit_grouped_quantile
 from .selection import _qualified_config_ids_for_splits, select_final_mpma_candidate
+from .mpma_vnext import rank_oof_loss, similarity_members
 from .storage import read_table, table_exists, write_table
 from .utils import TAXONOMIC_LEVELS, dump_json_standard
 
@@ -181,6 +184,8 @@ def _validate_plan(plan: Ensemble) -> None:
         "best_per_resolution",
         "best_per_learner_type",
         "quality_diversity",
+        "oof_top_k",
+        "oof_similarity",
         "diversity",
         "performance_diversity",
         "caruana",
@@ -220,6 +225,10 @@ def _validate_plan(plan: Ensemble) -> None:
                 f"Supported strategies: {list(SUPPORTED_AGGREGATIONS)}."
             )
         metric = canonical_metric_name(str(plan.optimize_metric))
+        if {"oof_top_k", "oof_similarity"} & set(methods) and metric != "log_loss":
+            raise ValueError(
+                "OOF top-k and similarity mechanisms currently require optimize_metric='log_loss'"
+            )
         if metric_requires_probability_semantics(metric):
             invalid = sorted(
                 set(aggregations) - set(PROBABILITY_PRESERVING_AGGREGATIONS)
@@ -245,13 +254,7 @@ def _validate_plan(plan: Ensemble) -> None:
             "safe_super_learner",
             "regularized_super_learner",
         }
-        learned = set(methods) & learned_methods
         simple = set(methods) - learned_methods
-        if learned and "weighted_mean_proba" not in aggregations:
-            raise ValueError(
-                "Learned-weight ensemble selectors require aggregation_strategies to include "
-                "'weighted_mean_proba'. Add that aggregation or remove those selection strategies."
-            )
         nonweighted = [x for x in aggregations if x != "weighted_mean_proba"]
         if simple and not nonweighted:
             raise ValueError(
@@ -290,7 +293,12 @@ def _ensemble_configs(
             for max_size in _plan_max_sizes(plan):
                 for aggregation in _plan_aggregations(plan):
                     if method in learned_weight_selectors:
-                        if aggregation != "weighted_mean_proba":
+                        if aggregation != "weighted_mean_proba" and (
+                            "weighted_mean_proba" in _plan_aggregations(plan)
+                            or aggregation in LEARNED_AGGREGATIONS
+                            or aggregation
+                            in {"ecdf_weighted_quantile", "ecdf_learned_quantile"}
+                        ):
                             continue
                     elif aggregation == "weighted_mean_proba":
                         continue
@@ -302,6 +310,11 @@ def _ensemble_configs(
                             method,
                             aggregation,
                             str(max_size),
+                            json.dumps(
+                                [plan.ecdf_member_weights, plan.ecdf_reference_learner]
+                            )
+                            if aggregation == "ecdf_weighted_quantile"
+                            else "na",
                             _resolved_super_learner_loss(plan)
                             if method
                             in {
@@ -668,6 +681,7 @@ def _evaluate_selected_members(
     native_weights: np.ndarray | None = None,
     native_weight_source: str = "",
     extra: dict[str, Any] | None = None,
+    aggregation_parameters_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if len(members) < 2 or len(set(members)) != len(members):
         raise ValueError("MPMA-E must contain at least two distinct members.")
@@ -675,8 +689,12 @@ def _evaluate_selected_members(
         raise ValueError("MPMA-E member count and prediction stack disagree.")
     aggregation = str(spec["aggregation_strategy"])
     active_weights: np.ndarray | None = None
-    aggregation_parameters: dict[str, Any] | None = None
-    aggregation_weight_source = "not_applicable"
+    aggregation_parameters: dict[str, Any] | None = aggregation_parameters_override
+    aggregation_weight_source = (
+        "configuration"
+        if aggregation_parameters_override is not None
+        else "not_applicable"
+    )
     aggregation_extra: dict[str, Any] = {}
     if aggregation == "weighted_mean_proba":
         if native_weights is None:
@@ -697,7 +715,18 @@ def _evaluate_selected_members(
     elif aggregation == "mean_proba":
         active_weights = effective_aggregation_weights(aggregation, len(members))
         aggregation_weight_source = "uniform"
-    if aggregation in LEARNED_AGGREGATIONS:
+    if aggregation == "ecdf_learned_quantile":
+        if ordered is None or "split_key" not in ordered.columns:
+            raise ValueError(
+                "Learned quantile aggregation requires held-out group assignments."
+            )
+        proba, aggregation_parameters, aggregation_extra = fit_grouped_quantile(
+            stack,
+            y_true,
+            ordered["split_key"].to_numpy(dtype=str),
+        )
+        aggregation_weight_source = "study_heldout_optimization"
+    elif aggregation in LEARNED_AGGREGATIONS:
         if ordered is None:
             raise ValueError(f"{aggregation} requires aligned inner-fold metadata.")
         if aggregation in ADVANCED_AGGREGATIONS:
@@ -742,6 +771,13 @@ def _evaluate_selected_members(
             np.count_nonzero(np.asarray(stored_weights, dtype=float) > 1e-12)
         )
         if stored_weights
+        else int(
+            np.count_nonzero(
+                np.asarray(aggregation_parameters["member_weights"], dtype=float)
+                > 1e-12
+            )
+        )
+        if aggregation == "ecdf_learned_quantile" and aggregation_parameters is not None
         else len(members),
         "aggregation_weight_source": aggregation_weight_source,
         "weight_source": aggregation_weight_source,
@@ -1745,6 +1781,7 @@ def _fit_logistic_stacker(
     c_value: float,
     l1_ratio: float | None,
     sample_weight: np.ndarray | None,
+    class_weight: str | None = None,
 ) -> LogisticRegression:
     penalty_default = (
         inspect.signature(LogisticRegression).parameters["penalty"].default
@@ -1756,6 +1793,7 @@ def _fit_logistic_stacker(
             "solver": "lbfgs",
             "max_iter": 5000,
             "random_state": 0,
+            "class_weight": class_weight,
         }
         if legacy_penalty_api:
             values["penalty"] = "l2"
@@ -1767,6 +1805,7 @@ def _fit_logistic_stacker(
             "max_iter": 20000,
             "tol": 1e-5,
             "random_state": 0,
+            "class_weight": class_weight,
         }
         if legacy_penalty_api:
             values["penalty"] = "elasticnet"
@@ -1802,8 +1841,10 @@ def _stacker_parameters(
 
 
 def _stacker_grid(aggregation: str) -> list[tuple[float, float | None]]:
-    if aggregation == "logistic_stacking":
+    if aggregation in {"logistic_stacking", "ecdf_logistic_stacking"}:
         return [(value, None) for value in (0.05, 0.2, 1.0, 5.0, 20.0)]
+    if aggregation == "ecdf_grouped_stacking":
+        return [(value, None) for value in (0.01, 0.05, 0.1, 0.2, 1.0)]
     if aggregation == "elastic_net_stacking":
         return [
             (c_value, l1_ratio)
@@ -1823,7 +1864,19 @@ def _fit_crossfitted_stacking(
     metric: str,
 ) -> tuple[np.ndarray, dict[str, Any], dict[str, Any]]:
     clip = 1e-6
-    features = stacking_features(stack, clip)
+    ecdf = aggregation in {"ecdf_logistic_stacking", "ecdf_grouped_stacking"}
+    if ecdf and int(stack.shape[2]) != 2:
+        raise ValueError("ECDF stacking currently supports binary outcomes only.")
+    references = (
+        [np.sort(stack[index, :, 1]).tolist() for index in range(stack.shape[0])]
+        if ecdf
+        else []
+    )
+    features = (
+        ecdf_stacking_features(stack, references)
+        if ecdf
+        else stacking_features(stack, clip)
+    )
     fold_keys = _stacking_fold_keys(ordered)
     unique_folds = sorted(set(fold_keys.tolist()))
     n_classes = int(stack.shape[2])
@@ -1832,7 +1885,8 @@ def _fit_crossfitted_stacking(
         raise ValueError(
             "Stacking aggregation requires every class in the inner OOF data."
         )
-    fold_balanced = aggregation == "cohort_robust_stacking"
+    fold_balanced = aggregation in {"cohort_robust_stacking", "ecdf_grouped_stacking"}
+    class_weight = "balanced" if aggregation == "ecdf_grouped_stacking" else None
     best = None
     trace: list[dict[str, Any]] = []
     for c_value, l1_ratio in _stacker_grid(aggregation):
@@ -1850,19 +1904,33 @@ def _fit_crossfitted_stacking(
                 if fold_balanced
                 else None
             )
+            train_features = features[train_mask]
+            validation_features = features[test_mask]
+            if ecdf:
+                fold_references = [
+                    np.sort(stack[index, train_mask, 1]).tolist()
+                    for index in range(stack.shape[0])
+                ]
+                train_features = ecdf_stacking_features(
+                    stack[:, train_mask, :], fold_references
+                )
+                validation_features = ecdf_stacking_features(
+                    stack[:, test_mask, :], fold_references
+                )
             try:
                 model = _fit_logistic_stacker(
-                    features[train_mask],
+                    train_features,
                     y_true[train_mask],
                     c_value=c_value,
                     l1_ratio=l1_ratio,
                     sample_weight=sample_weight,
+                    class_weight=class_weight,
                 )
             except Exception:
                 valid = False
                 break
             predicted = np.asarray(
-                model.predict_proba(features[test_mask]), dtype=float
+                model.predict_proba(validation_features), dtype=float
             )
             local = np.zeros((int(np.count_nonzero(test_mask)), n_classes), dtype=float)
             for source, target in enumerate(np.asarray(model.classes_, dtype=int)):
@@ -1916,6 +1984,7 @@ def _fit_crossfitted_stacking(
         c_value=float(c_value),
         l1_ratio=l1_ratio,
         sample_weight=full_weight,
+        class_weight=class_weight,
     )
     parameters = _stacker_parameters(
         final_model,
@@ -1926,6 +1995,10 @@ def _fit_crossfitted_stacking(
         l1_ratio=l1_ratio,
         fold_balanced=fold_balanced,
     )
+    if ecdf:
+        parameters["ecdf_references"] = references
+    if class_weight is not None:
+        parameters["class_weight"] = class_weight
     diagnostics = {
         "stacking_crossfit_score": float(pooled_score),
         "stacking_C": float(c_value),
@@ -1937,6 +2010,35 @@ def _fit_crossfitted_stacking(
     return np.asarray(crossfit, dtype=float), parameters, diagnostics
 
 
+def _ecdf_rank_parameters(
+    plan: Ensemble,
+    members: list[str],
+    stack: np.ndarray,
+    configs: pd.DataFrame,
+) -> dict[str, Any]:
+    metadata = configs.drop_duplicates("config_id").set_index("config_id")
+    learner_weights = dict(plan.ecdf_member_weights)
+    learners = [str(metadata.loc[member, "learner"]) for member in members]
+    if len(learners) != len(learner_weights) or set(learners) != set(learner_weights):
+        raise ValueError(
+            "ECDF weighted quantile members do not match the configured learner weights."
+        )
+    reference_index = learners.index(plan.ecdf_reference_learner)
+    if stack.ndim != 3 or stack.shape[2] != 2:
+        raise ValueError(
+            "ECDF weighted quantile aggregation requires binary member probabilities."
+        )
+    return {
+        "ecdf_references": [
+            np.sort(stack[i, :, 1].astype(float)).tolist()
+            for i in range(stack.shape[0])
+        ],
+        "member_weights": [float(learner_weights[name]) for name in learners],
+        "reference_member_index": int(reference_index),
+        "member_learners": learners,
+    }
+
+
 def _candidate_from_simple_selector(
     spec: dict[str, Any],
     scores: pd.Series,
@@ -1944,6 +2046,7 @@ def _candidate_from_simple_selector(
     configs: pd.DataFrame,
     pcols: list[str],
     metric: str,
+    plan: Ensemble,
 ) -> dict[str, Any] | None:
     method = str(spec["selection_strategy"])
     max_size = int(spec["max_size"])
@@ -1976,7 +2079,28 @@ def _candidate_from_simple_selector(
         extra["candidate_library_policy"] = "all_complete_inner_oof_mpmas"
         extra["candidate_library_size"] = len(library)
     else:
-        if method == "top_k":
+        if method in {"oof_top_k", "oof_similarity"}:
+            library = [str(value) for value in scores.index.tolist()]
+            ranking = rank_oof_loss(
+                predictions, library, robust=method == "oof_similarity"
+            )
+            if method == "oof_top_k":
+                members = ranking[:max_size]
+            else:
+                shortlisted = ranking[:30]
+                aligned, available = _aligned_stack(
+                    predictions, shortlisted, pcols, inner=True
+                )
+                if aligned is None or available is None:
+                    raise ValueError("Incomplete OOF similarity library")
+                members = similarity_members(available, shortlisted, max_size)
+            extra["candidate_library_policy"] = (
+                "pooled_oof_log_loss"
+                if method == "oof_top_k"
+                else "fold_robust_oof_similarity"
+            )
+            extra["candidate_library_size"] = len(ranking)
+        elif method == "top_k":
             members = _select_top_k(scores, max_size)
         elif method == "best_per_resolution":
             members = _select_best_per_resolution(scores, configs)[:max_size]
@@ -2016,6 +2140,11 @@ def _candidate_from_simple_selector(
         return None
     extra["inner_oof_rows"] = len(ordered)
     extra.update(diagnostics)
+    rank_parameters = (
+        _ecdf_rank_parameters(plan, members, stack, configs)
+        if str(spec["aggregation_strategy"]) == "ecdf_weighted_quantile"
+        else None
+    )
     return _evaluate_selected_members(
         spec,
         members,
@@ -2024,6 +2153,7 @@ def _candidate_from_simple_selector(
         metric,
         ordered=ordered,
         extra=extra,
+        aggregation_parameters_override=rank_parameters,
     )
 
 
@@ -2593,6 +2723,41 @@ def _candidate_from_safe_super_learner(
     )
 
 
+def _aligned_outer_oof_stacking(
+    predictions: pd.DataFrame,
+    members: list[str],
+    pcols: list[str],
+) -> tuple[pd.DataFrame, np.ndarray]:
+    required = {"sample_id", "outer_split_key", "config_id", "y_true"}
+    missing = sorted(required - set(predictions.columns))
+    if missing:
+        raise ValueError(f"Development OOF predictions are missing columns: {missing}.")
+    frame = _prediction_frame_for_outer(predictions, None)
+    frame = frame[frame["config_id"].isin(members)].copy()
+    if frame.duplicated(["config_id", "sample_id"]).any():
+        raise ValueError(
+            "Development OOF stacking requires exactly one prediction per model and sample."
+        )
+    group_counts = frame.groupby("sample_id")["outer_split_key"].nunique()
+    if (group_counts != 1).any():
+        raise ValueError("Development OOF samples have inconsistent held-out studies.")
+    ordered, stack = _aligned_stack(frame, members, pcols, inner=False)
+    if ordered is None or stack is None:
+        raise ValueError(
+            "Development OOF predictions are incomplete for selected members."
+        )
+    groups = frame[["sample_id", "outer_split_key"]].drop_duplicates("sample_id")
+    ordered = ordered.merge(groups, on="sample_id", how="left", validate="one_to_one")
+    if ordered["outer_split_key"].isna().any():
+        raise ValueError(
+            "Development OOF samples are missing held-out study identifiers."
+        )
+    ordered["split_key"] = ordered["outer_split_key"]
+    if ordered["sample_id"].duplicated().any():
+        raise ValueError("Development OOF stacking contains repeated sample IDs.")
+    return ordered, stack
+
+
 def _candidate_table_for_inner(
     inner_results: pd.DataFrame,
     inner_predictions: pd.DataFrame,
@@ -2603,6 +2768,7 @@ def _candidate_table_for_inner(
     qualification: pd.DataFrame | None = None,
     progress_callback=None,
     progress_scope: str | None = None,
+    final_oof_predictions: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     _validate_plan(plan)
     eligible = _eligible_config_ids(configs, plan)
@@ -2631,12 +2797,61 @@ def _candidate_table_for_inner(
         failed = False
         try:
             method = str(spec["selection_strategy"])
-            if str(spec.get("ensemble_kind", "model_ensemble")) == "late_fusion":
+            if (
+                final_oof_predictions is not None
+                and str(spec["aggregation_strategy"])
+                in {
+                    "ecdf_grouped_stacking",
+                    "ecdf_weighted_quantile",
+                    "ecdf_learned_quantile",
+                }
+                and method == "top_k"
+                and str(spec.get("ensemble_kind", "model_ensemble")) == "model_ensemble"
+            ):
+                members = _select_top_k(scores, int(spec["max_size"]))
+                if len(members) >= 2:
+                    outer_columns = _proba_cols(final_oof_predictions)
+                    if not outer_columns:
+                        raise ValueError(
+                            "Development OOF predictions have no probability columns."
+                        )
+                    ordered, outer_stack = _aligned_outer_oof_stacking(
+                        final_oof_predictions, members, outer_columns
+                    )
+                    row = _evaluate_selected_members(
+                        spec,
+                        members,
+                        outer_stack,
+                        ordered["y_true"].to_numpy(dtype=int),
+                        metric,
+                        ordered=ordered,
+                        aggregation_parameters_override=(
+                            _ecdf_rank_parameters(plan, members, outer_stack, configs)
+                            if str(spec["aggregation_strategy"])
+                            == "ecdf_weighted_quantile"
+                            else None
+                        ),
+                        extra={
+                            "inner_oof_rows": len(ordered),
+                            "candidate_library_policy": "unique_development_lodo_oof",
+                            "candidate_library_size": len(scores),
+                            "selection_weight_source": "none",
+                            "stacking_oof_unique_samples": int(
+                                ordered["sample_id"].nunique()
+                            ),
+                            "stacking_oof_studies": int(
+                                ordered["outer_split_key"].nunique()
+                            ),
+                        },
+                    )
+            elif str(spec.get("ensemble_kind", "model_ensemble")) == "late_fusion":
                 row = _candidate_from_late_fusion(
                     spec, scores, pred, configs, pcols, plan, metric
                 )
             elif method in {
                 "top_k",
+                "oof_top_k",
+                "oof_similarity",
                 "best_per_resolution",
                 "best_per_learner_type",
                 "quality_diversity",
@@ -2644,7 +2859,7 @@ def _candidate_table_for_inner(
                 "performance_diversity",
             }:
                 row = _candidate_from_simple_selector(
-                    spec, scores, pred, configs, pcols, metric
+                    spec, scores, pred, configs, pcols, metric, plan
                 )
             elif method == "caruana":
                 row = _candidate_from_caruana(spec, scores, pred, pcols, metric)
@@ -2928,6 +3143,7 @@ def select_final_mpma_e_candidate(
     member_score_metric: str | None = None,
     qualification: pd.DataFrame | None = None,
     progress_callback=None,
+    outer_predictions: pd.DataFrame | None = None,
 ) -> tuple[dict[str, Any], pd.DataFrame]:
     candidates = _candidate_table_for_inner(
         inner_results,
@@ -2939,6 +3155,7 @@ def select_final_mpma_e_candidate(
         qualification=qualification,
         progress_callback=progress_callback,
         progress_scope="__final__",
+        final_oof_predictions=outer_predictions,
     )
     if candidates.empty:
         return ({}, candidates)
@@ -2959,7 +3176,17 @@ def select_final_mpma_e_candidate(
     compatibility_metric = str(member_score_metric or metric)
     best = {
         "ensemble_config_id": str(first["ensemble_config_id"]),
-        "selection_basis": "all_inner_oof_predictions_for_final_refit",
+        "selection_basis": (
+            "unique_development_lodo_oof_for_final_refit"
+            if outer_predictions is not None
+            and str(first["aggregation_strategy"])
+            in {
+                "ecdf_grouped_stacking",
+                "ecdf_weighted_quantile",
+                "ecdf_learned_quantile",
+            }
+            else "all_inner_oof_predictions_for_final_refit"
+        ),
         "selection_metric": str(metric),
         "optimize_metric": compatibility_metric,
         "member_score_metric": compatibility_metric,
@@ -3083,6 +3310,7 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
             member_score_metric,
             qualification=qualification,
             progress_callback=live.update,
+            outer_predictions=outer_predictions,
         )
     if not final_ensemble:
         raise RuntimeError(
@@ -3095,6 +3323,7 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
         canonical_metric_name(str(sweep.evaluation.optimize_metric)),
         plan=sweep.ensemble,
         qualification=qualification,
+        inner_predictions=inner_predictions,
     )
     selection_path = ensemble_dir / "mpma_e_outer_selection.parquet"
     prediction_path = ensemble_dir / "ensemble_predictions.parquet"

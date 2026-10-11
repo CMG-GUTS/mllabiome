@@ -9,7 +9,7 @@ from curated_microbiota.collections import lampp_ibd
 from lightgbm import LGBMClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC, LinearSVC
@@ -46,94 +46,126 @@ EXPLORE = mll.Explore(
 
 
 RESOLUTIONS = (
-    ("raw", ("raw",)),
+    # ("raw", ("raw",)),
     ("genus", ("genus",)),
-    ("species", ("species",)),
-    ("strain", ("strain",)),
-    ("order-genus", ("order", "family", "genus")),
-    ("genus-species", ("genus", "species")),
+    # ("species", ("species",)),
+    # ("strain", ("strain",)),
+    # ("order-genus", ("order", "family", "genus")),
+    # ("genus-species", ("genus", "species")),
 )
 
 COUNT_TRANSFORMATIONS = (
-    mll.Transformation("presence_absence"),
-    mll.Transformation("identity"),
-    mll.Transformation("clr", composition_scope="joint"),
-    mll.Transformation("yeo_johnson", composition_scope="joint"),
-    mll.Transformation("log10", composition_scope="rank-wise"),
+    # mll.Transformation("presence_absence"),
+    # mll.Transformation("identity"),
+    # mll.Transformation("clr", composition_scope="joint"),
+    # mll.Transformation("yeo_johnson", composition_scope="joint"),
+    # mll.Transformation("log10", composition_scope="rank-wise"),
+    mll.WaypointEmbedding(
+        model="outpost-bio/Waypoint-6m",
+        pooling="mean",
+        batch_size=32,
+        max_length=512,
+        taxonomy_format="full",
+        resolutions=("genus",),
+    ),
 )
 
 MODELS = (
+    # (
+    #     "CNB_GroupedRankCal",
+    #     mll.GroupedRankCalibratedClassifier(
+    #         estimator=ComplementNB(
+    #             alpha=1.6e-7,
+    #             norm=True,
+    #             force_alpha=True,
+    #         ),
+    #         n_splits=3,
+    #         C=0.1,
+    #         random_state=42,
+    #         class_weight="balanced",
+    #     ),
+    # ),
     (
-        "GB_e100",
-        GradientBoostingClassifier(
-            n_estimators=100,
-            learning_rate=0.1,
-            loss="log_loss",
-            max_features="sqrt",
-            subsample=0.8,
-            random_state=17,
-        ),
-    ),
-    (
-        "SIAMCAT",
-        mll.SIAMCATClassifier(),
-    ),
-    (
-        "LDA_eigen_shrinkage_auto",
-        LinearDiscriminantAnalysis(
-            solver="eigen",
-            shrinkage="auto",
-        ),
-    ),
-    (
-        "LinearSVC_C1e-4",
-        LinearSVC(
-            C=1e-4,
-            loss="squared_hinge",
-            dual="auto",
-            max_iter=30000,
-            random_state=17,
-        ),
-    ),
-    (
-        "LR_4e-5_l2",
-        LogisticRegression(
-            C=4e-5,
-            penalty="l2",
-            solver="liblinear",
-            fit_intercept=True,
-            class_weight=None,
-            tol=1e-7,
-            max_iter=3000,
-            random_state=0,
-        ),
-    ),
-    (
-        "LR_c1_balanced_l2",
-        LogisticRegression(
-            penalty="l2",
-            C=1.0,
-            class_weight="balanced",
-            solver="liblinear",
-            max_iter=3000,
+        "ET_400_leaf5",
+        ExtraTreesClassifier(
+            n_estimators=400,
+            min_samples_leaf=5,
+            n_jobs=1,
             random_state=42,
         ),
     ),
-    (
-        "TabPFN",
-        mll.TabPFNClassifier(
-            n_estimators="auto",
-            auto_scale_n_estimators=True,
-            model_path="auto",
-            device="auto",
-            inference_precision="auto",
-            fit_mode="fit_preprocessors",
-            memory_saving_mode="auto",
-            keep_cache_on_device=True,
-            random_state=42,
-            n_preprocessing_jobs=1,
-        ),
-    ),
+    # (
+    #     "GB_e100",
+    #     GradientBoostingClassifier(
+    #         n_estimators=100,
+    #         learning_rate=0.1,
+    #         loss="log_loss",
+    #         max_features="sqrt",
+    #         subsample=0.8,
+    #         random_state=17,
+    #     ),
+    # ),
+    # (
+    #     "SIAMCAT",
+    #     mll.SIAMCATClassifier(),
+    # ),
+    # (
+    #     "LDA_eigen_shrinkage_auto",
+    #     LinearDiscriminantAnalysis(
+    #         solver="eigen",
+    #         shrinkage="auto",
+    #     ),
+    # ),
+    # (
+    #     "LinearSVC_C1e-4",
+    #     LinearSVC(
+    #         C=1e-4,
+    #         loss="squared_hinge",
+    #         dual="auto",
+    #         max_iter=30000,
+    #         random_state=17,
+    #     ),
+    # ),
+    # (
+    #     "LR_4e-5_l2",
+    #     LogisticRegression(
+    #         C=4e-5,
+    #         penalty="l2",
+    #         solver="liblinear",
+    #         fit_intercept=True,
+    #         class_weight=None,
+    #         tol=1e-7,
+    #         max_iter=3000,
+    #         random_state=0,
+    #     ),
+    # ),
+    # (
+    #     "LR_c1_balanced_l2",
+    #     LogisticRegression(
+    #         penalty="l2",
+    #         C=1.0,
+    #         class_weight="balanced",
+    #         solver="liblinear",
+    #         max_iter=3000,
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "TabPFN_Auto",
+    #     mll.TabPFNClassifier(
+    #         n_estimators='auto',
+    #         auto_scale_n_estimators=True,
+    #         model_path='auto',
+    #         device='auto',
+    #         inference_precision='auto',
+    #         fit_mode='fit_preprocessors',
+    #         memory_saving_mode='auto',
+    #         keep_cache_on_device=True,
+    #         random_state=42,
+    #         n_preprocessing_jobs=1,
+    #     ),
+    # ),
+
 )
 
 GATE = mll.QualificationGate(
@@ -145,39 +177,39 @@ GATE = mll.QualificationGate(
 ENSEMBLE = mll.Ensemble(
     max_sizes=(10,),
     selection_strategies=(
-        "top_k",
-        "best_per_resolution",
-        "best_per_learner_type",
-        "quality_diversity",
-        "diversity",
-        "performance_diversity",
+        # "top_k",
+        # "best_per_resolution",
+        # "best_per_learner_type",
+        # "quality_diversity",
+        # "diversity",
+        # "performance_diversity",
         "caruana",
-        "bagged_caruana",
-        "caruana_multistart",
-        "beam",
-        "super_learner",
-        "adaptive_super_learner",
-        "safe_super_learner",
-        "regularized_super_learner",
+        # "bagged_caruana",
+        # "caruana_multistart",
+        # "beam",
+        # "super_learner",
+        # "adaptive_super_learner",
+        # "safe_super_learner",
+        # "regularized_super_learner",
     ),
     aggregation_strategies=(
-        "mean_proba",
-        "weighted_mean_proba",
+        # "mean_proba",
+        # "weighted_mean_proba",
         "median_proba",
         "trimmed_mean_proba",
-        "trimmed_mean",
-        "geometric_mean_proba",
-        "logit_mean",
-        "logistic_stacking",
-        "elastic_net_stacking",
-        "cohort_robust_stacking",
-        "rf_stacking",
-        "extra_trees_stacking",
-        "boosted_stacking",
-        "gated_stacking",
-        "hierarchical_dirichlet_stacking",
-        "temperature_scaled_mean_proba",
-        "sigmoid_calibrated_mean_proba",
+        # "trimmed_mean",
+        # "geometric_mean_proba",
+        # "logit_mean",
+        # "logistic_stacking",
+        # "elastic_net_stacking",
+        # "cohort_robust_stacking",
+        # "rf_stacking",
+        # "extra_trees_stacking",
+        # "boosted_stacking",
+        # "gated_stacking",
+        # "hierarchical_dirichlet_stacking",
+        # "temperature_scaled_mean_proba",
+        # "sigmoid_calibrated_mean_proba",
     ),
     optimize_metric="log_loss",
 )

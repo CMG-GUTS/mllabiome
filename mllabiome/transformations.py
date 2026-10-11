@@ -1131,6 +1131,16 @@ class Transform:
 Transformation = Transform
 
 
+class ScopedTransformation(Transform):
+    __slots__ = ("resolutions",)
+
+    def __init__(self, name: str, *, resolutions: tuple[str, ...]):
+        super().__init__(name)
+        self.resolutions = tuple(str(value) for value in resolutions)
+        if not self.resolutions:
+            raise ValueError("ScopedTransformation requires at least one resolution.")
+
+
 def build_count_transformations(
     *, include_inactive: bool = True
 ) -> list[Transformation]:

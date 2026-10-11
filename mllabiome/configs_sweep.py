@@ -84,6 +84,7 @@ from .transformations import (
     _count_transformation_factory,
     _count_transformation_name,
     _count_transformation_specs_for_blocks,
+    _parse_transformation_identity,
 )
 from .utils import METRIC_COLUMNS, TAXONOMIC_LEVELS, dump_json_standard
 
@@ -467,13 +468,39 @@ def _validate_incremental_experiment_identity(
 
 
 def _scientifically_compatible_config(
-    count_transformation: str, resolution: str, learner_payload: Mapping[str, Any]
+    count_transformation: str,
+    resolution: str,
+    learner_payload: Mapping[str, Any],
+    estimator: Any,
 ) -> bool:
-    learner_class = str(learner_payload.get("class", "")).rsplit(".", 1)[-1]
-    if learner_class != "SIAMCATClassifier":
-        return True
-    transformation = str(count_transformation).strip().casefold()
-    return transformation == "identity" and str(resolution).strip().casefold() == "raw"
+    transformation, _ = _parse_transformation_identity(count_transformation)
+    for _ in range(8):
+        steps = getattr(estimator, "steps", None)
+        if steps:
+            estimator = steps[-1][1]
+            continue
+        base = getattr(estimator, "estimator", None)
+        if is_estimator_instance(base):
+            estimator = base
+            continue
+        break
+    learner_class = type(estimator).__name__
+    if learner_class == "SIAMCATClassifier":
+        return transformation == "identity" and resolution == "raw"
+    if learner_class == "BernoulliNB":
+        return transformation == "presence_absence"
+    if learner_class in {"MultinomialNB", "ComplementNB"}:
+        return transformation in {
+            "identity",
+            "relative_abundance",
+            "presence_absence",
+            "arcsine_sqrt",
+            "hellinger",
+            "within_sample_fractional_rank",
+            "training_ecdf_rank",
+            "prevalence_weighted_relative_abundance",
+        }
+    return True
 
 
 def build_sweep_configs(
@@ -481,17 +508,41 @@ def build_sweep_configs(
     count_transformations: Sequence[Any],
     learners: Sequence[Any],
     resolution_feature_blocks: Mapping[str, Any] | None = None,
+    learner_resolutions: Mapping[str, Sequence[str]] | None = None,
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
+    seen_configs: set[str] = set()
+    seen_semantic: set[str] = set()
+    allowed = (
+        {}
+        if learner_resolutions is None
+        else {
+            str(name): frozenset(
+                _parse_resolution(value)[0]
+                for value in ((values,) if isinstance(values, str) else values)
+            )
+            for name, values in learner_resolutions.items()
+        }
+    )
+    known_names = {_learner_name(item) for item in learners}
+    unknown_names = sorted(set(allowed) - known_names)
+    if unknown_names:
+        raise ValueError(f"Unknown learner_resolutions names: {unknown_names!r}.")
     learner_specs = [
         (
             _learner_name(x),
             learner_display_label(x),
             _learner_fingerprint(x),
             _learner_payload(x),
+            x[1],
         )
         for x in learners
     ]
+    named_fingerprints: dict[str, str] = {}
+    for name, _, fingerprint, _, _ in learner_specs:
+        previous = named_fingerprints.setdefault(name, fingerprint)
+        if previous != fingerprint:
+            raise ValueError(f"Learner {name!r} has conflicting estimator definitions.")
     block_map = (
         {} if resolution_feature_blocks is None else dict(resolution_feature_blocks)
     )
@@ -550,21 +601,37 @@ def build_sweep_configs(
                 learner_display,
                 learner_fingerprint,
                 learner_payload,
+                estimator,
             ) in learner_specs:
+                if lname in allowed and res_name not in allowed[lname]:
+                    continue
                 if not _scientifically_compatible_config(
-                    ct_name, res_name, learner_payload
+                    ct_name, res_name, learner_payload, estimator
                 ):
                     continue
+                config_id = _config_id(
+                    ct_name,
+                    res_name,
+                    lname,
+                    learner_fingerprint,
+                    transformation_fingerprint,
+                    resolution_fingerprint,
+                )
+                semantic = _scientific_digest(
+                    (
+                        resolution_fingerprint,
+                        transformation_fingerprint,
+                        learner_payload["class"],
+                        learner_payload["params"],
+                    )
+                )
+                if config_id in seen_configs or semantic in seen_semantic:
+                    continue
+                seen_configs.add(config_id)
+                seen_semantic.add(semantic)
                 rows.append(
                     {
-                        "config_id": _config_id(
-                            ct_name,
-                            res_name,
-                            lname,
-                            learner_fingerprint,
-                            transformation_fingerprint,
-                            resolution_fingerprint,
-                        ),
+                        "config_id": config_id,
                         "mpdr_id": _mpdr_id(ct_name, res_name),
                         "transformation_fingerprint": transformation_fingerprint,
                         "resolution_fingerprint": resolution_fingerprint,
@@ -589,6 +656,10 @@ def build_sweep_configs(
                         "active": 1,
                     }
                 )
+    if not rows:
+        raise ValueError(
+            "No eligible learner-resolution-transformation configurations remain."
+        )
     return pd.DataFrame(rows)
 
 
@@ -2153,7 +2224,9 @@ def _prewarm_foundation_representations(
 def _prepare_regression_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
     root = sweep.root()
     _prepare_dirs(root)
-    resolutions = [_parse_resolution(item) for item in sweep.resolutions]
+    resolutions = list(
+        dict.fromkeys(_parse_resolution(item) for item in sweep.resolutions)
+    )
     levels = tuple(
         dict.fromkeys(
             level
@@ -2192,6 +2265,7 @@ def _prepare_regression_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
         sweep.count_transformations,
         sweep.learners,
         resolution_feature_blocks=feature_blocks_by_resolution,
+        learner_resolutions=sweep.learner_resolutions,
     )
     cache_fingerprint = _evaluation_cache_fingerprint(sweep, dataset)
     evaluation_fingerprint = _evaluation_fingerprint(sweep, dataset, configs)
@@ -2259,7 +2333,9 @@ def _prepare_regression_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
 def _prepare_classification_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
     root = sweep.root()
     _prepare_dirs(root)
-    resolutions = [_parse_resolution(item) for item in sweep.resolutions]
+    resolutions = list(
+        dict.fromkeys(_parse_resolution(item) for item in sweep.resolutions)
+    )
     levels = tuple(
         dict.fromkeys(
             level
@@ -2299,6 +2375,7 @@ def _prepare_classification_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
         sweep.count_transformations,
         sweep.learners,
         resolution_feature_blocks=feature_blocks_by_resolution,
+        learner_resolutions=sweep.learner_resolutions,
     )
     cache_fingerprint = _evaluation_cache_fingerprint(sweep, dataset)
     evaluation_fingerprint = _evaluation_fingerprint(sweep, dataset, configs)
@@ -2383,6 +2460,7 @@ def _build_regression_tasks(
     sweep: Sweep, context: _SweepEvaluationContext
 ) -> tuple[list[_ScheduledEvaluationTask], dict[str, int]]:
     tasks: list[_ScheduledEvaluationTask] = []
+    scheduled: set[tuple[str, str]] = set()
     split_task_counts: dict[str, int] = {}
     dataset = context.dataset
     for split in context.outer_splits:
@@ -2421,6 +2499,9 @@ def _build_regression_tasks(
                         transformation_fingerprint,
                         resolution_fingerprint,
                     )
+                    pair = (split_key, config_id)
+                    if config_id not in context.current_config_ids or pair in scheduled:
+                        continue
                     missing_inner = {
                         key
                         for key in inner_keys
@@ -2434,6 +2515,7 @@ def _build_regression_tasks(
                     )
                     if not missing_inner and not needs_outer:
                         continue
+                    scheduled.add(pair)
                     task = delayed(_evaluate_regression_split_task)(
                         X_base,
                         feature_names,
@@ -2482,6 +2564,7 @@ def _build_classification_tasks(
     sweep: Sweep, context: _SweepEvaluationContext
 ) -> tuple[list[_ScheduledEvaluationTask], dict[str, int]]:
     tasks: list[_ScheduledEvaluationTask] = []
+    scheduled: set[tuple[str, str]] = set()
     split_task_counts: dict[str, int] = {}
     dataset = context.dataset
     y = dataset.y
@@ -2521,6 +2604,9 @@ def _build_classification_tasks(
                         transformation_fingerprint,
                         resolution_fingerprint,
                     )
+                    pair = (split_key, config_id)
+                    if config_id not in context.current_config_ids or pair in scheduled:
+                        continue
                     missing_inner = {
                         key
                         for key in inner_keys
@@ -2534,6 +2620,7 @@ def _build_classification_tasks(
                     )
                     if not missing_inner and not needs_outer:
                         continue
+                    scheduled.add(pair)
                     task = delayed(_evaluate_mpma_split_task)(
                         X_base,
                         feature_names,
