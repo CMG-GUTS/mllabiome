@@ -278,13 +278,7 @@ def _selected_levels(sweep: Sweep, model: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _abundance_scale(X: np.ndarray) -> str:
-    """Infer the coarse abundance scale used by a samples x features matrix.
 
-    A relative-abundance profile remains on the proportion scale after projection
-    onto a training feature universe even when the retained features sum to less
-    than one.  Treat such subcompositions as proportions instead of generic
-    non-negative abundance.
-    """
     values = np.asarray(X, dtype=float)
     if values.ndim != 2:
         raise ValueError(
@@ -316,16 +310,11 @@ def _abundance_scale(X: np.ndarray) -> str:
         np.mean(np.isclose(informative_totals, 100.0, rtol=0.03, atol=2.0))
     )
 
-    # Exact/near-exact compositions.
     if proportion_fraction >= 0.80:
         return "proportion"
     if percentage_fraction >= 0.80:
         return "percentage"
 
-    # External profiles are commonly projected onto the training feature schema.
-    # Taxa absent from the training universe are then dropped, so a valid
-    # relative-abundance sample can sum to < 1.  The values are still fractions
-    # on the same scale and must not be rejected as "nonnegative_abundance".
     proportion_upper = 1.0 + 0.03
     projected_proportion_fraction = float(
         np.mean(
@@ -342,7 +331,7 @@ def _abundance_scale(X: np.ndarray) -> str:
 
 
 def _transformation_base_token(model: dict[str, Any]) -> str:
-    """Return a normalized base abundance-transformation name."""
+
     identity = str(model.get("count_transformation", "")).strip()
     if not identity:
         return ""
@@ -356,13 +345,7 @@ def _scale_validation_mode(
     training_scale: str,
     inference_scale: str,
 ) -> str:
-    """Describe whether raw-scale validation is required for this member.
 
-    Presence/absence discards abundance magnitude entirely, so rejecting an
-    otherwise schema-compatible external dataset because its raw abundance units
-    differ is unnecessary.  Other transformations retain the existing strict
-    scale check.
-    """
     if _transformation_base_token(model) == "presence_absence":
         return "skipped_presence_absence"
     if training_scale == inference_scale:
@@ -625,9 +608,6 @@ def _fit_member(
     train_X, train_names, blocks = materialize_mpdr_with_blocks(dataset, levels)
     test_raw, test_names = _profile_resolution(profile_X, profile_names, levels)
 
-    # First align the external matrix to the exact raw feature schema used by the
-    # persisted member.  Scale validation must compare equivalent matrices, not
-    # a training-resolution matrix with an unaligned external-resolution matrix.
     test_X, audit = _align_resolution(
         np.asarray(train_X, dtype=np.float64),
         list(train_names),
@@ -661,6 +641,8 @@ def _fit_member(
         learner = _learner_item(sweep, model)
         _, learner_factory = _learner_factory(learner, task=dataset.task)
         estimator = configure_estimator_threads(learner_factory(), 1)
+        if callable(getattr(estimator, "bind_schema", None)):
+            estimator.bind_schema(transformer.get_feature_names_out(list(train_names)))
         if dataset.task == "classification":
             groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
             fit_classifier(estimator, train_transformed, dataset.y, groups)

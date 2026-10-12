@@ -15,7 +15,7 @@ from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
 TITLE = "LAMPP schizophrenia mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "LAMPP-SCZ-NCV-CM-official-v2"
+EXPERIMENT_DIR = HERE / "runs" / "LAMPP-SCZ-NCV-CM-base"
 
 DATA = lampp_scz.mllabiome()
 
@@ -40,61 +40,99 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
-    ("species", ("species",)),
+    # ("phylum", ("phylum",)),
+    # ("class", ("class",)),
+    # ("order", ("order",)),
+    # ("family", ("family",)),
+    # ("genus", ("genus",)),
+    # ("species", ("species",)),
     ("strain", ("strain",)),
     ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
-    mll.Transformation("presence_absence"),
+    # mll.Transformation("presence_absence"),
     # mll.Transformation("identity"),
     # mll.Transformation("clr", composition_scope="rank-wise"),
+    mll.Transformation(
+        "arcsine_sqrt",
+        composition_scope="rank-wise",
+    ),
+    mll.Transformation(
+        "relative_abundance",
+        composition_scope="rank-wise",
+    ),
 )
 
 MODELS = (
+    # baselines
+    # (
+    #     "Baseline_RF",
+    #     RandomForestClassifier(
+    #         n_estimators=1000,
+    #         min_samples_leaf=5,
+    #         random_state=42,
+    #         n_jobs=1,
+    #     ),
+    # ),
+    # (
+    #     "SIAMCAT",
+    #     mll.SIAMCATClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # # default standard models
     (
-        "LR_L2_C0002",
-        LogisticRegression(
-            penalty="l2",
-            C=0.002,
-            solver="liblinear",
-            max_iter=5000,
-            random_state=42,
-        ),
-    ),
-    (
-        "LGBM_e300",
-        LGBMClassifier(
-            n_estimators=300,
-            learning_rate=0.07,
-            num_leaves=7,
-            max_depth=3,
-            min_child_samples=3,
-            subsample=0.7,
-            subsample_freq=1,
-            colsample_bytree=0.6,
-            reg_alpha=0,
-            reg_lambda=0,
-            scale_pos_weight=1.0,
-            random_state=17,
-            verbosity=-1,
-        ),
-    ),
-    (
-        "CB_i300_d3",
+        "CB_default",
         CatBoostClassifier(
-            iterations=300,
-            learning_rate=0.04,
-            depth=3,
-            l2_leaf_reg=10,
-            random_strength=1.0,
-            rsm=0.60,
-            loss_function="Logloss",
-            eval_metric="Logloss",
             random_seed=42,
             thread_count=1,
             verbose=False,
             allow_writing_files=False,
+        ),
+    ),
+    (
+        "RF_default",
+        RandomForestClassifier(
+            random_state=42,
+        ),
+    ),
+    (
+        "LightGBM_default",
+        LGBMClassifier(
+            random_state=42,
+            n_jobs=1,
+            verbosity=-1,
+        ),
+    ),
+    (
+        "XGB_default",
+        XGBClassifier(
+            random_state=42,
+            n_jobs=1,
+            verbosity=0,
+            eval_metric="logloss",
+        ),
+    ),
+    (
+        "LR_default",
+        LogisticRegression(
+            random_state=42,
+        ),
+    ),
+    (
+        "TabPFN",
+        mll.TabPFNClassifier(
+            n_estimators="auto",
+            auto_scale_n_estimators=True,
+            model_path="auto",
+            device="auto",
+            inference_precision="auto",
+            fit_mode="fit_preprocessors",
+            memory_saving_mode="auto",
+            keep_cache_on_device=True,
+            random_state=42,
+            n_preprocessing_jobs=1,
         ),
     ),
 )
@@ -107,7 +145,8 @@ GATE = mll.QualificationGate(
 )
 
 ENSEMBLE = mll.Ensemble(
-    max_sizes=(10,),
+    include_inactive=True,
+    max_sizes=(3,),
     selection_strategies=(
         "top_k",
         "best_per_resolution",
@@ -120,7 +159,7 @@ ENSEMBLE = mll.Ensemble(
         "weighted_mean_proba",
         "median_proba",
     ),
-    optimize_metric="MCC",
+    optimize_metric="log_loss",
 )
 
 EXPLAINABILITY = mll.Explainability(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -9,7 +8,11 @@ from curated_microbiota.collections import lampp_ibd
 from lightgbm import LGBMClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier
+from sklearn.ensemble import (
+    ExtraTreesClassifier,
+    GradientBoostingClassifier,
+    RandomForestClassifier,
+)
 from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC, LinearSVC
@@ -19,7 +22,7 @@ from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
 TITLE = "LAMPP inflammatory bowel disease LODO mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "LAMPP-IBD-LODO-CM-official-v2-fm"
+EXPERIMENT_DIR = HERE / "runs" / "LAMPP-IBD-LODO-CM-base"
 
 DATA = lampp_ibd.mllabiome()
 
@@ -60,6 +63,7 @@ COUNT_TRANSFORMATIONS = (
     # mll.Transformation("clr", composition_scope="joint"),
     # mll.Transformation("yeo_johnson", composition_scope="joint"),
     # mll.Transformation("log10", composition_scope="rank-wise"),
+    # Foundation embedding; restricted to genus resolution.
     mll.WaypointEmbedding(
         model="outpost-bio/Waypoint-6m",
         pooling="mean",
@@ -68,23 +72,31 @@ COUNT_TRANSFORMATIONS = (
         taxonomy_format="full",
         resolutions=("genus",),
     ),
+    # Optional additional foundation embeddings:
+    # mll.WaypointEmbedding(
+    #     model="outpost-bio/Waypoint-45m",
+    #     pooling="mean",
+    #     batch_size=32,
+    #     max_length=512,
+    #     taxonomy_format="full",
+    #     resolutions=("genus",),
+    # ),
+    # mll.MGMEmbedding(
+    #     batch_size=32,
+    #     max_length=512,
+    #     taxonomy_format="full",
+    #     resolutions=("genus",),
+    # ),
+    # mll.MGM2Embedding(
+    #     model="small",
+    #     embedding_strategy="cls",
+    #     batch_size=64,
+    #     top_k_otus=768,
+    #     resolutions=("species",),
+    # ),
 )
 
 MODELS = (
-    # (
-    #     "CNB_GroupedRankCal",
-    #     mll.GroupedRankCalibratedClassifier(
-    #         estimator=ComplementNB(
-    #             alpha=1.6e-7,
-    #             norm=True,
-    #             force_alpha=True,
-    #         ),
-    #         n_splits=3,
-    #         C=0.1,
-    #         random_state=42,
-    #         class_weight="balanced",
-    #     ),
-    # ),
     (
         "ET_400_leaf5",
         ExtraTreesClassifier(
@@ -150,22 +162,21 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
-    # (
-    #     "TabPFN_Auto",
-    #     mll.TabPFNClassifier(
-    #         n_estimators='auto',
-    #         auto_scale_n_estimators=True,
-    #         model_path='auto',
-    #         device='auto',
-    #         inference_precision='auto',
-    #         fit_mode='fit_preprocessors',
-    #         memory_saving_mode='auto',
-    #         keep_cache_on_device=True,
-    #         random_state=42,
-    #         n_preprocessing_jobs=1,
-    #     ),
-    # ),
-
+    (
+        "TabPFN_Auto",
+        mll.TabPFNClassifier(
+            n_estimators="auto",
+            auto_scale_n_estimators=True,
+            model_path="auto",
+            device="auto",
+            inference_precision="auto",
+            fit_mode="fit_preprocessors",
+            memory_saving_mode="auto",
+            keep_cache_on_device=True,
+            random_state=42,
+            n_preprocessing_jobs=1,
+        ),
+    ),
 )
 
 GATE = mll.QualificationGate(
@@ -176,42 +187,14 @@ GATE = mll.QualificationGate(
 
 ENSEMBLE = mll.Ensemble(
     max_sizes=(10,),
-    selection_strategies=(
-        # "top_k",
-        # "best_per_resolution",
-        # "best_per_learner_type",
-        # "quality_diversity",
-        # "diversity",
-        # "performance_diversity",
-        "caruana",
-        # "bagged_caruana",
-        # "caruana_multistart",
-        # "beam",
-        # "super_learner",
-        # "adaptive_super_learner",
-        # "safe_super_learner",
-        # "regularized_super_learner",
-    ),
+    selection_strategies=("caruana",),
     aggregation_strategies=(
-        # "mean_proba",
-        # "weighted_mean_proba",
         "median_proba",
         "trimmed_mean_proba",
-        # "trimmed_mean",
-        # "geometric_mean_proba",
-        # "logit_mean",
-        # "logistic_stacking",
-        # "elastic_net_stacking",
-        # "cohort_robust_stacking",
-        # "rf_stacking",
-        # "extra_trees_stacking",
-        # "boosted_stacking",
-        # "gated_stacking",
-        # "hierarchical_dirichlet_stacking",
-        # "temperature_scaled_mean_proba",
-        # "sigmoid_calibrated_mean_proba",
     ),
     optimize_metric="log_loss",
+    # Include any previously evaluated candidates not declared in this script.
+    include_inactive=True,
 )
 
 EXPLAINABILITY = mll.Explainability(

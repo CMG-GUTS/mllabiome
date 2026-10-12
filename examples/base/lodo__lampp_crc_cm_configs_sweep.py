@@ -6,12 +6,14 @@ from catboost import CatBoostClassifier
 from curated_microbiota.collections import lampp_crc
 from lightgbm import LGBMClassifier
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from xgboost import XGBClassifier
 
 from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
 TITLE = "LAMPP colorectal cancer LODO mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "LAMPP-CRC-LODO-CM-official-v3"
+EXPERIMENT_DIR = HERE / "runs" / "LAMPP-CRC-LODO-CM-base"
 
 DATA = lampp_crc.mllabiome()
 
@@ -36,25 +38,54 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
+    ("phylum", ("phylum",)),
+    ("class", ("class",)),
+    ("order", ("order",)),
+    ("family", ("family",)),
+    ("genus", ("genus",)),
     ("species", ("species",)),
     ("strain", ("strain",)),
     ("raw", ("all",)),
 )
 
-COUNT_TRANSFORMATIONS = (mll.Transformation("presence_absence"),)
+COUNT_TRANSFORMATIONS = (
+    mll.Transformation("identity"),
+    mll.Transformation("presence_absence"),
+    mll.Transformation(
+        "arcsine_sqrt",
+        composition_scope="rank-wise",
+    ),
+    mll.Transformation(
+        "relative_abundance",
+        composition_scope="rank-wise",
+    ),
+    mll.Transformation(
+        "log10",
+        composition_scope="rank-wise",
+    ),
+)
 
 MODELS = (
+    # baselines
+    # (
+    #     "Baseline_RF",
+    #     RandomForestClassifier(
+    #         n_estimators=1000,
+    #         min_samples_leaf=5,
+    #         random_state=42,
+    #         n_jobs=1,
+    #     ),
+    # ),
+    # (
+    #     "SIAMCAT",
+    #     mll.SIAMCATClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # # default standard models
     (
-        "CB_i300_d3",
+        "CB_default",
         CatBoostClassifier(
-            iterations=300,
-            learning_rate=0.04,
-            depth=3,
-            l2_leaf_reg=10,
-            random_strength=1.0,
-            rsm=0.60,
-            loss_function="Logloss",
-            eval_metric="Logloss",
             random_seed=42,
             thread_count=1,
             verbose=False,
@@ -62,36 +93,49 @@ MODELS = (
         ),
     ),
     (
-        "RF_82_msl4",
+        "RF_default",
         RandomForestClassifier(
-            n_estimators=82,
-            max_features=52,
-            min_samples_leaf=4,
-            min_samples_split=2,
-            class_weight="balanced_subsample",
-            criterion="gini",
-            bootstrap=True,
             random_state=42,
         ),
     ),
     (
-        "LightGBM_e500",
+        "LightGBM_default",
         LGBMClassifier(
-            objective="binary",
-            n_estimators=500,
-            learning_rate=0.03,
-            num_leaves=7,
-            min_child_samples=40,
-            reg_lambda=30.0,
-            reg_alpha=1.0,
-            colsample_bytree=0.80,
-            subsample=0.80,
-            subsample_freq=1,
             random_state=42,
             n_jobs=1,
             verbosity=-1,
         ),
     ),
+    (
+        "XGB_default",
+        XGBClassifier(
+            random_state=42,
+            n_jobs=1,
+            verbosity=0,
+            eval_metric="logloss",
+        ),
+    ),
+    (
+        "LR_default",
+        LogisticRegression(
+            random_state=42,
+        ),
+    ),
+    # (
+    #     "TabPFN",
+    #     mll.TabPFNClassifier(
+    #         n_estimators="auto",
+    #         auto_scale_n_estimators=True,
+    #         model_path="auto",
+    #         device="auto",
+    #         inference_precision="auto",
+    #         fit_mode="fit_preprocessors",
+    #         memory_saving_mode="auto",
+    #         keep_cache_on_device=True,
+    #         random_state=42,
+    #         n_preprocessing_jobs=1,
+    #     ),
+    # )
 )
 
 
@@ -102,6 +146,7 @@ GATE = mll.QualificationGate(
 )
 
 ENSEMBLE = mll.Ensemble(
+    include_inactive=True,
     max_sizes=(10,),
     selection_strategies=(
         "top_k",

@@ -235,7 +235,7 @@ class Ensemble:
     include_model_ensembles: bool = True
     late_integrations: tuple[Integration, ...] = ()
 
-    include_inactive: bool = False
+    include_inactive: bool = True
 
     threshold_score: float = 0.30
     threshold_max_members: int = 50
@@ -1034,6 +1034,39 @@ class Sweep:
 
     def __post_init__(self) -> None:
         validate_model_specs(self.learners, context="Sweep.learners / MODELS")
+        from .resolutions import _parse_resolution
+        from .siamcat import SIAMCATClassifier
+        from .transformations import ScopedTransformation
+
+        siamcat_names = tuple(
+            str(name)
+            for name, estimator in self.learners
+            if isinstance(estimator, SIAMCATClassifier)
+        )
+        if siamcat_names and not self.uses_modalities:
+            original_resolutions = tuple(self.resolutions)
+            existing_names = tuple(
+                dict.fromkeys(
+                    _parse_resolution(item)[0] for item in original_resolutions
+                )
+            )
+            if "species" not in existing_names:
+                self.resolutions = (
+                    *original_resolutions,
+                    ("species", ("species",)),
+                )
+            self.count_transformations = (
+                *tuple(self.count_transformations),
+                ScopedTransformation("relative_abundance", resolutions=("species",)),
+            )
+            restricted = dict(self.learner_resolutions)
+            if "species" not in existing_names:
+                for name, _ in self.learners:
+                    if str(name) not in siamcat_names and str(name) not in restricted:
+                        restricted[str(name)] = existing_names
+            for name in siamcat_names:
+                restricted[name] = ("species",)
+            self.learner_resolutions = restricted
         late_integrations = tuple(
             item
             for item in self.integrations

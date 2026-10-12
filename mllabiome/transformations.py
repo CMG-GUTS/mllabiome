@@ -154,6 +154,9 @@ class PrevalenceFilter:
 TRANSFORMATION_LABELS: tuple[TransformationLabel, ...] = (
     TransformationLabel("identity", ("raw", "unchanged", "identity")),
     TransformationLabel(
+        "qwen3_ollama_embedding", ("qwen_embedding",), "foundation_embedding"
+    ),
+    TransformationLabel(
         "relative_abundance", ("none", "ra", "relative", "tss", "relative abundance")
     ),
     TransformationLabel(
@@ -1081,6 +1084,8 @@ class Transform:
     __slots__ = (
         "_fn",
         "_is_bw",
+        "_options",
+        "resolutions",
         "composition_scope",
         "feature_filter",
         "identity",
@@ -1095,6 +1100,7 @@ class Transform:
         abbreviation: str | None = None,
         composition_scope: str | None = None,
         feature_filter: PrevalenceFilter | None = None,
+        **options: Any,
     ) -> None:
         requested = str(name).strip()
         info = transformation_label(requested)
@@ -1115,9 +1121,29 @@ class Transform:
         ):
             raise TypeError("feature_filter must be a PrevalenceFilter or None.")
         self.feature_filter = None if feature_filter is None else feature_filter.fresh()
+        self._options = dict(options)
+        self.resolutions = None
         self.identity = _transformation_identity(
             self.name, self.composition_scope, self.feature_filter
         )
+        if self.name == "qwen3_ollama_embedding":
+            if (
+                fn is not None
+                or feature_filter is not None
+                or composition_scope not in (None, "joint")
+            ):
+                raise ValueError(
+                    "Qwen3 embedding is a built-in transformation without a custom function, filter, or composition scope."
+                )
+            from .foundation_models import QwenOllamaEmbedding
+
+            implementation = QwenOllamaEmbedding(**self._options)
+            self.identity = implementation.identity
+            self.resolutions = implementation.resolutions
+        elif self._options:
+            raise TypeError(
+                f"Transformation {self.name!r} does not accept parameters {sorted(self._options)!r}."
+            )
         self._fn = fn
         self._is_bw = False
 
@@ -1438,6 +1464,10 @@ class CountTransformationAdapter:
                 composition_scope="joint",
             )
         if isinstance(self.spec, Transform):
+            if self.spec.name == "qwen3_ollama_embedding":
+                from .foundation_models import QwenOllamaEmbedding
+
+                return QwenOllamaEmbedding(**self.spec._options)
             if self.spec._fn is None:
                 return CountTransformation(
                     self.spec.name,

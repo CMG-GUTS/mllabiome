@@ -311,13 +311,11 @@ def _comparator_configs(configs: pd.DataFrame, strategy: str) -> pd.DataFrame:
         siamcat |= learner_class.str.endswith("SIAMCATClassifier", na=False)
         eligible = frame[
             siamcat
-            & transform.str.fullmatch("identity", case=False).fillna(False)
-            & resolution.str.fullmatch("raw", case=False).fillna(False)
+            & transform.str.fullmatch(
+                r"relative_abundance@rank-wise", case=False
+            ).fillna(False)
+            & resolution.str.fullmatch("species", case=False).fillna(False)
         ].copy()
-        if "active" in eligible.columns:
-            active = pd.to_numeric(eligible["active"], errors="coerce").eq(1)
-            if active.any():
-                eligible = eligible.loc[active].copy()
         return eligible
     raise ValueError(f"Unsupported comparator strategy {strategy!r}.")
 

@@ -27,15 +27,25 @@ def _candidates():
     )
 
 
-def test_siamcat_is_raw_identity_once_with_aliased_resolutions():
+def test_siamcat_is_species_relative_abundance_once_with_duplicate_resolutions():
     configurations = build_sweep_configs(
-        (("raw", ("raw",)), ("raw", ("all",)), ("genus", ("genus",))),
-        (mll.Transformation("identity"), mll.Transformation("arcsine_sqrt")),
+        (
+            ("raw", ("raw",)),
+            ("raw", ("all",)),
+            ("genus", ("genus",)),
+            ("species", ("species",)),
+            ("species", ("species",)),
+        ),
+        (
+            mll.Transformation("identity"),
+            mll.Transformation("arcsine_sqrt"),
+            mll.Transformation("relative_abundance"),
+        ),
         _candidates(),
     )
     siamcat = configurations[configurations.learner.eq("SIAMCAT_Default")]
     assert siamcat[["resolution", "count_transformation"]].values.tolist() == [
-        ["raw", "identity"]
+        ["species", "relative_abundance@rank-wise"]
     ]
     assert configurations.config_id.is_unique
     assert "RF_alias" not in configurations.learner.tolist()
@@ -64,14 +74,15 @@ def test_naive_bayes_requires_compatible_representation():
 
 def test_resolution_restrictions_and_unknown_names():
     configurations = build_sweep_configs(
-        (("raw", ("all",)), ("genus", ("genus",))),
-        (mll.Transformation("identity"),),
+        (("raw", ("all",)), ("genus", ("genus",)), ("species", ("species",))),
+        (mll.Transformation("identity"), mll.Transformation("relative_abundance")),
         _candidates(),
         learner_resolutions={
             name: ("genus",) for name, _ in _candidates() if name != "SIAMCAT_Default"
         },
     )
-    assert set(configurations[configurations.resolution.eq("raw")].learner) == {
+    assert configurations[configurations.resolution.eq("raw")].empty
+    assert set(configurations[configurations.resolution.eq("species")].learner) == {
         "SIAMCAT_Default"
     }
     with pytest.raises(ValueError, match="Unknown learner_resolutions"):
@@ -100,12 +111,23 @@ def test_scheduler_only_queues_eligible_unique_pairs():
         ("SIAMCAT_Default", mll.SIAMCATClassifier()),
         ("RF", RandomForestClassifier(n_estimators=5, random_state=42)),
     )
-    resolutions = (("raw", ("all",)), ("raw", ("all",)), ("genus", ("genus",)))
+    resolutions = (
+        ("raw", ("all",)),
+        ("raw", ("all",)),
+        ("genus", ("genus",)),
+        ("species", ("species",)),
+        ("species", ("species",)),
+    )
     transforms = (
         mll.Transformation("identity"),
         mll.Transformation("presence_absence"),
+        mll.ScopedTransformation("relative_abundance", resolutions=("species",)),
     )
-    blocks = {"raw": (("all", (0, 1)),), "genus": (("genus", (0, 1)),)}
+    blocks = {
+        "raw": (("all", (0, 1)),),
+        "genus": (("genus", (0, 1)),),
+        "species": (("species", (0, 1)),),
+    }
     configurations = build_sweep_configs(
         resolutions,
         transforms,

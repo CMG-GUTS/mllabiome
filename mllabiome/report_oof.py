@@ -1439,6 +1439,9 @@ def _human_token(value: Any) -> str:
 def _mpma_b_composition(
     root: Path, learner_labels: dict[str, str] | None = None
 ) -> pd.DataFrame:
+
+    if not (root / "final_models.json").exists():
+        return pd.DataFrame()
     final = load_final_models(root)["MPMA-B"]
     representation = final.get("resolution", final.get("levels", ""))
     return pd.DataFrame(

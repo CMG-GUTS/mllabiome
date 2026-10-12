@@ -32,7 +32,7 @@ def _eligible_config_ids(configs: pd.DataFrame, plan: Any) -> set[str]:
     if configs.empty or "config_id" not in configs.columns:
         return set()
     frame = configs.copy()
-    if not bool(getattr(plan, "include_inactive", False)) and "active" in frame.columns:
+    if not bool(getattr(plan, "include_inactive", True)) and "active" in frame.columns:
         active = pd.to_numeric(frame["active"], errors="coerce").fillna(0).astype(int)
         frame = frame[active.eq(1)]
     mask = pd.Series(False, index=frame.index, dtype=bool)
@@ -200,7 +200,7 @@ def run_compute_accounting(
                 continue
             overhead = {"cpu_core_hours": 0.0, "wall_time_s": 0.0, "peak_rss_gib": 0.0}
             scope = (
-                "SIAMCAT raw identity comparator"
+                "SIAMCAT species relative-abundance comparator"
                 if strategy == "SIAMCAT"
                 else "prespecified comparator family + outer-fold inner-validation selection"
             )

@@ -622,6 +622,12 @@ def _prepare_group_cv_estimator(
     nested_under_cv: bool = False,
     allow_pipeline: bool = True,
 ) -> None:
+    if isinstance(estimator, GroupAwareCalibratedClassifier):
+        from .siamcat import SIAMCATClassifier
+
+        if isinstance(estimator.estimator, SIAMCATClassifier):
+            estimator._splits(X, y, groups)
+            return
     if _hidden_internal_cv(estimator):
         if isinstance(estimator, SVC):
             raise ValueError(

@@ -36,6 +36,8 @@ from .foundation_models import (
     MGM2_REFERENCE,
     MGM_REFERENCE,
     WAYPOINT_REFERENCE,
+    QWEN3_EMBEDDING_REFERENCE,
+    QwenOllamaEmbedding,
     FoundationModelDependencyError,
     FoundationModelReference,
     MBEmbed,
@@ -46,6 +48,7 @@ from .foundation_models import (
 )
 from .integrations import IntegratedCoordinate, Integration, IntegrationModel
 from .learners import FLAMLClassifier, build_learner, validate_model_specs
+from .ollama_decision import OllamaDecisionClassifier
 from .ridge_softmax import RidgeSoftmaxClassifier
 from .rank_calibration import GroupedRankCalibratedClassifier
 from .metrics import compute_metrics, compute_regression_metrics
@@ -128,6 +131,7 @@ __all__ = [
     "ScopedTransformation",
     "QualificationGate",
     "Robustness",
+    "OllamaDecisionClassifier",
     "RidgeSoftmaxClassifier",
     "GroupedRankCalibratedClassifier",
     "SIAMCATClassifier",
@@ -141,6 +145,8 @@ __all__ = [
     "TransformationCoordinate",
     "TransformationLabel",
     "WAYPOINT_REFERENCE",
+    "QWEN3_EMBEDDING_REFERENCE",
+    "QwenOllamaEmbedding",
     "WaypointEmbedding",
     "build_count_transformations",
     "build_learner",

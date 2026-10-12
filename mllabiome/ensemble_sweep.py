@@ -84,7 +84,7 @@ def _eligible_config_ids(configs: pd.DataFrame, ensemble: Ensemble) -> set[str]:
         return set()
     frame = configs.copy()
     if (
-        not bool(getattr(ensemble, "include_inactive", False))
+        not bool(getattr(ensemble, "include_inactive", True))
         and "active" in frame.columns
     ):
         active = pd.to_numeric(frame["active"], errors="coerce").fillna(0).astype(int)

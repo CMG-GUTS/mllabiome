@@ -15,6 +15,8 @@ import sys
 import tempfile
 import types
 import urllib.request
+import urllib.error
+import urllib.parse
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,8 +95,26 @@ class FoundationModelDependencyError(ImportError):
     pass
 
 
+QWEN3_EMBEDDING_REFERENCE = FoundationModelReference(
+    key="qwen3_ollama",
+    title="Qwen3 Embedding",
+    authors="Qwen Team",
+    year=2025,
+    venue="arXiv / open-weight model release",
+    doi="",
+    software_url="https://github.com/QwenLM/Qwen3-Embedding",
+    package="Ollama (local runtime)",
+)
+
+
 def foundation_model_references() -> tuple[FoundationModelReference, ...]:
-    return (WAYPOINT_REFERENCE, MGM_REFERENCE, MBEMBED_REFERENCE, MGM2_REFERENCE)
+    return (
+        WAYPOINT_REFERENCE,
+        MGM_REFERENCE,
+        MBEMBED_REFERENCE,
+        MGM2_REFERENCE,
+        QWEN3_EMBEDDING_REFERENCE,
+    )
 
 
 def _mgm_package_root() -> Path:
@@ -1914,3 +1934,304 @@ class MGM2Embedding:
 
     def project_model_input(self, X: np.ndarray) -> np.ndarray:
         return _project_embedding_input(X, self.n_features_out_, "MGM2")
+
+
+class _NoLocalRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> None:
+        raise ValueError("Local Ollama requests must not follow redirects.")
+
+
+class QwenOllamaEmbedding:
+    reference = QWEN3_EMBEDDING_REFERENCE
+    foundation_model = True
+    name = "qwen3_ollama_embedding"
+    composition_scope = "joint"
+    feature_filter = None
+    _MODEL_WIDTHS = {"0.6b": 1024, "4b": 2560, "8b": 4096}
+    _SERIALIZATION_VERSION = "microbiome-text-v1"
+
+    def __init__(
+        self,
+        model: str = "qwen3-embedding:0.6b",
+        *,
+        representation: str = "abundance",
+        top_k: int = 100,
+        presence_threshold_pct: float = 0.01,
+        dimensions: int | None = None,
+        batch_size: int = 8,
+        base_url: str = "http://127.0.0.1:11434",
+        timeout: float = 120.0,
+        resolutions: Sequence[str] | str | None = ("genus",),
+        cache: bool = True,
+        cache_dir: str | os.PathLike[str] | None = None,
+    ) -> None:
+        match = re.fullmatch(
+            r"qwen3-embedding:(0\.6b|4b|8b)(?:-[A-Za-z0-9_]+)*", str(model)
+        )
+        if match is None:
+            raise ValueError(
+                "Use a local explicit Qwen model tag, e.g. 'qwen3-embedding:0.6b' or 'qwen3-embedding:4b'."
+            )
+        if representation not in {"abundance", "presence_absence"}:
+            raise ValueError(
+                "representation must be 'abundance' or 'presence_absence'."
+            )
+        if int(top_k) < 1 or int(batch_size) < 1:
+            raise ValueError("top_k and batch_size must be positive.")
+        if not np.isfinite(presence_threshold_pct) or not (
+            0 <= presence_threshold_pct < 100
+        ):
+            raise ValueError("presence_threshold_pct must be within [0, 100).")
+        max_width = self._MODEL_WIDTHS[match.group(1)]
+        if dimensions is not None and not (1 <= int(dimensions) <= max_width):
+            raise ValueError(
+                f"dimensions must be in [1, {max_width}] for model {model!r}."
+            )
+        url = urllib.parse.urlsplit(str(base_url))
+        if (
+            url.scheme != "http"
+            or url.hostname != "127.0.0.1"
+            or url.username is not None
+            or url.password is not None
+            or url.path not in {"", "/"}
+            or url.query
+            or url.fragment
+            or url.port is None
+            or not (1 <= url.port <= 65535)
+        ):
+            raise ValueError(
+                "base_url must be an explicit local HTTP endpoint, e.g. http://127.0.0.1:11434"
+            )
+        if not np.isfinite(timeout) or float(timeout) <= 0:
+            raise ValueError("timeout must be positive and finite.")
+        self.model = str(model)
+        self.representation = str(representation)
+        self.top_k = int(top_k)
+        self.presence_threshold_pct = float(presence_threshold_pct)
+        self.dimensions = None if dimensions is None else int(dimensions)
+        self.batch_size = int(batch_size)
+        self.base_url = str(base_url).rstrip("/")
+        self.timeout = float(timeout)
+        self.resolutions = _normalise_resolutions(resolutions)
+        self.cache = bool(cache)
+        self.cache_dir = None if cache_dir is None else str(cache_dir)
+        self.identity = _identity(
+            "qwen3_ollama_" + _safe_fragment(self.model),
+            (
+                self.model,
+                self.representation,
+                self.top_k,
+                self.presence_threshold_pct,
+                self.dimensions,
+                self._SERIALIZATION_VERSION,
+                self.resolutions,
+            ),
+        )
+        self.feature_names_: list[str] | None = None
+        self.n_features_in_: int | None = None
+        self.n_features_out_: int | None = None
+        self._panel_indices: tuple[int, ...] = ()
+
+    def fresh(self) -> QwenOllamaEmbedding:
+        return type(self)(
+            self.model,
+            representation=self.representation,
+            top_k=self.top_k,
+            presence_threshold_pct=self.presence_threshold_pct,
+            dimensions=self.dimensions,
+            batch_size=self.batch_size,
+            base_url=self.base_url,
+            timeout=self.timeout,
+            resolutions=self.resolutions,
+            cache=self.cache,
+            cache_dir=self.cache_dir,
+        )
+
+    def bind_schema(
+        self, feature_names: Sequence[str], *, feature_blocks: Any = None
+    ) -> QwenOllamaEmbedding:
+        self.feature_names_ = [str(name) for name in feature_names]
+        return self
+
+    def fit(self, X: np.ndarray) -> QwenOllamaEmbedding:
+        arr = _validate_matrix(X)
+        names = _feature_names(self.feature_names_, arr.shape[1])
+        if self.representation == "presence_absence":
+            totals = arr.sum(axis=1, keepdims=True)
+            relative_pct = np.divide(
+                100 * arr, totals, out=np.zeros_like(arr), where=totals > 0
+            )
+            prevalence = (relative_pct > self.presence_threshold_pct).sum(axis=0)
+            ranked = np.lexsort((np.asarray(names), -prevalence))
+            self._panel_indices = tuple(int(i) for i in ranked[: self.top_k])
+        else:
+            self._panel_indices = ()
+        self.n_features_in_ = int(arr.shape[1])
+        self.n_features_out_ = (
+            self.dimensions
+            or self._MODEL_WIDTHS[
+                re.fullmatch(r"qwen3-embedding:(0\.6b|4b|8b).*", self.model).group(1)
+            ]
+        )
+        return self
+
+    def _request_json(
+        self, path: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        data = None if payload is None else json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="GET" if data is None else "POST",
+        )
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), _NoLocalRedirect()
+        )
+        try:
+            with opener.open(request, timeout=self.timeout) as response:
+                result = json.load(response)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(
+                f"Local Ollama endpoint {self.base_url} is unavailable or rejected the model {self.model!r}: {exc}"
+            ) from exc
+        if not isinstance(result, dict):
+            raise RuntimeError("Ollama returned a non-JSON-object response.")
+        return result
+
+    def _local_model_digest(self) -> str:
+        models = self._request_json("/api/tags").get("models", [])
+        for entry in models:
+            if entry.get("name") == self.model or entry.get("model") == self.model:
+                digest = entry.get("digest")
+                if not isinstance(digest, str) or not digest:
+                    raise RuntimeError(
+                        "Local Ollama model has no digest; refusing unsafe embedding cache."
+                    )
+                return digest
+        raise RuntimeError(
+            f"Model {self.model!r} is not installed locally. First run: ollama pull {self.model}"
+        )
+
+    def runtime_provenance(self) -> dict[str, Any]:
+        return {
+            "inference": "local-ollama-/api/embed",
+            "serialization": self._SERIALIZATION_VERSION,
+            "base_url": self.base_url,
+            "model": self.model,
+            "model_digest": "resolved-at-transform",
+        }
+
+    def _runtime_signature(self) -> dict[str, Any]:
+        return {
+            **self.runtime_provenance(),
+            "model_digest": self._local_model_digest(),
+            "representation": self.representation,
+            "dimensions": self.dimensions,
+            "panel": [self.feature_names_[i] for i in self._panel_indices],
+        }
+
+    def _render(self, row: np.ndarray) -> str:
+        if self.feature_names_ is None:
+            raise RuntimeError(
+                "QwenEmbedding schema is missing taxonomic feature names."
+            )
+        total = float(row.sum())
+        relative_pct = 100 * row / total if total > 0 else np.zeros_like(row)
+        if self.representation == "abundance":
+            ordered = np.lexsort((np.asarray(self.feature_names_), -relative_pct))
+            selected = [int(i) for i in ordered if relative_pct[i] > 0][: self.top_k]
+            entries = [
+                f"{self.feature_names_[i]}: {relative_pct[i]:.8g}%" for i in selected
+            ]
+            if not entries:
+                entries = ["No observed taxa."]
+            return (
+                "Gut microbiome taxonomic profile. Relative abundance as percentage of total measured abundance. "
+                "Top observed taxa, sorted by decreasing abundance.\n"
+                + "\n".join(entries)
+            )
+        entries = [
+            f"{self.feature_names_[i]}: {'present' if relative_pct[i] > self.presence_threshold_pct else 'absent'}"
+            for i in self._panel_indices
+        ]
+        return (
+            "Gut microbiome taxonomic detection profile. "
+            f"Present means relative abundance > {self.presence_threshold_pct:.8g}% of total measured abundance. "
+            "A fixed training-selected taxon panel, including absent taxa.\n"
+            + "\n".join(entries)
+        )
+
+    def _embed_uncached(self, arr: np.ndarray) -> np.ndarray:
+        if arr.shape[0] == 0:
+            return np.empty((0, int(self.n_features_out_)), dtype=np.float64)
+        output: list[np.ndarray] = []
+        for start in range(0, len(arr), self.batch_size):
+            texts = [self._render(row) for row in arr[start : start + self.batch_size]]
+            payload: dict[str, Any] = {
+                "model": self.model,
+                "input": texts,
+                "truncate": False,
+            }
+            if self.dimensions is not None:
+                payload["dimensions"] = self.dimensions
+            result = self._request_json("/api/embed", payload)
+            vectors = np.asarray(result.get("embeddings", []), dtype=np.float64)
+            expected = (len(texts), int(self.n_features_out_))
+            if vectors.shape != expected or not np.all(np.isfinite(vectors)):
+                raise RuntimeError(
+                    f"Invalid Qwen embedding output {vectors.shape}; expected {expected} finite values."
+                )
+            output.append(vectors)
+        return np.vstack(output)
+
+    def apply(self, X: np.ndarray) -> np.ndarray:
+        arr = _validate_matrix(X)
+        if self.n_features_in_ is None or self.n_features_out_ is None:
+            raise RuntimeError("QwenOllamaEmbedding has not been fitted.")
+        if arr.shape[1] != self.n_features_in_:
+            raise ValueError(
+                "Qwen embedding input feature count differs from fitted schema."
+            )
+        names = _feature_names(self.feature_names_, arr.shape[1])
+        return _cached_rows(
+            family="qwen3_ollama",
+            identity=self.identity,
+            runtime_signature=self._runtime_signature() if self.cache else {},
+            feature_names=names,
+            X=arr,
+            width=self.n_features_out_,
+            cache_enabled=self.cache,
+            cache_dir=self.cache_dir,
+            compute=self._embed_uncached,
+        )
+
+    def apply_fitted_pair(
+        self, X_tr: np.ndarray, X_te: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        train = _validate_matrix(X_tr)
+        test = _validate_matrix(X_te)
+        both = self.apply(np.concatenate((train, test), axis=0))
+        return both[: len(train)], both[len(train) :]
+
+    def get_feature_names_out(
+        self, input_features: Sequence[str] | None = None
+    ) -> list[str]:
+        if self.n_features_out_ is None:
+            raise RuntimeError("QwenOllamaEmbedding has not been fitted.")
+        return [f"qwen3_dim_{i}" for i in range(self.n_features_out_)]
+
+    def coordinate_metadata(
+        self, input_features: Sequence[str] | None = None
+    ) -> list[TransformationCoordinate]:
+        if self.n_features_out_ is None:
+            raise RuntimeError("QwenOllamaEmbedding has not been fitted.")
+        return _coordinate_metadata("qwen3", self.n_features_out_)
+
+    def perturbation_geometry(self) -> str:
+        return "foundation_embedding"
+
+    def project_model_input(self, X: np.ndarray) -> np.ndarray:
+        return _project_embedding_input(X, self.n_features_out_, "Qwen3")

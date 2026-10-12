@@ -128,7 +128,59 @@ def _resolution_dataset():
 
 
 def test_every_builtin_transformation_has_an_explicit_correctness_contract():
-    assert {label.key for label in TRANSFORMATION_LABELS} == EXPECTED_TRANSFORMATIONS
+    assert {label.key for label in TRANSFORMATION_LABELS} == (
+        EXPECTED_TRANSFORMATIONS | {"qwen3_ollama_embedding"}
+    )
+    qwen_labels = [
+        label
+        for label in TRANSFORMATION_LABELS
+        if label.key == "qwen3_ollama_embedding"
+    ]
+    assert len(qwen_labels) == 1
+    assert qwen_labels[0].category == "foundation_embedding"
+
+
+def test_qwen3_embedding_contract_uses_local_mock_and_training_only_schema(monkeypatch):
+    from mllabiome.foundation_models import QwenOllamaEmbedding
+
+    train = np.array([[8.0, 1.0, 0.0], [0.0, 5.0, 1.0]])
+    test = np.array([[2.0, 0.0, 6.0]])
+    requested = []
+
+    def fake_request(self, path, payload=None):
+        assert path == "/api/embed"
+        assert payload["model"] == "qwen3-embedding:0.6b"
+        assert payload["dimensions"] == 3
+        assert payload["truncate"] is False
+        requested.extend(payload["input"])
+        return {
+            "embeddings": [[float(len(text)), 2.0, 3.0] for text in payload["input"]]
+        }
+
+    monkeypatch.setattr(QwenOllamaEmbedding, "_request_json", fake_request)
+    spec = Transformation("qwen3_ollama_embedding", dimensions=3, top_k=2, cache=False)
+    adapter = CountTransformationAdapter(
+        spec.identity, spec, feature_names=["a", "b", "c"]
+    )
+    train_out, test_out = adapter.apply_pair(train, test)
+    assert train_out.shape == (2, 3)
+    assert test_out.shape == (1, 3)
+    assert np.isfinite(train_out).all() and np.isfinite(test_out).all()
+    assert adapter.perturbation_geometry() == "foundation_embedding"
+    assert adapter.get_feature_names_out() == [
+        "qwen3_dim_0",
+        "qwen3_dim_1",
+        "qwen3_dim_2",
+    ]
+    assert len(requested) == 3
+    assert "a: 88.888889%" in requested[0]
+    assert "b: 11.111111%" in requested[0]
+    assert "c: 75%" in requested[2]
+    assert "a: 25%" in requested[2]
+
+    first = adapter.apply(test)
+    joint = adapter.apply(np.vstack((test, np.array([[50.0, 0.0, 0.0]]))))
+    np.testing.assert_array_equal(first[0], joint[0])
 
 
 @pytest.mark.parametrize(

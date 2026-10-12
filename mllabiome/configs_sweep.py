@@ -485,8 +485,15 @@ def _scientifically_compatible_config(
             continue
         break
     learner_class = type(estimator).__name__
+    if learner_class == "OllamaDecisionClassifier":
+        representation = str(getattr(estimator, "representation", "abundance"))
+        return transformation in (
+            {"identity", "relative_abundance"}
+            if representation == "abundance"
+            else {"identity", "presence_absence"}
+        )
     if learner_class == "SIAMCATClassifier":
-        return transformation == "identity" and resolution == "raw"
+        return transformation == "relative_abundance" and resolution == "species"
     if learner_class == "BernoulliNB":
         return transformation == "presence_absence"
     if learner_class in {"MultinomialNB", "ComplementNB"}:
@@ -777,6 +784,8 @@ def _fit_classification_split_fold(
     fitted = transformation_factory()
     X_fit_transformed, X_eval_transformed = fitted.apply_pair(X_fit, X_eval)
     estimator = configure_estimator_threads(learner_factory(), threads_per_worker)
+    if callable(getattr(estimator, "bind_schema", None)):
+        estimator.bind_schema(fitted.get_feature_names_out(fold_names))
     fit_classifier(
         estimator,
         X_fit_transformed,
@@ -3264,6 +3273,10 @@ def _foundation_model_manifest_entries(items: Sequence[Any]) -> list[dict[str, A
     entries: list[dict[str, Any]] = []
     for item in items:
         spec = item[1] if isinstance(item, tuple) and len(item) == 2 else item
+        if getattr(spec, "name", None) == "qwen3_ollama_embedding":
+            from .foundation_models import QwenOllamaEmbedding
+
+            spec = QwenOllamaEmbedding(**spec._options)
         reference = getattr(spec, "reference", None)
         if reference is None:
             continue
@@ -3282,6 +3295,12 @@ def _foundation_model_manifest_entries(items: Sequence[Any]) -> list[dict[str, A
             "pooling",
             "embedding_strategy",
             "batch_size",
+            "base_url",
+            "representation",
+            "top_k",
+            "presence_threshold_pct",
+            "dimensions",
+            "timeout",
             "max_length",
             "top_k_otus",
             "device",

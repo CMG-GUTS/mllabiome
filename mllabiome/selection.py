@@ -24,7 +24,7 @@ def _eligible_config_ids(configs: pd.DataFrame, plan: Any | None = None) -> set[
         return set()
     frame = configs.copy()
     include_inactive = (
-        bool(getattr(plan, "include_inactive", False)) if plan is not None else False
+        bool(getattr(plan, "include_inactive", True)) if plan is not None else True
     )
     if not include_inactive and "active" in frame.columns:
         active = pd.to_numeric(frame["active"], errors="coerce").fillna(0).astype(int)

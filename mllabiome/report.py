@@ -1542,8 +1542,10 @@ def _strategy_rows(
         siamcat_mask |= learner_class.str.endswith("SIAMCATClassifier", na=False)
         siamcat = _pick(
             siamcat_mask
-            & transform.str.fullmatch("identity", case=False).fillna(False)
-            & resolution.str.fullmatch("raw", case=False).fillna(False)
+            & transform.str.fullmatch(
+                r"relative_abundance@rank-wise", case=False
+            ).fillna(False)
+            & resolution.str.fullmatch("species", case=False).fillna(False)
             & base["config_id"].astype(str).isin(siamcat_ids)
         )
 
