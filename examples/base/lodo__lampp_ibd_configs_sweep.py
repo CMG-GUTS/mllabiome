@@ -2,20 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pandas as pd
 from catboost import CatBoostClassifier
 from curated_microbiota.collections import lampp_ibd
 from lightgbm import LGBMClassifier
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.ensemble import (
-    ExtraTreesClassifier,
-    GradientBoostingClassifier,
     RandomForestClassifier,
 )
 from sklearn.linear_model import LogisticRegression
-from sklearn.neural_network import MLPClassifier
-from sklearn.svm import SVC, LinearSVC
 from xgboost import XGBClassifier
 
 from mllabiome import mll
