@@ -49,121 +49,88 @@ EXPLORE = mll.Explore(
 
 
 RESOLUTIONS = (
-    # ("raw", ("raw",)),
-    ("genus", ("genus",)),
+    # ("phylum", ("phylum",)),
+    # ("class", ("class",)),
+    # ("order", ("order",)),
+    # ("family", ("family",)),
+    # ("genus", ("genus",)),
     # ("species", ("species",)),
-    # ("strain", ("strain",)),
-    # ("order-genus", ("order", "family", "genus")),
-    # ("genus-species", ("genus", "species")),
+    ("strain", ("strain",)),
+    ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
     # mll.Transformation("presence_absence"),
     # mll.Transformation("identity"),
-    # mll.Transformation("clr", composition_scope="joint"),
-    # mll.Transformation("yeo_johnson", composition_scope="joint"),
-    # mll.Transformation("log10", composition_scope="rank-wise"),
-    # Foundation embedding; restricted to genus resolution.
-    mll.WaypointEmbedding(
-        model="outpost-bio/Waypoint-6m",
-        pooling="mean",
-        batch_size=32,
-        max_length=512,
-        taxonomy_format="full",
-        resolutions=("genus",),
+    # mll.Transformation("clr", composition_scope="rank-wise"),
+    mll.Transformation(
+        "arcsine_sqrt",
+        composition_scope="rank-wise",
     ),
-    # Optional additional foundation embeddings:
-    # mll.WaypointEmbedding(
-    #     model="outpost-bio/Waypoint-45m",
-    #     pooling="mean",
-    #     batch_size=32,
-    #     max_length=512,
-    #     taxonomy_format="full",
-    #     resolutions=("genus",),
-    # ),
-    # mll.MGMEmbedding(
-    #     batch_size=32,
-    #     max_length=512,
-    #     taxonomy_format="full",
-    #     resolutions=("genus",),
-    # ),
-    # mll.MGM2Embedding(
-    #     model="small",
-    #     embedding_strategy="cls",
-    #     batch_size=64,
-    #     top_k_otus=768,
-    #     resolutions=("species",),
-    # ),
+    mll.Transformation(
+        "relative_abundance",
+        composition_scope="rank-wise",
+    ),
 )
 
 MODELS = (
-    (
-        "ET_400_leaf5",
-        ExtraTreesClassifier(
-            n_estimators=400,
-            min_samples_leaf=5,
-            n_jobs=1,
-            random_state=42,
-        ),
-    ),
+    # baselines
     # (
-    #     "GB_e100",
-    #     GradientBoostingClassifier(
-    #         n_estimators=100,
-    #         learning_rate=0.1,
-    #         loss="log_loss",
-    #         max_features="sqrt",
-    #         subsample=0.8,
-    #         random_state=17,
+    #     "Baseline_RF",
+    #     RandomForestClassifier(
+    #         n_estimators=1000,
+    #         min_samples_leaf=5,
+    #         random_state=42,
+    #         n_jobs=1,
     #     ),
     # ),
     # (
     #     "SIAMCAT",
-    #     mll.SIAMCATClassifier(),
-    # ),
-    # (
-    #     "LDA_eigen_shrinkage_auto",
-    #     LinearDiscriminantAnalysis(
-    #         solver="eigen",
-    #         shrinkage="auto",
-    #     ),
-    # ),
-    # (
-    #     "LinearSVC_C1e-4",
-    #     LinearSVC(
-    #         C=1e-4,
-    #         loss="squared_hinge",
-    #         dual="auto",
-    #         max_iter=30000,
-    #         random_state=17,
-    #     ),
-    # ),
-    # (
-    #     "LR_4e-5_l2",
-    #     LogisticRegression(
-    #         C=4e-5,
-    #         penalty="l2",
-    #         solver="liblinear",
-    #         fit_intercept=True,
-    #         class_weight=None,
-    #         tol=1e-7,
-    #         max_iter=3000,
-    #         random_state=0,
-    #     ),
-    # ),
-    # (
-    #     "LR_c1_balanced_l2",
-    #     LogisticRegression(
-    #         penalty="l2",
-    #         C=1.0,
-    #         class_weight="balanced",
-    #         solver="liblinear",
-    #         max_iter=3000,
+    #     mll.SIAMCATClassifier(
     #         random_state=42,
     #     ),
     # ),
+    # # default standard models
     (
-        "TabPFN_Auto",
+        "CB_default",
+        CatBoostClassifier(
+            random_seed=42,
+            thread_count=1,
+            verbose=False,
+            allow_writing_files=False,
+        ),
+    ),
+    (
+        "RF_default",
+        RandomForestClassifier(
+            random_state=42,
+        ),
+    ),
+    (
+        "LightGBM_default",
+        LGBMClassifier(
+            random_state=42,
+            n_jobs=1,
+            verbosity=-1,
+        ),
+    ),
+    (
+        "XGB_default",
+        XGBClassifier(
+            random_state=42,
+            n_jobs=1,
+            verbosity=0,
+            eval_metric="logloss",
+        ),
+    ),
+    (
+        "LR_default",
+        LogisticRegression(
+            random_state=42,
+        ),
+    ),
+    (
+        "TabPFN",
         mll.TabPFNClassifier(
             n_estimators="auto",
             auto_scale_n_estimators=True,
@@ -179,6 +146,7 @@ MODELS = (
     ),
 )
 
+
 GATE = mll.QualificationGate(
     enabled=False,
     metric="MCC",
@@ -186,15 +154,21 @@ GATE = mll.QualificationGate(
 )
 
 ENSEMBLE = mll.Ensemble(
+    include_inactive=True,
     max_sizes=(10,),
-    selection_strategies=("caruana",),
+    selection_strategies=(
+        "top_k",
+        "best_per_resolution",
+        "best_per_learner_type",
+        "caruana",
+        "super_learner",
+    ),
     aggregation_strategies=(
+        "mean_proba",
+        "weighted_mean_proba",
         "median_proba",
-        "trimmed_mean_proba",
     ),
     optimize_metric="log_loss",
-    # Include any previously evaluated candidates not declared in this script.
-    include_inactive=True,
 )
 
 EXPLAINABILITY = mll.Explainability(

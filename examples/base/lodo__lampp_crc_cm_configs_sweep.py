@@ -52,13 +52,14 @@ COUNT_TRANSFORMATIONS = (
     mll.Transformation("identity"),
     mll.Transformation("presence_absence"),
     mll.Transformation(
-        "arcsine_sqrt",
-        composition_scope="rank-wise",
-    ),
-    mll.Transformation(
         "relative_abundance",
         composition_scope="rank-wise",
     ),
+    mll.Transformation(
+        "arcsine_sqrt",
+        composition_scope="rank-wise",
+    ),
+    mll.Transformation("clr", composition_scope="rank-wise"),
     mll.Transformation(
         "log10",
         composition_scope="rank-wise",
@@ -121,21 +122,21 @@ MODELS = (
             random_state=42,
         ),
     ),
-    # (
-    #     "TabPFN",
-    #     mll.TabPFNClassifier(
-    #         n_estimators="auto",
-    #         auto_scale_n_estimators=True,
-    #         model_path="auto",
-    #         device="auto",
-    #         inference_precision="auto",
-    #         fit_mode="fit_preprocessors",
-    #         memory_saving_mode="auto",
-    #         keep_cache_on_device=True,
-    #         random_state=42,
-    #         n_preprocessing_jobs=1,
-    #     ),
-    # )
+    (
+        "TabPFN",
+        mll.TabPFNClassifier(
+            n_estimators="auto",
+            auto_scale_n_estimators=True,
+            model_path="auto",
+            device="auto",
+            inference_precision="auto",
+            fit_mode="fit_preprocessors",
+            memory_saving_mode="auto",
+            keep_cache_on_device=True,
+            random_state=42,
+            n_preprocessing_jobs=1,
+        ),
+    )
 )
 
 

@@ -40,26 +40,30 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
-    # ("phylum", ("phylum",)),
-    # ("class", ("class",)),
-    # ("order", ("order",)),
-    # ("family", ("family",)),
-    # ("genus", ("genus",)),
-    # ("species", ("species",)),
+    ("phylum", ("phylum",)),
+    ("class", ("class",)),
+    ("order", ("order",)),
+    ("family", ("family",)),
+    ("genus", ("genus",)),
+    ("species", ("species",)),
     ("strain", ("strain",)),
     ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
-    # mll.Transformation("presence_absence"),
-    # mll.Transformation("identity"),
-    # mll.Transformation("clr", composition_scope="rank-wise"),
+    mll.Transformation("presence_absence"),
+    mll.Transformation("identity"),
+    mll.Transformation("clr", composition_scope="rank-wise"),
     mll.Transformation(
         "arcsine_sqrt",
         composition_scope="rank-wise",
     ),
     mll.Transformation(
         "relative_abundance",
+        composition_scope="rank-wise",
+    ),
+    mll.Transformation(
+        "log10",
         composition_scope="rank-wise",
     ),
 )
@@ -146,7 +150,7 @@ GATE = mll.QualificationGate(
 
 ENSEMBLE = mll.Ensemble(
     include_inactive=True,
-    max_sizes=(3,),
+    max_sizes=(10,),
     selection_strategies=(
         "top_k",
         "best_per_resolution",
