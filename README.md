@@ -136,18 +136,18 @@ uv run pytest -q
 Analyses are defined in Python configuration files and can be run end-to-end:
 
 ```bash
-mllabiome examples/ncv__brown_mdd_binary_cm_configs_sweep.py
+mllabiome examples/base/ncv__lampp_scz_cm_configs_sweep.py
 ```
 
 or stage by stage:
 
 ```bash
-mllabiome examples/ncv__brown_mdd_binary_cm_configs_sweep.py --stage explore
-mllabiome examples/ncv__brown_mdd_binary_cm_configs_sweep.py --stage evaluate
-mllabiome examples/ncv__brown_mdd_binary_cm_configs_sweep.py --stage ensemble
-mllabiome examples/ncv__brown_mdd_binary_cm_configs_sweep.py --stage explain
-mllabiome examples/ncv__brown_mdd_binary_cm_configs_sweep.py --stage robustness
-mllabiome examples/ncv__brown_mdd_binary_cm_configs_sweep.py --stage report
+mllabiome examples/base/ncv__lampp_scz_cm_configs_sweep.py --stage explore
+mllabiome examples/base/ncv__lampp_scz_cm_configs_sweep.py --stage evaluate
+mllabiome examples/base/ncv__lampp_scz_cm_configs_sweep.py --stage ensemble
+mllabiome examples/base/ncv__lampp_scz_cm_configs_sweep.py --stage explain
+mllabiome examples/base/ncv__lampp_scz_cm_configs_sweep.py --stage robustness
+mllabiome examples/base/ncv__lampp_scz_cm_configs_sweep.py --stage report
 ```
 
 Or check further examples in examples folder, such as examples/multimodal_regression__gutbrain_sweep.py for mulitmodal microbiota-gut-brain axis example.
@@ -233,7 +233,7 @@ A run can produce:
 - machine-readable result tables
 - an integrated HTML report
 
-Tabular results can also be exported as TSV and figures as PNG or PDF.
+Tabular results can also be exported as TSV and figures as i.e. PNG, SVG.
 
 ### Reproducibility
 
@@ -252,6 +252,8 @@ Runnable configurations are available in [`examples/`](examples/), including:
 - microbiome transformation and taxonomic-resolution sweeps
 - ensemble selection
 - explainability and robustness analysis
+
+- **Federated learning (experimental):** Privacy-aware, cross-study microbiome classification using Flower SecAgg+ and the LAMPP colorectal cancer benchmark. See the [federated learning example](examples/federated/README.md) for installation, configuration, and usage.
 
 ### Scope
 
@@ -277,3 +279,6 @@ Microbiome machine learning · microbiota machine learning · metagenomics · ph
 ### Acknowledgement
 
 > Funded by the European Union under grant agreement No 101137074 (HEREDITARY). Views and opinions expressed are however those of the author(s) only and do not necessarily reflect those of the European Union or the European Health and Digital Executive Agency (HaDEA). Neither the European Union nor the granting authority can be held responsible for them.
+
+
+#### Contact point: [Agata Polejowska](https://github.com/polejowska)

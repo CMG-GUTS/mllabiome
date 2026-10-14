@@ -15,6 +15,7 @@ from ._evaluation_protocols import (
     normalize_evaluation_protocol,
 )
 from .data import Data
+from .federated.config import Federated
 from .ensemble_aggregation import (
     PROBABILITY_PRESERVING_AGGREGATIONS,
     SUPPORTED_AGGREGATIONS,
@@ -1017,6 +1018,7 @@ class Sweep:
     learners: Any = field(default_factory=tuple)
     learner_resolutions: Mapping[str, Sequence[str]] = field(default_factory=dict)
     evaluation: Evaluation = field(default_factory=Evaluation)
+    federated: Federated | None = None
     gate: QualificationGate = field(default_factory=QualificationGate)
     ensemble: Ensemble = field(default_factory=Ensemble)
     explore: Explore = field(default_factory=Explore)
@@ -1155,6 +1157,7 @@ def build_sweep_from_module(mod: Any) -> Sweep:
             learners=learners,
             learner_resolutions=getattr(mod, "LEARNER_RESOLUTIONS", {}),
             evaluation=getattr(mod, "EVALUATION", Evaluation()),
+            federated=getattr(mod, "FEDERATED", None),
             gate=getattr(mod, "GATE", QualificationGate()),
             ensemble=ensemble,
             explore=getattr(mod, "EXPLORE", Explore()),
@@ -1217,6 +1220,7 @@ def build_sweep_from_module(mod: Any) -> Sweep:
         learners=learners,
         learner_resolutions=getattr(mod, "LEARNER_RESOLUTIONS", {}),
         evaluation=getattr(mod, "EVALUATION", Evaluation()),
+        federated=getattr(mod, "FEDERATED", None),
         gate=getattr(mod, "GATE", QualificationGate()),
         ensemble=getattr(mod, "ENSEMBLE", Ensemble()),
         explore=getattr(mod, "EXPLORE", Explore()),

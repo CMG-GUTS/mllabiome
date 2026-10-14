@@ -101,5 +101,5 @@ prepare_lampp_mllab.py
 catboost_info
 examples/official/
 examples/official/lampp
-HEREDITARY_README_0.1.1_audited.md
-examples/base/run_lampp_overnight_retry_macos.sh
+
+*.fab

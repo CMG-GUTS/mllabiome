@@ -54,6 +54,7 @@ def main(argv: list[str] | None = None) -> None:
             "all",
             "explore",
             "evaluate",
+            "federated-evaluate",
             "ensemble",
             "inference",
             "explain",

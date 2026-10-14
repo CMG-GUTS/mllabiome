@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mllabiome"
 dynamic = ["version"]
-description = "Machine learning, ensemble learning, multimodal modeling, and explainable AI for microbiome data with end to end evaluation."
+description = "Machine learning, ensemble learning, multimodal modeling, and explainable AI for microbiota data with end to end evaluation."
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 license = "Apache-2.0"
@@ -48,7 +48,6 @@ classifiers = [
 
 
 dependencies = [
-  # Core numerical / tabular stack
   "numpy>=1.23",
   "pandas>=1.5",
   "scipy>=1.9",
@@ -57,22 +56,18 @@ dependencies = [
   "polars>=0.20",
   "pyarrow>=12",
 
-  # Machine-learning backends
   "xgboost>=2",
   "lightgbm>=4",
   "catboost>=1.2",
   "flaml>=2",
 
-  # Explainability
   "shap>=0.44",
   "lime>=0.2.0.1",
   "PyALE>=1.2.0",
 
-  # Microbiome / scientific analysis
   "scikit-bio>=0.7.0",
   "networkx>=3",
 
-  # Runtime utilities
   "rich>=13",
   "tqdm>=4.66",
   "psutil>=7.2.2",
@@ -99,6 +94,10 @@ benchmark = [
 ]
 
 [project.optional-dependencies]
+federated = [
+  "flwr[simulation]>=1.39,<1.40",
+]
+
 tabpfn = [
   "tabpfn==9.1.0",
 ]
@@ -165,7 +164,6 @@ curated-microbiota-gut-brain-axis = { git = "https://github.com/CMG-GUTS/curated
 mllabiome = "mllabiome.cli:main"
 
 
-# setuptools configuration
 [tool.setuptools.dynamic]
 version = { attr = "mllabiome._version.__version__" }
 
@@ -180,8 +178,6 @@ mllabiome = [
   "_r/*.R",
 ]
 
-
-# pytest configuration
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
@@ -190,3 +186,32 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E9", "F63", "F7", "F82"]
+[tool.flwr.app]
+publisher = "cmg-guts"
+fab-format-version = 1
+flwr-version-target = "1.39.0"
+
+[tool.flwr.app.components]
+serverapp = "mllabiome.federated.flower_app:server_app"
+clientapp = "mllabiome.federated.flower_app:client_app"
+
+[tool.flwr.app.config]
+num-server-rounds = 10
+local-epochs = 2
+num-shares = 3
+reconstruction-threshold = 2
+clipping-range = 8.0
+max-weight = 1000.0
+num-clients = 3
+num-features = 10
+alpha = 0.0001
+eta0 = 0.01
+random-state = 42
+data-dir = ""
+output-path = ""
+
+[tool.flwr.federations]
+default = "local-simulation"
+
+[tool.flwr.federations.local-simulation]
+options.num-supernodes = 3

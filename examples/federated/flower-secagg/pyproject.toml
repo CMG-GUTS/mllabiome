@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mllabiome-flower-secagg"
+version = "0.1.0"
+description = "Flower SecAgg+ application for mllabiome federated evaluation"
+license = "Apache-2.0"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "mllabiome[federated]",
+]
+
+[tool.setuptools.packages.find]
+include = ["mllabiome_flower_secagg*"]
+
+[tool.flwr.app]
+publisher = "cmg-guts"
+flwr-version-target = "1.39.0"
+
+[tool.flwr.app.components]
+serverapp = "mllabiome_flower_secagg.app:server_app"
+clientapp = "mllabiome_flower_secagg.app:client_app"
+
+[tool.flwr.app.config]
+num-server-rounds = 10
+local-epochs = 2
+num-shares = 3
+reconstruction-threshold = 2
+clipping-range = 8.0
+max-weight = 1000.0
+num-clients = 3
+num-features = 10
+alpha = 0.0001
+eta0 = 0.01
+random-state = 42
+data-dir = ""
+output-path = ""

@@ -264,6 +264,10 @@ def run_stage(sweep: Sweep, stage_name: str) -> dict[str, Any]:
         return run_all(sweep)
     if stage_name == "explore":
         return run_explore(sweep)
+    if stage_name == "federated-evaluate":
+        from .federated.stage import federated_evaluate
+
+        return federated_evaluate(sweep)
     if stage_name == "evaluate":
         return run_evaluate(sweep)
     if stage_name == "ensemble":

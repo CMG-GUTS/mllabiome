@@ -31,6 +31,7 @@ from .explainability import (
 )
 from .explainability_methods import ALE, LIME, SHAP, ALEInteractions, Permutation
 from .final_explainability import explain
+from .federated import Federated
 from .foundation_models import (
     MBEMBED_REFERENCE,
     MGM2_REFERENCE,
@@ -104,6 +105,7 @@ __all__ = [
     "Dataset",
     "Ensemble",
     "Evaluation",
+    "Federated",
     "Explore",
     "Explainability",
     "ExplainabilityConfigurationError",
