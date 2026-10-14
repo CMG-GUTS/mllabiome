@@ -813,8 +813,8 @@ def _plot_ale_curves(
     out_stem: Path,
     *,
     max_panels: int = 12,
-    x_label: str = "Model-input feature value",
-    y_label: str = "ALE effect",
+    x_label: str = "Feature value (model input)",
+    y_label: str = "Contribution to model prediction",
 ) -> None:
     apply_style()
     import math as _math

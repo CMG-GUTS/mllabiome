@@ -1350,7 +1350,7 @@ def write_regression_report(sweep: Sweep, emit_html: bool = True) -> dict[str, P
 {robustness_html}
 <h2 id="compute">Computational resources</h2><p>Compute is summarized by additive CPU core-hours, model-fit count, and peak resident memory for the worker process tree. CPU time includes child processes and external R processes when used. MPMA-B and MPMA-E share the MPMA search pool, so their compute totals overlap.</p>{_report._html_table(compute_display)}
 <h4>Hardware and runtime environment</h4>{_report._html_table(hardware_summary) if not hardware_summary.empty else "<p>Hardware details are unavailable for this run.</p>"}
-{_report._abbreviations_html()}
+
 {_report._report_footer_html()}</main></div></body></html>'''
 
     html_text = _report._sanitize_report_html(html_text)
@@ -1744,7 +1744,7 @@ def write_multi_target_report(
 <body>{_report._report_nav_html()}
 <div class="report-shell"><main id="top" class="report-content"><h2 id="performance-evaluation" class="first-section">Task definition and evaluation procedure</h2>{_report._procedure_grid_html(procedure)}
 <h2 id="performance-summary">Target performance overview</h2><p>Every target retains its task-appropriate primary metric. Values are mean ± SD across {"held-out datasets" if is_lodo_protocol(sweep.evaluation.protocol) else "outer test folds"}. Classification and regression metrics are intentionally not collapsed into a single heterogeneous score.</p>{_report._html_table(overview)}{_report._html_table(macro) if not macro.empty else ""}
-{sections}{_report._abbreviations_html()}{_report._report_footer_html()}</main></div></body></html>'''
+{sections}{_report._report_footer_html()}</main></div></body></html>'''
 
     html_text = _report._sanitize_report_html(html_text)
 

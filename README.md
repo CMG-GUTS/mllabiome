@@ -5,22 +5,52 @@
     height="82"
     alt="mllabiome icon"
   >
-  &nbsp;&nbsp;&nbsp;
-  <a href="https://cmg-guts.github.io/mllabiome/">
-    <img
-      src="https://raw.githubusercontent.com/CMG-GUTS/mllabiome/main/assets/mllabiome-readme-flow-symbols.svg"
-      width="350"
-      align="right"
-      alt="From microbiome abundance data through machine learning to learned patterns and interactions"
-    >
-  </a>
 </p>
 
 <b>E</b>valuate, <b>e</b>nsemble, <b>e</b>xplain machine learning for microbiota data analysis in single-modality and multimodality scenarios.
 
+<table>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <a href="assets/example-outputs/feature_support__1.svg">
+        <img src="assets/example-outputs/feature_support__1.svg" width="100%" alt="Cross-method feature importance and stability visualization">
+      </a>
+      <br>
+      <strong>Feature importance and stability</strong>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <a href="assets/example-outputs/interaction_network_current__1.svg">
+        <img src="assets/example-outputs/interaction_network_current__1.svg" width="100%" alt="Microbial feature interaction network">
+      </a>
+      <br>
+      <strong>Feature interaction networks</strong>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <a href="assets/example-outputs/local_explanations.svg">
+        <img src="assets/example-outputs/local_explanations.svg" width="100%" alt="Sample-level feature contributions using complementary explanation methods">
+      </a>
+      <br>
+      <strong>Sample-level feature contributions</strong>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <a href="assets/example-outputs/ale_curves__1.svg">
+        <img src="assets/example-outputs/ale_curves__1.svg" width="100%" alt="Feature-specific effects on predicted class probability">
+      </a>
+      <br>
+      <strong>Feature-specific effects on predicted class probability</strong>
+    </td>
+  </tr>
+</table>
+
+
+
+### Definitions
+
 > An integrated leakage-controlled framework for microbiome machine learning that jointly handles compositional preprocessing and taxonomic representation selection, subject/cohort-aware nested evaluation, inner-OOF ensemble and multimodal model construction, cross-fitted explanation, and uncertainty/robustness analysis.
 
-> mllabiome addresses a methodological gap between general-purpose machine-learning libraries and microbiome-specific analytical workflows. Its distinguishing feature is an evaluation architecture in which microbiome representation, preprocessing, model optimization, ensemble construction, and multimodal integration can be evaluated within the same nested, group-aware resampling hierarchy. This design allows analytical choices that are commonly fixed before cross-validation to be treated as model-selection decisions while maintaining an untouched outer evaluation set. The framework additionally propagates this separation to model interpretation and robustness analyses, providing a common provenance structure from preprocessing through prediction and explanation.
+> mllabiome addresses a methodological gap between general-purpose machine-learning libraries and microbiome-specific analytical workflows. Its distinguishing feature is an evaluation architecture in which microbiome representation, preprocessing, model optimization, ensemble construction, and multimodal integration can be evaluated within the same nested, group-aware resampling hierarchy. This design allows analytical choices that are commonly fixed before cross-validation to be treated as model-selection decisions. The framework additionally propagates this separation to model interpretation and robustness analyses, providing a common provenance structure from preprocessing through prediction and explanation.
 
 `mllabiome` is a Python library for **microbiome machine learning**, designed for rigorous phenotype prediction, model benchmarking, ensemble learning, multimodal integration, explainable AI, and cross-cohort validation.
 
@@ -28,7 +58,7 @@ It provides an end-to-end workflow for evaluating combinations of **microbiome r
 
 Use `mllabiome` when you need to build or benchmark predictive models from microbiome abundance data without leaking information from held-out samples.
 
-## What it does
+### What it does
 
 - **Nested cross-validation** and repeated nested cross-validation
 - **Subject-aware grouped splitting** for repeated or longitudinal samples
@@ -46,7 +76,7 @@ Use `mllabiome` when you need to build or benchmark predictive models from micro
 - Exploratory microbiome analysis, including community-level statistics and differential abundance
 - Publication-oriented tables, figures, prediction files, and HTML reports
 
-## Why mllabiome?
+### Why mllabiome?
 
 Microbiome machine-learning workflows are unusually vulnerable to optimistic performance estimates when feature filtering, transformations, model selection, repeated samples, or dataset structure are handled outside the validation procedure.
 
@@ -58,7 +88,7 @@ Accordingly, preprocessing and candidate selection are performed within the appr
 
 This makes `mllabiome` particularly suited to **microbiome phenotype prediction, microbiome ML benchmarking, cross-study validation, and reproducible evaluation of predictive microbiome signatures**.
 
-## Install
+### Install
 
 Python 3.10 or newer is required.
 
@@ -97,7 +127,7 @@ uv pip install -e ".[dev]"
 uv run pytest -q
 ```
 
-## Quick start
+### Quick start
 
 Analyses are defined in Python configuration files and can be run end-to-end:
 
@@ -128,7 +158,7 @@ The main workflow is:
 explore → evaluate → ensemble → inference → explain → robustness → report
 ```
 
-## Typical use cases
+### Typical use cases
 
 `mllabiome` is intended for questions such as:
 
@@ -141,7 +171,7 @@ explore → evaluate → ensemble → inference → explain → robustness → r
 - Which microbial features consistently influence held-out predictions?
 - How stable are model explanations across folds, cohorts, and analysis choices?
 
-## Data
+### Data
 
 `mllabiome` operates on already quantified feature or abundance tables together with sample metadata.
 
@@ -149,13 +179,13 @@ Supported workflows include wide tabular data and feature-by-sample microbiome p
 
 `mllabiome` is **not** a raw sequencing pipeline: read QC, assembly, taxonomic profiling, and generation of abundance tables should be performed upstream.
 
-## Models and representations
+### Models and representations
 
 Any compatible scikit-learn estimator can be included in a model sweep. Common workflows can combine models such as logistic regression, random forests, ExtraTrees, XGBoost, LightGBM, CatBoost, neural networks, SIAMCAT, and AutoML methods.
 
 Microbiome representations can be evaluated across taxonomic levels and abundance transformations within the same validation framework.
 
-## Multimodal analysis
+### Multimodal analysis
 
 `mllabiome` supports unimodal and multimodal prediction, including:
 
@@ -168,7 +198,7 @@ Microbiome representations can be evaluated across taxonomic levels and abundanc
 
 Integration choices are evaluated within the same held-out evaluation framework.
 
-## Explainability
+### Explainability
 
 Model interpretation is available for selected individual models and ensembles using:
 
@@ -182,7 +212,7 @@ Where applicable, explanations are generated from models for which the explained
 
 Feature attribution should be interpreted as **model-based evidence and hypothesis generation**, not as proof of causal biological effects.
 
-## Outputs
+### Outputs
 
 A run can produce:
 
@@ -199,7 +229,7 @@ A run can produce:
 
 Tabular results can also be exported as TSV and figures as PNG or PDF.
 
-## Reproducibility
+### Reproducibility
 
 `mllabiome` records analysis configurations and separates model selection from held-out performance estimation.
 
@@ -207,7 +237,7 @@ For reproducible research, analyses should be run from a fixed `mllabiome` relea
 
 Optional R-backed functionality uses version-controlled integrations for SIAMCAT and ANCOM-BC2.
 
-## Examples
+### Examples
 
 Runnable configurations are available in [`examples/`](examples/), including:
 
@@ -217,22 +247,22 @@ Runnable configurations are available in [`examples/`](examples/), including:
 - ensemble selection
 - explainability and robustness analysis
 
-## Scope
+### Scope
 
 `mllabiome` focuses on **rigorous evaluation of predictive microbiome models**.
 
 It complements upstream microbiome-processing tools and general-purpose machine-learning frameworks by providing microbiome-aware evaluation, representation search, cohort-aware validation, ensemble construction, explainability, and reporting in one workflow.
 
-## Citation
+### Citation
 
 If you use `mllabiome` in published research, please cite the software release and the accompanying methods paper.
 
 Citation information will be provided in `CITATION.cff`.
 
-## License
+### License
 
 `mllabiome` is released under the Apache License 2.0.
 
-## Keywords
+### Keywords
 
 Microbiome machine learning · microbiota machine learning · metagenomics · phenotype prediction · nested cross-validation · grouped cross-validation · leave-one-dataset-out · cross-cohort validation · compositional data · ensemble learning · multimodal learning · explainable AI · SHAP · ALE · LIME · microbiome biomarker discovery · bioinformatics · classifying gut microbiome profiles to predict a health condition · taxonomic profiling data · comparing model performance across validation approaches

@@ -6,18 +6,10 @@ from catboost import CatBoostClassifier
 from curated_microbiota.collections import lampp_ghs
 from lightgbm import LGBMClassifier
 from xgboost import XGBClassifier
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.ensemble import BaggingClassifier, ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier
-from sklearn.linear_model import LogisticRegression, RidgeClassifier, SGDClassifier
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.neural_network import MLPClassifier
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import Normalizer, StandardScaler
-from sklearn.semi_supervised import LabelSpreading
-from sklearn.svm import LinearSVC, SVC
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 
 from mllabiome import mll
-from mllabiome.learners import GroupAwareCalibratedClassifier
 
 HERE = Path(__file__).resolve().parent
 TITLE = "LAMPP general health status LODO MPMA sweep"
@@ -46,32 +38,32 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
-    ("phylum", ("phylum",)),
-    ("class", ("class",)),
-    ("order", ("order",)),
-    ("family", ("family",)),
-    ("genus", ("genus",)),
-    ("species", ("species",)),
-    ("strain", ("strain",)),
+    # ("phylum", ("phylum",)),
+    # ("class", ("class",)),
+    # ("order", ("order",)),
+    # ("family", ("family",)),
+    # ("genus", ("genus",)),
+    # ("species", ("species",)),
+    # ("strain", ("strain",)),
     ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
     mll.Transformation("identity"),
     mll.Transformation("presence_absence"),
-    mll.Transformation(
-        "relative_abundance",
-        composition_scope="rank-wise",
-    ),
-    mll.Transformation(
-        "arcsine_sqrt",
-        composition_scope="rank-wise",
-    ),
-    mll.Transformation("clr", composition_scope="rank-wise"),
-    mll.Transformation(
-        "log10",
-        composition_scope="rank-wise",
-    ),
+    # mll.Transformation(
+    #     "relative_abundance",
+    #     composition_scope="rank-wise",
+    # ),
+    # mll.Transformation(
+    #     "arcsine_sqrt",
+    #     composition_scope="rank-wise",
+    # ),
+    # mll.Transformation("clr", composition_scope="rank-wise"),
+    # mll.Transformation(
+    #     "log10",
+    #     composition_scope="rank-wise",
+    # ),
 )
 
 MODELS = (
@@ -92,15 +84,15 @@ MODELS = (
     #     ),
     # ),
     # # default standard models
-    (
-        "CB_default",
-        CatBoostClassifier(
-            random_seed=42,
-            thread_count=1,
-            verbose=False,
-            allow_writing_files=False,
-        ),
-    ),
+    # (
+    #     "CB_default",
+    #     CatBoostClassifier(
+    #         random_seed=42,
+    #         thread_count=1,
+    #         verbose=False,
+    #         allow_writing_files=False,
+    #     ),
+    # ),
     (
         "RF_default",
         RandomForestClassifier(
@@ -130,21 +122,21 @@ MODELS = (
             random_state=42,
         ),
     ),
-    (
-        "TabPFN",
-        mll.TabPFNClassifier(
-            n_estimators="auto",
-            auto_scale_n_estimators=True,
-            model_path="auto",
-            device="auto",
-            inference_precision="auto",
-            fit_mode="fit_preprocessors",
-            memory_saving_mode="auto",
-            keep_cache_on_device=True,
-            random_state=42,
-            n_preprocessing_jobs=1,
-        ),
-    )
+    # (
+    #     "TabPFN",
+    #     mll.TabPFNClassifier(
+    #         n_estimators="auto",
+    #         auto_scale_n_estimators=True,
+    #         model_path="auto",
+    #         device="auto",
+    #         inference_precision="auto",
+    #         fit_mode="fit_preprocessors",
+    #         memory_saving_mode="auto",
+    #         keep_cache_on_device=True,
+    #         random_state=42,
+    #         n_preprocessing_jobs=1,
+    #     ),
+    # ),
 )
 
 

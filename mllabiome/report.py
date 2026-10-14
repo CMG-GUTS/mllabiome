@@ -456,94 +456,6 @@ def _display_learner(value: Any, learner_labels: dict[str, str] | None = None) -
     return _human_learner_name(text)
 
 
-_REPORT_ABBREVIATIONS = (
-    ("ALE", "accumulated local effects"),
-    ("ALR", "additive log-ratio"),
-    ("ANCOM-BC2", "Analysis of Compositions of Microbiomes with Bias Correction 2"),
-    ("AP", "average precision"),
-    ("AUCPR", "trapezoidal area under the precision-recall curve"),
-    ("AUROC", "area under the receiver operating characteristic curve"),
-    ("AutoML", "automated machine learning"),
-    ("CI", "confidence interval"),
-    ("CLR", "centered log-ratio"),
-    ("CPU", "central processing unit"),
-    ("CV", "cross-validation"),
-    ("ECDF", "empirical cumulative distribution function"),
-    ("F1", "harmonic mean of precision and recall"),
-    ("F1w", "support-weighted F1 score"),
-    ("FDR", "false discovery rate"),
-    ("FLAML", "Fast and Lightweight AutoML"),
-    ("FN", "false negative"),
-    ("FP", "false positive"),
-    ("GiB", "gibibyte"),
-    ("HC3", "heteroskedasticity-consistent covariance estimator, type 3"),
-    ("ID", "identifier"),
-    ("ILR", "isometric log-ratio"),
-    ("IQR", "interquartile range"),
-    ("LIME", "Local Interpretable Model-agnostic Explanations"),
-    ("LODO", "leave-one-dataset-out"),
-    ("MAE", "mean absolute error"),
-    ("MCC", "Matthews correlation coefficient"),
-    ("mdFDR", "mixed directional false discovery rate"),
-    ("ML", "machine learning"),
-    ("MPDR", "Microbiota profile data representation"),
-    ("MPMA", "Microbiota profile modelling algorithm"),
-    ("MPMA-B", "Microbiota profile modelling algorithm - base"),
-    ("MPMA-E", "Microbiota profile modelling algorithm - ensemble"),
-    ("MSE", "mean squared error"),
-    ("N", "number of evaluated observations"),
-    ("NA", "not available"),
-    ("NPV", "negative predictive value"),
-    ("OOF", "out-of-fold"),
-    ("OvR", "one-vs-rest"),
-    ("P/A", "presence/absence"),
-    ("PCoA", "principal coordinates analysis"),
-    ("PERMANOVA", "permutational multivariate analysis of variance"),
-    ("PERMDISP", "permutational analysis of multivariate dispersions"),
-    ("PPV", "positive predictive value"),
-    ("QN", "quantile normalization"),
-    ("Q1", "first quartile"),
-    ("Q3", "third quartile"),
-    ("RA", "relative abundance"),
-    ("RAM", "random-access memory"),
-    ("RF", "random forest"),
-    ("RMSE", "root mean squared error"),
-    ("ROC", "receiver operating characteristic"),
-    ("R²", "coefficient of determination"),
-    ("SD", "standard deviation"),
-    ("SHAP", "SHapley Additive exPlanations"),
-    (
-        "SIAMCAT",
-        "Statistical Inference of Associations between Microbial Communities And host phenoTypes",
-    ),
-    ("SMD", "standardized mean difference"),
-    ("TN", "true negative"),
-    ("TP", "true positive"),
-    ("YJ", "Yeo-Johnson"),
-    ("ε", "training-derived half-minimum positive relative-abundance pseudocount"),
-)
-
-
-def _abbreviations_html(heading_level: int = 2) -> str:
-
-    level = min(6, max(1, int(heading_level)))
-
-    rows = "".join(
-        "<tr>"
-        f"<td><strong>{html.escape(abbreviation)}</strong></td>"
-        f"<td>{html.escape(definition)}</td>"
-        "</tr>"
-        for abbreviation, definition in _REPORT_ABBREVIATIONS
-    )
-
-    return (
-        f'<h{level} id="abbreviations">Abbreviations</h{level}>'
-        '<div class="table-wrap"><table><thead><tr>'
-        "<th>Abbreviation or symbol</th><th>Meaning</th>"
-        f"</tr></thead><tbody>{rows}</tbody></table></div>"
-    )
-
-
 def _display_data_format(value: Any) -> str:
 
     text = str(value).strip()
@@ -640,10 +552,10 @@ def _report_nav_html(
         '<a href="#performance-evaluation">Task and evaluation</a>'
         + exploration_link
         + '<a href="#performance-summary">Machine learning performance evaluation</a>'
-        + '<a href="#explainability">Explainability</a>'
+        + '<a href="#explainability-summary">Explainability summary</a>'
+        + '<a href="#explainability">Explainability detail</a>'
         + robustness_link
         + '<a href="#compute">Computational resources</a>'
-        '<a href="#abbreviations">Abbreviations</a>'
         "</nav></div></header>"
         '<script>document.addEventListener("click",function(e){const a=e.target.closest(".report-links a[href^=\'#\'],.brand[href^=\'#\']");if(!a)return;const id=decodeURIComponent(a.getAttribute("href").slice(1));const t=document.getElementById(id);if(!t)return;e.preventDefault();t.scrollIntoView({behavior:"smooth",block:"start"})})</script>'
     )
@@ -717,6 +629,7 @@ REPORT_LAYERS = (
     "inferential_comparisons",
     "selected_specifications",
     "important_features",
+    "explainability_summary",
     "explainability",
     "robustness",
     "compute_hardware",
@@ -2569,6 +2482,13 @@ def _publication_layout_css() -> str:
 def _report_css() -> str:
 
     return """
+
+.xai-svg-figure { margin:18px 0 10px; width:100%; }
+.xai-svg-figure a { display:block; }
+.xai-svg-embed { display:block; width:100%; height:auto; max-width:100%; border:1px solid var(--track); background:#fff; }
+.xai-svg-download { display:flex; align-items:center; gap:12px; margin:10px 0 22px; flex-wrap:wrap; }
+.xai-svg-download a { font-weight:650; }
+.xai-detailed-svg { display:block; width:100%; height:auto; }
 :root {
   --ink:#0f172a; --mid:#64748b; --dim:#94a3b8; --track:#e2e8f0; --soft:#f8fafc;
   --bg:#ffffff; --blue:#2563eb; --blue-hover:#0ea5e9; --blue-soft:#eff6ff; --blue-hover-soft:#f0f9ff;
@@ -2687,6 +2607,7 @@ class _ReportVisuals:
     representation_figure: str
     mpma_e_figure: str
     explainability_html: str
+    explainability_summary_html: str
     explainability_count: int
 
 
@@ -2819,10 +2740,13 @@ def _build_report_visuals(
             report_dir,
             top_n=int(getattr(sweep.explainability, "top_k", 15)),
         )
+        from .report_explainability_summary import explainability_summary_block
+        explainability_summary_html = explainability_summary_block(root, report_dir)
     return _ReportVisuals(
         representation_figure=representation_figure,
         mpma_e_figure=mpma_e_figure,
         explainability_html=explainability_html,
+        explainability_summary_html=explainability_summary_html,
         explainability_count=explainability_count,
     )
 
@@ -3437,6 +3361,8 @@ def _render_report_html(
 {_performance_methodology_html(sweep.evaluation.protocol, 2000)}
 {_html_table(analysis.strategy_html, raw_html_cols=strategy_metric_cols)}
 {_baseline_rf_report_note(analysis.strategy_rows)}
+<h2 id=\"explainability-summary\">Explainability summary</h2>
+{visuals.explainability_summary_html}
 <h2 id=\"representation-impact\">Data representations and learner impact on performance</h2>
 {_representation_impact_note(str(sweep.evaluation.optimize_metric), bool(getattr(sweep, "uses_modalities", False)))}
 {representation_figure}
@@ -3463,7 +3389,6 @@ def _render_report_html(
 {_html_table(analysis.compute_display)}
 <h4>Hardware and runtime environment</h4>
 {hardware_html}
-{_abbreviations_html()}
 {_report_footer_html()}
 </main></div></body></html>
 """
@@ -3493,6 +3418,10 @@ def _write_report_manifest(
                 ]
             ),
             "explainability_targets": visuals.explainability_count,
+            "explainability_composite_svg": (
+                "explainability_composite.svg"
+                if (report_dir / "explainability_composite.svg").exists() else None
+            ),
         },
         report_dir / "report_manifest.json",
     )
@@ -3527,6 +3456,9 @@ def _report_outputs(
         "important_features": tables.feature_summary_path,
         "hardware_environment": tables.hardware_summary_path,
     }
+    composite_svg = report_dir / "explainability_composite.svg"
+    if composite_svg.is_file():
+        outputs["explainability_composite_svg"] = composite_svg
     if emit_html:
         outputs = {"html_report": report_html_path(report_dir.parent), **outputs}
     return outputs

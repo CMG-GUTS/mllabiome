@@ -200,7 +200,9 @@ def _target_dirs_by_label(root: Path) -> dict[str, Path]:
     out: dict[str, Path] = {}
     configs = _read_table(root / "configs.parquet")
     expected_baseline = (
-        resolve_baseline_rf_config_id(configs) if not configs.empty else None
+        resolve_baseline_rf_config_id(configs, active_only=False)
+        if not configs.empty
+        else None
     )
 
     for label, slugs in aliases:
@@ -679,10 +681,10 @@ def _member_native_explainability_blocks(
                     "ale_curves",
                     class_label,
                     report_dir,
-                    f"MPMA-E {descriptor} · {class_label}: ALE effect curves",
+                    f"MPMA-E {descriptor} · {class_label}: Feature contributions across feature values",
                 )
                 if curve:
-                    parts.append("<h6>ALE effect curves</h6>")
+                    parts.append("<h6>Feature contributions across feature values</h6>")
                     parts.append(
                         "<p>Thin pale lines show outer-fold ALE curves. The thick line and shaded band summarize the common-support region when multiple folds are available. ALE describes model behavior and should not be interpreted as a causal effect.</p>"
                     )
@@ -899,11 +901,11 @@ def _explainability_report_blocks(
                     "ale_curves",
                     class_label,
                     report_dir,
-                    f"{label} · {class_label}: ALE effect curves",
+                    f"{label} · {class_label}: Feature contributions across feature values",
                 )
 
                 if ale_curve:
-                    parts.append("<h6>ALE effect curves</h6>")
+                    parts.append("<h6>Feature contributions across feature values</h6>")
                     parts.append(
                         f"<p>Thin pale lines show the outer-fold ALE curves. When multiple displayed outer-fold curves have a shared feature-value range, the thick blue line shows their pointwise median only over that common-support range and the shaded band shows the corresponding interquartile range across folds. Individual fold curves may extend beyond the common-support range. If no shared range exists, no cross-fold median or interquartile band is drawn. If only one ALE curve is available, it is shown without an interquartile band. The dashed horizontal line marks zero centered ALE effect: values above or below it indicate feature regions associated with higher or lower predicted P({html.escape(class_label)}), respectively. ALE describes model behavior and should not be interpreted as a causal effect.</p>"
                     )

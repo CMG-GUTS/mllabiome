@@ -96,8 +96,10 @@ def resolve_baseline_rf_configs(
     return candidates.iloc[0:0].copy()
 
 
-def resolve_baseline_rf_config_id(frame: pd.DataFrame) -> str | None:
-    selected = resolve_baseline_rf_configs(frame)
+def resolve_baseline_rf_config_id(
+    frame: pd.DataFrame, *, active_only: bool = True
+) -> str | None:
+    selected = resolve_baseline_rf_configs(frame, active_only=active_only)
     if selected.empty or "config_id" not in selected.columns:
         return None
     value = selected.iloc[0].get("config_id")

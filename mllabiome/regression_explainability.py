@@ -1336,7 +1336,7 @@ def _write_regression_ale_figure(
         stem,
         max_panels=min(12, int(top_k)),
         x_label="Model-input feature value",
-        y_label="Centered ALE effect on prediction (target units)",
+        y_label="Contribution to predicted outcome (target units)",
     )
     return {"ale_curves_svg": stem.with_suffix(".svg")}
 

@@ -1815,8 +1815,7 @@ def enhance_html_report(
     if footer_pos == -1:
         body_close = text.rfind("</body>")
         footer_pos = body_close if body_close != -1 else len(text)
-    abbreviations_pos = text.find('<h2 id="abbreviations">')
-    compute_pos = abbreviations_pos if abbreviations_pos != -1 else footer_pos
+    compute_pos = footer_pos
     if compute_block:
         text = text[:compute_pos] + compute_block + "\n" + text[compute_pos:]
     text = text.replace("Learner family", "Learner type")

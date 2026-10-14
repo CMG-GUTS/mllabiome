@@ -3065,7 +3065,7 @@ def _run_ale_explainability(
                 curve_stem,
                 max_panels=min(12, sweep.explainability.top_k),
                 x_label="Model-input feature value",
-                y_label=f"Centered ALE effect on P({label})",
+                y_label=f"Contribution to predicted {label} probability",
             )
             state.method_outputs[f"ale_curves_{slug}"] = curve_stem.with_suffix(".svg")
     state.method_frames.append(frame)
@@ -3582,7 +3582,7 @@ def _resolve_baseline_rf_row(rankings: pd.DataFrame, root: Path) -> pd.Series | 
     if not table_exists(configs_path):
         return None
     configs = read_table(configs_path)
-    config_id = resolve_baseline_rf_config_id(configs)
+    config_id = resolve_baseline_rf_config_id(configs, active_only=False)
     if config_id is None or "config_id" not in rankings.columns:
         return None
     matches = rankings[rankings["config_id"].astype(str).eq(config_id)].copy()

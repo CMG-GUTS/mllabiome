@@ -4,14 +4,18 @@ from collections.abc import Iterable
 from pathlib import Path
 
 
-def _converter():
+def _backend():
     try:
-        import cairosvg
-    except Exception as exc:
-        raise RuntimeError(
-            "PNG/PDF figure export requires CairoSVG. Install cairosvg before using --export-png or --export-pdf."
-        ) from exc
-    return cairosvg
+        import pymupdf
+    except ImportError as exc:
+        raise RuntimeError("PNG/PDF figure export requires PyMuPDF.") from exc
+    return pymupdf
+
+
+def _svg_to_pdf_bytes(path: Path) -> bytes:
+    pymupdf = _backend()
+    with pymupdf.open(filename=str(path), filetype="svg") as document:
+        return document.convert_to_pdf()
 
 
 def export_svg_tree(
@@ -26,7 +30,7 @@ def export_svg_tree(
         raise ValueError(f"Unsupported figure export format: {invalid[0]}")
     if not requested:
         return {"directories": {}, "files": []}
-    cairosvg = _converter()
+    pymupdf = _backend()
     export_root = root / "exports"
     sources = [
         path for path in sorted(root.rglob("*.svg")) if export_root not in path.parents
@@ -42,9 +46,13 @@ def export_svg_tree(
             target = directory / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             if fmt == "png":
-                cairosvg.svg2png(url=str(source), write_to=str(target), dpi=450)
+                with pymupdf.open(filename=str(source), filetype="svg") as document:
+                    document[0].get_pixmap(
+                        matrix=pymupdf.Matrix(450.0 / 72.0, 450.0 / 72.0),
+                        alpha=True,
+                    ).save(str(target))
             else:
-                cairosvg.svg2pdf(url=str(source), write_to=str(target))
+                target.write_bytes(_svg_to_pdf_bytes(source))
             exported.append(
                 {
                     "source": str(source.relative_to(root)),

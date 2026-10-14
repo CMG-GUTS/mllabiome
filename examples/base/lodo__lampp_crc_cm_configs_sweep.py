@@ -21,7 +21,7 @@ EVALUATION = lampp_crc.splits(
     benchmark="mllabiome-benchmark-v2",
 ).mllabiome(
     optimize_metric="log_loss",
-    n_jobs="auto",
+    n_jobs=1,
 )
 
 EXPLORE = mll.Explore(
@@ -38,27 +38,27 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
-    ("phylum", ("phylum",)),
-    ("class", ("class",)),
-    ("order", ("order",)),
-    ("family", ("family",)),
-    ("genus", ("genus",)),
-    ("species", ("species",)),
-    ("strain", ("strain",)),
+    # ("phylum", ("phylum",)),
+    # ("class", ("class",)),
+    # ("order", ("order",)),
+    # ("family", ("family",)),
+    # ("genus", ("genus",)),
+    # ("species", ("species",)),
+    # ("strain", ("strain",)),
     ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
-    mll.Transformation("identity"),
-    mll.Transformation("presence_absence"),
-    mll.Transformation(
-        "relative_abundance",
-        composition_scope="rank-wise",
-    ),
-    mll.Transformation(
-        "arcsine_sqrt",
-        composition_scope="rank-wise",
-    ),
+    # mll.Transformation("identity"),
+    # mll.Transformation("presence_absence"),
+    # mll.Transformation(
+    #     "relative_abundance",
+    #     composition_scope="rank-wise",
+    # ),
+    # mll.Transformation(
+    #     "arcsine_sqrt",
+    #     composition_scope="rank-wise",
+    # ),
     mll.Transformation("clr", composition_scope="rank-wise"),
     mll.Transformation(
         "log10",
@@ -136,7 +136,7 @@ MODELS = (
             random_state=42,
             n_preprocessing_jobs=1,
         ),
-    )
+    ),
 )
 
 
@@ -148,21 +148,27 @@ GATE = mll.QualificationGate(
 
 ENSEMBLE = mll.Ensemble(
     include_inactive=True,
-    max_sizes=(3,),
+    max_sizes=(10,),
     selection_strategies=(
         "top_k",
         "best_per_resolution",
         "best_per_learner_type",
+        "performance_diversity",
         "caruana",
+        "bagged_caruana",
         "super_learner",
+        "safe_super_learner",
     ),
     aggregation_strategies=(
         "mean_proba",
         "weighted_mean_proba",
         "median_proba",
+        "logistic_stacking",
+        "rf_stacking",
     ),
     optimize_metric="log_loss",
 )
+
 
 EXPLAINABILITY = mll.Explainability(
     targets=("mpma_b",),
@@ -172,8 +178,9 @@ EXPLAINABILITY = mll.Explainability(
         mll.SHAP(),
         mll.ALE(),
         mll.LIME(),
-        mll.ALEInteractions(),
-    ),
+        mll.ALEInteractions(
+            top_k=50,
+        ),    ),
     classes="auto",
 )
 

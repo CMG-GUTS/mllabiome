@@ -136,7 +136,7 @@ MODELS = (
             random_state=42,
             n_preprocessing_jobs=1,
         ),
-    )
+    ),
 )
 
 

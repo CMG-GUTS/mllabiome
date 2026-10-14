@@ -7,6 +7,7 @@ from curated_microbiota.collections import lampp_scz
 from lightgbm import LGBMClassifier
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
@@ -70,21 +71,21 @@ COUNT_TRANSFORMATIONS = (
 
 MODELS = (
     # baselines
-    # (
-    #     "Baseline_RF",
-    #     RandomForestClassifier(
-    #         n_estimators=1000,
-    #         min_samples_leaf=5,
-    #         random_state=42,
-    #         n_jobs=1,
-    #     ),
-    # ),
-    # (
-    #     "SIAMCAT",
-    #     mll.SIAMCATClassifier(
-    #         random_state=42,
-    #     ),
-    # ),
+    (
+        "Baseline_RF",
+        RandomForestClassifier(
+            n_estimators=1000,
+            min_samples_leaf=5,
+            random_state=42,
+            n_jobs=1,
+        ),
+    ),
+    (
+        "SIAMCAT",
+        mll.SIAMCATClassifier(
+            random_state=42,
+        ),
+    ),
     # # default standard models
     (
         "CB_default",
@@ -125,6 +126,32 @@ MODELS = (
         ),
     ),
     (
+        "LR_tuned_scaled",
+        GridSearchCV(
+            estimator=Pipeline([
+                ("scaler", StandardScaler(with_mean=False)),
+                (
+                    "lr",
+                    LogisticRegression(
+                        solver="saga",
+                        max_iter=5000,
+                        tol=1e-3,
+                        random_state=42,
+                    ),
+                ),
+            ]),
+            param_grid={
+                "lr__C": [0.03, 0.3, 3.0],
+                "lr__l1_ratio": [0.0, 0.5, 1.0],
+            },
+            scoring="neg_log_loss",
+            cv=3,
+            refit=True,
+            n_jobs=1,
+            error_score="raise",
+        ),
+    ),
+    (
         "TabPFN",
         mll.TabPFNClassifier(
             n_estimators="auto",
@@ -139,6 +166,7 @@ MODELS = (
             n_preprocessing_jobs=1,
         ),
     ),
+
 )
 
 
@@ -155,26 +183,33 @@ ENSEMBLE = mll.Ensemble(
         "top_k",
         "best_per_resolution",
         "best_per_learner_type",
+        "performance_diversity",
         "caruana",
+        "bagged_caruana",
         "super_learner",
+        "safe_super_learner",
     ),
     aggregation_strategies=(
         "mean_proba",
         "weighted_mean_proba",
         "median_proba",
+        "logistic_stacking",
+        "rf_stacking",
     ),
     optimize_metric="log_loss",
 )
 
 EXPLAINABILITY = mll.Explainability(
-    targets=("mpma_b",),
+    targets=("mpma_b", "baseline_rf"),
     profile="screening",
     methods=(
         mll.Permutation(),
         mll.SHAP(),
         mll.ALE(),
         mll.LIME(),
-        mll.ALEInteractions(),
+        mll.ALEInteractions(
+            top_k=50,
+        ),
     ),
     classes="auto",
 )

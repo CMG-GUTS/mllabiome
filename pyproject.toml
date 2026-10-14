@@ -47,10 +47,6 @@ classifiers = [
 ]
 
 
-# mllabiome intentionally uses a batteries-included installation model.
-# A standard installation provides the complete supported machine-learning,
-# ensemble-learning, microbiome-analysis, and explainability stack required
-# for documented end-to-end workflows.
 dependencies = [
   # Core numerical / tabular stack
   "numpy>=1.23",
@@ -104,6 +100,10 @@ benchmark = [
 [project.optional-dependencies]
 tabpfn = [
   "tabpfn==9.1.0",
+]
+
+pdf = [
+  "PyMuPDF>=1.26",
 ]
 
 waypoint = [
