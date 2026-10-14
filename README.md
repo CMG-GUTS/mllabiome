@@ -1,3 +1,7 @@
+<i>Research use only. Not a medical device.
+This software was developed in the HEREDITARY project as a research prototype. It has not been assessed or certified under the EU Medical Device Regulation (EU) 2017/745. It must not be used to diagnose, treat, monitor or make any other decision about individual patients.</i>
+***
+
 <p>
   <img
     src="https://raw.githubusercontent.com/CMG-GUTS/mllabiome/main/assets/favicon.svg"
@@ -105,6 +109,7 @@ pip install mllabiome
 To install every dependency:
 ```bash
 uv sync --all-groups
+uv sync --all-extras --all-groups
 ```
 
 To use benchmark datasets:
@@ -116,7 +121,6 @@ To use FMs and benchmark datasets:
 ```bash
 uv sync --extra foundation --group benchmark
 uv sync --extra foundation --extra tabpfn --group benchmark
-uv sync --all-extras --all-groups
 ```
 For development from a checked-out repository:
 
@@ -132,24 +136,26 @@ uv run pytest -q
 Analyses are defined in Python configuration files and can be run end-to-end:
 
 ```bash
-mllabiome examples/ncv__ptsd_configs_sweep.py
+mllabiome examples/ncv__brown_mdd_binary_cm_configs_sweep.py
 ```
 
 or stage by stage:
 
 ```bash
-mllabiome examples/ncv__ptsd_configs_sweep.py --stage explore
-mllabiome examples/ncv__ptsd_configs_sweep.py --stage evaluate
-mllabiome examples/ncv__ptsd_configs_sweep.py --stage ensemble
-mllabiome examples/ncv__ptsd_configs_sweep.py --stage explain
-mllabiome examples/ncv__ptsd_configs_sweep.py --stage robustness
-mllabiome examples/ncv__ptsd_configs_sweep.py --stage report
+mllabiome examples/ncv__brown_mdd_binary_cm_configs_sweep.py --stage explore
+mllabiome examples/ncv__brown_mdd_binary_cm_configs_sweep.py --stage evaluate
+mllabiome examples/ncv__brown_mdd_binary_cm_configs_sweep.py --stage ensemble
+mllabiome examples/ncv__brown_mdd_binary_cm_configs_sweep.py --stage explain
+mllabiome examples/ncv__brown_mdd_binary_cm_configs_sweep.py --stage robustness
+mllabiome examples/ncv__brown_mdd_binary_cm_configs_sweep.py --stage report
 ```
+
+Or check further examples in examples folder, such as examples/multimodal_regression__gutbrain_sweep.py for mulitmodal microbiota-gut-brain axis example.
 
 For cross-study validation:
 
 ```bash
-mllabiome examples/ibs_lodo_configs_sweep.py --stage evaluate
+mllabiome examples/base/lodo__lampp_crc_cm_configs_sweep.py --stage evaluate
 ```
 
 The main workflow is:
@@ -266,3 +272,8 @@ Citation information will be provided in `CITATION.cff`.
 ### Keywords
 
 Microbiome machine learning · microbiota machine learning · metagenomics · phenotype prediction · nested cross-validation · grouped cross-validation · leave-one-dataset-out · cross-cohort validation · compositional data · ensemble learning · multimodal learning · explainable AI · SHAP · ALE · LIME · microbiome biomarker discovery · bioinformatics · classifying gut microbiome profiles to predict a health condition · taxonomic profiling data · comparing model performance across validation approaches
+
+
+### Acknowledgement
+
+> Funded by the European Union under grant agreement No 101137074 (HEREDITARY). Views and opinions expressed are however those of the author(s) only and do not necessarily reflect those of the European Union or the European Health and Digital Executive Agency (HaDEA). Neither the European Union nor the granting authority can be held responsible for them.

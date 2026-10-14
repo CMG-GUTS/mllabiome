@@ -3,86 +3,33 @@ from __future__ import annotations
 from pathlib import Path
 
 import lightgbm as lgb
+from curated_microbiota_gut_brain_axis.collections import gutbrain
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import ElasticNet
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
 
 from mllabiome import mll
 
-TITLE = "GUTBRAIN microbiota + BrainHarmonix regression sweep"
+TARGET = "Zung_S"
+TITLE = f"GUTBRAIN microbiota + BrainHarmonix {TARGET} regression sweep"
 EXPERIMENT_DIR = Path("examples/runs/GUTBRAIN-MULTIMODAL-NCV")
 
-SAMPLES = mll.Samples(
-    path=Path("examples/data/GUTBRAIN/participants.tsv"),
-    sample_id_col="participant_id",
-    target_col="Zung_S",
-    task="regression",
-)
-
-MODALITIES = (
-    mll.Modality(
-        "microbiota",
-        path=Path("examples/data/GUTBRAIN/HEALTHY_COLOMBIA_microbiota_profiles.tsv"),
-        format="matrix_tsv",
-        primary=True,
-    ),
-    mll.Modality(
-        "brainharmonix",
-        path=Path("examples/data/GUTBRAIN/brainharmonix_f_mllabiome.tsv"),
-        format="matrix_tsv",
-    ),
-)
-
-REPRESENTATIONS = {
-    "microbiota": (("species", ("species",)),),
-}
+DATA = gutbrain.mllabiome(target=TARGET)
 
 TRANSFORMATIONS = (
     mll.Transformation("presence_absence"),
     mll.Transformation("identity"),
-    # mll.Transformation("arcsine_sqrt", composition_scope="rank-wise"),
-    # mll.Transformation("arcsine_sqrt", composition_scope="joint"),
-    # mll.Transformation("yeo_johnson", composition_scope="rank-wise"),
-    # mll.Transformation("yeo_johnson", composition_scope="joint"),
-    # mll.Transformation("hellinger", composition_scope="rank-wise"),
-    # mll.Transformation("hellinger", composition_scope="joint"),
-    # mll.Transformation("relative_abundance", composition_scope="rank-wise"),
-    # mll.Transformation("relative_abundance", composition_scope="joint"),
-    # mll.Transformation("clr", composition_scope="rank-wise"),
-    # mll.Transformation("clr", composition_scope="joint"),
-    # mll.Transformation("log10", composition_scope="rank-wise"),
-    # mll.Transformation("log10", composition_scope="joint"),
-    mll.Transformation(
-        "relative_abundance",
-        composition_scope="joint",
-        feature_filter=mll.PrevalenceFilter(
-            threshold=0.05,
-        ),
-    ),
+    # mll.Transformation(
+    #     "relative_abundance",
+    #     composition_scope="joint",
+    #     feature_filter=mll.PrevalenceFilter(threshold=0.05),
+    # ),
 )
 
-
 INTEGRATIONS = (
-    # mll.Integration("unimodal"),
-    # mll.Integration("early_concat"),
     mll.Integration("intermediate_joint_pca", n_components=(16, 32)),
     mll.Integration("late_super_learner"),
 )
 
 LEARNERS = (
-    # (
-    #     "ENet_a0p01_l10p5",
-    #     make_pipeline(
-    #         StandardScaler(),
-    #         ElasticNet(
-    #             alpha=0.01,
-    #             l1_ratio=0.50,
-    #             max_iter=20_000,
-    #             random_state=42,
-    #         ),
-    #     ),
-    # ),
     (
         "RF_500_msl5",
         RandomForestRegressor(
@@ -112,12 +59,8 @@ LEARNERS = (
     ),
 )
 
-EVALUATION = mll.Evaluation(
-    protocol="nested_cv",
-    outer_folds=5,
-    inner_folds=3,
+EVALUATION = gutbrain.splits(target=TARGET).mllabiome(
     optimize_metric="RMSE",
-    random_state=42,
     n_jobs="auto",
 )
 
@@ -156,7 +99,7 @@ EXPLAINABILITY = mll.Explainability(
 )
 
 SWEEP = mll.Sweep(
-    data=None,
+    **DATA,
     experiment_dir=EXPERIMENT_DIR,
     title=TITLE,
     learners=LEARNERS,
@@ -164,9 +107,6 @@ SWEEP = mll.Sweep(
     gate=GATE,
     ensemble=ENSEMBLE,
     explainability=EXPLAINABILITY,
-    samples=SAMPLES,
-    modalities=MODALITIES,
-    representations=REPRESENTATIONS,
     transformations=TRANSFORMATIONS,
     integrations=INTEGRATIONS,
 )

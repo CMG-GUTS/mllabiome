@@ -44,13 +44,13 @@ RESOLUTIONS = (
     # ("family", ("family",)),
     # ("genus", ("genus",)),
     # ("species", ("species",)),
-    # ("strain", ("strain",)),
-    ("raw", ("all",)),
+    ("strain", ("strain",)),
+    # ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
     mll.Transformation("identity"),
-    mll.Transformation("presence_absence"),
+    # mll.Transformation("presence_absence"),
     # mll.Transformation(
     #     "relative_abundance",
     #     composition_scope="rank-wise",
@@ -93,50 +93,50 @@ MODELS = (
     #         allow_writing_files=False,
     #     ),
     # ),
-    (
-        "RF_default",
-        RandomForestClassifier(
-            random_state=42,
-        ),
-    ),
-    (
-        "LightGBM_default",
-        LGBMClassifier(
-            random_state=42,
-            n_jobs=1,
-            verbosity=-1,
-        ),
-    ),
-    (
-        "XGB_default",
-        XGBClassifier(
-            random_state=42,
-            n_jobs=1,
-            verbosity=0,
-            eval_metric="logloss",
-        ),
-    ),
-    (
-        "LR_default",
-        LogisticRegression(
-            random_state=42,
-        ),
-    ),
     # (
-    #     "TabPFN",
-    #     mll.TabPFNClassifier(
-    #         n_estimators="auto",
-    #         auto_scale_n_estimators=True,
-    #         model_path="auto",
-    #         device="auto",
-    #         inference_precision="auto",
-    #         fit_mode="fit_preprocessors",
-    #         memory_saving_mode="auto",
-    #         keep_cache_on_device=True,
+    #     "RF_default",
+    #     RandomForestClassifier(
     #         random_state=42,
-    #         n_preprocessing_jobs=1,
     #     ),
     # ),
+    # (
+    #     "LightGBM_default",
+    #     LGBMClassifier(
+    #         random_state=42,
+    #         n_jobs=1,
+    #         verbosity=-1,
+    #     ),
+    # ),
+    # (
+    #     "XGB_default",
+    #     XGBClassifier(
+    #         random_state=42,
+    #         n_jobs=1,
+    #         verbosity=0,
+    #         eval_metric="logloss",
+    #     ),
+    # ),
+    # (
+    #     "LR_default",
+    #     LogisticRegression(
+    #         random_state=42,
+    #     ),
+    # ),
+    (
+        "TabPFN",
+        mll.TabPFNClassifier(
+            n_estimators="auto",
+            auto_scale_n_estimators=True,
+            model_path="auto",
+            device="auto",
+            inference_precision="auto",
+            fit_mode="fit_preprocessors",
+            memory_saving_mode="auto",
+            keep_cache_on_device=True,
+            random_state=42,
+            n_preprocessing_jobs=1,
+        ),
+    ),
 )
 
 
