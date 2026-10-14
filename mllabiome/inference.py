@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import hashlib
 import importlib
 import json
@@ -8,9 +9,12 @@ import re
 from pathlib import Path
 from typing import Any
 
+
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn.pipeline import Pipeline
+
 
 from ._version import __version__
 from .compute import ResourceTracker, machine_profile
@@ -43,6 +47,7 @@ from .transformations import (
     transformation_label,
 )
 from .utils import dump_json_standard
+
 
 _DEPLOYMENT_SCHEMA = 1
 _INFERENCE_SCHEMA = 1
@@ -504,6 +509,16 @@ def _import_class(path: str) -> type[Any]:
     raise ImportError(f"Cannot import persisted learner class {path!r}.")
 
 
+def _instantiate_persisted_estimator(cls: type[Any], params: dict[str, Any]) -> Any:
+    direct = {key: value for key, value in params.items() if "__" not in key}
+    if issubclass(cls, Pipeline):
+        steps = direct["steps"]
+        direct["steps"] = [(name, estimator) for name, estimator in steps]
+        for name, _ in direct["steps"]:
+            direct.pop(name, None)
+    return cls(**direct)
+
+
 def _restore_persisted_value(value: Any) -> Any:
     if isinstance(value, str):
         if value == "nan":
@@ -525,12 +540,7 @@ def _restore_persisted_value(value: Any) -> Any:
             str(key): _restore_persisted_value(item)
             for key, item in value["params"].items()
         }
-        direct = {key: item for key, item in params.items() if "__" not in key}
-        nested = {key: item for key, item in params.items() if "__" in key}
-        obj = cls(**direct)
-        if nested and callable(getattr(obj, "set_params", None)):
-            obj.set_params(**nested)
-        return obj
+        return _instantiate_persisted_estimator(cls, params)
     return {str(key): _restore_persisted_value(item) for key, item in value.items()}
 
 
@@ -556,15 +566,7 @@ def _learner_item(sweep: Sweep, model: dict[str, Any]) -> Any:
         params = {
             str(key): _restore_persisted_value(value) for key, value in parsed.items()
         }
-        direct = {key: value for key, value in params.items() if "__" not in key}
-        nested = {key: value for key, value in params.items() if "__" in key}
-        estimator = cls(**direct)
-        if nested:
-            if not callable(getattr(estimator, "set_params", None)):
-                raise TypeError(
-                    f"Persisted learner {class_path!r} has nested parameters but no set_params()."
-                )
-            estimator.set_params(**nested)
+        estimator = _instantiate_persisted_estimator(cls, params)
         return (name, estimator)
     matches = [item for item in sweep.learners if _learner_name(item) == name]
     if len(matches) != 1:

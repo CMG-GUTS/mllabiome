@@ -465,18 +465,41 @@ def plot_feature_support(
         bracket_stab = (0.885, 0.970)
     else:
         label_length = max(len(_plain_taxon_label(name, None)) for name in features)
-        label_width = 0.263 if compact else min(0.310, max(0.215, 0.130 + 0.0033 * label_length))
+        label_width = (
+            0.263 if compact else min(0.310, max(0.215, 0.130 + 0.0033 * label_length))
+        )
         direction_x = label_width + (0.010 if compact else 0.017)
         support_x = direction_x + (0.139 if compact else 0.155)
         mean_x = support_x + (0.230 if compact else 0.235)
         stability_x = support_x + 0.274 if compact else mean_x + 0.095
         row_bottom = 0.125 if compact else 0.035
         row_height = 0.705 if compact else 0.820
-        ax_lab = fig.add_axes(_bbox(panel, 0.004, row_bottom, label_width, row_height), zorder=5)
-        ax_dir = fig.add_axes(_bbox(panel, direction_x, row_bottom, 0.105 if compact else 0.130, row_height), zorder=5)
-        ax_hm = fig.add_axes(_bbox(panel, support_x, row_bottom, 0.240 if compact else 0.210, row_height), zorder=5)
-        ax_mean = None if compact else fig.add_axes(_bbox(panel, mean_x, row_bottom, 0.068, row_height), zorder=5)
-        ax_stab = fig.add_axes(_bbox(panel, stability_x, row_bottom, 0.970 - stability_x, row_height), zorder=5)
+        ax_lab = fig.add_axes(
+            _bbox(panel, 0.004, row_bottom, label_width, row_height), zorder=5
+        )
+        ax_dir = fig.add_axes(
+            _bbox(
+                panel, direction_x, row_bottom, 0.105 if compact else 0.130, row_height
+            ),
+            zorder=5,
+        )
+        ax_hm = fig.add_axes(
+            _bbox(
+                panel, support_x, row_bottom, 0.240 if compact else 0.210, row_height
+            ),
+            zorder=5,
+        )
+        ax_mean = (
+            None
+            if compact
+            else fig.add_axes(
+                _bbox(panel, mean_x, row_bottom, 0.068, row_height), zorder=5
+            )
+        )
+        ax_stab = fig.add_axes(
+            _bbox(panel, stability_x, row_bottom, 0.970 - stability_x, row_height),
+            zorder=5,
+        )
         bracket_lab = (0.020, label_width)
         bracket_dir = (direction_x, direction_x + (0.105 if compact else 0.130))
         bracket_hm = (support_x, support_x + (0.240 if compact else 0.210))
@@ -512,7 +535,9 @@ def plot_feature_support(
         ax_lab.text(
             0.120,
             i,
-            _net_italic(_plain_taxon_label(feat, 17)) if compact else _full_feature_label(feat),
+            _net_italic(_plain_taxon_label(feat, 17))
+            if compact
+            else _full_feature_label(feat),
             ha="left",
             va="center",
             fontsize=5.0,
@@ -551,7 +576,11 @@ def plot_feature_support(
             [v], [i], s=size, marker=marker, color=col, edgecolors="none", zorder=3
         )
     ax_dir.set_xticks([-1.0, 0.0, 1.0])
-    ax_dir.set_xticklabels(["-", "0", "+"] if compact else ["Control", "0", "Case"], fontsize=5.0, color="#000000")
+    ax_dir.set_xticklabels(
+        ["-", "0", "+"] if compact else ["Control", "0", "Case"],
+        fontsize=5.0,
+        color="#000000",
+    )
     for lab in ax_dir.get_xticklabels():
         lab.set_clip_on(False)
     _style_black_bottom_axis(ax_dir, show_left=False)
@@ -575,7 +604,9 @@ def plot_feature_support(
             )
             axis.set_xticks(np.arange(len(method_cols)))
             labels = [m.replace("Permutation", "Perm.") for m in method_cols]
-            axis.set_xticklabels(labels, fontsize=5.0, color="#000000", rotation=90 if compact else 0)
+            axis.set_xticklabels(
+                labels, fontsize=5.0, color="#000000", rotation=90 if compact else 0
+            )
             axis.tick_params(axis="x", length=0, pad=2, colors="#000000")
             for lab in axis.get_xticklabels():
                 lab.set_clip_on(False)
@@ -595,13 +626,46 @@ def plot_feature_support(
         if ax_mean is not None:
             _soft_missing(ax_mean, "no mean")
 
-    _bracket(fig, panel, bracket_lab[0], bracket_lab[1], 0.900, "Ranked feature" if not compact else "Ranked features")
-    _bracket(fig, panel, bracket_dir[0], bracket_dir[1], 0.900, "Class shift" if not compact else "Shift")
-    _bracket(fig, panel, bracket_hm[0], bracket_hm[1], 0.900, "Top-k support" if not compact else "Support")
-    if ax_mean is not None:
-        _bracket(fig, panel, bracket_mean[0], bracket_mean[1], 0.900, "Mean support" if not compact else "Mean")
     _bracket(
-        fig, panel, bracket_stab[0], bracket_stab[1], 0.900, "Fold top-k frequency" if not compact else "Fold stability"
+        fig,
+        panel,
+        bracket_lab[0],
+        bracket_lab[1],
+        0.900,
+        "Ranked feature" if not compact else "Ranked features",
+    )
+    _bracket(
+        fig,
+        panel,
+        bracket_dir[0],
+        bracket_dir[1],
+        0.900,
+        "Class shift" if not compact else "Shift",
+    )
+    _bracket(
+        fig,
+        panel,
+        bracket_hm[0],
+        bracket_hm[1],
+        0.900,
+        "Top-k support" if not compact else "Support",
+    )
+    if ax_mean is not None:
+        _bracket(
+            fig,
+            panel,
+            bracket_mean[0],
+            bracket_mean[1],
+            0.900,
+            "Mean support" if not compact else "Mean",
+        )
+    _bracket(
+        fig,
+        panel,
+        bracket_stab[0],
+        bracket_stab[1],
+        0.900,
+        "Fold top-k frequency" if not compact else "Fold stability",
     )
     save_all(fig, out_stem)
     plt.close(fig)
@@ -1436,29 +1500,85 @@ def _compact_interaction_legend(
     for i in range(80):
         t = (i + 0.5) / 80.0
         col = _interp_col_net(t, CLASS_CTRL, NET_NEUT, CLASS_CASE)
-        ax.fill([0.018+i*0.0031,0.0211+i*0.0031,0.0211+i*0.0031,0.018+i*0.0031], [0.42,0.42,0.60,0.60], color=col, lw=0)
-    ax.text(0.018,0.93,left,ha="left",va="top",fontsize=5.0,color=MID)
-    ax.text(0.267,0.93,right,ha="right",va="top",fontsize=5.0,color=MID)
-    ax.text(0.142,0.04,"Class shift",ha="center",va="bottom",fontsize=5.0,color=MID)
+        ax.fill(
+            [
+                0.018 + i * 0.0031,
+                0.0211 + i * 0.0031,
+                0.0211 + i * 0.0031,
+                0.018 + i * 0.0031,
+            ],
+            [0.42, 0.42, 0.60, 0.60],
+            color=col,
+            lw=0,
+        )
+    ax.text(0.018, 0.93, left, ha="left", va="top", fontsize=5.0, color=MID)
+    ax.text(0.267, 0.93, right, ha="right", va="top", fontsize=5.0, color=MID)
+    ax.text(
+        0.142, 0.04, "Class shift", ha="center", va="bottom", fontsize=5.0, color=MID
+    )
     if abundance_available:
-        values = _net_abundance_legend_values(abundances, abundance_lower, abundance_upper)
+        values = _net_abundance_legend_values(
+            abundances, abundance_lower, abundance_upper
+        )
         if len(values) > 3:
-            values = [values[0],values[len(values)//2],values[-1]]
-        positions = np.linspace(0.355,0.645,len(values)) if len(values)>1 else np.array([0.5])
-        for x,value in zip(positions,values):
-            norm = _net_abundance_norm(value,abundance_lower,abundance_upper)
-            size = 15.0 + 57.0*norm
-            ax.scatter([x],[0.49],s=size,facecolors=NET_NEUT,edgecolors=INK,linewidths=0.5,zorder=4)
-            ax.text(x,0.95,_format_relative_abundance(value),ha="center",va="top",fontsize=5.0,color=MID)
+            values = [values[0], values[len(values) // 2], values[-1]]
+        positions = (
+            np.linspace(0.355, 0.645, len(values))
+            if len(values) > 1
+            else np.array([0.5])
+        )
+        for x, value in zip(positions, values):
+            norm = _net_abundance_norm(value, abundance_lower, abundance_upper)
+            size = 15.0 + 57.0 * norm
+            ax.scatter(
+                [x],
+                [0.49],
+                s=size,
+                facecolors=NET_NEUT,
+                edgecolors=INK,
+                linewidths=0.5,
+                zorder=4,
+            )
+            ax.text(
+                x,
+                0.95,
+                _format_relative_abundance(value),
+                ha="center",
+                va="top",
+                fontsize=5.0,
+                color=MID,
+            )
     else:
-        ax.text(0.5,0.57,"N/A",ha="center",va="center",fontsize=5.0,color=MID)
-    ax.text(0.50,0.04,"Mean relative abundance",ha="center",va="bottom",fontsize=5.0,color=MID)
+        ax.text(0.5, 0.57, "N/A", ha="center", va="center", fontsize=5.0, color=MID)
+    ax.text(
+        0.50,
+        0.04,
+        "Mean relative abundance",
+        ha="center",
+        va="bottom",
+        fontsize=5.0,
+        color=MID,
+    )
     for i in range(30):
-        t=(i+0.5)/30.0
-        ax.plot([0.75+i*0.0071,0.75+(i+1)*0.0071],[0.50,0.50],lw=0.45+1.55*t,color=NET_EDGE_CMAP(0.10+0.90*t),solid_capstyle="butt")
-    ax.text(0.747,0.95,f"{s_min:.2g}",ha="left",va="top",fontsize=5.0,color=MID)
-    ax.text(0.968,0.95,f"{s_max:.2g}",ha="right",va="top",fontsize=5.0,color=MID)
-    ax.text(0.858,0.04,"Interaction strength",ha="center",va="bottom",fontsize=5.0,color=MID)
+        t = (i + 0.5) / 30.0
+        ax.plot(
+            [0.75 + i * 0.0071, 0.75 + (i + 1) * 0.0071],
+            [0.50, 0.50],
+            lw=0.45 + 1.55 * t,
+            color=NET_EDGE_CMAP(0.10 + 0.90 * t),
+            solid_capstyle="butt",
+        )
+    ax.text(0.747, 0.95, f"{s_min:.2g}", ha="left", va="top", fontsize=5.0, color=MID)
+    ax.text(0.968, 0.95, f"{s_max:.2g}", ha="right", va="top", fontsize=5.0, color=MID)
+    ax.text(
+        0.858,
+        0.04,
+        "Interaction strength",
+        ha="center",
+        va="bottom",
+        fontsize=5.0,
+        color=MID,
+    )
 
 
 def plot_interaction_network(
@@ -1476,10 +1596,15 @@ def plot_interaction_network(
         node_count = len(_build_network_graph(tab.head(int(top_k)), stats).nodes())
     except Exception:
         node_count = 0
-    panel_height = 42.0 if compact else min(160.0, 112.0 + max(0, node_count - 24) * 3.0)
+    panel_height = (
+        42.0 if compact else min(160.0, 112.0 + max(0, node_count - 24) * 3.0)
+    )
     fig = plt.figure(figsize=((89.0 * MM) if compact else COL_W_2, panel_height * MM))
     fig.patch.set_facecolor(BG)
-    ax_net = fig.add_axes([0.005, 0.253, 0.990, 0.725] if compact else [0.025, 0.225, 0.950, 0.745], zorder=4)
+    ax_net = fig.add_axes(
+        [0.005, 0.253, 0.990, 0.725] if compact else [0.025, 0.225, 0.950, 0.745],
+        zorder=4,
+    )
     ax_leg = fig.add_axes([0.035, 0.025, 0.930, 0.192 if compact else 0.155], zorder=12)
     try:
         (
@@ -1492,8 +1617,14 @@ def plot_interaction_network(
         ) = _draw_network(ax_net, tab, stats, top_k, layout=layout)
         if compact:
             _compact_interaction_legend(
-                ax_leg,s_min,s_max,abundance_lower,abundance_upper,
-                abundances,abundance_available,labels,
+                ax_leg,
+                s_min,
+                s_max,
+                abundance_lower,
+                abundance_upper,
+                abundances,
+                abundance_available,
+                labels,
             )
         else:
             _legend_interaction_bottom(
@@ -1710,7 +1841,6 @@ def _draw_cohort_context(
     return groups, colors
 
 
-
 def _draw_standardized_cohort_sample_shift(
     axis: plt.Axes,
     context: pd.DataFrame,
@@ -1722,37 +1852,89 @@ def _draw_standardized_cohort_sample_shift(
     _style_black_bottom_axis(axis, show_left=False)
     plotted = 0
     maximum = 1.0
-    if not context.empty and {"feature", "sample_id", "class_index", "relative_abundance"}.issubset(context.columns):
-        frame = context[["feature", "sample_id", "class_index", "relative_abundance"]].copy()
+    if not context.empty and {
+        "feature",
+        "sample_id",
+        "class_index",
+        "relative_abundance",
+    }.issubset(context.columns):
+        frame = context[
+            ["feature", "sample_id", "class_index", "relative_abundance"]
+        ].copy()
         frame["feature"] = frame["feature"].astype(str)
         frame["sample_id"] = frame["sample_id"].astype(str)
         frame["class_index"] = pd.to_numeric(frame["class_index"], errors="coerce")
-        frame["relative_abundance"] = pd.to_numeric(frame["relative_abundance"], errors="coerce")
+        frame["relative_abundance"] = pd.to_numeric(
+            frame["relative_abundance"], errors="coerce"
+        )
         frame = frame.dropna(subset=["class_index", "relative_abundance"])
         frame = frame.drop_duplicates(["feature", "sample_id"], keep="first")
         sample_color = "#82758F"
         for yi, feature in enumerate(features):
             subset = frame[frame["feature"].eq(str(feature))]
-            controls = subset.loc[subset["class_index"].eq(0), "relative_abundance"].to_numpy(float)
-            cases = subset.loc[subset["class_index"].eq(1), "relative_abundance"].to_numpy(float)
+            controls = subset.loc[
+                subset["class_index"].eq(0), "relative_abundance"
+            ].to_numpy(float)
+            cases = subset.loc[
+                subset["class_index"].eq(1), "relative_abundance"
+            ].to_numpy(float)
             sample = subset[subset["sample_id"].eq(str(sample_id))]
             if len(controls) < 2 or len(cases) < 2 or sample.empty:
                 continue
-            pooled = ((len(controls) - 1) * np.var(controls, ddof=1) + (len(cases) - 1) * np.var(cases, ddof=1)) / (len(controls) + len(cases) - 2)
+            pooled = (
+                (len(controls) - 1) * np.var(controls, ddof=1)
+                + (len(cases) - 1) * np.var(cases, ddof=1)
+            ) / (len(controls) + len(cases) - 2)
             if not np.isfinite(pooled) or pooled <= 0:
                 continue
             spread = float(np.sqrt(pooled))
             baseline = float(np.mean(controls))
             case_shift = (float(np.mean(cases)) - baseline) / spread
-            focal_shift = (float(sample["relative_abundance"].iloc[0]) - baseline) / spread
+            focal_shift = (
+                float(sample["relative_abundance"].iloc[0]) - baseline
+            ) / spread
             if not np.isfinite(case_shift) or not np.isfinite(focal_shift):
                 continue
             maximum = max(maximum, abs(case_shift), abs(focal_shift))
-            axis.plot([0.0, focal_shift], [yi + 0.25, yi + 0.25], color=sample_color, lw=0.58, alpha=0.43, solid_capstyle="round", zorder=2)
-            axis.scatter([focal_shift], [yi + 0.25], marker="o", s=5.0, facecolor=BG, edgecolor=sample_color, linewidth=0.52, alpha=0.86, zorder=3)
+            axis.plot(
+                [0.0, focal_shift],
+                [yi + 0.25, yi + 0.25],
+                color=sample_color,
+                lw=0.58,
+                alpha=0.43,
+                solid_capstyle="round",
+                zorder=2,
+            )
+            axis.scatter(
+                [focal_shift],
+                [yi + 0.25],
+                marker="o",
+                s=5.0,
+                facecolor=BG,
+                edgecolor=sample_color,
+                linewidth=0.52,
+                alpha=0.86,
+                zorder=3,
+            )
             case_color = CLASS_CASE if case_shift >= 0.0 else CLASS_CTRL
-            axis.plot([0.0, case_shift], [yi - 0.12, yi - 0.12], color=case_color, lw=1.0, alpha=0.86, solid_capstyle="round", zorder=4)
-            axis.scatter([case_shift], [yi - 0.12], marker="o", s=9, color=case_color, edgecolors="none", zorder=5)
+            axis.plot(
+                [0.0, case_shift],
+                [yi - 0.12, yi - 0.12],
+                color=case_color,
+                lw=1.0,
+                alpha=0.86,
+                solid_capstyle="round",
+                zorder=4,
+            )
+            axis.scatter(
+                [case_shift],
+                [yi - 0.12],
+                marker="o",
+                s=9,
+                color=case_color,
+                edgecolors="none",
+                zorder=5,
+            )
             plotted += 1
     axis.set_xlim(-maximum * 1.16, maximum * 1.16)
     axis.set_xticks([-maximum, 0.0, maximum])
@@ -1879,7 +2061,9 @@ def plot_local_attributions(
     if compact:
         representatives = []
         if "true_class_label" in selected.columns:
-            for class_name in dict.fromkeys(selected["true_class_label"].astype(str).tolist()):
+            for class_name in dict.fromkeys(
+                selected["true_class_label"].astype(str).tolist()
+            ):
                 for sample_id in sample_ids:
                     subset = selected[selected["sample_id"].astype(str).eq(sample_id)]
                     if subset["true_class_label"].astype(str).eq(class_name).any():
@@ -2136,34 +2320,79 @@ def plot_local_attributions(
             if has_context:
                 axes = {
                     "labels": fig.add_axes(
-                        [0.035, y0 + (0.15 if compact else 0.10) * panel_h, 0.225 if compact else 0.235, panel_h * (0.55 if compact else 0.61)]
+                        [
+                            0.035,
+                            y0 + (0.15 if compact else 0.10) * panel_h,
+                            0.225 if compact else 0.235,
+                            panel_h * (0.55 if compact else 0.61),
+                        ]
                     ),
                     "context": fig.add_axes(
-                        [0.273 if compact else 0.285, y0 + (0.15 if compact else 0.10) * panel_h, 0.150 if compact else 0.120, panel_h * (0.55 if compact else 0.61)]
+                        [
+                            0.273 if compact else 0.285,
+                            y0 + (0.15 if compact else 0.10) * panel_h,
+                            0.150 if compact else 0.120,
+                            panel_h * (0.55 if compact else 0.61),
+                        ]
                     ),
                     "shap": fig.add_axes(
-                        [0.436 if compact else 0.425, y0 + (0.15 if compact else 0.10) * panel_h, 0.157 if compact else 0.170, panel_h * (0.55 if compact else 0.61)]
+                        [
+                            0.436 if compact else 0.425,
+                            y0 + (0.15 if compact else 0.10) * panel_h,
+                            0.157 if compact else 0.170,
+                            panel_h * (0.55 if compact else 0.61),
+                        ]
                     ),
                     "lime": fig.add_axes(
-                        [0.608 if compact else 0.610, y0 + (0.15 if compact else 0.10) * panel_h, 0.157 if compact else 0.170, panel_h * (0.55 if compact else 0.61)]
+                        [
+                            0.608 if compact else 0.610,
+                            y0 + (0.15 if compact else 0.10) * panel_h,
+                            0.157 if compact else 0.170,
+                            panel_h * (0.55 if compact else 0.61),
+                        ]
                     ),
                     "consensus": fig.add_axes(
-                        [0.780 if compact else 0.795, y0 + (0.15 if compact else 0.10) * panel_h, 0.190 if compact else 0.170, panel_h * (0.55 if compact else 0.61)]
+                        [
+                            0.780 if compact else 0.795,
+                            y0 + (0.15 if compact else 0.10) * panel_h,
+                            0.190 if compact else 0.170,
+                            panel_h * (0.55 if compact else 0.61),
+                        ]
                     ),
                 }
             else:
                 axes = {
                     "labels": fig.add_axes(
-                        [0.035, y0 + (0.15 if compact else 0.10) * panel_h, 0.275, panel_h * (0.55 if compact else 0.61)]
+                        [
+                            0.035,
+                            y0 + (0.15 if compact else 0.10) * panel_h,
+                            0.275,
+                            panel_h * (0.55 if compact else 0.61),
+                        ]
                     ),
                     "shap": fig.add_axes(
-                        [0.325, y0 + (0.15 if compact else 0.10) * panel_h, 0.200, panel_h * (0.55 if compact else 0.61)]
+                        [
+                            0.325,
+                            y0 + (0.15 if compact else 0.10) * panel_h,
+                            0.200,
+                            panel_h * (0.55 if compact else 0.61),
+                        ]
                     ),
                     "lime": fig.add_axes(
-                        [0.540, y0 + (0.15 if compact else 0.10) * panel_h, 0.200, panel_h * (0.55 if compact else 0.61)]
+                        [
+                            0.540,
+                            y0 + (0.15 if compact else 0.10) * panel_h,
+                            0.200,
+                            panel_h * (0.55 if compact else 0.61),
+                        ]
                     ),
                     "consensus": fig.add_axes(
-                        [0.755, y0 + (0.15 if compact else 0.10) * panel_h, 0.210, panel_h * (0.55 if compact else 0.61)]
+                        [
+                            0.755,
+                            y0 + (0.15 if compact else 0.10) * panel_h,
+                            0.210,
+                            panel_h * (0.55 if compact else 0.61),
+                        ]
                     ),
                 }
         else:
@@ -2171,22 +2400,47 @@ def plot_local_attributions(
             if has_context:
                 axes = {
                     "labels": fig.add_axes(
-                        [0.055, y0 + (0.15 if compact else 0.10) * panel_h, 0.300, panel_h * (0.55 if compact else 0.61)]
+                        [
+                            0.055,
+                            y0 + (0.15 if compact else 0.10) * panel_h,
+                            0.300,
+                            panel_h * (0.55 if compact else 0.61),
+                        ]
                     ),
                     "context": fig.add_axes(
-                        [0.375, y0 + (0.15 if compact else 0.10) * panel_h, 0.145, panel_h * (0.55 if compact else 0.61)]
+                        [
+                            0.375,
+                            y0 + (0.15 if compact else 0.10) * panel_h,
+                            0.145,
+                            panel_h * (0.55 if compact else 0.61),
+                        ]
                     ),
                     method: fig.add_axes(
-                        [0.55, y0 + (0.15 if compact else 0.10) * panel_h, 0.39, panel_h * (0.55 if compact else 0.61)]
+                        [
+                            0.55,
+                            y0 + (0.15 if compact else 0.10) * panel_h,
+                            0.39,
+                            panel_h * (0.55 if compact else 0.61),
+                        ]
                     ),
                 }
             else:
                 axes = {
                     "labels": fig.add_axes(
-                        [0.055, y0 + (0.15 if compact else 0.10) * panel_h, 0.39, panel_h * (0.55 if compact else 0.61)]
+                        [
+                            0.055,
+                            y0 + (0.15 if compact else 0.10) * panel_h,
+                            0.39,
+                            panel_h * (0.55 if compact else 0.61),
+                        ]
                     ),
                     method: fig.add_axes(
-                        [0.47, y0 + (0.15 if compact else 0.10) * panel_h, 0.47, panel_h * (0.55 if compact else 0.61)]
+                        [
+                            0.47,
+                            y0 + (0.15 if compact else 0.10) * panel_h,
+                            0.47,
+                            panel_h * (0.55 if compact else 0.61),
+                        ]
                     ),
                 }
         n_rows = len(merged)
@@ -2219,13 +2473,25 @@ def plot_local_attributions(
             ].copy()
             if compact and str(task).lower() == "classification":
                 plotted_shift, maximum_shift = _draw_standardized_cohort_sample_shift(
-                    axes["context"], panel_context, display_features, sample_id,
+                    axes["context"],
+                    panel_context,
+                    display_features,
+                    sample_id,
                 )
                 compact_shift_axes.append(axes["context"])
                 compact_shift_maximum = max(compact_shift_maximum, maximum_shift)
-                axes["context"].set_title("Shift",fontsize=5.0,color=MID,pad=3)
+                axes["context"].set_title("Shift", fontsize=5.0, color=MID, pad=3)
                 if plotted_shift == 0:
-                    axes["context"].text(0.5,0.5,"n/a",transform=axes["context"].transAxes,ha="center",va="center",fontsize=5.0,color=MID)
+                    axes["context"].text(
+                        0.5,
+                        0.5,
+                        "n/a",
+                        transform=axes["context"].transAxes,
+                        ha="center",
+                        va="center",
+                        fontsize=5.0,
+                        color=MID,
+                    )
             else:
                 _draw_cohort_context(
                     axes["context"],
@@ -2270,14 +2536,18 @@ def plot_local_attributions(
             ]
             ax.barh(y, values, height=0.54, color=colors, edgecolor="none", zorder=2)
             ax.axvline(0.0, color="#000000", lw=0.5, zorder=3)
-            ax.set_xlim(-(2.80 if compact else 2.05) * vmax, (2.80 if compact else 2.05) * vmax)
+            ax.set_xlim(
+                -(2.80 if compact else 2.05) * vmax, (2.80 if compact else 2.05) * vmax
+            )
             if method == "shap":
                 xlabel = shap_label
                 title = "SHAP"
             else:
                 xlabel = "LIME local surrogate coefficient"
                 title = "LIME"
-            ax.set_xlabel("" if compact else xlabel, fontsize=5.0, color=INK, labelpad=2)
+            ax.set_xlabel(
+                "" if compact else xlabel, fontsize=5.0, color=INK, labelpad=2
+            )
             ax.set_title(title, fontsize=5.7, color=MID, pad=3, weight="bold")
             ax.tick_params(axis="x", labelsize=5.0, length=1.8, width=0.35, pad=1)
             ax.spines["bottom"].set_visible(True)
@@ -2311,7 +2581,10 @@ def plot_local_attributions(
             ax.set_xlim(-2.80, 2.80)
             ax.set_xticks([-1.0, 0.0, 1.0])
             ax.set_xlabel(
-                "" if compact else "Signed within-method rank support", fontsize=5.0, color=INK, labelpad=2
+                "" if compact else "Signed within-method rank support",
+                fontsize=5.0,
+                color=INK,
+                labelpad=2,
             )
             ax.set_title("Cross-method", fontsize=5.7, color=MID, pad=3, weight="bold")
             ax.tick_params(axis="x", labelsize=5.0, length=1.8, width=0.35, pad=1)
@@ -2323,7 +2596,11 @@ def plot_local_attributions(
                 support_count = int(row["support_count"])
                 x = value + (0.065 if value >= 0 else -0.065)
                 ha = "left" if value >= 0 else "right"
-                label = f"{support_count}/2" if compact else f"{value:+.3f} · {support_count}/2"
+                label = (
+                    f"{support_count}/2"
+                    if compact
+                    else f"{value:+.3f} · {support_count}/2"
+                )
                 ax.text(
                     x,
                     yi,
@@ -2338,15 +2615,48 @@ def plot_local_attributions(
         axis.set_xlim(-compact_shift_maximum * 1.16, compact_shift_maximum * 1.16)
         axis.set_xticks([-compact_shift_maximum, 0.0, compact_shift_maximum])
         axis.set_xticklabels(["-", "0", "+"], fontsize=5.0, color="#000000")
-        for label, alignment in zip(axis.get_xticklabels(), ("left", "center", "right")):
+        for label, alignment in zip(
+            axis.get_xticklabels(), ("left", "center", "right")
+        ):
             label.set_horizontalalignment(alignment)
     if compact and not context.empty and len(methods) == 2:
         legend_y = 0.017
         legend_x = 0.39
         sample_color = "#82758F"
-        fig.add_artist(mlines.Line2D([legend_x, legend_x + 0.025], [legend_y, legend_y], transform=fig.transFigure, color=sample_color, alpha=0.43, lw=0.58, solid_capstyle="round"))
-        fig.add_artist(mlines.Line2D([legend_x + 0.025], [legend_y], transform=fig.transFigure, marker="o", linestyle="none", markersize=1.75, markerfacecolor=BG, markeredgecolor=sample_color, markeredgewidth=0.52, alpha=0.86))
-        fig.text(legend_x + 0.045, legend_y, "Explained sample", fontsize=5.0, color=MID, ha="left", va="center")
+        fig.add_artist(
+            mlines.Line2D(
+                [legend_x, legend_x + 0.025],
+                [legend_y, legend_y],
+                transform=fig.transFigure,
+                color=sample_color,
+                alpha=0.43,
+                lw=0.58,
+                solid_capstyle="round",
+            )
+        )
+        fig.add_artist(
+            mlines.Line2D(
+                [legend_x + 0.025],
+                [legend_y],
+                transform=fig.transFigure,
+                marker="o",
+                linestyle="none",
+                markersize=1.75,
+                markerfacecolor=BG,
+                markeredgecolor=sample_color,
+                markeredgewidth=0.52,
+                alpha=0.86,
+            )
+        )
+        fig.text(
+            legend_x + 0.045,
+            legend_y,
+            "Explained sample",
+            fontsize=5.0,
+            color=MID,
+            ha="left",
+            va="center",
+        )
     save_all(fig, out_stem)
     plt.close(fig)
     return out_stem.with_suffix(".svg")

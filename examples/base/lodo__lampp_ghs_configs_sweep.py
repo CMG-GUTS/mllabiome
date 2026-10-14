@@ -42,9 +42,9 @@ RESOLUTIONS = (
     # ("class", ("class",)),
     # ("order", ("order",)),
     # ("family", ("family",)),
-    # ("genus", ("genus",)),
+    ("genus", ("genus",)),
     # ("species", ("species",)),
-    ("strain", ("strain",)),
+    # ("strain", ("strain",)),
     # ("raw", ("all",)),
 )
 

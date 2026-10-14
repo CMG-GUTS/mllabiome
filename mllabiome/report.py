@@ -2741,6 +2741,7 @@ def _build_report_visuals(
             top_n=int(getattr(sweep.explainability, "top_k", 15)),
         )
         from .report_explainability_summary import explainability_summary_block
+
         explainability_summary_html = explainability_summary_block(root, report_dir)
     return _ReportVisuals(
         representation_figure=representation_figure,
@@ -3420,7 +3421,8 @@ def _write_report_manifest(
             "explainability_targets": visuals.explainability_count,
             "explainability_composite_svg": (
                 "explainability_composite.svg"
-                if (report_dir / "explainability_composite.svg").exists() else None
+                if (report_dir / "explainability_composite.svg").exists()
+                else None
             ),
         },
         report_dir / "report_manifest.json",

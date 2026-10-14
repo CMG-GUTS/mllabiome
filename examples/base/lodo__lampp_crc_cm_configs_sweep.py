@@ -180,7 +180,8 @@ EXPLAINABILITY = mll.Explainability(
         mll.LIME(),
         mll.ALEInteractions(
             top_k=50,
-        ),    ),
+        ),
+    ),
     classes="auto",
 )
 

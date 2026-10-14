@@ -128,18 +128,20 @@ MODELS = (
     (
         "LR_tuned_scaled",
         GridSearchCV(
-            estimator=Pipeline([
-                ("scaler", StandardScaler(with_mean=False)),
-                (
-                    "lr",
-                    LogisticRegression(
-                        solver="saga",
-                        max_iter=5000,
-                        tol=1e-3,
-                        random_state=42,
+            estimator=Pipeline(
+                [
+                    ("scaler", StandardScaler(with_mean=False)),
+                    (
+                        "lr",
+                        LogisticRegression(
+                            solver="saga",
+                            max_iter=5000,
+                            tol=1e-3,
+                            random_state=42,
+                        ),
                     ),
-                ),
-            ]),
+                ]
+            ),
             param_grid={
                 "lr__C": [0.03, 0.3, 3.0],
                 "lr__l1_ratio": [0.0, 0.5, 1.0],
@@ -166,7 +168,6 @@ MODELS = (
             n_preprocessing_jobs=1,
         ),
     ),
-
 )
 
 
