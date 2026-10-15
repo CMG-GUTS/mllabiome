@@ -34,16 +34,10 @@ From a repository checkout, use `uv sync --extra foundation` for foundation-mode
 
 ## Run an example
 
-The repository contains runnable configuration files under `examples/`.
+Browse the [current example configurations](https://github.com/CMG-GUTS/mllabiome/tree/main/examples). From a repository checkout, run a configuration with:
 
 ```bash
-mllabiome examples/ncv__ptsd_configs_sweep.py
-```
-
-A leave-one-dataset-out example is also provided:
-
-```bash
-mllabiome examples/ibs_lodo_configs_sweep.py --stage evaluate
+mllabiome path/to/config.py --stage evaluate
 ```
 
 ## Run one stage
