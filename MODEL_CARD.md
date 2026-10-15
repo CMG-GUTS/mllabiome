@@ -12,7 +12,7 @@
 | Type | Software or library |
 | Owner partner and contact | Radboud University Medical Center (RUMC), Agata Polejowska, agata.polejowska@radboudumc.nl |
 | License | Apache-2.0 |
-| Repository and DOI | https://github.com/CMG-GUTS/mllabiome |
+| Repository URL | https://github.com/CMG-GUTS/mllabiome |
 | Release date | 15 October 2026 |
 | Related task or deliverable | WP4, D4.5, D2.6 |
 | How to cite | Agata Polejowska. (2026). *mllabiome* (Version 0.2.0) [Computer software]. https://github.com/CMG-GUTS/mllabiome |
@@ -26,24 +26,21 @@
 **Out-of-scope uses.** This release must not be used for
 - clinical diagnosis, prognosis or treatment of individual patients;
 - decisions about individuals, such as insurance, employment or access to care;
-- re-identification of individuals or linkage with other data sources;
-- populations, devices or data types not described in Section 3;
+- re-identification of individuals or linkage with other data sources.
 
 ## 3. Data provenance
 
-| Dataset | Source partner | Type (public, synthetic, pseudonymized, anonymized) | Population (size, age, sex, country, condition) | Ethics approval or access conditions |
+| Dataset | Source publication | Type (public, synthetic, pseudonymized, anonymized) | Population (size, age, sex, country, condition) | Ethics approval or access conditions |
 |---|---|---|---|---|
 | LAMPP — Live Assessment of Metagenomics-based tools for human Phenotype Prediction (all six prediction tasks) | Barak et al. (2025), https://doi.org/10.1101/2025.06.12.658885 | Public | Multiple cohorts covering different host phenotypes. Demographics and sample sizes vary by task; see the source publication. | Publicly available benchmark. Ethics approvals are described in the original studies. |
 | Gut microbiota and fMRI-derived features | Miranda-Angulo et al. (2024), https://doi.org/10.1016/j.psyneuen.2024.107003 | Public | 88 healthy Colombian men, aged 21–40 years. | Publicly available research data. Original study ethics and data-access conditions apply. |
 
 
-This repository and the released files contain no personal data, pseudonymized records, identifiers or pseudonymization keys.
-
 ## 4. Method
 
 - **Algorithm or architecture.** The framework supports multiple machine-learning algorithms, ensemble methods and pretrained foundation models for unimodal and multimodal analysis. It provides automated model optimization, validation and explainability.
-- **Training setting.** Centralized.
-- **Privacy techniques.** No dedicated privacy-preserving techniques are documented for the core framework; data are processed locally by default.
+- **Training setting.** Primarily centralized; optional federated-learning simulation using Flower SecAgg+.
+**Privacy techniques.** Data are processed locally by default. Secure aggregation is demonstrated in the optional federated-learning example.
 
 ## 5. Performance
 
@@ -60,7 +57,7 @@ This repository and the released files contain no personal data, pseudonymized r
 
 ## 7. Responsible use and reporting
 
-- **Terms of use.** Released under the Apache-2.0 license. The software is intended for research use only and has not been validated for clinical applications. Users are responsible for ensuring appropriate data protection and compliance with applicable regulations.
+- **Terms of use.** Released under the Apache-2.0 license. The software is intended for research use only and has not been validated for clinical applications.
 - **Contact for misuse or vulnerability reports.** Agata Polejowska, Radboud University Medical Center, agata.polejowska@radboudumc.nl
 
 ## 8. Acknowledgement
