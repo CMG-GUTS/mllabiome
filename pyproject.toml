@@ -93,9 +93,10 @@ benchmark = [
     "curated-microbiota-gut-brain-axis>=0.1.0",
 ]
 
+
 [project.optional-dependencies]
 federated = [
-  "flwr[simulation]>=1.39,<1.40",
+  "flwr[simulation]>=1.39,<1.40; python_version >= '3.11'",
 ]
 
 tabpfn = [

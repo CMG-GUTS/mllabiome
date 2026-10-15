@@ -878,6 +878,28 @@ def run_inference(
     )
     inference_root = root / "inference"
     deployment_dir = inference_root / "deployment"
+    deployment_dir.mkdir(parents=True, exist_ok=True)
+    background_path = deployment_dir / "background.npz"
+    fingerprint = dataset_fingerprint(training)
+    replace_background = True
+    if background_path.is_file():
+        try:
+            with np.load(background_path, allow_pickle=False) as existing:
+                replace_background = str(existing["fingerprint"].item()) != fingerprint
+        except (ValueError, OSError, KeyError):
+            pass
+    if replace_background:
+        rng = np.random.default_rng(int(sweep.evaluation.random_state))
+        rows = np.sort(rng.choice(len(training.sample_ids), size=min(32, len(training.sample_ids)), replace=False))
+        temp = background_path.with_suffix(".tmp")
+        with temp.open("wb") as handle:
+            np.savez_compressed(
+                handle,
+                X=training.X_by_level["all"][rows],
+                names=np.asarray(training.feature_names_by_level["all"], dtype=str),
+                fingerprint=np.asarray(fingerprint),
+            )
+        temp.replace(background_path)
     inference_root.mkdir(parents=True, exist_ok=True)
     tracker = ResourceTracker().start()
     member_cache: dict[str, tuple[dict[str, Any], np.ndarray, dict[str, Any]]] = {}
@@ -899,6 +921,17 @@ def run_inference(
             audits.extend(rows)
     finally:
         resources = tracker.stop()
+    samples_path = inference_root / "samples.npz"
+    temp = samples_path.with_suffix(".tmp")
+    with temp.open("wb") as handle:
+        np.savez_compressed(
+            handle,
+            X=profile_X,
+            names=np.asarray(profile_names, dtype=str),
+            samples=np.asarray(sample_ids, dtype=str),
+            fingerprint=np.asarray(input_audit["abundance_sha256"]),
+        )
+    temp.replace(samples_path)
     predictions = _prediction_frame(sample_ids, training, strategy_values)
     predictions_path = inference_root / "predictions.tsv"
     _atomic_tsv(predictions, predictions_path)
@@ -958,6 +991,7 @@ def run_inference(
         "inference_outcomes_used_for_fit_or_prediction": False,
         "inference_metadata_used_as_predictors": False,
         "predictions": str(predictions_path),
+        "samples": str(samples_path),
         "predictions_with_metadata": None
         if metadata_predictions_path is None
         else str(metadata_predictions_path),

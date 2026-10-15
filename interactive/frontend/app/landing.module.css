@@ -1,0 +1,237 @@
+
+
+.container {
+  min-height: 100vh;
+  padding: var(--ml-space-xl) var(--ml-space-lg);
+  background: var(--ml-bg);
+  position: relative;
+}
+
+.themeToggleWrapper {
+  position: absolute;
+  top: var(--ml-space-lg);
+  right: var(--ml-space-lg);
+}
+
+.hero {
+  text-align: center;
+  margin-bottom: var(--ml-space-xl);
+  padding: var(--ml-space-xl) var(--ml-space-lg);
+  max-width: 720px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.heroGrid {
+  display: none;
+}
+
+.hero h1 {
+  font-size: 3rem;
+  margin: 0 0 var(--ml-space-sm) 0;
+  font-weight: 600;
+  color: var(--ml-text);
+  letter-spacing: -0.03em;
+}
+
+.subtitle {
+  font-size: 1.25rem;
+  color: var(--ml-text-secondary);
+  margin: 0 0 var(--ml-space-sm) 0;
+  font-weight: 500;
+}
+
+.description {
+  font-size: 1rem;
+  color: var(--ml-text-secondary);
+  margin: 0;
+  line-height: 1.6;
+}
+
+.modeSelector {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--ml-space-lg);
+  margin-bottom: var(--ml-space-xl);
+  max-width: 960px;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 0 var(--ml-space-md);
+}
+
+@media (max-width: 768px) {
+  .modeSelector {
+    grid-template-columns: 1fr;
+  }
+}
+
+.modeCard {
+  background: var(--ml-bg);
+  border: 1px solid var(--ml-border);
+  border-radius: 16px;
+  padding: var(--ml-space-xl);
+  cursor: pointer;
+  transition: all var(--ml-transition-fast);
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.modeCard:hover {
+  border-color: var(--ml-text);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--ml-space-xs);
+  margin-bottom: var(--ml-space-xs);
+}
+
+.iconBox {
+  display: none;
+}
+
+.iconBox svg {
+  display: none;
+}
+
+.modeCard h2 {
+  font-size: 1.125rem;
+  margin: 0;
+  color: var(--ml-text);
+  font-weight: 600;
+}
+
+.modeCard p {
+  color: var(--ml-text-secondary);
+  margin: 0 0 auto 0;
+  line-height: 1.6;
+  font-size: 0.9375rem;
+  padding-bottom: var(--ml-space-md);
+}
+
+.modeButton {
+  background: var(--ml-text);
+  color: var(--ml-bg);
+  border: none;
+  border-radius: 9999px;
+  padding: 0.75rem 1.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--ml-transition-fast);
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: auto;
+  letter-spacing: -0.01em;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.modeButton::after {
+  content: '→';
+  font-size: 0.875rem;
+  transition: transform var(--ml-transition-fast);
+}
+
+.modeButton:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.modeButton:hover::after {
+  transform: translateX(3px);
+}
+
+.info {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--ml-space-lg) var(--ml-space-md);
+}
+
+.info h3 {
+  text-align: center;
+  font-size: 0.9375rem;
+  margin: 0 0 var(--ml-space-lg) 0;
+  color: var(--ml-text-secondary);
+  font-weight: 500;
+}
+
+.steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--ml-space-md);
+}
+
+.step {
+  display: flex;
+  gap: var(--ml-space-xs);
+  align-items: flex-start;
+}
+
+.stepNumber {
+  color: var(--ml-blue);
+  min-width: 24px;
+  font-weight: 500;
+  font-size: 0.75rem;
+  flex-shrink: 0;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.step h4 {
+  margin: 0 0 0.125rem 0;
+  color: var(--ml-text);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.step p {
+  margin: 0;
+  color: var(--ml-text-tertiary);
+  line-height: 1.5;
+  font-size: 0.75rem;
+}
+
+
+@media (max-width: 768px) {
+  .container {
+    padding: var(--ml-space-lg) var(--ml-space-sm);
+  }
+  
+  .hero {
+    padding: var(--ml-space-lg) var(--ml-space-sm);
+  }
+  
+  .hero h1 {
+    font-size: 1.75rem;
+  }
+  
+  .subtitle {
+    font-size: 1rem;
+  }
+  
+  .modeSelector {
+    grid-template-columns: 1fr;
+    gap: var(--ml-space-md);
+    padding: 0;
+  }
+  
+  .modeCard {
+    padding: var(--ml-space-md);
+  }
+  
+  .steps {
+    grid-template-columns: 1fr;
+    gap: var(--ml-space-md);
+  }
+  
+  .info {
+    padding: var(--ml-space-lg) var(--ml-space-md);
+  }
+}

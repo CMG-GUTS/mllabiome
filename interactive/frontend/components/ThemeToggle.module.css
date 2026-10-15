@@ -1,0 +1,26 @@
+
+
+.toggle {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--ml-border);
+  border-radius: var(--ml-radius-md);
+  color: var(--ml-text-secondary);
+  cursor: pointer;
+  transition: all var(--ml-transition-fast);
+}
+
+.toggle:hover {
+  border-color: var(--ml-text);
+  color: var(--ml-text);
+  background: var(--ml-bg-secondary);
+}
+
+.toggle svg {
+  width: 16px;
+  height: 16px;
+}

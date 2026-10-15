@@ -57,6 +57,7 @@ def main(argv: list[str] | None = None) -> None:
             "federated-evaluate",
             "ensemble",
             "inference",
+            "interactive-inference",
             "explain",
             "robustness",
             "report",
@@ -64,6 +65,7 @@ def main(argv: list[str] | None = None) -> None:
         default="all",
         help="Entry point for full execution or stage-level restart.",
     )
+    parser.add_argument("--port", type=int, default=8765)
     parser.add_argument(
         "--explore",
         action="store_true",
@@ -132,6 +134,15 @@ def main(argv: list[str] | None = None) -> None:
         success(f"All configuration results exported · {exported}")
         return
     stage("mllabiome", f"config={args.config} · stage={args.stage}")
+    if args.stage == "interactive-inference":
+        from .interactive.launcher import launch
+
+        try:
+            launch(sweep.root(), args.config, port=args.port)
+        except (RuntimeError, FileNotFoundError, ValueError, OSError) as exc:
+            error(str(exc))
+            parser.exit(2)
+        return
     if args.redo:
         sweep.evaluation.redo = True
     run_stage(sweep, args.stage)

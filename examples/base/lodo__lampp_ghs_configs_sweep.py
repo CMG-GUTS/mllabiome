@@ -43,7 +43,7 @@ RESOLUTIONS = (
     # ("order", ("order",)),
     # ("family", ("family",)),
     ("genus", ("genus",)),
-    # ("species", ("species",)),
+    ("species", ("species",)),
     # ("strain", ("strain",)),
     # ("raw", ("all",)),
 )

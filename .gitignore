@@ -103,3 +103,11 @@ examples/official/
 examples/official/lampp
 
 *.fab
+/interactive/frontend/node_modules/
+/interactive/frontend/.next/
+/interactive/frontend/out/
+/interactive/frontend/dist/
+/interactive/frontend/.turbo/
+/interactive/frontend/.vercel/
+/interactive/frontend/coverage/
+*.tsbuildinfo

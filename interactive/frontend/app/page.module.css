@@ -1,0 +1,262 @@
+
+
+.container {
+  min-height: 100vh;
+  background: var(--ml-bg);
+}
+
+.main {
+  min-height: 100vh;
+  background-color: var(--ml-bg);
+  padding: 0;
+}
+
+.uploadContainer {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--ml-space-xl);
+}
+
+.uploadCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  max-width: 600px;
+  width: 100%;
+  animation: fadeIn 0.5s ease-out;
+  transition: all var(--ml-transition-normal);
+}
+
+.uploadCard.dragging {
+  transform: scale(1.02);
+}
+
+.uploadCard.dragging .uploadArea {
+  border-color: var(--ml-blue);
+  background: rgba(0, 112, 243, 0.05);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.logoLarge {
+  margin-bottom: var(--ml-space-xl);
+  opacity: 0.9;
+}
+
+.title {
+  font-size: 2.5rem;
+  font-weight: 600;
+  color: var(--ml-text);
+  margin-bottom: var(--ml-space-md);
+  letter-spacing: -0.03em;
+}
+
+.description {
+  font-size: 1.125rem;
+  color: var(--ml-text-secondary);
+  margin-bottom: var(--ml-space-xl);
+  line-height: 1.6;
+  max-width: 480px;
+}
+
+.uploadArea {
+  width: 100%;
+  max-width: 500px;
+  padding: var(--ml-space-xl);
+  border: 2px dashed var(--ml-border);
+  border-radius: var(--ml-radius-xl);
+  background: var(--ml-bg-secondary);
+  transition: all var(--ml-transition-fast);
+  cursor: pointer;
+}
+
+.uploadArea:hover {
+  border-color: var(--ml-border-hover);
+  background: var(--ml-bg-card);
+}
+
+.uploadButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1.25rem;
+  background: var(--ml-text);
+  color: var(--ml-bg);
+  border-radius: var(--ml-radius-md);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--ml-transition-fast);
+  border: none;
+}
+
+.uploadButton:hover {
+  opacity: 0.85;
+}
+
+.orText {
+  margin-top: var(--ml-space-lg);
+  font-size: 0.9375rem;
+  color: var(--ml-text-tertiary);
+  font-weight: 500;
+}
+
+.uploadInput {
+  display: none;
+}
+
+.supportedFormats {
+  margin-top: var(--ml-space-lg);
+  font-size: 0.875rem;
+  color: var(--ml-text-tertiary);
+}
+
+.chatContainer {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.header {
+  background: var(--ml-bg-card);
+  border-bottom: 1px solid var(--ml-border);
+  padding: var(--ml-space-lg) var(--ml-space-xl);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  backdrop-filter: blur(8px);
+  background: rgba(255, 255, 255, 0.95);
+  flex-shrink: 0;
+}
+
+.logo {
+  height: 28px;
+  width: auto;
+  object-fit: contain;
+}
+
+.profileInfo {
+  display: flex;
+  align-items: center;
+  gap: var(--ml-space-lg);
+  padding: var(--ml-space-sm) var(--ml-space-md);
+  background: var(--ml-bg-secondary);
+  border: 1px solid var(--ml-border);
+  border-radius: var(--ml-radius-md);
+}
+
+.profileName {
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--ml-text);
+}
+
+.changeButton {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--ml-text-secondary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--ml-radius-md);
+  transition: all var(--ml-transition-fast);
+}
+
+.changeButton:hover {
+  color: var(--ml-text);
+  background: var(--ml-bg-secondary);
+}
+
+
+.modeSelector {
+  display: flex;
+  gap: 0;
+  padding: var(--ml-space-md);
+  background: rgba(0, 0, 0, 0.3);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.modeSelector button {
+  flex: 1;
+  padding: var(--ml-space-md) var(--ml-space-lg);
+  background: transparent;
+  border: none;
+  color: var(--ml-text-secondary);
+  font-size: 1.125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--ml-transition-fast);
+  border-bottom: 3px solid transparent;
+}
+
+.modeSelector button:hover {
+  color: var(--ml-text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.modeSelector button.active {
+  color: var(--ml-text);
+  border-bottom-color: var(--ml-blue);
+  background: rgba(0, 112, 243, 0.1);
+}
+
+
+@media (max-width: 1200px) {
+  .header {
+    padding: var(--ml-space-lg);
+  }
+}
+
+@media (max-width: 768px) {
+  .uploadContainer {
+    padding: var(--ml-space-lg) var(--ml-space-md);
+  }
+  
+  .title {
+    font-size: 2rem;
+  }
+  
+  .description {
+    font-size: 1rem;
+  }
+  
+  .uploadButton {
+    padding: var(--ml-space-md) var(--ml-space-lg);
+    font-size: 1rem;
+  }
+  
+  .header {
+    padding: var(--ml-space-md);
+  }
+  
+  .logo {
+    height: 24px;
+  }
+  
+  .profileInfo {
+    padding: var(--ml-space-xs) var(--ml-space-sm);
+    gap: var(--ml-space-sm);
+  }
+  
+  .profileName {
+    font-size: 0.875rem;
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
