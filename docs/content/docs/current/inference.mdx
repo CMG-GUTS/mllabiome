@@ -1,0 +1,25 @@
+# Inference and interactive interface
+
+The inference stage applies selected MPMA-B or MPMA-E workflows to new microbiome profiles. Run evaluation first; MPMA-E inference also requires a completed ensemble stage.
+
+In a sweep configuration, set:
+
+```python
+INFERENCE = mll.Inference(
+    abundance_path="new_profiles.tsv",
+    targets=("mpma_b", "mpma_e"),
+    feature_policy="strict",
+)
+```
+
+Then run:
+
+```bash
+mllabiome path/to/config.py --stage inference
+```
+
+`feature_policy="strict"` requires matching features; `"zero_fill"` is an optional alternative. Fitted preprocessing and learner pipelines are reused for inference.
+
+The repository also includes an [optional local interactive inference interface](https://github.com/CMG-GUTS/mllabiome/tree/main/interactive) for exploring predictions from completed runs. It is separate from the Python package.
+
+**Research use only. Not a medical device.** Do not enter personal or patient data into a demo interface.

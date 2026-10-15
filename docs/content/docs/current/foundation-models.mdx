@@ -1,0 +1,39 @@
+# Foundation-model representations
+
+`mllabiome` can benchmark frozen pretrained embeddings alongside conventional microbiome transformations. The package does not distribute model weights.
+
+| Adapter | Default resolution | Requirements |
+|---|---|---|
+| `WaypointEmbedding` | Genus | Foundation dependencies; access to the selected Hugging Face checkpoint |
+| `MGMEmbedding` | Genus only | Foundation dependencies and upstream model resources |
+| `MGM2Embedding` | Species | Foundation dependencies and upstream checkpoints |
+| `MBEmbed` | Species only | Compatible, portable author-provided checkpoint |
+| `QwenOllamaEmbedding` | Genus | Local Ollama with a Qwen3 embedding model |
+
+## Configuration
+
+From the repository checkout, install optional dependencies with `uv sync --extra foundation`. Waypoint may also require Hugging Face authentication; download and usage conditions are set by the model providers.
+
+```python
+from mllabiome import mll
+
+RESOLUTIONS = (
+    ("genus", ("genus",)),
+    ("species", ("species",)),
+)
+
+COUNT_TRANSFORMATIONS = (
+    mll.Transformation("relative_abundance"),
+    mll.WaypointEmbedding(),
+    mll.MGMEmbedding(),
+    mll.MGM2Embedding(),
+)
+```
+
+Each adapter runs only at its configured resolution. Activate only the adapters for which the required checkpoints and dependencies are available. Representations are evaluated through the same train/test splitting and model-selection workflow as other transformations.
+
+For local Qwen embeddings, install Ollama, pull `qwen3-embedding:0.6b`, and add `mll.QwenOllamaEmbedding()` to `COUNT_TRANSFORMATIONS`. Its default endpoint is `127.0.0.1:11434`.
+
+**MBEmbed limitation:** the publicly available standard checkpoint is not portable in a clean Python environment; use a compatible author-provided checkpoint if available. These are representation adapters, not clinical prediction models.
+
+The optional `OllamaDecisionClassifier` is a separate experimental local prediction adapter, not a frozen embedding transformation.

@@ -1,0 +1,19 @@
+# Federated-learning simulation
+
+The optional Flower workflow demonstrates SecAgg+ secure aggregation in a **single-machine simulation**. It is not a validated multi-institutional deployment or a differential-privacy implementation.
+
+The current workflow supports binary classification with leave-one-dataset-out evaluation, one compatible `SGDClassifier`, and single-table microbiome data.
+
+In an otherwise configured sweep, set:
+
+```python
+FEDERATED = mll.Federated(num_rounds=10, local_epochs=2)
+```
+
+Run the separate simulation stage:
+
+```bash
+mllabiome path/to/config.py --stage federated-evaluate
+```
+
+All study data are loaded on one machine for this demonstration. Real distributed processing requires additional deployment and privacy assessment. See the [federated example](https://github.com/CMG-GUTS/mllabiome/tree/main/examples/federated).

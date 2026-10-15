@@ -1,6 +1,6 @@
 # Quickstart
 
-Python 3.10 or newer is required.
+Python 3.10–3.13 is supported.
 
 ## Install
 
@@ -28,6 +28,10 @@ On Windows PowerShell, activate the environment with:
 .venv\Scripts\Activate.ps1
 ```
 
+## Optional integrations
+
+From a repository checkout, use `uv sync --extra foundation` for foundation-model dependencies or `uv sync --extra tabpfn` for TabPFN. Models and checkpoints may require separate access; see [Foundation models](./foundation-models).
+
 ## Run an example
 
 The repository contains runnable configuration files under `examples/`.
@@ -49,12 +53,13 @@ mllabiome path/to/config.py --stage explore
 mllabiome path/to/config.py --stage evaluate
 mllabiome path/to/config.py --stage ensemble
 mllabiome path/to/config.py --stage inference
+mllabiome path/to/config.py --stage federated-evaluate
 mllabiome path/to/config.py --stage explain
 mllabiome path/to/config.py --stage robustness
 mllabiome path/to/config.py --stage report
 ```
 
-The default command runs the complete workflow:
+The federated stage is a separate optional simulation; it is not part of `--stage all`. The default command runs the standard workflow:
 
 ```bash
 mllabiome path/to/config.py --stage all

@@ -63,6 +63,16 @@ COUNT_TRANSFORMATIONS = (
 
 Supported transformations also include Hellinger, CLR/log-ratio, log, rank-based, and other representations exposed by `mll.Transformation`.
 
+Foundation-model adapters can be added as transformations; see [Foundation models](./foundation-models) for setup and checkpoint requirements.
+
+## Exploratory differential abundance
+
+```python
+EXPLORE = mll.Explore(differential_abundance="auto")
+```
+
+`auto` uses ANCOM-BC2 for suitable integer counts and CLR-based analysis for relative-abundance data. ANCOM-BC2 requires an R runtime.
+
 ## Learners
 
 Learners are explicit `(name, estimator)` pairs:
@@ -78,7 +88,7 @@ MODELS = (
 )
 ```
 
-Compatible scikit-learn estimators and pipelines can be used. The package also exposes integrations for supported backends such as XGBoost, LightGBM, CatBoost, FLAML, and SIAMCAT.
+Compatible scikit-learn estimators and pipelines can be used. Supported optional backends include XGBoost, LightGBM, CatBoost, FLAML, SIAMCAT, and TabPFN (`mll.TabPFNClassifier`, requiring the `tabpfn` extra). An experimental local Ollama decision classifier is also available.
 
 ## Sweep
 
