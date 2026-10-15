@@ -1,12 +1,23 @@
+
 name: Publish release to PyPI
 
 on:
   release:
     types:
       - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing published release tag
+        required: true
+        type: string
 
 permissions:
   contents: read
+
+concurrency:
+  group: pypi-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -15,10 +26,18 @@ jobs:
       contents: read
 
     steps:
+      - name: Verify manually selected release is published
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.draft')" = "false"
+
       - name: Checkout release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
           persist-credentials: false
 
       - name: Install uv
@@ -29,7 +48,7 @@ jobs:
 
       - name: Verify tag matches package version
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
         run: |
           VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' mllabiome/_version.py)"
           test "$RELEASE_TAG" = "v$VERSION"
@@ -37,17 +56,17 @@ jobs:
       - name: Check lockfile
         run: uv lock --check
 
-      - name: Install project
-        run: uv sync --locked --group dev
+      - name: Install project and benchmark tests
+        run: uv sync --locked --group dev --group benchmark
 
       - name: Check synchronized metadata
-        run: uv run --locked python scripts/sync_version.py --check
+        run: uv run --locked --group dev --group benchmark python scripts/sync_version.py --check
 
       - name: Lint
-        run: uv run --locked ruff check mllabiome tests scripts
+        run: uv run --locked --group dev --group benchmark ruff check mllabiome tests scripts
 
       - name: Test
-        run: uv run --locked pytest -q
+        run: uv run --locked --group dev --group benchmark python -m pytest -q
 
       - name: Build
         run: uv build --no-sources
@@ -62,6 +81,7 @@ jobs:
             --no-project \
             --with dist/*.whl \
             python -c 'import importlib.metadata as md, mllabiome; assert md.version("mllabiome") == mllabiome.__version__'
+          uv run --isolated --no-project --with dist/*.whl mllabiome --help
 
       - name: Smoke test source distribution
         run: |
