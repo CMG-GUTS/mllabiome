@@ -502,6 +502,7 @@ def _write_prediction_tables(
 ) -> dict[str, Path]:
     dataset = bundle["dataset"]
     aggregation = str(mpma_e["aggregation_strategy"])
+    aggregation_parameters = mpma_e.get("aggregation_parameters", {})
     linear_weights = bundle["linear_weights"]
     ensemble_rows: list[dict[str, Any]] = []
     member_rows: list[dict[str, Any]] = []

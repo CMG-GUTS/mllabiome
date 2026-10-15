@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from catboost import CatBoostClassifier
+from xgboost import XGBClassifier
 from curated_microbiota.collections import lampp_dm7
 from lightgbm import LGBMClassifier
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
