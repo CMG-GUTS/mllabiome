@@ -25,14 +25,21 @@ class _Client(NumPyClient):
     def fit(self, parameters, config):
         settings = self.context.run_config
         updates = train_local(
-            parameters, self.X, self.y,
+            parameters,
+            self.X,
+            self.y,
             alpha=float(settings["alpha"]),
             eta0=float(settings["eta0"]),
             local_epochs=int(settings["local-epochs"]),
             random_state=int(settings["random-state"]),
         )
-        if any(np.max(np.abs(array)) > float(settings["clipping-range"]) for array in updates):
-            raise ValueError("Local parameters exceed the configured SecAgg+ clipping range.")
+        if any(
+            np.max(np.abs(array)) > float(settings["clipping-range"])
+            for array in updates
+        ):
+            raise ValueError(
+                "Local parameters exceed the configured SecAgg+ clipping range."
+            )
         return updates, len(self.y), {}
 
     def evaluate(self, parameters, config):
@@ -71,7 +78,10 @@ class _SavingFedAvg(FedAvg):
                 intercept=arrays[1],
                 round=np.asarray(int(server_round), dtype=np.int64),
             )
-            print(f"mllabiome SecAgg+ round {server_round} aggregated and checkpointed", flush=True)
+            print(
+                f"mllabiome SecAgg+ round {server_round} aggregated and checkpointed",
+                flush=True,
+            )
         return parameters, metrics
 
 
@@ -85,7 +95,9 @@ def _server_main(grid: Grid, context: Context) -> None:
     shares = int(cfg["num-shares"])
     threshold = int(cfg["reconstruction-threshold"])
     if n_clients < 3 or not 3 <= shares <= n_clients or not 2 <= threshold <= shares:
-        raise ValueError("Invalid SecAgg+ configuration or insufficient training clients.")
+        raise ValueError(
+            "Invalid SecAgg+ configuration or insufficient training clients."
+        )
     n_features = int(cfg["num-features"])
     initial = ndarrays_to_parameters(initial_parameters(n_features))
     strategy = _SavingFedAvg(
@@ -98,7 +110,10 @@ def _server_main(grid: Grid, context: Context) -> None:
         accept_failures=False,
         initial_parameters=initial,
     )
-    print(f"mllabiome SecAgg+ server starting: {n_clients} clients, {cfg['num-server-rounds']} rounds", flush=True)
+    print(
+        f"mllabiome SecAgg+ server starting: {n_clients} clients, {cfg['num-server-rounds']} rounds",
+        flush=True,
+    )
     legacy = LegacyContext(
         context=context,
         config=ServerConfig(num_rounds=int(cfg["num-server-rounds"])),

@@ -19,8 +19,13 @@ class Federated:
     def __post_init__(self) -> None:
         if self.num_rounds < 1 or self.local_epochs < 1:
             raise ValueError("num_rounds and local_epochs must be positive.")
-        if self.num_shares < 3 or not 2 <= self.reconstruction_threshold <= self.num_shares:
-            raise ValueError("SecAgg+ requires num_shares >= 3 and 2 <= reconstruction_threshold <= num_shares.")
+        if (
+            self.num_shares < 3
+            or not 2 <= self.reconstruction_threshold <= self.num_shares
+        ):
+            raise ValueError(
+                "SecAgg+ requires num_shares >= 3 and 2 <= reconstruction_threshold <= num_shares."
+            )
         if not 0.0 < float(self.clipping_range) < float("inf"):
             raise ValueError("clipping_range must be finite and positive.")
         if not 0.0 < float(self.client_cpus) < float("inf"):

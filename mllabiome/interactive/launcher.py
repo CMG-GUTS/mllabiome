@@ -14,32 +14,67 @@ FRONTEND = Path("interactive/frontend")
 
 
 def frontend_directory(config: Path) -> Path:
-    for root in (*config.expanduser().resolve().parents, Path(__file__).resolve().parents[2]):
+    for root in (
+        *config.expanduser().resolve().parents,
+        Path(__file__).resolve().parents[2],
+    ):
         candidate = root / FRONTEND
-        if (candidate / "package-lock.json").is_file() and (candidate / "app" / "inference" / "page.tsx").is_file():
+        if (candidate / "package-lock.json").is_file() and (
+            candidate / "app" / "inference" / "page.tsx"
+        ).is_file():
             return candidate
-    raise FileNotFoundError("Cannot find interactive/frontend in the mllabiome source checkout.")
+    raise FileNotFoundError(
+        "Cannot find interactive/frontend in the mllabiome source checkout."
+    )
 
 
 def frontend_assets(config: Path) -> Path:
     frontend = frontend_directory(config)
     output = frontend / "out"
-    if (output / "index.html").is_file() and (output / "inference" / "index.html").is_file():
-        return output
+    assets = (output / "index.html", output / "inference" / "index.html")
+    sources = [
+        file
+        for directory in ("app", "components", "public")
+        for file in (frontend / directory).rglob("*")
+        if file.is_file()
+    ]
+    sources.extend(
+        frontend / name
+        for name in (
+            "package.json",
+            "package-lock.json",
+            "tsconfig.json",
+            "next.config.js",
+        )
+    )
+    if all(asset.is_file() for asset in assets):
+        built = min(asset.stat().st_mtime_ns for asset in assets)
+        if all(file.stat().st_mtime_ns <= built for file in sources):
+            return output
     if not shutil.which("npm") or not shutil.which("node"):
-        raise RuntimeError("Interactive inference requires Node.js 20+ and npm on first launch to build the original TypeScript frontend.")
+        raise RuntimeError(
+            "Interactive inference requires Node.js 20+ and npm on first launch to build the original TypeScript frontend."
+        )
     try:
         if not (frontend / "node_modules" / ".bin" / "next").is_file():
-            subprocess.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=frontend, check=True)
+            subprocess.run(
+                ["npm", "ci", "--no-audit", "--no-fund"], cwd=frontend, check=True
+            )
         subprocess.run(["npm", "run", "build"], cwd=frontend, check=True)
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError("The original mllabiome-ii frontend could not be built. Check the npm output above.") from exc
+        raise RuntimeError(
+            "The original mllabiome-ii frontend could not be built. Check the npm output above."
+        ) from exc
     if not (output / "inference" / "index.html").is_file():
-        raise RuntimeError("The interactive frontend build did not produce the inference page.")
+        raise RuntimeError(
+            "The interactive frontend build did not produce the inference page."
+        )
     return output
 
 
-def launch(root: Path, config: Path, port: int = 8765, open_browser: bool = True) -> None:
+def launch(
+    root: Path, config: Path, port: int = 8765, open_browser: bool = True
+) -> None:
     RunStore(root)
     assets = frontend_assets(config)
     with create_server(root, port, static=assets) as server:

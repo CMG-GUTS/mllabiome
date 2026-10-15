@@ -28,17 +28,19 @@ EVALUATION = lampp_crc.splits().mllabiome(
 )
 RESOLUTIONS = (("raw", ("all",)),)
 COUNT_TRANSFORMATIONS = (Transform("arcsine_sqrt"),)
-MODELS = ((
-    "fed_sgd_logistic",
-    SGDClassifier(
-        loss="log_loss",
-        penalty="l2",
-        learning_rate="constant",
-        alpha=L2_ALPHA,
-        eta0=LEARNING_RATE,
-        random_state=RANDOM_STATE,
+MODELS = (
+    (
+        "fed_sgd_logistic",
+        SGDClassifier(
+            loss="log_loss",
+            penalty="l2",
+            learning_rate="constant",
+            alpha=L2_ALPHA,
+            eta0=LEARNING_RATE,
+            random_state=RANDOM_STATE,
+        ),
     ),
-),)
+)
 FEDERATED = Federated(
     num_rounds=NUM_ROUNDS,
     local_epochs=LOCAL_EPOCHS,

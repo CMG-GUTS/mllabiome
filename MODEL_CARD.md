@@ -11,7 +11,7 @@
 | Owner partner and contact | Radboud University Medical Center (RUMC), Agata Polejowska, agata.polejowska@radboudumc.nl |
 | License | Apache-2.0 |
 | Repository and DOI | https://github.com/CMG-GUTS/mllabiome |
-| Release date | 14 October 2026 |
+| Release date | 15 October 2026 |
 | Related task or deliverable | WP4, D4.5, D2.6 |
 | How to cite | Agata Polejowska. (2026). *mllabiome* (Version 0.2.0) [Computer software]. https://github.com/CMG-GUTS/mllabiome |
 

@@ -148,7 +148,7 @@ GATE = mll.QualificationGate(
 
 ENSEMBLE = mll.Ensemble(
     include_inactive=True,
-    max_sizes=(3,),
+    max_sizes=(10,),
     selection_strategies=(
         "top_k",
         "best_per_resolution",

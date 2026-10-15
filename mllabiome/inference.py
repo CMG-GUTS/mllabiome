@@ -890,7 +890,13 @@ def run_inference(
             pass
     if replace_background:
         rng = np.random.default_rng(int(sweep.evaluation.random_state))
-        rows = np.sort(rng.choice(len(training.sample_ids), size=min(32, len(training.sample_ids)), replace=False))
+        rows = np.sort(
+            rng.choice(
+                len(training.sample_ids),
+                size=min(32, len(training.sample_ids)),
+                replace=False,
+            )
+        )
         temp = background_path.with_suffix(".tmp")
         with temp.open("wb") as handle:
             np.savez_compressed(

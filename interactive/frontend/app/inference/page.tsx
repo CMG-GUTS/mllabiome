@@ -132,6 +132,7 @@ export default function InferencePage() {
   const [chatConfigDetail, setChatConfigDetail] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
+  const explanationVersion = useRef(0)
 
   const currentSelection = () => models.find(model => model.model_id === selectedModel)
 
@@ -168,6 +169,8 @@ export default function InferencePage() {
 
   useEffect(() => {
     const model = currentSelection()
+    explanationVersion.current += 1
+    setExplaining(false)
     setExplanations(null)
     setSelectedSample(null)
     if (!model || dataFile) {
@@ -181,7 +184,7 @@ export default function InferencePage() {
         if (!active) return
         const converted = toPredictions(rows, model)
         setResults(converted.length ? converted : null)
-        setSelectedSample(converted[0]?.sample_id || null)
+        setSelectedSample(null)
       })
       .catch(() => { if (active) setResults(null) })
     return () => { active = false }
@@ -246,7 +249,7 @@ export default function InferencePage() {
       const converted = toPredictions(rows, model)
       setResults(converted)
       setExplanations(null)
-      setSelectedSample(converted[0]?.sample_id || null)
+      setSelectedSample(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Inference failed')
     } finally {
@@ -275,24 +278,34 @@ export default function InferencePage() {
   const upsertExplanation = (incoming: SampleExplanation[]) => {
     setExplanations(previous => {
       const byId = new Map((previous || []).map(row => [row.sample_id, row]))
-      for (const row of incoming) byId.set(row.sample_id, { ...byId.get(row.sample_id), ...row })
+      for (const row of incoming) {
+        const merged = { ...byId.get(row.sample_id), ...row }
+        merged.top_features = merged.shap_features || merged.lime_features || []
+        byId.set(row.sample_id, merged)
+      }
       return [...byId.values()]
     })
   }
 
-  const fetchExplanationForSample = async (sampleId?: string | null) => {
+  const fetchExplanationForSample = async (sampleId: string) => {
     const model = currentSelection()
-    if (!model || !sampleId) return
+    if (!model) return
     if (model.task !== 'classification') {
       setError('SHAP/LIME inference explanations are available for classification runs only.')
       return
     }
+    const cached = explanations?.find(item => item.sample_id === sampleId)
+    const methods = [
+      showShap && !cached?.shap_features && 'shap',
+      showLime && !cached?.lime_features && 'lime',
+    ].filter((value): value is string => Boolean(value))
+    if (!methods.length) return
+    const version = ++explanationVersion.current
     setExplaining(true)
     setError(null)
     try {
-      const methods = [showShap && 'shap', showLime && 'lime'].filter((value): value is string => Boolean(value))
       const content = dataFile ? await dataFile.text() : ''
-      const requests = methods.map(async method => {
+      const resolved = await Promise.allSettled(methods.map(async method => {
         const response = await fetch(`/api/runs/${model.run_id}/explain`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -306,13 +319,11 @@ export default function InferencePage() {
           }),
         })
         return responseData<RawExplanation>(response)
-      })
-      const resolved = await Promise.allSettled(requests)
+      }))
+      if (version !== explanationVersion.current) return
       const good = resolved.filter((r): r is PromiseFulfilledResult<RawExplanation> => r.status === 'fulfilled').map(r => r.value)
-      if (!good.length) {
-        const failed = resolved.find((r): r is PromiseRejectedResult => r.status === 'rejected')
-        throw failed?.reason || new Error('Explanation failed')
-      }
+      const failed = resolved.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+      if (!good.length) throw failed?.reason || new Error('Explanation failed')
       const prediction = results?.find(row => row.sample_id === sampleId)
       const mapped: SampleExplanation = {
         sample_id: sampleId,
@@ -329,25 +340,21 @@ export default function InferencePage() {
         }))
         if (result.method === 'shap') mapped.shap_features = features
         if (result.method === 'lime') mapped.lime_features = features
-        mapped.top_features = mapped.shap_features || mapped.lime_features || []
       }
       upsertExplanation([mapped])
-      setSelectedSample(sampleId)
-      const failed = resolved.find((r): r is PromiseRejectedResult => r.status === 'rejected')
       if (failed) setError(`One explanation method failed: ${failed.reason instanceof Error ? failed.reason.message : 'unknown error'}`)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to generate explanations')
+      if (version === explanationVersion.current) setError(err instanceof Error ? err.message : 'Failed to generate explanations')
     } finally {
-      setExplaining(false)
+      if (version === explanationVersion.current) setExplaining(false)
     }
   }
 
-  const handleExplain = () => fetchExplanationForSample(selectedSample || results?.[0]?.sample_id || null)
-
-  const handleSampleChange = (sampleId: string) => {
-    setSelectedSample(sampleId)
-    if (!explanations?.some(item => item.sample_id === sampleId)) fetchExplanationForSample(sampleId)
+  const handleExplain = () => {
+    if (selectedSample) void fetchExplanationForSample(selectedSample)
   }
+
+  const handleSampleChange = (sampleId: string) => setSelectedSample(sampleId)
 
   const toggleShap = () => { if (!showShap || showLime) setShowShap(!showShap) }
   const toggleLime = () => { if (!showLime || showShap) setShowLime(!showLime) }
@@ -355,10 +362,12 @@ export default function InferencePage() {
   const buildContext = () => {
     const model = currentSelection()
     const summary = [model ? `Model: ${model.display_name}` : '']
-    for (const row of results || []) summary.push(`${row.sample_id}: ${row.label}`)
-    for (const item of explanations || []) {
-      summary.push(`${item.sample_id} · ${item.explanation_basis || 'attribution'}`)
-      for (const feature of item.top_features.slice(0, 8)) summary.push(`${feature.feature}: ${feature.importance.toFixed(5)}`)
+    const prediction = results?.find(row => row.sample_id === selectedSample)
+    if (prediction) summary.push(`Selected sample: ${prediction.sample_id}; prediction: ${prediction.label}; probability: ${prediction.probability}`)
+    const explanation = explanations?.find(item => item.sample_id === selectedSample)
+    if (explanation) {
+      summary.push(`${explanation.sample_id} · ${explanation.explanation_basis || 'attribution'}`)
+      for (const feature of explanation.top_features.slice(0, 8)) summary.push(`${feature.feature}: ${feature.importance.toFixed(5)}`)
     }
     return summary.join('\n').slice(0, 6000)
   }
@@ -540,10 +549,13 @@ export default function InferencePage() {
               <button
                 className={`${styles.runButtonSmall} ${styles.explainButtonSmall}`}
                 onClick={handleExplain}
-                disabled={!selectedModel || explaining || (!dataFile && !results)}
+                disabled={!selectedModel || !selectedSample || explaining || currentModel?.task !== 'classification'}
               >
-                {explaining ? 'Explaining...' : 'Explain'}
+                {explaining ? 'Explaining...' : selectedSample ? `Explain ${selectedSample}` : 'Explain'}
               </button>
+              {results?.length && !selectedSample ? (
+                <p className={styles.modelDescription}>Select a prediction row to explain a sample.</p>
+              ) : null}
             </div>
           </div>
 
@@ -592,23 +604,30 @@ export default function InferencePage() {
                       <div className={styles.tableCell}>Probability</div>
                       <div className={styles.tableCell}>Confidence</div>
                     </div>
-                    {results.map((pred, idx) => (
-                      <div key={idx} className={styles.tableRow}>
-                        <div className={`${styles.tableCell} ${styles.sampleIdCell}`} title={pred.sample_id}>
+                    {results.map(pred => (
+                      <button
+                        key={pred.sample_id}
+                        type="button"
+                        className={`${styles.tableRow} ${selectedSample === pred.sample_id ? styles.tableRowSelected : ''}`}
+                        onClick={() => setSelectedSample(pred.sample_id)}
+                        aria-pressed={selectedSample === pred.sample_id}
+                        aria-label={`Select sample ${pred.sample_id} for explanation`}
+                      >
+                        <span className={`${styles.tableCell} ${styles.sampleIdCell}`} title={pred.sample_id}>
                           <span className={styles.sampleIdText}>{pred.sample_id}</span>
-                        </div>
-                        <div className={styles.tableCell}>
+                        </span>
+                        <span className={styles.tableCell}>
                           <span className={`${styles.predictionLabel} ${pred.prediction === 1 ? styles.positive : styles.negative}`}>
                             {pred.label}
                           </span>
-                        </div>
-                        <div className={styles.tableCell}>
+                        </span>
+                        <span className={styles.tableCell}>
                           {currentModel?.task === 'classification' ? `${(pred.probability * 100).toFixed(1)}%` : '—'}
-                        </div>
-                        <div className={styles.tableCell}>
+                        </span>
+                        <span className={styles.tableCell}>
                           <span className={styles.confidence}>{currentModel?.task === 'classification' ? `${(pred.confidence * 100).toFixed(0)}%` : '—'}</span>
-                        </div>
-                      </div>
+                        </span>
+                      </button>
                     ))}
                   </div>
                 </section>
@@ -657,6 +676,9 @@ export default function InferencePage() {
                     </div>
                   </div>
 
+                  {!currentExplanation && (
+                    <p className={styles.explainPrompt}>Select Explain to compute attributions for {selectedSample}.</p>
+                  )}
                   {currentExplanation && (
                     <div className={styles.explanationCard}>
                       <div className={`${styles.explainabilityGrid} ${showShap && showLime ? styles.explainabilityGridTwo : styles.explainabilityGridOne}`}>
@@ -665,7 +687,7 @@ export default function InferencePage() {
                             <div className={styles.panelHeadingRow}>
                               <h4 className={styles.subSectionTitle}>SHAP</h4>
                             </div>
-                            {renderExplanationList(currentExplanation.shap_features || currentExplanation.top_features || [])}
+                            {currentExplanation.shap_features ? renderExplanationList(currentExplanation.shap_features) : <p className={styles.explainPrompt}>Click Explain to compute SHAP.</p>}
                           </div>
                         )}
 
@@ -674,7 +696,7 @@ export default function InferencePage() {
                             <div className={styles.panelHeadingRow}>
                               <h4 className={styles.subSectionTitle}>LIME</h4>
                             </div>
-                            {renderExplanationList(currentExplanation.lime_features || [])}
+                            {currentExplanation.lime_features ? renderExplanationList(currentExplanation.lime_features) : <p className={styles.explainPrompt}>Click Explain to compute LIME.</p>}
                           </div>
                         )}
                       </div>

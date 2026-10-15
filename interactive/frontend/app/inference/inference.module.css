@@ -2873,3 +2873,38 @@
   border-top-color: #e2e8f0;
   color: #e2e8f0;
 }
+
+.tableRow {
+  width: 100%;
+  appearance: none;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.tableRow:hover {
+  background: var(--ml-bg-secondary);
+}
+
+.tableRow:focus-visible {
+  outline: 2px solid var(--ml-primary);
+  outline-offset: -2px;
+}
+
+.tableRowSelected,
+.tableRowSelected:hover {
+  background: rgba(37, 99, 235, 0.08);
+  box-shadow: inset 2px 0 0 var(--ml-primary);
+}
+
+.tableRow .sampleIdText {
+  cursor: inherit;
+}
+
+.explainPrompt {
+  color: var(--ml-text-secondary);
+  font-size: 0.75rem;
+  padding: 0.75rem 0;
+}

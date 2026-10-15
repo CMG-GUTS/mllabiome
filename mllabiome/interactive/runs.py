@@ -47,11 +47,15 @@ class RunStore:
         self.runs = {}
         for index, (target, path) in enumerate(paths):
             if path != self.root and self.root not in path.parents:
-                raise ValueError("An inference target lies outside the experiment directory.")
+                raise ValueError(
+                    "An inference target lies outside the experiment directory."
+                )
             if (path / "inference" / "deployment" / "manifest.json").is_file():
                 self.runs[str(index)] = Run(str(index), path, target)
         if not self.runs:
-            raise FileNotFoundError("No completed inference run found. Run --stage inference first.")
+            raise FileNotFoundError(
+                "No completed inference run found. Run --stage inference first."
+            )
 
     def get(self, run_id: str) -> Run:
         if run_id not in self.runs:
@@ -60,7 +64,11 @@ class RunStore:
 
 
 def read_manifest(run: Run) -> dict[str, Any]:
-    return json.loads((run.path / "inference" / "deployment" / "manifest.json").read_text(encoding="utf-8"))
+    return json.loads(
+        (run.path / "inference" / "deployment" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
 
 
 def read_summary(run: Run) -> dict[str, Any]:
@@ -71,7 +79,10 @@ def read_summary(run: Run) -> dict[str, Any]:
         "task": manifest["task"],
         "strategies": manifest["targets"],
         "classes": manifest.get("class_labels", []),
-        "explainable": (run.path / "inference" / "deployment" / "background.npz").is_file() and manifest["task"] == "classification",
+        "explainable": (
+            run.path / "inference" / "deployment" / "background.npz"
+        ).is_file()
+        and manifest["task"] == "classification",
     }
 
 
@@ -79,10 +90,14 @@ def read_predictions(run: Run) -> list[dict[str, Any]]:
     path = run.path / "inference" / "predictions.tsv"
     if not path.is_file():
         return []
-    return json.loads(pd.read_csv(path, sep="\t", dtype={"sample_id": str}).to_json(orient="records"))
+    return json.loads(
+        pd.read_csv(path, sep="\t", dtype={"sample_id": str}).to_json(orient="records")
+    )
 
 
-def read_profile(payload: bytes, format: str, sample_id_col: str = "sample_id") -> tuple[np.ndarray, list[str], list[str]]:
+def read_profile(
+    payload: bytes, format: str, sample_id_col: str = "sample_id"
+) -> tuple[np.ndarray, list[str], list[str]]:
     from io import BytesIO
 
     if format == "matrix":
@@ -95,7 +110,9 @@ def read_profile(payload: bytes, format: str, sample_id_col: str = "sample_id") 
         frame = frame.T
     elif format == "wide":
         try:
-            frame = pd.read_csv(BytesIO(payload), sep=None, engine="python", dtype={sample_id_col: str})
+            frame = pd.read_csv(
+                BytesIO(payload), sep=None, engine="python", dtype={sample_id_col: str}
+            )
         except (pd.errors.ParserError, pd.errors.EmptyDataError, UnicodeError) as exc:
             raise ValueError("Cannot parse the inference table.") from exc
         if sample_id_col not in frame:
@@ -104,7 +121,12 @@ def read_profile(payload: bytes, format: str, sample_id_col: str = "sample_id") 
         names = frame.columns.astype(str).str.strip().tolist()
     else:
         raise ValueError("Format must be wide or matrix.")
-    if not samples or not names or len(samples) != len(set(samples)) or len(names) != len(set(names)):
+    if (
+        not samples
+        or not names
+        or len(samples) != len(set(samples))
+        or len(names) != len(set(names))
+    ):
         raise ValueError("Input requires unique, nonempty sample IDs and features.")
     if any(not name for name in samples + names):
         raise ValueError("Sample IDs and feature names must not be empty.")
@@ -114,7 +136,9 @@ def read_profile(payload: bytes, format: str, sample_id_col: str = "sample_id") 
     return X, names, samples
 
 
-def read_profile_for_run(run: Run, payload: bytes, format: str) -> tuple[np.ndarray, list[str], list[str]]:
+def read_profile_for_run(
+    run: Run, payload: bytes, format: str
+) -> tuple[np.ndarray, list[str], list[str]]:
     X, names, samples = read_profile(payload, format)
     if format == "wide":
         try:
@@ -124,7 +148,9 @@ def read_profile_for_run(run: Run, payload: bytes, format: str) -> tuple[np.ndar
         lookup = {name: index for index, name in enumerate(names)}
         missing = [name for name in expected if name not in lookup]
         if missing:
-            raise ValueError(f"Wide inference input is missing {len(missing)} training feature(s): {missing[:5]!r}.")
+            raise ValueError(
+                f"Wide inference input is missing {len(missing)} training feature(s): {missing[:5]!r}."
+            )
         return X[:, [lookup[name] for name in expected]], expected, samples
     return X, names, samples
 
@@ -157,25 +183,49 @@ def predict_values(
     for member in members:
         config_id = str(member["config_id"])
         if config_id not in cache:
-            path = run.path / "inference" / "deployment" / "members" / f"{config_id}.joblib"
+            path = (
+                run.path
+                / "inference"
+                / "deployment"
+                / "members"
+                / f"{config_id}.joblib"
+            )
             if path.parent != path.resolve().parent or not path.is_file():
                 raise FileNotFoundError("A fitted model is unavailable.")
             bundle = read_bundle(path, path.stat().st_mtime_ns)
-            if bundle.get("signature") != audit_by_id[config_id].get("deployment_signature"):
-                raise ValueError("The fitted model signature does not match the deployment manifest.")
+            if bundle.get("signature") != audit_by_id[config_id].get(
+                "deployment_signature"
+            ):
+                raise ValueError(
+                    "The fitted model signature does not match the deployment manifest."
+                )
             raw_names = list(bundle["raw_feature_names"])
-            resolved, resolved_names = _profile_resolution(X, names, tuple(bundle["levels"]))
+            resolved, resolved_names = _profile_resolution(
+                X, names, tuple(bundle["levels"])
+            )
             aligned, _ = _align_resolution(
-                np.empty((0, len(raw_names))), raw_names, resolved, resolved_names,
+                np.empty((0, len(raw_names))),
+                raw_names,
+                resolved,
+                resolved_names,
                 policy=read_inference_policy(run),
             )
             training_scale = audit_by_id[config_id]["training_abundance_scale"]
-            if validate_scale and _scale_validation_mode(member, training_scale, _abundance_scale(aligned)) == "mismatch":
-                raise ValueError(f"Abundance scale differs from training for {config_id}.")
+            if (
+                validate_scale
+                and _scale_validation_mode(
+                    member, training_scale, _abundance_scale(aligned)
+                )
+                == "mismatch"
+            ):
+                raise ValueError(
+                    f"Abundance scale differs from training for {config_id}."
+                )
             transformed = bundle["transformer"].apply(aligned)
             if manifest["task"] == "classification":
                 prediction = _predict_proba_aligned(
-                    bundle["estimator"], transformed,
+                    bundle["estimator"],
+                    transformed,
                     np.arange(len(manifest["class_labels"])),
                 )
             else:
@@ -196,9 +246,15 @@ def predict_values(
         aggregation = str(model["aggregation_strategy"])
         weights = None
         if aggregation in {"weighted_mean_proba", "weighted_mean_prediction"}:
-            weights = [float(item.get("aggregation_weight", item.get("weight"))) for item in members]
+            weights = [
+                float(item.get("aggregation_weight", item.get("weight")))
+                for item in members
+            ]
         result = aggregate_member_predictions(
-            np.stack(values), aggregation, weights, model.get("aggregation_parameters", {}),
+            np.stack(values),
+            aggregation,
+            weights,
+            model.get("aggregation_parameters", {}),
         )
     result = np.asarray(result, dtype=float)
     if not np.isfinite(result).all():
@@ -211,32 +267,53 @@ def read_inference_policy(run: Run) -> str:
     return json.loads(path.read_text(encoding="utf-8")).get("feature_policy", "strict")
 
 
-def predict_table(run: Run, X: np.ndarray, names: list[str], samples: list[str], strategy: str) -> list[dict[str, Any]]:
+def predict_table(
+    run: Run, X: np.ndarray, names: list[str], samples: list[str], strategy: str
+) -> list[dict[str, Any]]:
     from types import SimpleNamespace
 
     manifest = read_manifest(run)
-    dataset = SimpleNamespace(task=manifest["task"], class_labels=manifest.get("class_labels", []))
-    frame = _prediction_frame(samples, dataset, {strategy: predict_values(run, X, names, strategy)})
+    dataset = SimpleNamespace(
+        task=manifest["task"], class_labels=manifest.get("class_labels", [])
+    )
+    frame = _prediction_frame(
+        samples, dataset, {strategy: predict_values(run, X, names, strategy)}
+    )
     return json.loads(frame.to_json(orient="records"))
 
 
 def read_background(run: Run) -> tuple[np.ndarray, list[str]]:
     path = run.path / "inference" / "deployment" / "background.npz"
     if not path.is_file():
-        raise FileNotFoundError("Run inference again to save a training reference for explanations.")
+        raise FileNotFoundError(
+            "Run inference again to save a training reference for explanations."
+        )
     with np.load(path, allow_pickle=False) as data:
         fingerprint = str(data["fingerprint"].item())
         if fingerprint != read_manifest(run)["training_dataset_fingerprint"]:
-            raise ValueError("The explanation reference does not match the fitted model.")
+            raise ValueError(
+                "The explanation reference does not match the fitted model."
+            )
         return data["X"].astype(float), data["names"].astype(str).tolist()
 
 
 def read_saved_samples(run: Run) -> tuple[np.ndarray, list[str], list[str]]:
     path = run.path / "inference" / "samples.npz"
     if not path.is_file():
-        raise FileNotFoundError("Inference inputs are not saved in this run. Run --stage inference again or upload the original samples.")
-    inference_manifest = json.loads((run.path / "inference" / "manifest.json").read_text(encoding="utf-8"))
+        raise FileNotFoundError(
+            "Inference inputs are not saved in this run. Run --stage inference again or upload the original samples."
+        )
+    inference_manifest = json.loads(
+        (run.path / "inference" / "manifest.json").read_text(encoding="utf-8")
+    )
     with np.load(path, allow_pickle=False) as data:
-        if str(data["fingerprint"].item()) != inference_manifest["input"]["abundance_sha256"]:
+        if (
+            str(data["fingerprint"].item())
+            != inference_manifest["input"]["abundance_sha256"]
+        ):
             raise ValueError("Saved inference inputs do not match this experiment run.")
-        return data["X"].astype(float), data["names"].astype(str).tolist(), data["samples"].astype(str).tolist()
+        return (
+            data["X"].astype(float),
+            data["names"].astype(str).tolist(),
+            data["samples"].astype(str).tolist(),
+        )
