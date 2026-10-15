@@ -1,3 +1,5 @@
+# mllabiome
+
 > **Research use only. Not a medical device.**
 > This software was developed in the HEREDITARY project as a research prototype. It has not been assessed or certified under the EU Medical Device Regulation (EU) 2017/745. It must not be used to diagnose, treat, monitor or make any other decision about individual patients.
 
@@ -26,7 +28,6 @@
 - decisions about individuals, such as insurance, employment or access to care;
 - re-identification of individuals or linkage with other data sources;
 - populations, devices or data types not described in Section 3;
-- clinical monitoring of individual patients.
 
 ## 3. Data provenance
 
