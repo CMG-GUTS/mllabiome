@@ -42,15 +42,15 @@ RESOLUTIONS = (
     # ("class", ("class",)),
     # ("order", ("order",)),
     # ("family", ("family",)),
-    ("genus", ("genus",)),
-    ("species", ("species",)),
-    # ("strain", ("strain",)),
+    # ("genus", ("genus",)),
+    # ("species", ("species",)),
+    ("strain", ("strain",)),
     # ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
-    mll.Transformation("identity"),
-    # mll.Transformation("presence_absence"),
+    # mll.Transformation("identity"),
+    mll.Transformation("presence_absence"),
     # mll.Transformation(
     #     "relative_abundance",
     #     composition_scope="rank-wise",

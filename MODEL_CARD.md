@@ -32,27 +32,27 @@
 
 | Dataset | Source publication | Type (public, synthetic, pseudonymized, anonymized) | Population (size, age, sex, country, condition) | Ethics approval or access conditions |
 |---|---|---|---|---|
-| LAMPP — Live Assessment of Metagenomics-based tools for human Phenotype Prediction (all six prediction tasks) | Barak et al. (2025), https://doi.org/10.1101/2025.06.12.658885 | Public | Multiple cohorts covering different host phenotypes. Demographics and sample sizes vary by task; see the source publication. | Publicly available benchmark. Ethics approvals are described in the original studies. |
+| LAMPP — Live Assessment of Metagenomics-based tools for host Phenotype Prediction (all six prediction tasks) | Barak et al. (2025), https://doi.org/10.1101/2025.06.12.658885 | Public | Multiple cohorts covering different host phenotypes. Demographics and sample sizes vary by task; see the source publication. | Publicly available benchmark. Ethics approvals are described in the original studies. |
 | Gut microbiota and fMRI-derived features | Miranda-Angulo et al. (2024), https://doi.org/10.1016/j.psyneuen.2024.107003 | Public | 88 healthy Colombian men, aged 21–40 years. | Publicly available research data. Original study ethics and data-access conditions apply. |
 
 
 ## 4. Method
 
 - **Algorithm or architecture.** The framework supports multiple machine-learning algorithms, ensemble methods and pretrained foundation models for unimodal and multimodal analysis. It provides automated model optimization, validation and explainability.
-- **Training setting.** Primarily centralized; optional federated-learning simulation using Flower SecAgg+.
-**Privacy techniques.** Data are processed locally by default. Secure aggregation is demonstrated in the optional federated-learning example.
+- **Training setting.** Primarily centralized. Optional single-machine federated-learning simulation using Flower and SecAgg+.
+- **Privacy techniques.** Data are processed locally by default. The optional federated-learning example demonstrates secure aggregation of model updates but does not provide differential privacy.
 
 ## 5. Performance
 
-- **Evaluation data.** Public datasets including all six LAMPP benchmark tasks and data from Miranda-Angulo et al. (2024); evaluation configurations include nested cross-validation and leave-one-dataset-out validation.
-- **Metrics and results.** No single performance result applies to the software framework; metrics and results depend on the dataset, prediction task and model configuration.
+- **Evaluation data.** Public datasets including all six LAMPP benchmark tasks and data from Miranda-Angulo et al. (2024). Evaluation configurations include nested cross-validation and leave-one-dataset-out validation, and additionally inference setting for evaluation on external hidden labels data for assessing generalizability.
+- **Metrics and results.** No single performance result applies to the software framework. Metrics and results depend on the dataset, prediction task and model configuration.
 - **Results by subgroup.** No release-wide demographic subgroup results are reported.
 
 ## 6. Known limitations and risks
 
 - **Generalizability.** Model performance depends on the datasets, populations and preprocessing methods used. Generalizability to other cohorts, sequencing protocols and data modalities is not guaranteed.
 - **Known biases and confounders.** Microbiome analyses may be affected by cohort differences, batch effects, age, sex, medication and other confounding factors.
-- **Failure modes.** Feature explanations do not establish causality.
+- **Failure modes.** Small sample sizes, inadequate handling of repeated samples, or preprocessing **outside the developed validation procedure** may lead to overfitting or overly optimistic performance estimates. Feature explanations do not establish causality.
 - **Privacy risks.** The framework processes user-provided data locally. Users are responsible for protecting sensitive data and generated outputs. No trained model weights are distributed. Privacy attacks on optional third-party pretrained models have not been assessed.
 
 ## 7. Responsible use and reporting
