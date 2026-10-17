@@ -142,6 +142,34 @@ foundation = [
   "biopython>=1.81",
   "filelock>=3.13",
 ]
+tabdpt = [
+    "tabdpt>=1.3,<1.4",
+]
+causilo = [
+    "causilo>=1.0.3,<2",
+]
+kumo = [
+    "structured-data-models ; python_full_version >= '3.11'",
+]
+limix2 = [
+    "huggingface-hub>=0.24 ; python_full_version >= '3.12'",
+    "limix ; python_full_version >= '3.12'",
+]
+tabicl = [
+    "tabicl>=2.2,<3",
+]
+realmlp = [
+    "pytabkit>=1.7.3,<2",
+]
+tabfm = [
+    "tabfm[pytorch]>=1.0.1,<2 ; python_full_version >= '3.11'",
+]
+tabm = [
+    "pytabkit>=1.7.3,<2",
+]
+exaone = [
+    "exaonetabular ; python_full_version >= '3.11'",
+]
 
 [tool.uv]
 override-dependencies = [
@@ -160,6 +188,9 @@ override-dependencies = [
 [tool.uv.sources]
 curated-microbiota = { git = "https://github.com/CMG-GUTS/curated-microbiota", tag = "v0.2.0" }
 curated-microbiota-gut-brain-axis = { git = "https://github.com/CMG-GUTS/curated-microbiota-gut-brain-axis", tag = "v0.1.0" }
+structured-data-models = { git = "https://github.com/NVIDIA/structured-data-models.git" }
+limix = { git = "https://github.com/limix-ldm-ai/LimiX.git" }
+exaonetabular = { git = "https://github.com/LGAI-Research/EXAONE-Tabular.git" }
 
 [project.scripts]
 mllabiome = "mllabiome.cli:main"

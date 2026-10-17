@@ -24,6 +24,8 @@ from .configs_sweep import (
     evaluate,
 )
 from .data import Data, Dataset, Metadata, load_dataset
+from .causilo import CausiloClassifier, CausiloDependencyError
+from .exaone import EXAONETabularClassifier, EXAONETabularDependencyError
 from .ensemble_sweep import sweep_ensemble
 from .explainability import (
     ExplainabilityConfigurationError,
@@ -48,6 +50,9 @@ from .foundation_models import (
     foundation_model_references,
 )
 from .integrations import IntegratedCoordinate, Integration, IntegrationModel
+from .kumo import KumoTabularClassifier, KumoTabularDependencyError
+from .limix2 import LimiX2Classifier, LimiX2DependencyError
+from .limix import LimiXClassifier
 from .learners import FLAMLClassifier, build_learner, validate_model_specs
 from .ollama_decision import OllamaDecisionClassifier
 from .ridge_softmax import RidgeSoftmaxClassifier
@@ -64,6 +69,11 @@ from .pipeline import run_all, run_explore, run_inference, run_robustness
 from .report import write_report
 from .resolutions import materialize_mpdr
 from .siamcat import SIAMCATClassifier
+from .tabdpt import TabDPTClassifier, TabDPTDependencyError
+from .tabicl import TabICLClassifier, TabICLDependencyError
+from .tabfm import TabFMClassifier, TabFMDependencyError
+from .tabm import TabMClassifier, TabMDependencyError
+from .realmlp import RealMLPClassifier, RealMLPDependencyError
 from .tabpfn import TabPFNClassifier, TabPFNDependencyError
 from .transformations import (
     TRANSFORMATION_LABELS,
@@ -90,7 +100,16 @@ from .utils import (
 __all__ = [
     "ALE",
     "CLASSIFICATION_METRIC_COLUMNS",
+    "CausiloClassifier",
+    "CausiloDependencyError",
+    "EXAONETabularClassifier",
+    "EXAONETabularDependencyError",
+    "KumoTabularClassifier",
+    "KumoTabularDependencyError",
     "LIME",
+    "LimiXClassifier",
+    "LimiX2Classifier",
+    "LimiX2DependencyError",
     "METRIC_COLUMNS",
     "MPDR",
     "MPMA",
@@ -137,6 +156,16 @@ __all__ = [
     "RidgeSoftmaxClassifier",
     "GroupedRankCalibratedClassifier",
     "SIAMCATClassifier",
+    "TabFMClassifier",
+    "TabFMDependencyError",
+    "TabMClassifier",
+    "TabMDependencyError",
+    "TabICLClassifier",
+    "TabICLDependencyError",
+    "RealMLPClassifier",
+    "RealMLPDependencyError",
+    "TabDPTClassifier",
+    "TabDPTDependencyError",
     "TabPFNClassifier",
     "TabPFNDependencyError",
     "Samples",

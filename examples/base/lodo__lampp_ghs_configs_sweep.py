@@ -13,7 +13,7 @@ from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
 TITLE = "LAMPP general health status LODO MPMA sweep"
-EXPERIMENT_DIR = HERE / "runs" / "LAMPP-GHS-LODO-CM-base"
+EXPERIMENT_DIR = HERE / "runs" / "LAMPP-GHS-LODO-CM-base-dl-kumo-only"
 
 DATA = lampp_ghs.mllabiome()
 
@@ -38,19 +38,19 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
-    # ("phylum", ("phylum",)),
+    ("phylum", ("phylum",)),
     # ("class", ("class",)),
     # ("order", ("order",)),
     # ("family", ("family",)),
     # ("genus", ("genus",)),
     # ("species", ("species",)),
-    ("strain", ("strain",)),
-    # ("raw", ("all",)),
+    # ("strain", ("strain",)),
+    ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
-    # mll.Transformation("identity"),
-    mll.Transformation("presence_absence"),
+    mll.Transformation("identity"),
+    # mll.Transformation("presence_absence"),
     # mll.Transformation(
     #     "relative_abundance",
     #     composition_scope="rank-wise",
@@ -122,21 +122,46 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
+    # (
+    #     "TabPFN",
+    #     mll.TabPFNClassifier(
+    #         n_estimators="auto",
+    #         auto_scale_n_estimators=True,
+    #         model_path="auto",
+    #         device="auto",
+    #         inference_precision="auto",
+    #         fit_mode="fit_preprocessors",
+    #         memory_saving_mode="auto",
+    #         keep_cache_on_device=True,
+    #         random_state=42,
+    #         n_preprocessing_jobs=1,
+    #     ),
+    # ),
+    # (
+    #     "TabDPT_v1_3",
+    #     mll.TabDPTClassifier(
+    #         n_ensembles=8,
+    #         context_size=512,
+    #         context_reduction="subsample",
+    #         feature_reduction="pca",
+    #         normalizer="standard",
+    #         temperature=1.0,
+    #         device=None,
+    #         use_flash=True,
+    #         compile=False,
+    #         random_state=42,
+    #         verbose=False,
+    #     ),
+    # ),
     (
-        "TabPFN",
-        mll.TabPFNClassifier(
-            n_estimators="auto",
-            auto_scale_n_estimators=True,
-            model_path="auto",
-            device="auto",
-            inference_precision="auto",
-            fit_mode="fit_preprocessors",
-            memory_saving_mode="auto",
-            keep_cache_on_device=True,
-            random_state=42,
-            n_preprocessing_jobs=1,
-        ),
+    "KumoTabular_small",
+    mll.KumoTabularClassifier(
+        size="small",
+        device="cpu",
+        random_state=42,
     ),
+),
+
 )
 
 

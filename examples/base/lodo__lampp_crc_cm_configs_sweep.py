@@ -13,7 +13,7 @@ from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
 TITLE = "LAMPP colorectal cancer LODO mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "LAMPP-CRC-LODO-CM-base"
+EXPERIMENT_DIR = HERE / "runs" / "LAMPP-CRC-LODO-CM-base-kumod-only"
 
 DATA = lampp_crc.mllabiome()
 
@@ -42,14 +42,14 @@ RESOLUTIONS = (
     # ("class", ("class",)),
     # ("order", ("order",)),
     # ("family", ("family",)),
-    # ("genus", ("genus",)),
+    ("genus", ("genus",)),
     # ("species", ("species",)),
-    # ("strain", ("strain",)),
-    ("raw", ("all",)),
+    ("strain", ("strain",)),
+    # ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
-    # mll.Transformation("identity"),
+    mll.Transformation("identity"),
     # mll.Transformation("presence_absence"),
     # mll.Transformation(
     #     "relative_abundance",
@@ -59,11 +59,11 @@ COUNT_TRANSFORMATIONS = (
     #     "arcsine_sqrt",
     #     composition_scope="rank-wise",
     # ),
-    mll.Transformation("clr", composition_scope="rank-wise"),
-    mll.Transformation(
-        "log10",
-        composition_scope="rank-wise",
-    ),
+    # mll.Transformation("clr", composition_scope="rank-wise"),
+    # mll.Transformation(
+    #     "log10",
+    #     composition_scope="rank-wise",
+    # ),
 )
 
 MODELS = (
@@ -84,59 +84,112 @@ MODELS = (
     #     ),
     # ),
     # # default standard models
-    (
-        "CB_default",
-        CatBoostClassifier(
-            random_seed=42,
-            thread_count=1,
-            verbose=False,
-            allow_writing_files=False,
-        ),
+    # (
+    #     "CB_default",
+    #     CatBoostClassifier(
+    #         random_seed=42,
+    #         thread_count=1,
+    #         verbose=False,
+    #         allow_writing_files=False,
+    #     ),
+    # ),
+    # (
+    #     "RF_default",
+    #     RandomForestClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "LightGBM_default",
+    #     LGBMClassifier(
+    #         random_state=42,
+    #         n_jobs=1,
+    #         verbosity=-1,
+    #     ),
+    # ),
+    # (
+    #     "XGB_default",
+    #     XGBClassifier(
+    #         random_state=42,
+    #         n_jobs=1,
+    #         verbosity=0,
+    #         eval_metric="logloss",
+    #     ),
+    # ),
+    # (
+    #     "LR_default",
+    #     LogisticRegression(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "TabPFN",
+    #     mll.TabPFNClassifier(
+    #         n_estimators="auto",
+    #         auto_scale_n_estimators=True,
+    #         model_path="auto",
+    #         device="auto",
+    #         inference_precision="auto",
+    #         fit_mode="fit_preprocessors",
+    #         memory_saving_mode="auto",
+    #         keep_cache_on_device=True,
+    #         random_state=42,
+    #         n_preprocessing_jobs=1,
+    #     ),
+    # ),
+#     (
+#     "KumoTabular_medium",
+#     mll.KumoTabularClassifier(
+#         size="medium",
+#         device="cpu",
+#         random_state=42,
+#     ),
+# ),
+# (
+#     "KumoTabular_large",
+#     mll.KumoTabularClassifier(
+#         size="large",
+#         device="cpu",
+#         random_state=42,
+#     ),
+# ),
+
+# (
+#     "LimiX2_default",
+#     mll.LimiX2Classifier(
+#         device="auto",
+#         random_state=42,
+#     ),
+# ),
+
+
+# (
+#     "LimiX_2M_noretrieval",
+#     mll.LimiXClassifier(
+#         size="2m",
+#         retrieval=False,
+#         device="auto",
+#         random_state=42,
+#     ),
+# ),
+# (
+#     "LimiX_16M_noretrieval",
+#     mll.LimiXClassifier(
+#         size="16m",
+#         retrieval=False,
+#         device="auto",
+#         random_state=42,
+#     ),
+# ),
+
+(
+    "KumoTabular_default",
+    mll.KumoTabularClassifier(
+        device="cpu",
+        random_state=42,
     ),
-    (
-        "RF_default",
-        RandomForestClassifier(
-            random_state=42,
-        ),
-    ),
-    (
-        "LightGBM_default",
-        LGBMClassifier(
-            random_state=42,
-            n_jobs=1,
-            verbosity=-1,
-        ),
-    ),
-    (
-        "XGB_default",
-        XGBClassifier(
-            random_state=42,
-            n_jobs=1,
-            verbosity=0,
-            eval_metric="logloss",
-        ),
-    ),
-    (
-        "LR_default",
-        LogisticRegression(
-            random_state=42,
-        ),
-    ),
-    (
-        "TabPFN",
-        mll.TabPFNClassifier(
-            n_estimators="auto",
-            auto_scale_n_estimators=True,
-            model_path="auto",
-            device="auto",
-            inference_precision="auto",
-            fit_mode="fit_preprocessors",
-            memory_saving_mode="auto",
-            keep_cache_on_device=True,
-            random_state=42,
-            n_preprocessing_jobs=1,
-        ),
-    ),
+),
+
 )
 
 
