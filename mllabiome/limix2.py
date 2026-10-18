@@ -50,7 +50,9 @@ class LimiX2Classifier(ClassifierMixin, BaseEstimator):
         if sparse.issparse(X):
             required_bytes = X.shape[0] * X.shape[1] * np.dtype(np.float32).itemsize
             if required_bytes > 2 * 1024**3:
-                raise MemoryError("Densifying the LimiX-2 feature matrix would exceed 2 GiB.")
+                raise MemoryError(
+                    "Densifying the LimiX-2 feature matrix would exceed 2 GiB."
+                )
             X = X.toarray()
         array = np.asarray(X, dtype=np.float32)
         if array.ndim != 2 or array.shape[1] == 0:
@@ -64,7 +66,9 @@ class LimiX2Classifier(ClassifierMixin, BaseEstimator):
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
         if device not in {"cpu", "cuda", "mps"} and not device.startswith("cuda:"):
-            raise ValueError("device must be 'auto', 'cpu', 'cuda', 'mps', or a CUDA device index.")
+            raise ValueError(
+                "device must be 'auto', 'cpu', 'cuda', 'mps', or a CUDA device index."
+            )
         if device.startswith("cuda") and not torch.cuda.is_available():
             raise RuntimeError("CUDA was requested but is not available.")
         if device == "mps" and not torch.backends.mps.is_available():
@@ -83,8 +87,10 @@ class LimiX2Classifier(ClassifierMixin, BaseEstimator):
             ) from exc
         predictor = getattr(limix, "LimiXPredictor", None)
         if predictor is None:
-            raise LimiX2DependencyError("The installed limix package has no LimiXPredictor. "
-                "Install the official limix-ldm-ai/LimiX repository, not the unrelated PyPI limix project.")
+            raise LimiX2DependencyError(
+                "The installed limix package has no LimiXPredictor. "
+                "Install the official limix-ldm-ai/LimiX repository, not the unrelated PyPI limix project."
+            )
         return predictor, torch
 
     def _checkpoint_path(self) -> str:
@@ -100,16 +106,22 @@ class LimiX2Classifier(ClassifierMixin, BaseEstimator):
                 "Automatic checkpoint downloading requires huggingface-hub. "
                 "Install the limix2 optional dependency or pass model_path."
             ) from exc
-        return str(hub.hf_hub_download(repo_id="stable-ai/LimiX-2", filename="LimiX-2.ckpt"))
+        return str(
+            hub.hf_hub_download(repo_id="stable-ai/LimiX-2", filename="LimiX-2.ckpt")
+        )
 
     def _config_path(self) -> str:
         if self.inference_config is not None:
             path = Path(self.inference_config).expanduser()
             if not path.is_file():
-                raise FileNotFoundError(f"LimiX-2 inference config does not exist: {path}")
+                raise FileNotFoundError(
+                    f"LimiX-2 inference config does not exist: {path}"
+                )
             return str(path)
         try:
-            return str(resources.files("config").joinpath("cls_default_noretrieval_v2.json"))
+            return str(
+                resources.files("config").joinpath("cls_default_noretrieval_v2.json")
+            )
         except ModuleNotFoundError as exc:
             raise LimiX2DependencyError(
                 "The installed LimiX package is missing its packaged v2 config. "
@@ -117,15 +129,22 @@ class LimiX2Classifier(ClassifierMixin, BaseEstimator):
             ) from exc
 
     def fit(self, X: Any, y: Any, groups: Any = None):
-        if isinstance(self.random_state, (bool, np.bool_)) or not isinstance(
-            self.random_state, (int, np.integer)
-        ) or self.random_state < 0:
+        if (
+            isinstance(self.random_state, (bool, np.bool_))
+            or not isinstance(self.random_state, (int, np.integer))
+            or self.random_state < 0
+        ):
             raise ValueError("random_state must be a nonnegative integer.")
         if not np.isfinite(self.softmax_temperature) or self.softmax_temperature <= 0:
             raise ValueError("softmax_temperature must be positive and finite.")
         if not np.isfinite(self.outlier_remove_std) or self.outlier_remove_std <= 0:
             raise ValueError("outlier_remove_std must be positive and finite.")
-        if self.device not in {"auto", "cpu", "cuda", "mps"} and not self.device.startswith("cuda:"):
+        if self.device not in {
+            "auto",
+            "cpu",
+            "cuda",
+            "mps",
+        } and not self.device.startswith("cuda:"):
             raise ValueError("Invalid LimiX-2 device.")
         array = self._as_array(X)
         target = np.asarray(y)
@@ -154,7 +173,11 @@ class LimiX2Classifier(ClassifierMixin, BaseEstimator):
             return factory
         upstream = importlib.import_module("inference.v2_0.predictor").LimiXPredictor
         base = os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
-        cache_path = Path(self.cache_dir).expanduser() if self.cache_dir is not None else Path(base) / "mllabiome" / "limix2"
+        cache_path = (
+            Path(self.cache_dir).expanduser()
+            if self.cache_dir is not None
+            else Path(base) / "mllabiome" / "limix2"
+        )
         use_data_cache = self.use_data_cache
 
         class PortableCacheManager(upstream.CacheManager):
@@ -195,10 +218,14 @@ class LimiX2Classifier(ClassifierMixin, BaseEstimator):
         check_is_fitted(self, ("X_train_", "y_train_", "classes_", "n_features_in_"))
         array = self._as_array(X)
         if array.shape[1] != self.n_features_in_:
-            raise ValueError(f"Expected {self.n_features_in_} features, got {array.shape[1]}.")
+            raise ValueError(
+                f"Expected {self.n_features_in_} features, got {array.shape[1]}."
+            )
         if hasattr(self, "feature_names_in_") and hasattr(X, "columns"):
             if not np.array_equal(np.asarray(X.columns), self.feature_names_in_):
-                raise ValueError("Prediction feature names must match training feature names.")
+                raise ValueError(
+                    "Prediction feature names must match training feature names."
+                )
         with optional_limix_triton():
             predictor = self._get_predictor()
             ensure_limix_torch_norm_interface()
@@ -208,7 +235,9 @@ class LimiX2Classifier(ClassifierMixin, BaseEstimator):
         proba = np.asarray(result, dtype=np.float64)
         shape = (array.shape[0], self.classes_.size)
         if proba.shape != shape:
-            raise ValueError(f"Expected LimiX-2 probability shape {shape}, got {proba.shape}.")
+            raise ValueError(
+                f"Expected LimiX-2 probability shape {shape}, got {proba.shape}."
+            )
         if not np.isfinite(proba).all() or np.any(proba < 0):
             raise ValueError("LimiX-2 returned invalid probabilities.")
         if not np.allclose(proba.sum(axis=1), 1.0, atol=1e-5):

@@ -68,7 +68,11 @@ class LimiXClassifier(LimiX2Classifier):
     def _config_path(self) -> str:
         if self.inference_config is not None:
             return super()._config_path()
-        name = "cls_default_retrieval.json" if self.retrieval else "cls_default_noretrieval.json"
+        name = (
+            "cls_default_retrieval.json"
+            if self.retrieval
+            else "cls_default_noretrieval.json"
+        )
         try:
             return str(resources.files("config").joinpath(name))
         except ModuleNotFoundError as exc:

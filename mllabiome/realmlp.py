@@ -61,18 +61,33 @@ class RealMLPClassifier(ClassifierMixin, BaseEstimator):
 
     def _backend_params(self) -> dict[str, Any]:
         names = (
-            "device", "random_state", "val_metric_name", "use_ls", "n_cv",
-            "n_refit", "n_epochs", "batch_size", "n_threads", "hidden_sizes",
-            "val_fraction", "verbosity",
+            "device",
+            "random_state",
+            "val_metric_name",
+            "use_ls",
+            "n_cv",
+            "n_refit",
+            "n_epochs",
+            "batch_size",
+            "n_threads",
+            "hidden_sizes",
+            "val_fraction",
+            "verbosity",
         )
-        return {name: getattr(self, name) for name in names if getattr(self, name) is not None}
+        return {
+            name: getattr(self, name)
+            for name in names
+            if getattr(self, name) is not None
+        }
 
     @staticmethod
     def _prepare_X(X: Any):
         if sparse.issparse(X):
             bytes_required = X.shape[0] * X.shape[1] * np.dtype(np.float32).itemsize
             if bytes_required > 2 * 1024**3:
-                raise MemoryError("Densifying the RealMLP feature matrix would exceed 2 GiB.")
+                raise MemoryError(
+                    "Densifying the RealMLP feature matrix would exceed 2 GiB."
+                )
             X = X.astype(np.float32).toarray()
         if not hasattr(X, "shape"):
             X = np.asarray(X)
@@ -107,10 +122,14 @@ class RealMLPClassifier(ClassifierMixin, BaseEstimator):
         check_is_fitted(self, ("model_", "classes_", "n_features_in_"))
         X = self._prepare_X(X)
         if X.shape[1] != self.n_features_in_:
-            raise ValueError(f"Expected {self.n_features_in_} features, got {X.shape[1]}.")
+            raise ValueError(
+                f"Expected {self.n_features_in_} features, got {X.shape[1]}."
+            )
         if hasattr(self, "feature_names_in_") and hasattr(X, "columns"):
             if not np.array_equal(np.asarray(X.columns), self.feature_names_in_):
-                raise ValueError("Prediction feature names must match training feature names.")
+                raise ValueError(
+                    "Prediction feature names must match training feature names."
+                )
         proba = np.asarray(self.model_.predict_proba(X), dtype=np.float64)
         shape = (X.shape[0], len(self.classes_))
         if proba.shape != shape or not np.isfinite(proba).all() or (proba < 0).any():

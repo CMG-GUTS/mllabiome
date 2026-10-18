@@ -49,9 +49,7 @@ class CausiloClassifier(ClassifierMixin, BaseEstimator):
     @staticmethod
     def _prepare_X(X: Any):
         if sparse.issparse(X):
-            required_bytes = (
-                X.shape[0] * X.shape[1] * np.dtype(np.float32).itemsize
-            )
+            required_bytes = X.shape[0] * X.shape[1] * np.dtype(np.float32).itemsize
             if required_bytes > 2 * 1024**3:
                 raise MemoryError("Densifying the Causilo matrix would exceed 2 GiB.")
             X = X.astype(np.float32).toarray()
@@ -115,7 +113,9 @@ class CausiloClassifier(ClassifierMixin, BaseEstimator):
             )
         if hasattr(self, "feature_names_in_") and hasattr(X, "columns"):
             if not np.array_equal(np.asarray(X.columns), self.feature_names_in_):
-                raise ValueError("Prediction feature names must match training features.")
+                raise ValueError(
+                    "Prediction feature names must match training features."
+                )
         return X
 
     def predict_proba(self, X: Any) -> np.ndarray:

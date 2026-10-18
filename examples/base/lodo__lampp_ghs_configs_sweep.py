@@ -153,15 +153,20 @@ MODELS = (
     #         verbose=False,
     #     ),
     # ),
+    #     (
+    #     "KumoTabular_small",
+    #     mll.KumoTabularClassifier(
+    #         size="small",
+    #         device="cpu",
+    #         random_state=42,
+    #     ),
+    # ),
     (
-    "KumoTabular_small",
-    mll.KumoTabularClassifier(
-        size="small",
-        device="cpu",
-        random_state=42,
+        "Causilo_default",
+        mll.CausiloClassifier(
+            random_state=42,
+        ),
     ),
-),
-
 )
 
 

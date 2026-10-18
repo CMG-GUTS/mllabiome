@@ -3229,6 +3229,9 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
         from .regression_ensemble import sweep_regression_ensemble
 
         return sweep_regression_ensemble(sweep)
+    from ._config_store import refresh_catalog
+
+    refresh_catalog(Path(sweep.root()))
     root = sweep.root()
     ensemble_dir = root / "ensembling"
     ensemble_dir.mkdir(parents=True, exist_ok=True)

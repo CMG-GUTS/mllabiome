@@ -13,7 +13,7 @@ from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
 TITLE = "LAMPP colorectal cancer LODO mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "LAMPP-CRC-LODO-CM-base-kumod-only"
+EXPERIMENT_DIR = HERE / "runs" / "LAMPP-CRC-LODO-CM-base-dl-only"
 
 DATA = lampp_crc.mllabiome()
 
@@ -38,11 +38,11 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
-    # ("phylum", ("phylum",)),
+    ("phylum", ("phylum",)),
     # ("class", ("class",)),
     # ("order", ("order",)),
     # ("family", ("family",)),
-    ("genus", ("genus",)),
+    # ("genus", ("genus",)),
     # ("species", ("species",)),
     ("strain", ("strain",)),
     # ("raw", ("all",)),
@@ -137,59 +137,68 @@ MODELS = (
     #         n_preprocessing_jobs=1,
     #     ),
     # ),
-#     (
-#     "KumoTabular_medium",
-#     mll.KumoTabularClassifier(
-#         size="medium",
-#         device="cpu",
-#         random_state=42,
-#     ),
-# ),
-# (
-#     "KumoTabular_large",
-#     mll.KumoTabularClassifier(
-#         size="large",
-#         device="cpu",
-#         random_state=42,
-#     ),
-# ),
-
-# (
-#     "LimiX2_default",
-#     mll.LimiX2Classifier(
-#         device="auto",
-#         random_state=42,
-#     ),
-# ),
-
-
-# (
-#     "LimiX_2M_noretrieval",
-#     mll.LimiXClassifier(
-#         size="2m",
-#         retrieval=False,
-#         device="auto",
-#         random_state=42,
-#     ),
-# ),
-# (
-#     "LimiX_16M_noretrieval",
-#     mll.LimiXClassifier(
-#         size="16m",
-#         retrieval=False,
-#         device="auto",
-#         random_state=42,
-#     ),
-# ),
-
-(
-    "KumoTabular_default",
-    mll.KumoTabularClassifier(
-        device="cpu",
-        random_state=42,
+    #     (
+    #     "KumoTabular_medium",
+    #     mll.KumoTabularClassifier(
+    #         size="medium",
+    #         device="cpu",
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "KumoTabular_large",
+    #     mll.KumoTabularClassifier(
+    #         size="large",
+    #         device="cpu",
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "LimiX2_default",
+    #     mll.LimiX2Classifier(
+    #         device="auto",
+    #         random_state=42,
+    #     ),
+    # ),
+    (
+        "LimiX_2M_noretrieval",
+        mll.LimiXClassifier(
+            size="2m",
+            retrieval=False,
+            device="auto",
+            random_state=42,
+        ),
     ),
-),
-
+    # (
+    #     "LimiX_16M_noretrieval",
+    #     mll.LimiXClassifier(
+    #         size="16m",
+    #         retrieval=False,
+    #         device="auto",
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "KumoTabular_default",
+    #     mll.KumoTabularClassifier(
+    #         device="cpu",
+    #         random_state=42,
+    #     ),
+    # ),
+    (
+        "Causilo_default",
+        mll.CausiloClassifier(
+            random_state=42,
+        ),
+    ),
+    (
+        "KumoTabular_small",
+        mll.KumoTabularClassifier(
+            size="small",
+            device="cpu",
+            random_state=42,
+        ),
+    ),
 )
 
 

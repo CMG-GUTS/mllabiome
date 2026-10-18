@@ -41,7 +41,9 @@ class EXAONETabularClassifier(ClassifierMixin, BaseEstimator):
         if sparse.issparse(X):
             bytes_required = X.shape[0] * X.shape[1] * np.dtype(np.float32).itemsize
             if bytes_required > 2 * 1024**3:
-                raise MemoryError("Densifying the EXAONE feature matrix would exceed 2 GiB.")
+                raise MemoryError(
+                    "Densifying the EXAONE feature matrix would exceed 2 GiB."
+                )
             X = X.astype(np.float32).toarray()
         try:
             array = np.asarray(X, dtype=np.float32)
@@ -147,11 +149,15 @@ class EXAONETabularClassifier(ClassifierMixin, BaseEstimator):
             )
         if hasattr(self, "feature_names_in_") and names is not None:
             if not np.array_equal(np.asarray(names), self.feature_names_in_):
-                raise ValueError("Prediction feature names must match training feature names.")
+                raise ValueError(
+                    "Prediction feature names must match training feature names."
+                )
         model = self._get_model()
         probabilities = np.asarray(model.predict_proba(X_array), dtype=np.float64)
         if probabilities.shape != (len(X_array), len(self.classes_)):
-            raise ValueError(f"EXAONE returned an invalid probability shape: {probabilities.shape}.")
+            raise ValueError(
+                f"EXAONE returned an invalid probability shape: {probabilities.shape}."
+            )
         backend_classes = getattr(model, "classes_", None)
         if backend_classes is not None:
             backend_classes = np.asarray(backend_classes)

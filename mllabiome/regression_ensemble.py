@@ -1005,6 +1005,9 @@ def _apply_candidate(
 
 
 def sweep_regression_ensemble(sweep: Sweep) -> dict[str, Path]:
+    from ._config_store import refresh_catalog
+
+    refresh_catalog(Path(sweep.root()))
     root = Path(sweep.root())
     ensemble_dir = root / "ensembling"
     ensemble_dir.mkdir(parents=True, exist_ok=True)

@@ -64,7 +64,9 @@ def _eligible_config_ids(configs: pd.DataFrame, plan: Any | None = None) -> set[
 
 
 def _qualified_pairs(qualification: pd.DataFrame | None) -> set[tuple[str, str]] | None:
-    if qualification is None:
+    if qualification is None or (
+        qualification.empty and len(qualification.columns) == 0
+    ):
         return None
     required = {"split_key", "config_id", "qualified"}
     missing = required - set(qualification.columns)
@@ -280,7 +282,7 @@ def select_final_mpma_candidate(
     frame[metric] = pd.to_numeric(frame[metric], errors="coerce")
     if eligible_ids:
         frame = frame[frame["config_id"].isin(eligible_ids)]
-    if qualification is not None:
+    if _qualified_pairs(qualification) is not None:
         if "split_key" not in inner.columns:
             raise ValueError(
                 "Inner-results table must contain split_key when qualification filtering is enabled."

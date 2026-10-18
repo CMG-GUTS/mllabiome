@@ -24,8 +24,16 @@ from threadpoolctl import threadpool_limits
 
 from ._evaluation_protocols import is_hierarchical_lodo_protocol, is_lodo_protocol
 from ._version import __version__
-from .compute import ResourceTracker, machine_profile
-from .console import info, path_table, progress, stage, success, summary_table
+from .compute import ResourceTracker, machine_profile, synchronize_accelerators
+from .console import (
+    info,
+    path_table,
+    progress,
+    stage,
+    success,
+    summary_table,
+    evaluation_leaders,
+)
 from .data import Dataset, dataset_fingerprint, load_dataset
 from .estimator_protocol import EstimatorLike, is_estimator_instance
 from .figures import _write_representation_impact_figure
@@ -60,6 +68,18 @@ from .runtime import (
 )
 from .selection import write_mpma_b_selection_outputs
 from .storage import read_table, remove_table, table_exists, write_table
+from ._config_store import (
+    refresh_catalog,
+    indexed_config_ids,
+    read_configurations,
+    read_configuration,
+    write_configuration,
+    register_configuration,
+    top_configs,
+    matched_outer_difference,
+    split_digest,
+    SECTIONS,
+)
 from .sweep_types import MPDR
 from .sweep_types import MPMA as MPMA
 from .sweep_types import Ensemble as Ensemble
@@ -766,6 +786,7 @@ def _fit_classification_split_fold(
     random_state: int,
     threads_per_worker: int,
 ) -> _ClassificationFoldOutput:
+    fold_start = time.perf_counter_ns()
     X_fit, X_eval, feature_mask = _lodo_feature_pair(
         X_base, fit_idx, eval_idx, protocol
     )
@@ -783,16 +804,24 @@ def _fit_classification_split_fold(
     )
     fitted = transformation_factory()
     X_fit_transformed, X_eval_transformed = fitted.apply_pair(X_fit, X_eval)
+    preprocess_end = time.perf_counter_ns()
     estimator = configure_estimator_threads(learner_factory(), threads_per_worker)
+    setup_end = time.perf_counter_ns()
     if callable(getattr(estimator, "bind_schema", None)):
         estimator.bind_schema(fitted.get_feature_names_out(fold_names))
+    synchronize_accelerators()
+    fit_start = time.perf_counter_ns()
     fit_classifier(
         estimator,
         X_fit_transformed,
         y[fit_idx],
         None if groups is None else groups[fit_idx],
     )
+    synchronize_accelerators()
+    fit_end = time.perf_counter_ns()
     proba = _predict_proba_aligned(estimator, X_eval_transformed, classes)
+    synchronize_accelerators()
+    predict_end = time.perf_counter_ns()
     pred = classes[proba.argmax(axis=1)]
     metrics = compute_metrics(y[eval_idx], pred, proba, classes)
     if "subject_macro_log_loss" in requested_metrics:
@@ -814,6 +843,20 @@ def _fit_classification_split_fold(
         stage_name,
     )
     metric_row.update(fitted.feature_filter_metadata())
+    metric_row.update(
+        {
+            "preprocess_seconds": (preprocess_end - fold_start) / 1e9,
+            "model_setup_seconds": (setup_end - preprocess_end) / 1e9,
+            "fit_seconds": (fit_end - fit_start) / 1e9,
+            "predict_seconds": (predict_end - fit_end) / 1e9,
+            "score_seconds": (time.perf_counter_ns() - predict_end) / 1e9,
+            "fold_wall_seconds": (time.perf_counter_ns() - fold_start) / 1e9,
+            "n_train": int(len(fit_idx)),
+            "n_test": int(len(eval_idx)),
+            "n_features": int(X_fit_transformed.shape[1]),
+            "threads_per_worker": int(threads_per_worker),
+        }
+    )
     metric_row["n_samples"] = len(eval_idx)
     metric_row["n_subjects"] = len(
         pd.unique(np.asarray(subject_ids, dtype=object)[eval_idx])
@@ -866,6 +909,7 @@ def _evaluate_classification_inner_splits(
     existing_inner_keys: set[str],
     random_state: int,
     threads_per_worker: int,
+    checkpoint_root: str | None = None,
 ) -> None:
     for inner_no, (inner_train_local, inner_val_local) in enumerate(inner_splits):
         inner_key = f"{split_key}__i{inner_no}"
@@ -906,6 +950,14 @@ def _evaluate_classification_inner_splits(
             )
             result["inner_metrics"].append(output.metric_row)
             result["inner_predictions"].extend(output.prediction_rows)
+            if checkpoint_root is not None:
+                _checkpoint_inner(
+                    Path(checkpoint_root),
+                    cid,
+                    inner_key,
+                    output.metric_row,
+                    output.prediction_rows,
+                )
             if np.isfinite(output.gate_score):
                 score_rows.append(dict(output.metric_row))
             result["fits"] += 1
@@ -1076,6 +1128,7 @@ def _evaluate_mpma_split_task(
     random_state: int,
     threads_per_worker: int,
     resource_sample_interval_s: float,
+    checkpoint_root: str | None = None,
 ) -> dict[str, Any]:
     gate_metric_input = str(gate_metric)
     canonical_gate_metric = canonical_metric_name(gate_metric_input)
@@ -1131,6 +1184,7 @@ def _evaluate_mpma_split_task(
             existing_inner_keys=existing_inner_keys,
             random_state=random_state,
             threads_per_worker=threads_per_worker,
+            checkpoint_root=checkpoint_root,
         )
         qualified = _classification_qualification(
             result,
@@ -1191,7 +1245,42 @@ def _evaluate_mpma_split_task(
     return result
 
 
-def _checkpoint_result(root: Path, result: dict[str, Any]) -> None:
+def _checkpoint_inner(
+    root: Path,
+    config_id: str,
+    inner_key: str,
+    metric_row: dict[str, Any],
+    predictions: list[dict[str, Any]],
+) -> None:
+    payload = {
+        "inner_metrics": [metric_row],
+        "inner_predictions": predictions,
+    }
+    compressed = zlib.compress(
+        json.dumps(payload, allow_nan=True, separators=(",", ":")).encode("utf-8"),
+        level=3,
+    )
+    with sqlite3.connect(root / "configs.db", timeout=60) as conn:
+        conn.execute("PRAGMA busy_timeout=60000")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=FULL")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS inner_fold_checkpoints (
+                config_id TEXT NOT NULL,
+                inner_key TEXT NOT NULL,
+                payload BLOB NOT NULL,
+                PRIMARY KEY (config_id, inner_key)
+            )"""
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO inner_fold_checkpoints VALUES (?, ?, ?)",
+            (str(config_id), str(inner_key), sqlite3.Binary(compressed)),
+        )
+
+
+def _checkpoint_result(
+    root: Path, result: dict[str, Any], metric: str | None = None
+) -> None:
     payload = {
         "inner_metrics": result.get("inner_metrics", []),
         "inner_predictions": result.get("inner_predictions", []),
@@ -1204,10 +1293,11 @@ def _checkpoint_result(root: Path, result: dict[str, Any]) -> None:
         json.dumps(payload, allow_nan=True, separators=(",", ":")).encode("utf-8"),
         level=3,
     )
-    conn = sqlite3.connect(root / "configs.db")
+    conn = sqlite3.connect(root / "configs.db", timeout=60)
     try:
+        conn.execute("PRAGMA busy_timeout=60000")
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA synchronous=FULL")
         conn.execute(
             """CREATE TABLE IF NOT EXISTS evaluation_checkpoints (
                 config_id TEXT NOT NULL,
@@ -1217,6 +1307,31 @@ def _checkpoint_result(root: Path, result: dict[str, Any]) -> None:
                 PRIMARY KEY (config_id, split_key)
             )"""
         )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS config_fold_scores (
+                config_id TEXT NOT NULL, split_key TEXT NOT NULL,
+                metric TEXT NOT NULL, score REAL NOT NULL,
+                PRIMARY KEY (config_id, split_key, metric)
+            )"""
+        )
+        if metric is not None:
+            for row in result.get("outer_metrics", []):
+                if int(row.get("ok", 0)) != 1:
+                    continue
+                try:
+                    score = float(row[metric])
+                except (KeyError, ValueError, TypeError):
+                    continue
+                if np.isfinite(score):
+                    conn.execute(
+                        "INSERT OR REPLACE INTO config_fold_scores VALUES (?, ?, ?, ?)",
+                        (
+                            str(result.get("config_id", "")),
+                            str(row.get("split_key", "")),
+                            str(metric),
+                            score,
+                        ),
+                    )
         conn.execute(
             """INSERT OR REPLACE INTO evaluation_checkpoints(config_id, split_key, payload, elapsed_s)
                VALUES (?, ?, ?, ?)""",
@@ -1252,10 +1367,27 @@ def _load_checkpoint_frames(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='evaluation_checkpoints'"
         ).fetchone()
         if not exists:
-            return empty
-        rows = conn.execute(
-            "SELECT config_id, split_key, payload FROM evaluation_checkpoints"
-        ).fetchall()
+            rows = []
+        requested = sorted(current_config_ids)
+        if requested and exists:
+            marks = ",".join("?" for _ in requested)
+            rows = conn.execute(
+                f"SELECT config_id, split_key, payload FROM evaluation_checkpoints WHERE config_id IN ({marks})",
+                requested,
+            ).fetchall()
+        else:
+            rows = []
+            marks = ",".join("?" for _ in requested)
+        has_inner = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='inner_fold_checkpoints'"
+        ).fetchone()
+        if has_inner and requested:
+            inner_rows = conn.execute(
+                f"SELECT config_id, inner_key, payload FROM inner_fold_checkpoints WHERE config_id IN ({marks})",
+                requested,
+            ).fetchall()
+        else:
+            inner_rows = []
     finally:
         conn.close()
     buckets = {k: [] for k in empty}
@@ -1268,9 +1400,19 @@ def _load_checkpoint_frames(
             continue
         for key in buckets:
             buckets[key].extend(payload.get(key, []))
+    for config_id, inner_key, blob in inner_rows:
+        outer_key = str(inner_key).rsplit("__i", 1)[0]
+        if outer_key not in outer_keys:
+            continue
+        try:
+            payload = json.loads(zlib.decompress(blob).decode("utf-8"))
+        except (ValueError, zlib.error):
+            continue
+        for key in ("inner_metrics", "inner_predictions"):
+            buckets[key].extend(payload.get(key, []))
     return {
-        key: pd.DataFrame(rows) if rows else pd.DataFrame()
-        for key, rows in buckets.items()
+        key: pd.DataFrame(values) if values else pd.DataFrame()
+        for key, values in buckets.items()
     }
 
 
@@ -1281,6 +1423,7 @@ def _clear_evaluation_checkpoints(root: Path, compact: bool = False) -> None:
     conn = sqlite3.connect(db_path)
     try:
         conn.execute("DROP TABLE IF EXISTS evaluation_checkpoints")
+        conn.execute("DROP TABLE IF EXISTS inner_fold_checkpoints")
         conn.commit()
         if compact:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -1498,6 +1641,7 @@ def _fit_regression_split_fold(
     random_state: int,
     threads_per_worker: int,
 ) -> _RegressionFoldOutput:
+    fold_start = time.perf_counter_ns()
     X_fit, X_eval, feature_mask = _lodo_feature_pair(
         X_base, fit_idx, eval_idx, protocol
     )
@@ -1515,12 +1659,20 @@ def _fit_regression_split_fold(
     )
     fitted = transformation_factory()
     X_fit_transformed, X_eval_transformed = fitted.apply_pair(X_fit, X_eval)
+    preprocess_end = time.perf_counter_ns()
     estimator = configure_estimator_threads(learner_factory(), threads_per_worker)
+    setup_end = time.perf_counter_ns()
+    synchronize_accelerators()
+    fit_start = time.perf_counter_ns()
     estimator.fit(X_fit_transformed, y[fit_idx])
+    synchronize_accelerators()
+    fit_end = time.perf_counter_ns()
     pred = np.asarray(
         _estimator_call(estimator, "predict", X_eval_transformed),
         dtype=float,
     ).reshape(-1)
+    synchronize_accelerators()
+    predict_end = time.perf_counter_ns()
     metrics = compute_regression_metrics(y[eval_idx], pred)
     metric_row = _regression_metric_row(
         metrics,
@@ -1532,6 +1684,20 @@ def _fit_regression_split_fold(
         stage_name,
     )
     metric_row.update(fitted.feature_filter_metadata())
+    metric_row.update(
+        {
+            "preprocess_seconds": (preprocess_end - fold_start) / 1e9,
+            "model_setup_seconds": (setup_end - preprocess_end) / 1e9,
+            "fit_seconds": (fit_end - fit_start) / 1e9,
+            "predict_seconds": (predict_end - fit_end) / 1e9,
+            "score_seconds": (time.perf_counter_ns() - predict_end) / 1e9,
+            "fold_wall_seconds": (time.perf_counter_ns() - fold_start) / 1e9,
+            "n_train": int(len(fit_idx)),
+            "n_test": int(len(eval_idx)),
+            "n_features": int(X_fit_transformed.shape[1]),
+            "threads_per_worker": int(threads_per_worker),
+        }
+    )
     prediction_rows = _regression_prediction_rows(
         split_key,
         cid,
@@ -1576,6 +1742,7 @@ def _evaluate_regression_inner_splits(
     existing_inner_keys: set[str],
     random_state: int,
     threads_per_worker: int,
+    checkpoint_root: str | None = None,
 ) -> None:
     for inner_no, (inner_train_local, inner_val_local) in enumerate(inner_splits):
         inner_key = f"{split_key}__i{inner_no}"
@@ -1613,6 +1780,14 @@ def _evaluate_regression_inner_splits(
             )
             result["inner_metrics"].append(output.metric_row)
             result["inner_predictions"].extend(output.prediction_rows)
+            if checkpoint_root is not None:
+                _checkpoint_inner(
+                    Path(checkpoint_root),
+                    cid,
+                    inner_key,
+                    output.metric_row,
+                    output.prediction_rows,
+                )
             if np.isfinite(output.gate_score):
                 score_rows.append(dict(output.metric_row))
             result["fits"] += 1
@@ -1775,6 +1950,7 @@ def _evaluate_regression_split_task(
     random_state: int,
     threads_per_worker: int,
     resource_sample_interval_s: float,
+    checkpoint_root: str | None = None,
 ) -> dict[str, Any]:
     gate_metric_input = str(gate_metric)
     canonical_gate_metric = canonical_metric_name(gate_metric_input)
@@ -1824,6 +2000,7 @@ def _evaluate_regression_split_task(
             existing_inner_keys=existing_inner_keys,
             random_state=random_state,
             threads_per_worker=threads_per_worker,
+            checkpoint_root=checkpoint_root,
         )
         qualified = _regression_qualification(
             result,
@@ -2022,83 +2199,250 @@ def _prepare_evaluation_tasks(
     return prepared
 
 
+def _publish_completed_config(
+    root: Path,
+    config_id: str,
+    outer_keys: set[str],
+    inner_keys: set[str],
+    metric: str,
+    gate_enabled: bool,
+) -> bool:
+    frames = _load_checkpoint_frames(root, {config_id}, outer_keys)
+    if not outer_keys:
+        return False
+    inner = frames["inner_metrics"]
+    if not inner_keys.issubset(
+        {str(key) for key, cid in _done_pairs(inner, "inner_key") if cid == config_id}
+    ):
+        return False
+    outer = frames["outer_metrics"]
+    qualified = frames["qualification"]
+    outer_done = {
+        str(key) for key, cid in _done_pairs(outer, "split_key") if cid == config_id
+    }
+    excluded = set()
+    if gate_enabled and not qualified.empty:
+        excluded = {
+            str(row["split_key"])
+            for row in qualified.to_dict(orient="records")
+            if str(row.get("config_id")) == config_id
+            and int(row.get("qualified", 1)) == 0
+        }
+    if not outer_keys.issubset(outer_done | excluded):
+        return False
+    subsets = {
+        "outer_metrics": ["split_key", "config_id"],
+        "inner_metrics": ["inner_key", "config_id"],
+        "outer_predictions": ["split_key", "config_id", "sample_id"],
+        "inner_predictions": ["split_key", "config_id", "sample_id"],
+        "qualification": ["split_key", "config_id"],
+        "job_resources": ["split_key", "config_id"],
+    }
+    for section, frame in frames.items():
+        if not frame.empty:
+            frame = frame.drop_duplicates(
+                subset=[
+                    column for column in subsets[section] if column in frame.columns
+                ],
+                keep="last",
+            ).reset_index(drop=True)
+        frames[section] = frame
+    with sqlite3.connect(root / "configs.db") as conn:
+        config = pd.read_sql_query(
+            "SELECT * FROM configs WHERE config_id=?", conn, params=[config_id]
+        )
+    if config.empty:
+        raise ValueError(f"Missing configuration metadata for {config_id}")
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    score = None
+    if metric in outer.columns:
+        scores = pd.to_numeric(outer[metric], errors="coerce").to_numpy(dtype=float)
+        scores = scores[np.isfinite(scores)]
+        if scores.size:
+            score = float(np.mean(scores))
+    meta = {
+        "benchmark": str(manifest.get("evaluation_cache_fingerprint") or ""),
+        "dataset": str(manifest.get("dataset_fingerprint") or ""),
+        "split_digest": split_digest(root),
+        "task": str(manifest.get("task") or ""),
+        "target": str(manifest.get("target") or ""),
+        "metric": str(metric),
+        "outer_count": len(outer_done),
+        "expected_outer_count": len(outer_keys),
+        "inner_count": len(inner_keys),
+        "score": score,
+        "configuration": config.iloc[0].where(pd.notna(config.iloc[0]), None).to_dict(),
+        "hardware": machine_profile(),
+        "software": manifest.get("software_provenance", {}),
+    }
+    write_configuration(root, config_id, frames, meta)
+    register_configuration(root, config_id)
+    with sqlite3.connect(root / "configs.db", timeout=60) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=FULL")
+        conn.execute(
+            "DELETE FROM evaluation_checkpoints WHERE config_id=?", (config_id,)
+        )
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='inner_fold_checkpoints'"
+        ).fetchone():
+            conn.execute(
+                "DELETE FROM inner_fold_checkpoints WHERE config_id=?", (config_id,)
+            )
+    return True
+
+
+def _recover_committed_configs(
+    root: Path,
+    config_ids: set[str],
+    outer_splits: Sequence[dict[str, Any]],
+    inner_splits_by_outer: Mapping[str, Sequence[Any]],
+    metric: str,
+    gate_enabled: bool,
+) -> None:
+    if not config_ids or not (root / "configs.db").exists():
+        return
+    with sqlite3.connect(root / "configs.db") as conn:
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='evaluation_checkpoints'"
+        ).fetchone():
+            return
+        pending = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT DISTINCT config_id FROM evaluation_checkpoints"
+            )
+        }
+    expected_outer = {str(split["split_key"]) for split in outer_splits}
+    expected_inner = {
+        f"{str(split['split_key'])}__i{i}"
+        for split in outer_splits
+        for i in range(len(inner_splits_by_outer[str(split["split_key"])]))
+    }
+    indexed = set(indexed_config_ids(root))
+    for cid in sorted(config_ids & pending):
+        if cid in indexed and (root / "configs" / f"{cid}.parquet").exists():
+            with sqlite3.connect(root / "configs.db", timeout=60) as conn:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=FULL")
+                conn.execute(
+                    "DELETE FROM evaluation_checkpoints WHERE config_id=?", (cid,)
+                )
+                if conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='inner_fold_checkpoints'"
+                ).fetchone():
+                    conn.execute(
+                        "DELETE FROM inner_fold_checkpoints WHERE config_id=?", (cid,)
+                    )
+        else:
+            _publish_completed_config(
+                root,
+                cid,
+                expected_outer,
+                expected_inner,
+                canonical_metric_name(metric),
+                gate_enabled,
+            )
+
+
 def _run_evaluation_tasks(
     root: Path,
     tasks: Sequence[_PreparedEvaluationTask],
     split_task_counts: Mapping[str, int],
     execution: ExecutionPlan,
     job_label: str,
+    *,
+    context: _SweepEvaluationContext,
+    metric: str,
+    gate_enabled: bool,
 ) -> _EvaluationRows:
     rows = _EvaluationRows.empty()
     completed_by_split: dict[str, int] = {}
+    remaining = {}
+    expected_outer = {str(item["split_key"]) for item in context.outer_splits}
+    expected_inner = {
+        f"{str(item['split_key'])}__i{index}"
+        for item in context.outer_splits
+        for index in range(len(context.inner_splits_by_outer[str(item["split_key"])]))
+    }
+    for task in tasks:
+        remaining[task.config_id] = remaining.get(task.config_id, 0) + 1
+    from .console import console
+
+    leaders = top_configs(root, metric, loss=metric_is_loss(metric))
+    if leaders:
+        evaluation_leaders(root, metric, leaders)
     with progress() as prog:
         job_task = prog.add_task(job_label, total=len(tasks))
         split_task = prog.add_task(
             "Outer splits completed", total=len(split_task_counts)
         )
-        payloads = [(task.fn, task.args, task.kwargs) for task in tasks]
+        payloads = [
+            (task.fn, task.args, {**task.kwargs, "checkpoint_root": str(root)})
+            for task in tasks
+        ]
         for result in iter_parallel_tasks(payloads, execution):
-            _checkpoint_result(root, result)
+            _checkpoint_result(root, result, metric)
             rows.extend(result)
             split_key = str(result.get("split_key", ""))
             config_id = str(result.get("config_id", ""))
             completed_by_split[split_key] = completed_by_split.get(split_key, 0) + 1
             if completed_by_split[split_key] == split_task_counts.get(split_key, 0):
                 prog.advance(split_task)
+            remaining[config_id] -= 1
+            if remaining[config_id] == 0:
+                published = _publish_completed_config(
+                    root,
+                    config_id,
+                    expected_outer,
+                    expected_inner,
+                    metric,
+                    gate_enabled,
+                )
+                if published:
+                    leaders = top_configs(root, metric, loss=metric_is_loss(metric))
+                    rank = next(
+                        (
+                            i
+                            for i, item in enumerate(leaders, 1)
+                            if item[0] == config_id
+                        ),
+                        None,
+                    )
+                    rank_text = f" · rank {rank}" if rank is not None else ""
+                    console.print(f"[green]✓[/green] {config_id} finalized{rank_text}")
+                    evaluation_leaders(root, metric, leaders)
+                else:
+                    console.print(
+                        f"[yellow]![/yellow] {config_id} remains resumable; incomplete or failed folds"
+                    )
+            outer_rows = result.get("outer_metrics", [])
+            valid = [row for row in outer_rows if row.get("ok") == 1 and metric in row]
+            latest = valid[-1] if valid else None
+            description = f"{job_label} · {split_key} · {config_id}"
+            if latest is not None:
+                description += (
+                    f" · {metric}={float(latest[metric]):.4g}"
+                    f" · fit {float(latest.get('fit_seconds', 0.0)):.1f}s"
+                    f" · infer {float(latest.get('predict_seconds', 0.0)):.2f}s"
+                )
+                comparator = next(
+                    (cid for cid, _, _ in leaders if cid != config_id), None
+                )
+                if comparator is not None:
+                    paired = matched_outer_difference(
+                        root, config_id, comparator, metric
+                    )
+                    if paired is not None:
+                        description += (
+                            f" · Δleader {paired[0]:+.3g} ({paired[1]} paired)"
+                        )
             prog.update(
                 job_task,
                 advance=1,
-                description=f"{job_label} · {split_key} · {config_id}",
+                description=description,
             )
     return rows
-
-
-def _persist_evaluation_rows(
-    root: Path,
-    rows: _EvaluationRows,
-    existing: Mapping[str, pd.DataFrame],
-    gate_enabled: bool,
-) -> None:
-    _write_tables(
-        root,
-        rows.outer_metrics,
-        rows.inner_metrics,
-        rows.outer_predictions,
-        rows.inner_predictions,
-        rows.qualification,
-        rows.job_resources,
-        existing=dict(existing),
-        gate_enabled=bool(gate_enabled),
-    )
-    outer_path = root / "results" / "outer_results.parquet"
-    if not table_exists(outer_path):
-        return
-    outer = read_table(outer_path)
-    if outer.empty or "ok" not in outer.columns:
-        return
-    ok = pd.to_numeric(outer["ok"], errors="coerce").fillna(0).astype(int)
-    if bool((ok == 1).any()):
-        return
-    columns = [
-        name
-        for name in ("count_transformation", "resolution", "learner", "error")
-        if name in outer.columns
-    ]
-    failures = outer.loc[:, columns].drop_duplicates()
-    details = []
-    for record in failures.head(8).to_dict(orient="records"):
-        label = " / ".join(
-            str(record.get(name, ""))
-            for name in ("count_transformation", "resolution", "learner")
-            if str(record.get(name, ""))
-        )
-        error = str(record.get("error", "evaluation failed"))
-        details.append(f"{label}: {error}" if label else error)
-    message = "\n".join(details)
-    raise RuntimeError(
-        "All outer evaluation configurations failed. The failed rows were written to "
-        f"{outer_path}.\n{message}"
-    )
 
 
 def _write_selection_artifacts(
@@ -2300,7 +2644,19 @@ def _prepare_regression_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
         evaluation_fingerprint=evaluation_fingerprint,
         evaluation_cache_fingerprint=cache_fingerprint,
     )
+    imported, rejected = refresh_catalog(root)
+    if imported or rejected:
+        info(f"Configuration catalog · {imported} indexed · {rejected} incompatible")
     current_config_ids = set(configs["config_id"].astype(str))
+    if not sweep.evaluation.redo:
+        _recover_committed_configs(
+            root,
+            current_config_ids,
+            outer_splits,
+            inner_splits_by_outer,
+            str(sweep.evaluation.optimize_metric),
+            bool(sweep.gate.enabled),
+        )
     current_outer_keys = {str(split["split_key"]) for split in outer_splits}
     existing = _load_existing_evaluation(
         root,
@@ -2413,7 +2769,19 @@ def _prepare_classification_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
         evaluation_fingerprint=evaluation_fingerprint,
         evaluation_cache_fingerprint=cache_fingerprint,
     )
+    imported, rejected = refresh_catalog(root)
+    if imported or rejected:
+        info(f"Configuration catalog · {imported} indexed · {rejected} incompatible")
     current_config_ids = set(configs["config_id"].astype(str))
+    if not sweep.evaluation.redo:
+        _recover_committed_configs(
+            root,
+            current_config_ids,
+            outer_splits,
+            inner_splits_by_outer,
+            str(sweep.evaluation.optimize_metric),
+            bool(sweep.gate.enabled),
+        )
     current_outer_keys = {str(split["split_key"]) for split in outer_splits}
     existing = _load_existing_evaluation(
         root,
@@ -2772,12 +3140,6 @@ def _reuse_completed_evaluation(
     output_label: str,
 ) -> dict[str, Path]:
     success(message)
-    _persist_evaluation_rows(
-        context.root,
-        _EvaluationRows.empty(),
-        context.existing,
-        sweep.gate.enabled,
-    )
     _write_selection_artifacts(context.root, sweep, class_labels)
     outputs = _existing_outputs(context.root)
     path_table(output_label, outputs)
@@ -2804,8 +3166,10 @@ def _finish_evaluation(
         split_task_counts,
         execution,
         job_label,
+        context=context,
+        metric=canonical_metric_name(str(sweep.evaluation.optimize_metric)),
+        gate_enabled=bool(sweep.gate.enabled),
     )
-    _persist_evaluation_rows(context.root, rows, context.existing, sweep.gate.enabled)
     _write_selection_artifacts(context.root, sweep, class_labels)
     elapsed = time.perf_counter() - started
     dump_json_standard(
@@ -2959,6 +3323,18 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
 
 
 def _prepare_dirs(root: Path) -> None:
+    legacy_paths = (
+        root / "configs.parquet",
+        root / "results" / "outer_results.parquet",
+        root / "inner_results" / "inner_results.parquet",
+        root / "predictions" / "outer_predictions.parquet",
+        root / "inner_predictions" / "inner_predictions.parquet",
+    )
+    if any(path.exists() for path in legacy_paths):
+        raise ValueError(
+            "This experiment uses the previous combined-results layout. "
+            "Use a new experiment directory; existing results require a separate migration."
+        )
     for d in [
         "results",
         "predictions",
@@ -3031,8 +3407,10 @@ def _load_existing_evaluation(
         "job_resources": root / "tables" / "job_resources.parquet",
     }
     base = {
-        name: _filter_existing(_read_table(path), outer_keys)
-        for name, path in tables.items()
+        name: _filter_existing(
+            read_configurations(root, name, sorted(current_config_ids)), outer_keys
+        )
+        for name in tables
     }
     checkpoints = _load_checkpoint_frames(root, current_config_ids, outer_keys)
     subsets = {
@@ -3444,7 +3822,7 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
         for name, sql_type in extra_columns.items():
             if name not in columns:
                 conn.execute(f"ALTER TABLE configs ADD COLUMN {name} {sql_type}")
-        conn.execute("UPDATE configs SET active=0")
+        conn.execute("UPDATE configs SET active=0 WHERE active=1")
         for r in configs.to_dict(orient="records"):
             conn.execute(
                 """INSERT INTO configs
@@ -3515,13 +3893,9 @@ def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
                 ),
             )
         conn.commit()
-        export = pd.read_sql_query(
-            "SELECT * FROM configs ORDER BY active DESC, count_transformation, resolution, learner",
-            conn,
-        )
     finally:
         conn.close()
-    write_table(root / "configs.parquet", export)
+    return None
 
 
 def _predict_proba_aligned(
@@ -3577,75 +3951,6 @@ def _failed_metric_row(
     row["ok"] = 0
     row["error"] = f"{type(exc).__name__}: {exc}"
     return row
-
-
-def _write_tables(
-    root: Path,
-    outer_metrics: list[dict[str, Any]],
-    inner_metrics: list[dict[str, Any]],
-    outer_preds: list[dict[str, Any]],
-    inner_preds: list[dict[str, Any]],
-    qualification: list[dict[str, Any]],
-    job_resources: list[dict[str, Any]],
-    existing: dict[str, pd.DataFrame] | None = None,
-    gate_enabled: bool = False,
-) -> None:
-    existing = existing or {}
-    outer_df = _concat_existing_new(
-        existing.get("outer_metrics", pd.DataFrame()),
-        outer_metrics,
-        ["split_key", "config_id"],
-    )
-    inner_df = _concat_existing_new(
-        existing.get("inner_metrics", pd.DataFrame()),
-        inner_metrics,
-        ["inner_key", "config_id"],
-    )
-    outer_pred_df = _concat_existing_new(
-        existing.get("outer_predictions", pd.DataFrame()),
-        outer_preds,
-        ["split_key", "config_id", "sample_id"],
-    )
-    inner_pred_df = _concat_existing_new(
-        existing.get("inner_predictions", pd.DataFrame()),
-        inner_preds,
-        ["split_key", "config_id", "sample_id"],
-    )
-    qual_df = (
-        _concat_existing_new(
-            existing.get("qualification", pd.DataFrame()),
-            qualification,
-            ["split_key", "config_id"],
-        )
-        if gate_enabled
-        else pd.DataFrame()
-    )
-    resource_df = _concat_existing_new(
-        existing.get("job_resources", pd.DataFrame()),
-        job_resources,
-        ["split_key", "config_id"],
-    )
-
-    for frame in (outer_df, inner_df):
-        if "transformation_abbreviation" in frame.columns:
-            frame.drop(columns=["transformation_abbreviation"], inplace=True)
-        if "count_transformation" in frame.columns:
-            frame["count_transformation"] = frame["count_transformation"].map(
-                _count_transformation_name
-            )
-    _write_dataframe(root / "results" / "outer_results.parquet", outer_df)
-    _write_dataframe(root / "inner_results" / "inner_results.parquet", inner_df)
-    _write_dataframe(root / "predictions" / "outer_predictions.parquet", outer_pred_df)
-    _write_dataframe(
-        root / "inner_predictions" / "inner_predictions.parquet", inner_pred_df
-    )
-    _write_dataframe(root / "tables" / "job_resources.parquet", resource_df)
-    qpath = root / "tables" / "qualification_gate.parquet"
-    if gate_enabled:
-        _write_dataframe(qpath, qual_df)
-    elif table_exists(qpath):
-        remove_table(qpath)
-    _clear_evaluation_checkpoints(root, compact=True)
 
 
 def _write_rankings_and_figures(
@@ -3747,4 +4052,26 @@ def _write_rankings_and_figures(
     )
     summary.columns = [f"{metric_name}_{stat}" for metric_name, stat in summary.columns]
     summary = summary.reset_index()
+    phase_columns = [
+        name
+        for name in (
+            "preprocess_seconds",
+            "model_setup_seconds",
+            "fit_seconds",
+            "predict_seconds",
+            "score_seconds",
+            "fold_wall_seconds",
+        )
+        if name in valid.columns
+    ]
+    if phase_columns:
+        for column in phase_columns:
+            valid[column] = pd.to_numeric(valid[column], errors="coerce")
+        timing = valid.groupby(group_cols, dropna=False)[phase_columns].agg(
+            ["median", "sum", "count"]
+        )
+        timing.columns = [f"{name}_{stat}" for name, stat in timing.columns]
+        summary = summary.merge(
+            timing.reset_index(), on=group_cols, how="left", validate="one_to_one"
+        )
     write_table(summary_path, summary)

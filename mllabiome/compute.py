@@ -192,3 +192,19 @@ def machine_profile(
         "python_implementation": platform.python_implementation(),
         "executable": sys.executable,
     }
+
+
+def synchronize_accelerators() -> None:
+    if "torch" not in sys.modules:
+        return
+    torch = sys.modules["torch"]
+    try:
+        if torch.cuda.is_available() and torch.cuda.is_initialized():
+            torch.cuda.synchronize()
+    except (AttributeError, RuntimeError):
+        pass
+    try:
+        if torch.backends.mps.is_available():
+            torch.mps.synchronize()
+    except (AttributeError, RuntimeError):
+        pass

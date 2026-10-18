@@ -52,7 +52,9 @@ class KumoTabularClassifier(ClassifierMixin, BaseEstimator):
         if sparse.issparse(X):
             required_bytes = X.shape[0] * X.shape[1] * np.dtype(np.float32).itemsize
             if required_bytes > 2 * 1024**3:
-                raise MemoryError("Densifying the Kumo Tabular matrix would exceed 2 GiB.")
+                raise MemoryError(
+                    "Densifying the Kumo Tabular matrix would exceed 2 GiB."
+                )
             X = X.toarray()
         array = np.asarray(X, dtype=np.float32)
         if array.ndim != 2:
@@ -83,9 +85,11 @@ class KumoTabularClassifier(ClassifierMixin, BaseEstimator):
     def fit(self, X: Any, y: Any, groups: Any = None):
         if self.size not in {"small", "medium", "large"}:
             raise ValueError("size must be 'small', 'medium', or 'large'.")
-        if isinstance(self.n_estimators, (bool, np.bool_)) or not isinstance(
-            self.n_estimators, (int, np.integer)
-        ) or self.n_estimators < 1:
+        if (
+            isinstance(self.n_estimators, (bool, np.bool_))
+            or not isinstance(self.n_estimators, (int, np.integer))
+            or self.n_estimators < 1
+        ):
             raise ValueError("n_estimators must be a positive integer.")
         if self.random_state is not None and (
             isinstance(self.random_state, (bool, np.bool_))
@@ -96,7 +100,9 @@ class KumoTabularClassifier(ClassifierMixin, BaseEstimator):
         array = self._array(X)
         target = np.asarray(y)
         if target.ndim != 1 or target.shape[0] != array.shape[0]:
-            raise ValueError("y must be a one-dimensional target with one value per sample.")
+            raise ValueError(
+                "y must be a one-dimensional target with one value per sample."
+            )
         if groups is not None and np.asarray(groups).shape != (array.shape[0],):
             raise ValueError("groups must contain one value per training sample.")
         encoder = LabelEncoder().fit(target)
@@ -111,7 +117,9 @@ class KumoTabularClassifier(ClassifierMixin, BaseEstimator):
             del self.feature_names_in_
         if hasattr(X, "columns") and all(isinstance(c, str) for c in X.columns):
             self.feature_names_in_ = np.asarray(X.columns, dtype=object)
-        self.feature_columns_ = tuple(f"feature_{i}" for i in range(self.n_features_in_))
+        self.feature_columns_ = tuple(
+            f"feature_{i}" for i in range(self.n_features_in_)
+        )
         self.classes_ = encoder.classes_
         context = self._as_table(array, columns=self.feature_columns_)
         labels = torch.as_tensor(
@@ -130,10 +138,13 @@ class KumoTabularClassifier(ClassifierMixin, BaseEstimator):
             pretrained=self.pretrained,
             device=self.device_,
         )
-        with torch.inference_mode(), torch.amp.autocast(
-            self.device_.type,
-            dtype=torch.float16,
-            enabled=self.device_.type == "cuda",
+        with (
+            torch.inference_mode(),
+            torch.amp.autocast(
+                self.device_.type,
+                dtype=torch.float16,
+                enabled=self.device_.type == "cuda",
+            ),
         ):
             self.model_.fit(
                 x=context,
@@ -147,16 +158,23 @@ class KumoTabularClassifier(ClassifierMixin, BaseEstimator):
         check_is_fitted(self, ("model_", "classes_", "n_features_in_"))
         array = self._array(X)
         if array.shape[1] != self.n_features_in_:
-            raise ValueError(f"Expected {self.n_features_in_} features, got {array.shape[1]}.")
+            raise ValueError(
+                f"Expected {self.n_features_in_} features, got {array.shape[1]}."
+            )
         if hasattr(self, "feature_names_in_") and hasattr(X, "columns"):
             if not np.array_equal(np.asarray(X.columns), self.feature_names_in_):
-                raise ValueError("Prediction feature names must match the training features.")
+                raise ValueError(
+                    "Prediction feature names must match the training features."
+                )
         query = self._as_table(array, columns=self.feature_columns_)
         sdm, torch = self._dependencies()
-        with torch.inference_mode(), torch.amp.autocast(
-            self.device_.type,
-            dtype=torch.float16,
-            enabled=self.device_.type == "cuda",
+        with (
+            torch.inference_mode(),
+            torch.amp.autocast(
+                self.device_.type,
+                dtype=torch.float16,
+                enabled=self.device_.type == "cuda",
+            ),
         ):
             output = self.model_.predict(query)
         proba = output.numerical.detach().cpu().numpy().astype(np.float64, copy=False)
@@ -166,7 +184,9 @@ class KumoTabularClassifier(ClassifierMixin, BaseEstimator):
             raise ValueError(f"Unexpected Kumo Tabular probability columns: {names}.")
         proba = proba[:, [names.index(name) for name in expected]]
         if proba.shape != (array.shape[0], len(self.classes_)):
-            raise ValueError(f"Unexpected Kumo Tabular probability shape: {proba.shape}.")
+            raise ValueError(
+                f"Unexpected Kumo Tabular probability shape: {proba.shape}."
+            )
         if not np.isfinite(proba).all() or (proba < 0).any():
             raise ValueError("Kumo Tabular produced invalid probabilities.")
         if not np.allclose(proba.sum(axis=1), 1.0, atol=1e-5):

@@ -79,21 +79,42 @@ class TabICLClassifier(ClassifierMixin, BaseEstimator):
 
     def _backend_params(self) -> dict[str, Any]:
         names = (
-            "n_estimators", "norm_methods", "feat_shuffle_method",
-            "class_shuffle_method", "outlier_threshold", "softmax_temperature",
-            "average_logits", "support_many_classes", "batch_size", "kv_cache",
-            "model_path", "allow_auto_download", "checkpoint_version", "device",
-            "use_amp", "use_fa3", "offload_mode", "disk_offload_dir",
-            "random_state", "n_jobs", "verbose",
+            "n_estimators",
+            "norm_methods",
+            "feat_shuffle_method",
+            "class_shuffle_method",
+            "outlier_threshold",
+            "softmax_temperature",
+            "average_logits",
+            "support_many_classes",
+            "batch_size",
+            "kv_cache",
+            "model_path",
+            "allow_auto_download",
+            "checkpoint_version",
+            "device",
+            "use_amp",
+            "use_fa3",
+            "offload_mode",
+            "disk_offload_dir",
+            "random_state",
+            "n_jobs",
+            "verbose",
         )
-        return {name: getattr(self, name) for name in names if getattr(self, name) is not None}
+        return {
+            name: getattr(self, name)
+            for name in names
+            if getattr(self, name) is not None
+        }
 
     @staticmethod
     def _prepare_X(X: Any):
         if sparse.issparse(X):
             bytes_required = X.shape[0] * X.shape[1] * np.dtype(np.float32).itemsize
             if bytes_required > 2 * 1024**3:
-                raise MemoryError("Densifying the TabICL feature matrix would exceed 2 GiB.")
+                raise MemoryError(
+                    "Densifying the TabICL feature matrix would exceed 2 GiB."
+                )
             X = X.astype(np.float32).toarray()
         if not hasattr(X, "shape"):
             X = np.asarray(X)
@@ -139,10 +160,14 @@ class TabICLClassifier(ClassifierMixin, BaseEstimator):
         check_is_fitted(self, ("classes_", "n_features_in_", "X_train_", "y_train_"))
         X = self._prepare_X(X)
         if X.shape[1] != self.n_features_in_:
-            raise ValueError(f"Expected {self.n_features_in_} features, got {X.shape[1]}.")
+            raise ValueError(
+                f"Expected {self.n_features_in_} features, got {X.shape[1]}."
+            )
         if hasattr(self, "feature_names_in_") and hasattr(X, "columns"):
             if not np.array_equal(np.asarray(X.columns), self.feature_names_in_):
-                raise ValueError("Prediction feature names must match training feature names.")
+                raise ValueError(
+                    "Prediction feature names must match training feature names."
+                )
         proba = np.asarray(self._get_model().predict_proba(X), dtype=np.float64)
         shape = (X.shape[0], len(self.classes_))
         if proba.shape != shape or not np.isfinite(proba).all() or (proba < 0).any():

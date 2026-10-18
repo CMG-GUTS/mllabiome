@@ -53,7 +53,6 @@ RESOLUTIONS = (
 
 COUNT_TRANSFORMATIONS = (
     # mll.Transformation("presence_absence"),
-
     mll.Transformation("identity"),
     # mll.Transformation("clr", composition_scope="rank-wise"),
     # mll.Transformation(
@@ -169,7 +168,6 @@ MODELS = (
     #         n_preprocessing_jobs=1,
     #     ),
     # ),
-
     # (
     #     "TabDPT_v1_3",
     #     mll.TabDPTClassifier(
@@ -186,119 +184,104 @@ MODELS = (
     #         verbose=False,
     #     ),
     # ),
-# (
-#     "Causilo_default",
-#     mll.CausiloClassifier(
-#         random_state=42,
-#     ),
-# ),
-
-# (
-#     "TabDPT_default",
-#     mll.TabDPTClassifier(
-#         random_state=42,
-#     ),
-# ),
-
-
-# (
-#     "KumoTabular_default",
-#     mll.KumoTabularClassifier(
-#         device="cpu",
-#         random_state=42,
-#     ),
-# ),
-# (
-#     "KumoTabular_small",
-#     mll.KumoTabularClassifier(
-#         size="small",
-#         device="cpu",
-#         random_state=42,
-#     ),
-# ),
-
-# (
-#     "KumoTabular_medium",
-#     mll.KumoTabularClassifier(
-#         size="medium",
-#         device="cpu",
-#         random_state=42,
-#     ),
-# ),
-# (
-#     "KumoTabular_large",
-#     mll.KumoTabularClassifier(
-#         size="large",
-#         device="cpu",
-#         random_state=42,
-#     ),
-# ),
-
-(
-    "LimiX2_default",
-    mll.LimiX2Classifier(
-        device="auto",
-        random_state=42,
+    # (
+    #     "Causilo_default",
+    #     mll.CausiloClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "TabDPT_default",
+    #     mll.TabDPTClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "KumoTabular_default",
+    #     mll.KumoTabularClassifier(
+    #         device="cpu",
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "KumoTabular_small",
+    #     mll.KumoTabularClassifier(
+    #         size="small",
+    #         device="cpu",
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "KumoTabular_medium",
+    #     mll.KumoTabularClassifier(
+    #         size="medium",
+    #         device="cpu",
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "KumoTabular_large",
+    #     mll.KumoTabularClassifier(
+    #         size="large",
+    #         device="cpu",
+    #         random_state=42,
+    #     ),
+    # ),
+    (
+        "LimiX2_default",
+        mll.LimiX2Classifier(
+            device="auto",
+            random_state=42,
+        ),
     ),
-),
-
-
-# (
-#     "LimiX_2M_noretrieval",
-#     mll.LimiXClassifier(
-#         size="2m",
-#         retrieval=False,
-#         device="auto",
-#         random_state=42,
-#     ),
-# ),
-# (
-#     "LimiX_16M_noretrieval",
-#     mll.LimiXClassifier(
-#         size="16m",
-#         retrieval=False,
-#         device="auto",
-#         random_state=42,
-#     ),
-# ),
-
-# (
-#     "TabICLv2_default",
-#     mll.TabICLClassifier(
-#         random_state=42,
-#     ),
-# ),
-
-# (
-#     "RealMLP_TD_default",
-#     mll.RealMLPClassifier(
-#         random_state=42,
-#     ),
-# ),
-
-# (
-#     "TabFM_default",
-#     mll.TabFMClassifier(
-#         random_state=42,
-#     ),
-# ),
-
-# (
-#     "TabM_default",
-#     mll.TabMClassifier(
-#         random_state=42,
-#     ),
-# ),
-
-
-# (
-#     "EXAONE_default",
-#     mll.EXAONETabularClassifier(
-#         random_state=42,
-#     ),
-# ),
-
-
+    # (
+    #     "LimiX_2M_noretrieval",
+    #     mll.LimiXClassifier(
+    #         size="2m",
+    #         retrieval=False,
+    #         device="auto",
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "LimiX_16M_noretrieval",
+    #     mll.LimiXClassifier(
+    #         size="16m",
+    #         retrieval=False,
+    #         device="auto",
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "TabICLv2_default",
+    #     mll.TabICLClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "RealMLP_TD_default",
+    #     mll.RealMLPClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "TabFM_default",
+    #     mll.TabFMClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "TabM_default",
+    #     mll.TabMClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "EXAONE_default",
+    #     mll.EXAONETabularClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
 )
 
 

@@ -614,7 +614,9 @@ def _write_representation_impact_figure(
 
     result_path = root / "results" / "outer_results.parquet"
 
-    if not result_path.exists() or result_path.stat().st_size == 0:
+    from .storage import table_exists
+
+    if not table_exists(result_path):
         return
 
     df = read_table(result_path)

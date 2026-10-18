@@ -175,3 +175,43 @@ def _format_value(value: object) -> str:
     if isinstance(value, (list, tuple, set)):
         return ", ".join(map(str, value))
     return str(value)
+
+
+def evaluation_leaders(
+    root: Path, metric: str, ranked: Sequence[tuple[str, float, int]]
+) -> None:
+    import sqlite3
+
+    if not ranked:
+        return
+    path = Path(root) / "configs.db"
+    names = {}
+    if path.exists():
+        with sqlite3.connect(path) as conn:
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='configs'"
+            ).fetchone():
+                ids = [str(row[0]) for row in ranked]
+                placeholders = ",".join("?" for _ in ids)
+                rows = conn.execute(
+                    f"SELECT config_id, learner, resolution, count_transformation FROM configs WHERE config_id IN ({placeholders})",
+                    ids,
+                )
+                names = {
+                    str(cid): " · ".join(
+                        str(value)
+                        for value in (learner, resolution, transformation)
+                        if value
+                    )
+                    for cid, learner, resolution, transformation in rows
+                }
+    table = Table(title=f"Top {len(ranked)} · {metric}", box=None, pad_edge=False)
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("Configuration")
+    table.add_column(metric, justify="right")
+    table.add_column("Outer folds", justify="right", style="dim")
+    for index, (config_id, score, folds) in enumerate(ranked, 1):
+        table.add_row(
+            str(index), names.get(config_id, config_id), f"{score:.5g}", str(folds)
+        )
+    console.print(table)

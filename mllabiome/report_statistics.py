@@ -630,6 +630,23 @@ def _selection_metric_from_run(
 def _file_signature(path: Path) -> dict[str, Any]:
     physical = resolve_table_path(path) if path.suffix == ".parquet" else path
     if not physical.exists():
+        from ._config_store import section_for_path, indexed_config_ids
+
+        if section_for_path(path) is not None:
+            identifiers = indexed_config_ids(path.parent.parent)
+            if identifiers:
+                from ._config_store import _artifact_path
+
+                parts = [
+                    _artifact_path(path.parent.parent, cid).stat()
+                    for cid in identifiers
+                ]
+                return {
+                    "path": str(path),
+                    "exists": True,
+                    "size": sum(stat.st_size for stat in parts),
+                    "mtime_ns": max(stat.st_mtime_ns for stat in parts),
+                }
         return {"path": str(path), "exists": False}
     stat = physical.stat()
     return {

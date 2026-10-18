@@ -83,6 +83,14 @@ def read_table(path: Path, *, dtype=None) -> pd.DataFrame:
         require_parquet_engine()
         frame = pd.read_parquet(parquet)
         return frame.astype(str) if dtype is str else frame
+    from ._config_store import section_for_path, read_configurations, indexed_config_ids
+
+    section = section_for_path(parquet)
+    if section is not None:
+        root = parquet.parent.parent
+        if indexed_config_ids(root):
+            frame = read_configurations(root, section)
+            return frame.astype(str) if dtype is str else frame
     configs = _read_configs_db(path)
     if not configs.empty:
         return configs.astype(str) if dtype is str else configs
@@ -153,6 +161,12 @@ def table_exists(path: Path) -> bool:
     if parquet.exists() and parquet.stat().st_size > 0:
         return True
     if _configs_db(path) is not None:
+        return True
+    from ._config_store import section_for_path, indexed_config_ids
+
+    if section_for_path(parquet) is not None and indexed_config_ids(
+        parquet.parent.parent
+    ):
         return True
     return any(p.exists() and p.stat().st_size > 0 for p in _legacy_paths(path))
 

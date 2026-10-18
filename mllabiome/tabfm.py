@@ -33,7 +33,9 @@ class TabFMClassifier(ClassifierMixin, BaseEstimator):
         if sparse.issparse(X):
             bytes_required = X.shape[0] * X.shape[1] * np.dtype(np.float32).itemsize
             if bytes_required > 2 * 1024**3:
-                raise MemoryError("Densifying the TabFM feature matrix would exceed 2 GiB.")
+                raise MemoryError(
+                    "Densifying the TabFM feature matrix would exceed 2 GiB."
+                )
             X = X.astype(np.float32).toarray()
         if not hasattr(X, "shape"):
             X = np.asarray(X)
@@ -70,10 +72,14 @@ class TabFMClassifier(ClassifierMixin, BaseEstimator):
                 try:
                     torch = importlib.import_module("torch")
                 except ImportError as exc:
-                    raise TabFMDependencyError("The PyTorch backend requires torch.") from exc
+                    raise TabFMDependencyError(
+                        "The PyTorch backend requires torch."
+                    ) from exc
                 if torch.cuda.is_available():
                     device = "cuda"
-                elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                elif (
+                    hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+                ):
                     device = "mps"
                 else:
                     device = "cpu"
@@ -123,13 +129,19 @@ class TabFMClassifier(ClassifierMixin, BaseEstimator):
         check_is_fitted(self, ("classes_", "n_features_in_", "X_train_", "y_train_"))
         X = self._prepare_X(X)
         if X.shape[1] != self.n_features_in_:
-            raise ValueError(f"Expected {self.n_features_in_} features, got {X.shape[1]}.")
+            raise ValueError(
+                f"Expected {self.n_features_in_} features, got {X.shape[1]}."
+            )
         if hasattr(self, "feature_names_in_") and hasattr(X, "columns"):
             if not np.array_equal(np.asarray(X.columns), self.feature_names_in_):
-                raise ValueError("Prediction feature names must match training feature names.")
+                raise ValueError(
+                    "Prediction feature names must match training feature names."
+                )
         proba = np.asarray(self._get_model().predict_proba(X), dtype=np.float64)
         if proba.shape != (len(X), len(self.classes_)):
-            raise ValueError(f"TabFM returned an invalid probability shape: {proba.shape}.")
+            raise ValueError(
+                f"TabFM returned an invalid probability shape: {proba.shape}."
+            )
         if not np.isfinite(proba).all() or (proba < 0).any():
             raise ValueError("TabFM returned invalid class probabilities.")
         if not np.allclose(proba.sum(axis=1), 1.0, atol=1e-5):
