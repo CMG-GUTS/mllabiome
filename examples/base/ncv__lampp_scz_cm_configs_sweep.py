@@ -45,7 +45,7 @@ RESOLUTIONS = (
     # ("class", ("class",)),
     # ("order", ("order",)),
     # ("family", ("family",)),
-    ("genus", ("genus",)),
+    # ("genus", ("genus",)),
     # ("species", ("species",)),
     ("strain", ("strain",)),
     # ("raw", ("all",)),
@@ -196,13 +196,13 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
-    # (
-    #     "KumoTabular_default",
-    #     mll.KumoTabularClassifier(
-    #         device="cpu",
-    #         random_state=42,
-    #     ),
-    # ),
+    (
+        "KumoTabular_default",
+        mll.KumoTabularClassifier(
+            device="cpu",
+            random_state=42,
+        ),
+    ),
     # (
     #     "KumoTabular_small",
     #     mll.KumoTabularClassifier(

@@ -418,23 +418,78 @@ def read_configurations(
     )
 
 
+@lru_cache(maxsize=8192)
+def _inner_ranking_score(
+    root: str,
+    config_id: str,
+    metric: str,
+    expected_inner: int,
+    file_size: int,
+    mtime_ns: int,
+) -> float | None:
+    import math
+
+    from .metrics import aggregate_validation_metric
+
+    frame = read_configuration(Path(root), config_id, "inner_metrics")
+    if frame.empty or metric not in frame.columns or "inner_key" not in frame.columns:
+        return None
+    frame = frame.drop_duplicates("inner_key", keep="last")
+    if "ok" in frame.columns:
+        frame = frame.loc[pd.to_numeric(frame["ok"], errors="coerce").eq(1)]
+    frame = frame.loc[pd.to_numeric(frame[metric], errors="coerce").map(math.isfinite)]
+    if len(frame) != expected_inner:
+        return None
+    score, _ = aggregate_validation_metric(frame, metric)
+    return float(score) if math.isfinite(score) else None
+
+
 def top_configs(
     root: Path, metric: str, k: int = 3, loss: bool = True
 ) -> list[tuple[str, float, int]]:
-    path = Path(root) / "configs.db"
-    if not path.exists():
+    root = Path(root)
+    path = root / "configs.db"
+    if not path.exists() or k <= 0:
         return []
     with sqlite3.connect(path) as conn:
         if not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE name='config_artifacts'"
         ).fetchone():
             return []
-        order = "ASC" if loss else "DESC"
         rows = conn.execute(
-            f"SELECT config_id, score, outer_count FROM config_artifacts WHERE metric=? AND score IS NOT NULL AND outer_count=expected_outer_count ORDER BY score {order}, config_id LIMIT ?",
-            (str(metric), int(k)),
+            "SELECT config_id, inner_count, outer_count FROM config_artifacts "
+            "WHERE metric=? AND inner_count>0",
+            (str(metric),),
+        ).fetchall()
+    ranked = []
+    for config_id, expected_inner, outer_count in rows:
+        artifact = _artifact_path(root, str(config_id))
+        if not artifact.is_file():
+            continue
+        stat = artifact.stat()
+        score = _inner_ranking_score(
+            str(root), str(config_id), str(metric), int(expected_inner),
+            stat.st_size, stat.st_mtime_ns,
         )
-        return [(str(cid), float(score), int(count)) for cid, score, count in rows]
+        if score is not None:
+            ranked.append((str(config_id), score, int(outer_count)))
+    ranked.sort(key=lambda item: (item[1] if loss else -item[1], item[0]))
+    return ranked[:k]
+
+
+def latest_ranked_config(root: Path, metric: str) -> str | None:
+    ranked_ids = {
+        config_id for config_id, _, _ in top_configs(root, metric, k=2147483647)
+    }
+    if not ranked_ids:
+        return None
+    with sqlite3.connect(Path(root) / "configs.db") as conn:
+        rows = conn.execute(
+            "SELECT config_id FROM config_artifacts WHERE metric=? "
+            "ORDER BY mtime_ns DESC, config_id",
+            (str(metric),),
+        )
+        return next((str(row[0]) for row in rows if str(row[0]) in ranked_ids), None)
 
 
 def matched_outer_difference(

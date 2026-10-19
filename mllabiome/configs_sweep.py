@@ -28,11 +28,11 @@ from .compute import ResourceTracker, machine_profile, synchronize_accelerators
 from .console import (
     info,
     path_table,
-    progress,
     stage,
     success,
     summary_table,
     evaluation_leaders,
+    EvaluationMonitor,
 )
 from .data import Dataset, dataset_fingerprint, load_dataset
 from .estimator_protocol import EstimatorLike, is_estimator_instance
@@ -76,7 +76,7 @@ from ._config_store import (
     write_configuration,
     register_configuration,
     top_configs,
-    matched_outer_difference,
+    latest_ranked_config,
     split_digest,
     SECTIONS,
 )
@@ -2165,6 +2165,7 @@ class _EvaluationRows:
     inner_predictions: list[dict[str, Any]]
     qualification: list[dict[str, Any]]
     job_resources: list[dict[str, Any]]
+    latest_config_id: str | None = None
 
     @classmethod
     def empty(cls) -> _EvaluationRows:
@@ -2348,17 +2349,14 @@ def _recover_committed_configs(
 def _run_evaluation_tasks(
     root: Path,
     tasks: Sequence[_PreparedEvaluationTask],
-    split_task_counts: Mapping[str, int],
     execution: ExecutionPlan,
-    job_label: str,
     *,
     context: _SweepEvaluationContext,
     metric: str,
     gate_enabled: bool,
 ) -> _EvaluationRows:
     rows = _EvaluationRows.empty()
-    completed_by_split: dict[str, int] = {}
-    remaining = {}
+    remaining: dict[str, int] = {}
     expected_outer = {str(item["split_key"]) for item in context.outer_splits}
     expected_inner = {
         f"{str(item['split_key'])}__i{index}"
@@ -2367,16 +2365,27 @@ def _run_evaluation_tasks(
     }
     for task in tasks:
         remaining[task.config_id] = remaining.get(task.config_id, 0) + 1
-    from .console import console
-
-    leaders = top_configs(root, metric, loss=metric_is_loss(metric))
-    if leaders:
-        evaluation_leaders(root, metric, leaders)
-    with progress() as prog:
-        job_task = prog.add_task(job_label, total=len(tasks))
-        split_task = prog.add_task(
-            "Outer splits completed", total=len(split_task_counts)
-        )
+    leaders = top_configs(root, metric, k=2147483647, loss=metric_is_loss(metric))
+    with EvaluationMonitor(
+        root,
+        metric,
+        list(remaining),
+        sorted(expected_outer),
+        sorted(expected_inner),
+        context.existing["inner_metrics"].to_dict(orient="records"),
+        context.existing["outer_metrics"].to_dict(orient="records"),
+        all_config_ids=sorted(context.current_config_ids),
+        completed_pairs={
+            (str(split["split_key"]), str(config_id))
+            for split in context.outer_splits
+            for config_id in context.current_config_ids
+            if _outer_pair_complete(
+                str(split["split_key"]), str(config_id),
+                context.outer_done, context.qualification_map,
+            )
+        },
+        classification=str(context.dataset.task) != "regression",
+    ) as monitor:
         payloads = [
             (task.fn, task.args, {**task.kwargs, "checkpoint_root": str(root)})
             for task in tasks
@@ -2384,11 +2393,8 @@ def _run_evaluation_tasks(
         for result in iter_parallel_tasks(payloads, execution):
             _checkpoint_result(root, result, metric)
             rows.extend(result)
-            split_key = str(result.get("split_key", ""))
+            monitor.result(result)
             config_id = str(result.get("config_id", ""))
-            completed_by_split[split_key] = completed_by_split.get(split_key, 0) + 1
-            if completed_by_split[split_key] == split_task_counts.get(split_key, 0):
-                prog.advance(split_task)
             remaining[config_id] -= 1
             if remaining[config_id] == 0:
                 published = _publish_completed_config(
@@ -2400,48 +2406,13 @@ def _run_evaluation_tasks(
                     gate_enabled,
                 )
                 if published:
-                    leaders = top_configs(root, metric, loss=metric_is_loss(metric))
-                    rank = next(
-                        (
-                            i
-                            for i, item in enumerate(leaders, 1)
-                            if item[0] == config_id
-                        ),
-                        None,
+                    rows.latest_config_id = config_id
+                    leaders = top_configs(
+                        root, metric, k=2147483647, loss=metric_is_loss(metric)
                     )
-                    rank_text = f" · rank {rank}" if rank is not None else ""
-                    console.print(f"[green]✓[/green] {config_id} finalized{rank_text}")
-                    evaluation_leaders(root, metric, leaders)
+                    monitor.finalized(config_id, leaders)
                 else:
-                    console.print(
-                        f"[yellow]![/yellow] {config_id} remains resumable; incomplete or failed folds"
-                    )
-            outer_rows = result.get("outer_metrics", [])
-            valid = [row for row in outer_rows if row.get("ok") == 1 and metric in row]
-            latest = valid[-1] if valid else None
-            description = f"{job_label} · {split_key} · {config_id}"
-            if latest is not None:
-                description += (
-                    f" · {metric}={float(latest[metric]):.4g}"
-                    f" · fit {float(latest.get('fit_seconds', 0.0)):.1f}s"
-                    f" · infer {float(latest.get('predict_seconds', 0.0)):.2f}s"
-                )
-                comparator = next(
-                    (cid for cid, _, _ in leaders if cid != config_id), None
-                )
-                if comparator is not None:
-                    paired = matched_outer_difference(
-                        root, config_id, comparator, metric
-                    )
-                    if paired is not None:
-                        description += (
-                            f" · Δleader {paired[0]:+.3g} ({paired[1]} paired)"
-                        )
-            prog.update(
-                job_task,
-                advance=1,
-                description=description,
-            )
+                    monitor.unfinished(config_id)
     return rows
 
 
@@ -3141,6 +3112,15 @@ def _reuse_completed_evaluation(
 ) -> dict[str, Path]:
     success(message)
     _write_selection_artifacts(context.root, sweep, class_labels)
+    metric = canonical_metric_name(str(sweep.evaluation.optimize_metric))
+    ranked = top_configs(context.root, metric, k=2147483647, loss=metric_is_loss(metric))
+    evaluation_leaders(
+        context.root,
+        metric,
+        ranked,
+        latest_config_id=latest_ranked_config(context.root, metric),
+        classification=bool(class_labels),
+    )
     outputs = _existing_outputs(context.root)
     path_table(output_label, outputs)
     return outputs
@@ -3151,10 +3131,8 @@ def _finish_evaluation(
     context: _SweepEvaluationContext,
     execution: ExecutionPlan,
     prepared_tasks: Sequence[_PreparedEvaluationTask],
-    split_task_counts: Mapping[str, int],
     *,
     class_labels: Sequence[str],
-    job_label: str,
     completion_label: str,
     output_label: str,
     task: str,
@@ -3163,9 +3141,7 @@ def _finish_evaluation(
     rows = _run_evaluation_tasks(
         context.root,
         prepared_tasks,
-        split_task_counts,
         execution,
-        job_label,
         context=context,
         metric=canonical_metric_name(str(sweep.evaluation.optimize_metric)),
         gate_enabled=bool(sweep.gate.enabled),
@@ -3188,6 +3164,15 @@ def _finish_evaluation(
         f"{completion_label} completed in {elapsed:.1f}s · workers={execution.workers} · "
         f"added {len(rows.outer_metrics):,} outer rows and {len(rows.inner_metrics):,} inner rows"
     )
+    metric = canonical_metric_name(str(sweep.evaluation.optimize_metric))
+    ranked = top_configs(context.root, metric, k=2147483647, loss=metric_is_loss(metric))
+    evaluation_leaders(
+        context.root,
+        metric,
+        ranked,
+        latest_config_id=rows.latest_config_id or latest_ranked_config(context.root, metric),
+        classification=task != "regression",
+    )
     outputs = _existing_outputs(context.root)
     path_table(output_label, outputs)
     return outputs
@@ -3195,7 +3180,7 @@ def _finish_evaluation(
 
 def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
     context = _prepare_regression_evaluation(sweep)
-    tasks, split_task_counts = _build_regression_tasks(sweep, context)
+    tasks, _ = _build_regression_tasks(sweep, context)
     execution = _evaluation_execution_plan(sweep, len(tasks))
     prepared_tasks = _prepare_evaluation_tasks(tasks, execution.threads_per_worker)
     expected_pairs, completed_pairs = _evaluation_pair_counts(context)
@@ -3224,9 +3209,7 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
         context,
         execution,
         prepared_tasks,
-        split_task_counts,
         class_labels=(),
-        job_label="Regression MPMA/split jobs",
         completion_label="Regression sweep",
         output_label="Regression sweep outputs",
         task="regression",
@@ -3284,7 +3267,7 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
 
 def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
     context = _prepare_classification_evaluation(sweep)
-    tasks, split_task_counts = _build_classification_tasks(sweep, context)
+    tasks, _ = _build_classification_tasks(sweep, context)
     execution = _evaluation_execution_plan(sweep, len(tasks))
     prepared_tasks = _prepare_evaluation_tasks(tasks, execution.threads_per_worker)
     expected_pairs, completed_pairs = _evaluation_pair_counts(context)
@@ -3313,9 +3296,7 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
         context,
         execution,
         prepared_tasks,
-        split_task_counts,
         class_labels=context.dataset.class_labels,
-        job_label="MPMA/split jobs",
         completion_label="Configuration sweep",
         output_label="Configuration sweep outputs",
         task="classification",

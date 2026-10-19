@@ -45,9 +45,9 @@ RESOLUTIONS = (
     # ("class", ("class",)),
     # ("order", ("order",)),
     # ("family", ("family",)),
-    ("genus", ("genus",)),
-    # ("species", ("species",)),
-    ("strain", ("strain",)),
+    # ("genus", ("genus",)),
+    ("species", ("species",)),
+    # ("strain", ("strain",)),
     # ("raw", ("all",)),
 )
 
@@ -196,21 +196,21 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
-    # (
-    #     "KumoTabular_default",
-    #     mll.KumoTabularClassifier(
-    #         device="cpu",
-    #         random_state=42,
-    #     ),
-    # ),
-    # (
-    #     "KumoTabular_small",
-    #     mll.KumoTabularClassifier(
-    #         size="small",
-    #         device="cpu",
-    #         random_state=42,
-    #     ),
-    # ),
+    (
+        "KumoTabular_default",
+        mll.KumoTabularClassifier(
+            device="cpu",
+            random_state=42,
+        ),
+    ),
+    (
+        "KumoTabular_small",
+        mll.KumoTabularClassifier(
+            size="small",
+            device="cpu",
+            random_state=42,
+        ),
+    ),
     # (
     #     "KumoTabular_medium",
     #     mll.KumoTabularClassifier(
@@ -252,12 +252,12 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
-    (
-        "TabICLv2_default",
-        mll.TabICLClassifier(
-            random_state=42,
-        ),
-    ),
+    # (
+    #     "TabICLv2_default",
+    #     mll.TabICLClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
     # (
     #     "RealMLP_TD_default",
     #     mll.RealMLPClassifier(
@@ -319,7 +319,7 @@ EXPLAINABILITY = mll.Explainability(
     profile="screening",
     methods=(
         mll.Permutation(),
-        mll.SHAP(),
+        # mll.SHAP(),
         mll.ALE(),
         mll.LIME(),
         mll.ALEInteractions(
