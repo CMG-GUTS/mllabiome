@@ -959,6 +959,7 @@ class Inference:
     sample_id_col: str | None = None
     feature_policy: str = "strict"
     allow_training_sample_overlap: bool = False
+    save_weights: bool = True
 
     def __post_init__(self) -> None:
         targets = tuple(
@@ -989,6 +990,8 @@ class Inference:
             raise ValueError(
                 "Inference.feature_policy must be 'strict' or 'zero_fill'."
             )
+        if not isinstance(self.save_weights, bool):
+            raise TypeError("Inference.save_weights must be a boolean.")
         sample_id_col = (
             None if self.sample_id_col is None else str(self.sample_id_col).strip()
         )

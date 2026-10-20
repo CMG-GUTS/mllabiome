@@ -339,6 +339,7 @@ if EXTERNAL_TEST is None:
 INFERENCE = EXTERNAL_TEST.mllabiome(
     targets=("mpma_b", "mpma_e"),
     feature_policy="strict",
+    save_weights=False,
 )
 
 SWEEP = mll.Sweep(

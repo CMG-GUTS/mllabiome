@@ -594,12 +594,13 @@ def _fit_member(
     profile_names: list[str],
     model: dict[str, Any],
     deployment_dir: Path,
-) -> tuple[dict[str, Any], np.ndarray, dict[str, Any]]:
+    save_weights: bool,
+) -> tuple[dict[str, Any] | None, np.ndarray, dict[str, Any]]:
     config_id = str(model["config_id"])
     signature = _member_signature(dataset, model)
     bundle_path = deployment_dir / "members" / f"{config_id}.joblib"
     bundle = None
-    if bundle_path.exists():
+    if save_weights and bundle_path.exists():
         try:
             candidate = joblib.load(bundle_path)
             if isinstance(candidate, dict) and candidate.get("signature") == signature:
@@ -669,7 +670,8 @@ def _fit_member(
             "transformer": transformer,
             "estimator": estimator,
         }
-        _atomic_joblib(bundle, bundle_path)
+        if save_weights:
+            _atomic_joblib(bundle, bundle_path)
     else:
         expected_names = [str(value) for value in bundle.get("raw_feature_names", [])]
         if expected_names != list(train_names):
@@ -713,10 +715,10 @@ def _fit_member(
             "inference_abundance_scale": inference_scale,
             "abundance_scale_validation": scale_validation,
             "deployment_signature": signature,
-            "bundle_path": str(bundle_path),
+            "bundle_path": str(bundle_path) if save_weights else None,
         }
     )
-    return bundle, predictions, audit
+    return bundle if save_weights else None, predictions, audit
 
 
 def _strategy_predictions(
@@ -726,15 +728,16 @@ def _strategy_predictions(
     profile_names: list[str],
     models: dict[str, Any],
     deployment_dir: Path,
+    save_weights: bool,
     strategy: str,
-    member_cache: dict[str, tuple[dict[str, Any], np.ndarray, dict[str, Any]]],
+    member_cache: dict[str, tuple[dict[str, Any] | None, np.ndarray, dict[str, Any]]],
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
     if strategy == "MPMA-B":
         model = models["MPMA-B"]
         config_id = str(model["config_id"])
         if config_id not in member_cache:
             member_cache[config_id] = _fit_member(
-                sweep, dataset, profile_X, profile_names, model, deployment_dir
+                sweep, dataset, profile_X, profile_names, model, deployment_dir, save_weights
             )
         probabilities = member_cache[config_id][1]
         alpha = float(model.get("probability_softening_alpha", 0.0))
@@ -754,7 +757,7 @@ def _strategy_predictions(
         config_id = str(member["config_id"])
         if config_id not in member_cache:
             member_cache[config_id] = _fit_member(
-                sweep, dataset, profile_X, profile_names, member, deployment_dir
+                sweep, dataset, profile_X, profile_names, member, deployment_dir, save_weights
             )
         member_predictions.append(member_cache[config_id][1])
         audits.append(member_cache[config_id][2])
@@ -878,37 +881,38 @@ def run_inference(
     )
     inference_root = root / "inference"
     deployment_dir = inference_root / "deployment"
-    deployment_dir.mkdir(parents=True, exist_ok=True)
-    background_path = deployment_dir / "background.npz"
-    fingerprint = dataset_fingerprint(training)
-    replace_background = True
-    if background_path.is_file():
-        try:
-            with np.load(background_path, allow_pickle=False) as existing:
-                replace_background = str(existing["fingerprint"].item()) != fingerprint
-        except (ValueError, OSError, KeyError):
-            pass
-    if replace_background:
-        rng = np.random.default_rng(int(sweep.evaluation.random_state))
-        rows = np.sort(
-            rng.choice(
-                len(training.sample_ids),
-                size=min(32, len(training.sample_ids)),
-                replace=False,
+    if sweep.inference.save_weights:
+        deployment_dir.mkdir(parents=True, exist_ok=True)
+        background_path = deployment_dir / "background.npz"
+        fingerprint = dataset_fingerprint(training)
+        replace_background = True
+        if background_path.is_file():
+            try:
+                with np.load(background_path, allow_pickle=False) as existing:
+                    replace_background = str(existing["fingerprint"].item()) != fingerprint
+            except (ValueError, OSError, KeyError):
+                pass
+        if replace_background:
+            rng = np.random.default_rng(int(sweep.evaluation.random_state))
+            rows = np.sort(
+                rng.choice(
+                    len(training.sample_ids),
+                    size=min(32, len(training.sample_ids)),
+                    replace=False,
+                )
             )
-        )
-        temp = background_path.with_suffix(".tmp")
-        with temp.open("wb") as handle:
-            np.savez_compressed(
-                handle,
-                X=training.X_by_level["all"][rows],
-                names=np.asarray(training.feature_names_by_level["all"], dtype=str),
-                fingerprint=np.asarray(fingerprint),
-            )
-        temp.replace(background_path)
+            temp = background_path.with_suffix(".tmp")
+            with temp.open("wb") as handle:
+                np.savez_compressed(
+                    handle,
+                    X=training.X_by_level["all"][rows],
+                    names=np.asarray(training.feature_names_by_level["all"], dtype=str),
+                    fingerprint=np.asarray(fingerprint),
+                )
+            temp.replace(background_path)
     inference_root.mkdir(parents=True, exist_ok=True)
     tracker = ResourceTracker().start()
-    member_cache: dict[str, tuple[dict[str, Any], np.ndarray, dict[str, Any]]] = {}
+    member_cache: dict[str, tuple[dict[str, Any] | None, np.ndarray, dict[str, Any]]] = {}
     strategy_values: dict[str, np.ndarray] = {}
     audits: list[dict[str, Any]] = []
     try:
@@ -920,6 +924,7 @@ def run_inference(
                 profile_names,
                 models,
                 deployment_dir,
+                sweep.inference.save_weights,
                 strategy,
                 member_cache,
             )
@@ -974,15 +979,17 @@ def run_inference(
     )
     feature_audit_path = inference_root / "feature_audit.tsv"
     _atomic_tsv(feature_audit, feature_audit_path)
-    deployment_manifest = _deployment_manifest(
-        sweep,
-        training,
-        models,
-        requested,
-        list(unique_audits.values()),
-    )
-    deployment_manifest_path = deployment_dir / "manifest.json"
-    dump_json_standard(deployment_manifest, deployment_manifest_path)
+    deployment_manifest_path = None
+    if sweep.inference.save_weights:
+        deployment_manifest = _deployment_manifest(
+            sweep,
+            training,
+            models,
+            requested,
+            list(unique_audits.values()),
+        )
+        deployment_manifest_path = deployment_dir / "manifest.json"
+        dump_json_standard(deployment_manifest, deployment_manifest_path)
     manifest = {
         "schema_version": _INFERENCE_SCHEMA,
         "package_version": __version__,
@@ -993,6 +1000,7 @@ def run_inference(
         "inference_samples": len(sample_ids),
         "input": input_audit,
         "feature_policy": sweep.inference.feature_policy,
+        "save_weights": sweep.inference.save_weights,
         "training_outcomes_used_for_full_fit": True,
         "inference_outcomes_used_for_fit_or_prediction": False,
         "inference_metadata_used_as_predictors": False,
@@ -1002,7 +1010,9 @@ def run_inference(
         if metadata_predictions_path is None
         else str(metadata_predictions_path),
         "feature_audit": str(feature_audit_path),
-        "deployment_manifest": str(deployment_manifest_path),
+        "deployment_manifest": None
+        if deployment_manifest_path is None
+        else str(deployment_manifest_path),
         "resources": resources,
         "machine": machine_profile(),
         "python_version": platform.python_version(),
@@ -1013,8 +1023,9 @@ def run_inference(
         "predictions": predictions_path,
         "feature_audit": feature_audit_path,
         "manifest": manifest_path,
-        "deployment_manifest": deployment_manifest_path,
     }
+    if deployment_manifest_path is not None:
+        outputs["deployment_manifest"] = deployment_manifest_path
     if metadata_predictions_path is not None:
         outputs["predictions_with_metadata"] = metadata_predictions_path
     return outputs

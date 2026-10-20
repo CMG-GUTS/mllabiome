@@ -484,7 +484,7 @@ def _inference_rows(sweep: Sweep) -> list[tuple[str, object]]:
             if isinstance(strategies, list):
                 rows.append(
                     (
-                        f"{target} · deployed strategies",
+                        f"{target} · {'deployed strategies' if manifest.get('save_weights', True) else 'inference strategies'}",
                         ", ".join(str(value) for value in strategies),
                     )
                 )

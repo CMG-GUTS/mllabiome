@@ -50,6 +50,11 @@ class RunStore:
                 raise ValueError(
                     "An inference target lies outside the experiment directory."
                 )
+            inference_manifest = path / "inference" / "manifest.json"
+            if inference_manifest.is_file():
+                settings = json.loads(inference_manifest.read_text(encoding="utf-8"))
+                if not settings.get("save_weights", True):
+                    continue
             if (path / "inference" / "deployment" / "manifest.json").is_file():
                 self.runs[str(index)] = Run(str(index), path, target)
         if not self.runs:
