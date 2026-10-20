@@ -101,6 +101,7 @@ prepare_lampp_mllab.py
 catboost_info
 examples/official/
 examples/official/lampp
+*runs-19
 
 *.fab
 /interactive/frontend/node_modules/

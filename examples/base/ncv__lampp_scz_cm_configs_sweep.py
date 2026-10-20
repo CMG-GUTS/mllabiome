@@ -203,14 +203,14 @@ MODELS = (
             random_state=42,
         ),
     ),
-    # (
-    #     "KumoTabular_small",
-    #     mll.KumoTabularClassifier(
-    #         size="small",
-    #         device="cpu",
-    #         random_state=42,
-    #     ),
-    # ),
+(
+    "KumoTabular_small",
+    mll.KumoTabularClassifier(
+        size="small",
+        device="cpu",
+        random_state=42,
+    ),
+),
     # (
     #     "KumoTabular_medium",
     #     mll.KumoTabularClassifier(

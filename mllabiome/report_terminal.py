@@ -464,22 +464,23 @@ def _print_report_summary(
     _terminal_table("Final MPMA-E specification", ensemble_summary)
 
     if not ensemble_members.empty:
-        cols = [
-            c
-            for c in [
-                "Member",
-                "Taxonomic representation",
-                "Resolution",
-                "Count transformation",
-                "Learner type",
-                "count_transformation",
-                "learner",
-            ]
-            if c in ensemble_members.columns
+        columns = [
+            "Member",
+            "Config ID",
+            "Learner",
+            "Family",
+            "Modalities",
+            "Integration",
+            "Components",
+            "Representation",
+            "Transformation",
+            "Weight",
+            "Features",
         ]
-
+        selected = [column for column in columns if column in ensemble_members.columns]
         _terminal_table(
-            "Final MPMA-E members", ensemble_members[cols] if cols else ensemble_members
+            "Final MPMA-E members",
+            ensemble_members[selected] if selected else ensemble_members,
         )
 
     _feature_support_terminal(root, top_n=8)

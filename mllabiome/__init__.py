@@ -51,6 +51,7 @@ from .foundation_models import (
 )
 from .integrations import IntegratedCoordinate, Integration, IntegrationModel
 from .kumo import KumoTabularClassifier, KumoTabularDependencyError
+from .kumo_regressor import KumoTabularRegressor
 from .limix2 import LimiX2Classifier, LimiX2DependencyError
 from .limix import LimiXClassifier
 from .learners import FLAMLClassifier, build_learner, validate_model_specs
@@ -105,6 +106,7 @@ __all__ = [
     "EXAONETabularClassifier",
     "EXAONETabularDependencyError",
     "KumoTabularClassifier",
+    "KumoTabularRegressor",
     "KumoTabularDependencyError",
     "LIME",
     "LimiXClassifier",

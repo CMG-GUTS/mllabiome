@@ -187,29 +187,53 @@ def _format_value(value: object) -> str:
 
 
 def _evaluation_names(root: Path, identifiers: Sequence[str]) -> dict[str, str]:
-    import sqlite3
-
     path = Path(root) / "configs.db"
     if not path.exists() or not identifiers:
         return {}
     with sqlite3.connect(path) as conn:
         if not conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE name='configs'"
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='configs'"
         ).fetchone():
             return {}
-        placeholders = ",".join("?" for _ in identifiers)
-        rows = conn.execute(
-            f"SELECT config_id, learner, resolution, count_transformation FROM configs WHERE config_id IN ({placeholders})",
-            tuple(identifiers),
-        )
-        return {
-            str(cid): " · ".join(
-                str(value)
-                for value in (learner, resolution, transformation)
-                if value
+        available = {row[1] for row in conn.execute("PRAGMA table_info(configs)")}
+        fields = [
+            column
+            for column in (
+                "learner",
+                "modalities",
+                "integration",
+                "integration_n_components",
+                "resolution",
+                "count_transformation",
             )
-            for cid, learner, resolution, transformation in rows
-        }
+            if column in available
+        ]
+        if "config_id" not in available or not fields:
+            return {}
+        names = {}
+        for start in range(0, len(identifiers), 500):
+            chunk = list(identifiers[start:start + 500])
+            placeholders = ",".join("?" for _ in chunk)
+            query = (
+                f"SELECT config_id, {', '.join(fields)} FROM configs "
+                f"WHERE config_id IN ({placeholders})"
+            )
+            for record in conn.execute(query, tuple(chunk)):
+                values = dict(zip(fields, record[1:]))
+                parts = []
+                for field in ("learner", "modalities", "integration"):
+                    value = values.get(field)
+                    if value is not None and str(value).strip():
+                        parts.append(str(value).strip())
+                components = values.get("integration_n_components")
+                if components is not None and str(components).strip():
+                    parts.append(f"components={components}")
+                for field in ("resolution", "count_transformation"):
+                    value = values.get(field)
+                    if value is not None and str(value).strip():
+                        parts.append(str(value).strip())
+                names[str(record[0])] = " · ".join(parts) or str(record[0])
+        return names
 
 
 def _evaluation_summary(

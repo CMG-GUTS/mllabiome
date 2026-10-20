@@ -15,7 +15,7 @@ EXPERIMENT_DIR = Path("examples/runs/GUTBRAIN-MULTIMODAL-NCV")
 DATA = gutbrain.mllabiome(target=TARGET)
 
 TRANSFORMATIONS = (
-    mll.Transformation("presence_absence"),
+    # mll.Transformation("presence_absence"),
     mll.Transformation("identity"),
     # mll.Transformation(
     #     "relative_abundance",
@@ -27,6 +27,8 @@ TRANSFORMATIONS = (
 INTEGRATIONS = (
     mll.Integration("intermediate_joint_pca", n_components=(16, 32)),
     mll.Integration("late_super_learner"),
+    mll.Integration("early_concat"),
+
 )
 
 LEARNERS = (
@@ -55,6 +57,32 @@ LEARNERS = (
             n_jobs=1,
             random_state=42,
             verbosity=-1,
+        ),
+    ),
+    (
+    "KumoTabular_small",
+    mll.KumoTabularRegressor(
+        size="small",
+        pretrained=True,
+        n_estimators=8,
+        device="cpu",
+        random_state=42,
+    ),
+),
+    (
+        "KumoTabular_medium",
+        mll.KumoTabularClassifier(
+            size="medium",
+            device="cpu",
+            random_state=42,
+        ),
+    ),
+    (
+        "KumoTabular_large",
+        mll.KumoTabularClassifier(
+            size="large",
+            device="cpu",
+            random_state=42,
         ),
     ),
 )

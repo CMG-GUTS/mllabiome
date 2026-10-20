@@ -114,6 +114,7 @@ _LEARNER_DISPLAY_NAMES = {
     "CausiloClassifier": "Causilo",
     "EXAONETabularClassifier": "EXAONE Tabular",
     "KumoTabularClassifier": "Kumo Tabular",
+    "KumoTabularRegressor": "Kumo Tabular",
     "LimiXClassifier": "LimiX",
     "LimiX2Classifier": "LimiX-2",
     "TabDPTClassifier": "TabDPT",

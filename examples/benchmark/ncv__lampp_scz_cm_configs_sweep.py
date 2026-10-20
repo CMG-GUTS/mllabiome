@@ -16,7 +16,7 @@ from mllabiome import mll
 
 HERE = Path(__file__).resolve().parent
 TITLE = "LAMPP schizophrenia mllabiome benchmark sweep"
-EXPERIMENT_DIR = HERE / "runs" / "LAMPP-SCZ-NCV-CM"
+EXPERIMENT_DIR = HERE / "runs" / "LAMPP-SCZ-NCV-CM-official"
 
 DATA = lampp_scz.mllabiome()
 
@@ -41,32 +41,36 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
-    # ("phylum", ("phylum",)),
-    # ("class", ("class",)),
-    # ("order", ("order",)),
-    # ("family", ("family",)),
-    # ("genus", ("genus",)),
+    ("phylum", ("phylum",)),
+    ("class", ("class",)),
+    ("order", ("order",)),
+    ("family", ("family",)),
+    ("genus", ("genus",)),
     ("species", ("species",)),
-    # ("strain", ("strain",)),
-    # ("raw", ("all",)),
+    ("strain", ("strain",)),
+    ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
-    # mll.Transformation("presence_absence"),
+    mll.Transformation("presence_absence"),
     mll.Transformation("identity"),
-    # mll.Transformation("clr", composition_scope="rank-wise"),
-    # mll.Transformation(
-    #     "arcsine_sqrt",
-    #     composition_scope="rank-wise",
-    # ),
-    # mll.Transformation(
-    #     "relative_abundance",
-    #     composition_scope="rank-wise",
-    # ),
-    # mll.Transformation(
-    #     "log10",
-    #     composition_scope="rank-wise",
-    # ),
+    mll.Transformation("clr", composition_scope="rank-wise"),
+    mll.Transformation(
+        "arcsine_sqrt",
+        composition_scope="rank-wise",
+    ),
+    mll.Transformation(
+        "hellinger",
+        composition_scope="rank-wise",
+    ),
+    mll.Transformation(
+        "relative_abundance",
+        composition_scope="rank-wise",
+    ),
+    mll.Transformation(
+        "log10",
+        composition_scope="rank-wise",
+    ),
 )
 
 MODELS = (
@@ -96,20 +100,20 @@ MODELS = (
     #         allow_writing_files=False,
     #     ),
     # ),
-    (
-        "RF_default",
-        RandomForestClassifier(
-            random_state=42,
-        ),
-    ),
-    (
-        "LightGBM_default",
-        LGBMClassifier(
-            random_state=42,
-            n_jobs=1,
-            verbosity=-1,
-        ),
-    ),
+    # (
+    #     "RF_default",
+    #     RandomForestClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "LightGBM_default",
+    #     LGBMClassifier(
+    #         random_state=42,
+    #         n_jobs=1,
+    #         verbosity=-1,
+    #     ),
+    # ),
     # (
     #     "XGB_default",
     #     XGBClassifier(
@@ -196,29 +200,22 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
-    (
-        "KumoTabular_default",
-        mll.KumoTabularClassifier(
-            device="cpu",
-            random_state=42,
-        ),
-    ),
-    (
-        "KumoTabular_small",
-        mll.KumoTabularClassifier(
-            size="small",
-            device="cpu",
-            random_state=42,
-        ),
-    ),
     # (
-    #     "KumoTabular_medium",
+    #     "KumoTabular_small",
     #     mll.KumoTabularClassifier(
-    #         size="medium",
+    #         size="small",
     #         device="cpu",
     #         random_state=42,
     #     ),
     # ),
+    (
+        "KumoTabular_medium",
+        mll.KumoTabularClassifier(
+            size="medium",
+            device="cpu",
+            random_state=42,
+        ),
+    ),
     # (
     #     "KumoTabular_large",
     #     mll.KumoTabularClassifier(
