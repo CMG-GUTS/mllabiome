@@ -112,3 +112,6 @@ examples/official/lampp
 /interactive/frontend/.vercel/
 /interactive/frontend/coverage/
 *.tsbuildinfo
+
+manuscript.zip
+examples/benchmark-internal

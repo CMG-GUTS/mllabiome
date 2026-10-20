@@ -386,37 +386,21 @@ def _align_softened_mpma_b_positive_probability(
 
 
 def _load_mpma_b(root: Path) -> pd.DataFrame:
-    predictions = _align_softened_mpma_b_positive_probability(
-        _read_required_table(root / "predictions" / "mpma_b_outer_predictions.parquet")
-    )
-    selection = _read_required_table(root / "tables" / "mpma_b_outer_selection.parquet")
-    return _validate_selected_predictions(
-        root,
-        "MPMA-B",
-        predictions,
-        selection,
-        "config_id",
-        "config_id",
-        {"outer_fold_inner_validation"},
-    )
+    from .fixed_final_performance import fixed_final_outer_performance
+
+    predictions, _ = fixed_final_outer_performance(root, "MPMA-B", persist=False)
+    if predictions.empty:
+        raise ValueError("No final MPMA-B specification is available for reporting")
+    return predictions
 
 
 def _load_mpma_e(root: Path) -> pd.DataFrame:
-    predictions = _read_required_table(
-        root / "ensembling" / "ensemble_predictions.parquet"
-    )
-    selection = _read_required_table(
-        root / "ensembling" / "mpma_e_outer_selection.parquet"
-    )
-    return _validate_selected_predictions(
-        root,
-        "MPMA-E",
-        predictions,
-        selection,
-        "ensemble_config_id",
-        "ensemble_config_id",
-        {"outer_fold_inner_oof_predictions_only"},
-    )
+    from .fixed_final_performance import fixed_final_outer_performance
+
+    predictions, _ = fixed_final_outer_performance(root, "MPMA-E", persist=False)
+    if predictions.empty:
+        raise ValueError("No final MPMA-E specification is available for reporting")
+    return predictions
 
 
 def _load_comparator(root: Path, strategy: str, metric: str) -> pd.DataFrame:
@@ -473,21 +457,22 @@ def load_evaluation_predictions(
 
 def evaluation_prediction_metadata(strategy: str) -> dict[str, Any]:
     strategy = str(strategy).strip()
-    if strategy == "MPMA-B":
+    if strategy in {"MPMA-B", "MPMA-E"}:
         return {
-            "estimand": "nested_model_selection_procedure_performance",
-            "prediction_artifact": "predictions/mpma_b_outer_predictions.parquet",
-            "selection_artifact": "tables/mpma_b_outer_selection.parquet",
-            "selection_scope": "outer_fold_inner_validation_only",
-            "final_refit_specification_used_for_performance": False,
-        }
-    if strategy == "MPMA-E":
-        return {
-            "estimand": "nested_ensemble_selection_procedure_performance",
-            "prediction_artifact": "ensembling/ensemble_predictions.parquet",
-            "selection_artifact": "ensembling/mpma_e_outer_selection.parquet",
-            "selection_scope": "outer_fold_inner_oof_predictions_only",
-            "final_refit_specification_used_for_performance": False,
+            "estimand": "retrospective_fixed_final_specification_outer_cv",
+            "prediction_artifact": (
+                "tables/mpma_b_final_outer_predictions.parquet"
+                if strategy == "MPMA-B"
+                else "ensembling/mpma_e_final_outer_predictions.parquet"
+            ),
+            "selection_artifact": (
+                "tables/mpma_b_final_candidate.json"
+                if strategy == "MPMA-B"
+                else "ensembling/mpma_e_final_candidate.json"
+            ),
+            "selection_scope": "all_development_inner_validation",
+            "final_refit_specification_used_for_performance": True,
+            "post_selection_unbiased": False,
         }
     if strategy in _COMPARATORS:
         return {

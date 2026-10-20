@@ -290,9 +290,28 @@ def _feature_names(names: Sequence[str] | None, width: int) -> list[str]:
     return out
 
 
-def _waypoint_taxon_name(value: Any) -> str:
-    parts = re.split(r"(?:[|;]|___(?=[dkpcofgst]__))", str(value))
-    return ";".join(part.strip() for part in parts if part.strip())
+def _waypoint_taxon_name(value: Any, taxonomy_format: str = "full") -> str:
+    parts = [
+        part.strip()
+        for part in re.split(r"(?:[|;]|___(?=[dkpcofgst]__))", str(value))
+        if part.strip()
+    ]
+    if taxonomy_format == "genus":
+        genus = [part for part in parts if part.startswith("g__") and len(part) > 3]
+        if genus:
+            return genus[-1]
+        if len(parts) == 1 and not re.match(r"^[dkpcofgst]__", parts[0]):
+            return f"g__{parts[0]}"
+    return ";".join(parts)
+
+
+def _mgm2_taxon_name(value: Any) -> str:
+    parts = [
+        part.strip()
+        for part in re.split(r"(?:[|;]|___(?=(?:sk|[dkpcofgst])__))", str(value))
+        if part.strip()
+    ]
+    return ";".join(parts)
 
 
 def _normalise_resolutions(values: Sequence[str] | str | None) -> tuple[str, ...]:
@@ -700,7 +719,7 @@ class WaypointEmbedding:
             "pooling": self.pooling,
             "max_length": self.max_length,
             "taxonomy_format": self.taxonomy_format,
-            "taxonomy_adapter": "mllabiome-lineage-normalizer-v2",
+            "taxonomy_adapter": "mllabiome-waypoint-token-aggregation-v3",
         }
 
     def _load_runtime(self) -> tuple[Any, Any, Any, Any, Any, str]:
@@ -768,7 +787,7 @@ class WaypointEmbedding:
 
     def _embed_uncached(self, arr: np.ndarray) -> np.ndarray:
         names = [
-            _waypoint_taxon_name(name)
+            _waypoint_taxon_name(name, self.taxonomy_format)
             for name in _feature_names(self.feature_names_, arr.shape[1])
         ]
         (
@@ -780,27 +799,43 @@ class WaypointEmbedding:
             resolved_device,
         ) = self._load_runtime()
         model, tokenizer, token_std_means, pool = runtime
-        matrix = pd.DataFrame(
-            arr,
-            index=[f"sample_{i}" for i in range(arr.shape[0])],
-            columns=names,
-        )
-        data = matrix_to_waypoint_df(
-            matrix,
-            taxonomy_format=self.taxonomy_format,
-            normalize=True,
-            drop_zeros=True,
-        )
         unknown_id = int(tokenizer.unk_token_id)
-        known_tokens = sum(
-            int(tokenizer._convert_token_to_id(str(taxon))) != unknown_id
-            for taxa in data["Taxa"]
-            for taxon in taxa
-        )
-        if known_tokens == 0:
+        token_indices: dict[int, list[int]] = {}
+        for index, name in enumerate(names):
+            token_id = int(tokenizer._convert_token_to_id(name))
+            if token_id != unknown_id:
+                token_indices.setdefault(token_id, []).append(index)
+        if not token_indices:
             raise ValueError(
                 "Waypoint tokenizer recognized no taxa. Check taxonomy rank labels and lineage separators."
             )
+        row_totals = arr.sum(axis=1)
+        zero_rows = np.flatnonzero(row_totals <= 0)
+        if zero_rows.size:
+            raise ValueError(
+                f"Waypoint requires positive total abundance for every sample; zero-abundance rows: {zero_rows[:10].tolist()}."
+            )
+        token_ids = list(token_indices)
+        token_names = [str(tokenizer._convert_id_to_token(token_id)) for token_id in token_ids]
+        token_matrix = np.column_stack(
+            [arr[:, indices].sum(axis=1) for indices in token_indices.values()]
+        )
+        zero_coverage = np.flatnonzero(token_matrix.sum(axis=1) <= 0)
+        if zero_coverage.size:
+            raise ValueError(
+                f"Waypoint tokenizer recognized no nonzero taxa in samples at row indices {zero_coverage[:10].tolist()}."
+            )
+        matrix = pd.DataFrame(
+            token_matrix / row_totals[:, None],
+            index=[f"sample_{i}" for i in range(arr.shape[0])],
+            columns=token_names,
+        )
+        data = matrix_to_waypoint_df(
+            matrix,
+            taxonomy_format="full",
+            normalize=False,
+            drop_zeros=True,
+        )
         samples = tokenize_for_embedding(
             data,
             tokenizer,
@@ -1102,11 +1137,12 @@ class MGMEmbedding:
 
     def _matrix(self, arr: np.ndarray) -> pd.DataFrame:
         names = self._genus_names(arr.shape[1])
-        return pd.DataFrame(
+        matrix = pd.DataFrame(
             arr,
             index=[f"sample_{i}" for i in range(arr.shape[0])],
             columns=names,
         )
+        return matrix.T.groupby(level=0, sort=False).sum().T
 
     def fit(self, X: np.ndarray) -> MGMEmbedding:
         arr = _validate_matrix(X)
@@ -1140,7 +1176,11 @@ class MGMEmbedding:
         model, phylogeny_path = runtime
         matrix = self._matrix(arr)
         phylogeny_index = pd.read_csv(phylogeny_path, index_col=0).index.astype(str)
-        supported = set(matrix.columns.astype(str)).intersection(set(phylogeny_index))
+        supported = (
+            set(matrix.columns.astype(str))
+            & set(phylogeny_index)
+            & set(tokenizer.vocab)
+        )
         if not supported:
             examples = ", ".join(list(matrix.columns.astype(str)[:8]))
             raise ValueError(
@@ -1161,7 +1201,7 @@ class MGMEmbedding:
         with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
             corpus = MicroCorpus(
                 tokenizer=tokenizer,
-                abu=matrix,
+                abu=supported_matrix,
                 phylogeny_path=phylogeny_path,
                 max_len=self.max_length,
                 preprocess=True,
@@ -1638,6 +1678,7 @@ class MGM2Embedding:
                 self.revision,
                 self.source_revision,
                 self.resolutions,
+                "mllabiome-mgm2-taxonomy-v2",
             ),
         )
         self.feature_names_: list[str] | None = None
@@ -1749,6 +1790,7 @@ class MGM2Embedding:
             "model": self.model,
             "strategy": self.embedding_strategy,
             "top_k_otus": self.top_k_otus,
+            "taxonomy_adapter": "mllabiome-mgm2-taxonomy-v2",
             "checkpoint_sha256": _sha256_file(model_dir / "model.ckpt"),
             "config_sha256": _sha256_file(config),
             "reference_ntv3_sha256": _sha256_file(reference),
@@ -1796,7 +1838,10 @@ class MGM2Embedding:
             raise ValueError(
                 f"MGM2 received {count}/{arr.shape[0]} samples with zero total abundance."
             )
-        names = _feature_names(self.feature_names_, arr.shape[1])
+        names = [
+            _mgm2_taxon_name(value)
+            for value in _feature_names(self.feature_names_, arr.shape[1])
+        ]
         source_root = self._source_root()
         model_dir, _, reference, fallback = self._release_files()
         try:
@@ -1813,6 +1858,7 @@ class MGM2Embedding:
             output = tmp / "community_embeddings.npz"
             sample_ids = [f"sample_{i}" for i in range(arr.shape[0])]
             frame = pd.DataFrame(arr.T, index=names, columns=sample_ids)
+            frame = frame.groupby(level=0, sort=False).sum()
             frame.index.name = "feature_id"
             frame.to_csv(table)
             build_cmd = [

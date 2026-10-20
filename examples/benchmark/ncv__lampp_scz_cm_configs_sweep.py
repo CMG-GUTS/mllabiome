@@ -41,13 +41,13 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
-    ("phylum", ("phylum",)),
-    ("class", ("class",)),
-    ("order", ("order",)),
-    ("family", ("family",)),
-    ("genus", ("genus",)),
-    ("species", ("species",)),
-    ("strain", ("strain",)),
+    # ("phylum", ("phylum",)),
+    # ("class", ("class",)),
+    # ("order", ("order",)),
+    # ("family", ("family",)),
+    # ("genus", ("genus",)),
+    # ("species", ("species",)),
+    # ("strain", ("strain",)),
     ("raw", ("all",)),
 )
 
@@ -73,6 +73,29 @@ COUNT_TRANSFORMATIONS = (
     ),
 )
 
+
+# COUNT_TRANSFORMATIONS = (
+#     mll.WaypointEmbedding(
+#         model="outpost-bio/Waypoint-6m",
+#         pooling="last_token",
+#         taxonomy_format="full",
+#         resolutions=("genus",),
+#         batch_size=16,
+#         max_length=512,
+#         device=None,
+#         cache=True,
+#     ),
+#     mll.MGMEmbedding(
+#         taxonomy_format="full",
+#         resolutions=("genus",),
+#         batch_size=16,
+#         max_length=512,
+#         device=None,
+#         cache=True,
+#     ),
+# )
+
+
 MODELS = (
     # baselines
     # (
@@ -91,44 +114,44 @@ MODELS = (
     #     ),
     # ),
     # # default standard models
-    # (
-    #     "CB_default",
-    #     CatBoostClassifier(
-    #         random_seed=42,
-    #         thread_count=1,
-    #         verbose=False,
-    #         allow_writing_files=False,
-    #     ),
-    # ),
-    # (
-    #     "RF_default",
-    #     RandomForestClassifier(
-    #         random_state=42,
-    #     ),
-    # ),
-    # (
-    #     "LightGBM_default",
-    #     LGBMClassifier(
-    #         random_state=42,
-    #         n_jobs=1,
-    #         verbosity=-1,
-    #     ),
-    # ),
-    # (
-    #     "XGB_default",
-    #     XGBClassifier(
-    #         random_state=42,
-    #         n_jobs=1,
-    #         verbosity=0,
-    #         eval_metric="logloss",
-    #     ),
-    # ),
-    # (
-    #     "LR_default",
-    #     LogisticRegression(
-    #         random_state=42,
-    #     ),
-    # ),
+    (
+        "CB_default",
+        CatBoostClassifier(
+            random_seed=42,
+            thread_count=1,
+            verbose=False,
+            allow_writing_files=False,
+        ),
+    ),
+    (
+        "RF_default",
+        RandomForestClassifier(
+            random_state=42,
+        ),
+    ),
+    (
+        "LightGBM_default",
+        LGBMClassifier(
+            random_state=42,
+            n_jobs=1,
+            verbosity=-1,
+        ),
+    ),
+    (
+        "XGB_default",
+        XGBClassifier(
+            random_state=42,
+            n_jobs=1,
+            verbosity=0,
+            eval_metric="logloss",
+        ),
+    ),
+    (
+        "LR_default",
+        LogisticRegression(
+            random_state=42,
+        ),
+    ),
     # (
     #     "LR_tuned_scaled",
     #     GridSearchCV(
@@ -188,34 +211,34 @@ MODELS = (
     #         verbose=False,
     #     ),
     # ),
-    # (
-    #     "Causilo_default",
-    #     mll.CausiloClassifier(
-    #         random_state=42,
-    #     ),
-    # ),
+    (
+        "Causilo_default",
+        mll.CausiloClassifier(
+            random_state=42,
+        ),
+    ),
     # (
     #     "TabDPT_default",
     #     mll.TabDPTClassifier(
     #         random_state=42,
     #     ),
     # ),
-    # (
-    #     "KumoTabular_small",
-    #     mll.KumoTabularClassifier(
-    #         size="small",
-    #         device="cpu",
-    #         random_state=42,
-    #     ),
-    # ),
     (
-        "KumoTabular_medium",
+        "KumoTabular_small",
         mll.KumoTabularClassifier(
-            size="medium",
+            size="small",
             device="cpu",
             random_state=42,
         ),
     ),
+    # (
+    #     "KumoTabular_medium",
+    #     mll.KumoTabularClassifier(
+    #         size="medium",
+    #         device="cpu",
+    #         random_state=42,
+    #     ),
+    # ),
     # (
     #     "KumoTabular_large",
     #     mll.KumoTabularClassifier(

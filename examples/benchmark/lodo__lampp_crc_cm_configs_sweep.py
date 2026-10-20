@@ -43,9 +43,9 @@ RESOLUTIONS = (
     # ("order", ("order",)),
     # ("family", ("family",)),
     # ("genus", ("genus",)),
-    ("species", ("species",)),
-    ("strain", ("strain",)),
-    # ("raw", ("all",)),
+    # ("species", ("species",)),
+    # ("strain", ("strain",)),
+    ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
@@ -55,19 +55,19 @@ COUNT_TRANSFORMATIONS = (
     #     "relative_abundance",
     #     composition_scope="rank-wise",
     # ),
-    mll.Transformation(
-        "arcsine_sqrt",
-        composition_scope="rank-wise",
-    ),
-    # mll.Transformation("clr", composition_scope="rank-wise"),
     # mll.Transformation(
-    #     "hellinger",
+    #     "arcsine_sqrt",
     #     composition_scope="rank-wise",
     # ),
+    # mll.Transformation("clr", composition_scope="rank-wise"),
     mll.Transformation(
-        "log10",
+        "hellinger",
         composition_scope="rank-wise",
     ),
+    # mll.Transformation(
+    #     "log10",
+    #     composition_scope="rank-wise",
+    # ),
 )
 
 MODELS = (
@@ -88,44 +88,44 @@ MODELS = (
     #     ),
     # ),
     # # default standard models
-    # (
-    #     "CB_default",
-    #     CatBoostClassifier(
-    #         random_seed=42,
-    #         thread_count=1,
-    #         verbose=False,
-    #         allow_writing_files=False,
-    #     ),
-    # ),
-    # (
-    #     "RF_default",
-    #     RandomForestClassifier(
-    #         random_state=42,
-    #     ),
-    # ),
-    # (
-    #     "LightGBM_default",
-    #     LGBMClassifier(
-    #         random_state=42,
-    #         n_jobs=1,
-    #         verbosity=-1,
-    #     ),
-    # ),
-    # (
-    #     "XGB_default",
-    #     XGBClassifier(
-    #         random_state=42,
-    #         n_jobs=1,
-    #         verbosity=0,
-    #         eval_metric="logloss",
-    #     ),
-    # ),
-    # (
-    #     "LR_default",
-    #     LogisticRegression(
-    #         random_state=42,
-    #     ),
-    # ),
+    (
+        "CB_default",
+        CatBoostClassifier(
+            random_seed=42,
+            thread_count=1,
+            verbose=False,
+            allow_writing_files=False,
+        ),
+    ),
+    (
+        "RF_default",
+        RandomForestClassifier(
+            random_state=42,
+        ),
+    ),
+    (
+        "LightGBM_default",
+        LGBMClassifier(
+            random_state=42,
+            n_jobs=1,
+            verbosity=-1,
+        ),
+    ),
+    (
+        "XGB_default",
+        XGBClassifier(
+            random_state=42,
+            n_jobs=1,
+            verbosity=0,
+            eval_metric="logloss",
+        ),
+    ),
+    (
+        "LR_default",
+        LogisticRegression(
+            random_state=42,
+        ),
+    ),
     # (
     #     "TabPFN",
     #     mll.TabPFNClassifier(
@@ -189,12 +189,12 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
-    # (
-    #     "Causilo_default",
-    #     mll.CausiloClassifier(
-    #         random_state=42,
-    #     ),
-    # ),
+    (
+        "Causilo_default",
+        mll.CausiloClassifier(
+            random_state=42,
+        ),
+    ),
     # (
     #     "KumoTabular_small",
     #     mll.KumoTabularClassifier(
@@ -211,14 +211,14 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
-    (
-        "KumoTabular_large",
-        mll.KumoTabularClassifier(
-            size="large",
-            device="cpu",
-            random_state=42,
-        ),
-    ),
+    # (
+    #     "KumoTabular_large",
+    #     mll.KumoTabularClassifier(
+    #         size="large",
+    #         device="cpu",
+    #         random_state=42,
+    #     ),
+    # ),
 )
 
 
@@ -230,23 +230,23 @@ GATE = mll.QualificationGate(
 
 ENSEMBLE = mll.Ensemble(
     include_inactive=True,
-    max_sizes=(3,),
+    max_sizes=(10,),
     selection_strategies=(
         "top_k",
         "best_per_resolution",
         "best_per_learner_type",
-        # "performance_diversity",
+        "performance_diversity",
         "caruana",
-        # "bagged_caruana",
-        # "super_learner",
-        # "safe_super_learner",
+        "bagged_caruana",
+        "super_learner",
+        "safe_super_learner",
     ),
     aggregation_strategies=(
         "mean_proba",
         "weighted_mean_proba",
-        # "median_proba",
-        # "logistic_stacking",
-        # "rf_stacking",
+        "median_proba",
+        "logistic_stacking",
+        "rf_stacking",
     ),
     optimize_metric="log_loss",
 )

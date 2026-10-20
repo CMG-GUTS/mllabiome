@@ -17,7 +17,7 @@ from ._evaluation_protocols import is_lodo_protocol
 from .baseline_rf import resolve_baseline_rf_configs
 from .configs_sweep import Sweep
 from .console import info, path_table, phase_progress, stage, success
-from .metrics import canonical_metric_name, compute_metrics, metric_is_loss
+from .metrics import canonical_metric_name, metric_is_loss
 from .report_compute import run_compute_accounting
 from .report_statistics import run_report_statistics
 from .storage import read_table, table_exists, write_table
@@ -583,7 +583,12 @@ def _performance_methodology_html(protocol: Any, n_bootstrap: int = 2000) -> str
         "Precision and recall are macro-averaged across classes."
     )
 
-    return f"<p>{html.escape(uncertainty)}{html.escape(metrics)}</p>"
+    qualification = (
+        " MPMA-B and MPMA-E use a single final specification selected from all development inner-validation evidence, "
+        "evaluated retrospectively using the saved held-out predictions of its constituent pipeline or members. "
+        "These fixed-specification cross-validation estimates can be optimistic after selection and are not independent external validation."
+    )
+    return f"<p>{html.escape(uncertainty)}{html.escape(metrics)}{html.escape(qualification)}</p>"
 
 
 def _inferential_layer_html(protocol: Any, metric: Any) -> str:
@@ -610,7 +615,11 @@ def _inferential_layer_html(protocol: Any, metric: Any) -> str:
             "For higher-is-better metrics, a positive difference favors Strategy A. For loss metrics, a negative difference favors Strategy A."
         )
 
-    return f"<p><strong>Inferential layer.</strong> {body}</p>"
+    qualification = (
+        " Comparisons involving retrospectively selected fixed MPMA-B or MPMA-E specifications are exploratory, "
+        "because selection reused evidence from the development cohort; p-values and intervals do not correct for this selection."
+    )
+    return f"<p><strong>Inferential layer.</strong> {body}{qualification}</p>"
 
 
 def _top_mpma_heading(table: pd.DataFrame) -> str:
@@ -1151,139 +1160,17 @@ def _selected_json(root: Path) -> dict[str, Any]:
 
 
 def _best_mpma_row(root: Path) -> dict[str, Any]:
+    from .fixed_final_performance import fixed_final_outer_performance
 
-    nested = _read_json(root / "tables" / "mpma_b_strategy_summary.json")
-
-    if isinstance(nested, dict) and nested:
-        return nested
-
-    selected = _selected_json(root)
-
-    best = (
-        selected.get("inner_val_best_mpma")
-        or selected.get("inner_val_best_individual")
-        or {}
-    )
-
-    return best if isinstance(best, dict) else {}
-
-
-def _ensemble_outer_metrics_from_predictions(
-    root: Path, ensemble_config_id: str
-) -> dict[str, Any]:
-
-    path = root / "ensembling" / "ensemble_predictions.parquet"
-
-    if not table_exists(path) or not str(ensemble_config_id):
-        return {}
-
-    df = _read_table(path)
-
-    if (
-        df.empty
-        or "ensemble_config_id" not in df.columns
-        or "outer_split_key" not in df.columns
-    ):
-        return {}
-
-    df = df[df["ensemble_config_id"].astype(str).eq(str(ensemble_config_id))].copy()
-
-    if df.empty:
-        return {}
-
-    pcols = [c for c in df.columns if c.startswith("proba_")]
-
-    if not pcols or "y_true" not in df.columns or "y_pred" not in df.columns:
-        return {}
-
-    classes = np.arange(len(pcols), dtype=int)
-
-    fold_rows: list[dict[str, float]] = []
-
-    for _, sub in df.groupby("outer_split_key", sort=False):
-        yy = pd.to_numeric(sub["y_true"], errors="coerce")
-
-        mask = yy.notna()
-
-        y_true = yy.loc[mask].astype(int).to_numpy()
-
-        y_pred = (
-            pd.to_numeric(sub.loc[mask, "y_pred"], errors="coerce")
-            .fillna(0)
-            .astype(int)
-            .to_numpy()
-        )
-
-        proba = (
-            sub.loc[mask, pcols]
-            .apply(pd.to_numeric, errors="coerce")
-            .to_numpy(dtype=float)
-        )
-
-        if len(y_true) == 0 or proba.shape[0] != len(y_true):
-            continue
-
-        fold_rows.append(compute_metrics(y_true, y_pred, proba, classes))
-
-    if not fold_rows:
-        return {}
-
-    tab = pd.DataFrame(fold_rows)
-
-    out: dict[str, Any] = {}
-
-    for col in tab.columns:
-        vals = (
-            pd.to_numeric(tab[col], errors="coerce")
-            .replace([np.inf, -np.inf], np.nan)
-            .dropna()
-        )
-
-        if vals.empty:
-            continue
-
-        out[f"outer_{col}_mean"] = float(vals.mean())
-
-        out[f"outer_{col}_std"] = float(vals.std(ddof=1)) if len(vals) > 1 else 0.0
-
-        out[f"outer_{col}_count"] = len(vals)
-
-        out[f"{col}_mean"] = out[f"outer_{col}_mean"]
-
-        out[f"{col}_std"] = out[f"outer_{col}_std"]
-
-        out[f"{col}_count"] = out[f"outer_{col}_count"]
-
-    return out
+    _, summary = fixed_final_outer_performance(root, "MPMA-B", persist=True)
+    return summary
 
 
 def _ensemble_row(root: Path) -> dict[str, Any]:
+    from .fixed_final_performance import fixed_final_outer_performance
 
-    nested = _read_json(root / "ensembling" / "mpma_e_strategy_summary.json")
-
-    if isinstance(nested, dict) and nested:
-        return nested
-
-    selected = _selected_json(root)
-
-    ens = (
-        selected.get("inner_val_best_mpmas_ensemble")
-        or selected.get("inner_val_best_ensemble")
-        or {}
-    )
-
-    if not isinstance(ens, dict):
-        return {}
-
-    row = dict(ens)
-
-    eid = str(row.get("ensemble_config_id", ""))
-
-    for k, v in _ensemble_outer_metrics_from_predictions(root, eid).items():
-        if k not in row or not np.isfinite(_safe_float(row.get(k))):
-            row[k] = v
-
-    return row
+    _, summary = fixed_final_outer_performance(root, "MPMA-E", persist=True)
+    return summary
 
 
 def _ensemble_final_candidate(root: Path) -> dict[str, Any]:
@@ -1956,7 +1843,7 @@ def _procedure_table(sweep: Sweep, root: Path) -> pd.DataFrame:
         ],
         [
             "Selection rule",
-            "Reported performance uses held-out outer evaluation predictions.",
+            "MPMA-B and MPMA-E show retrospective outer-fold scores for one final selected specification each; selection may make these scores optimistic. Independent external performance must be evaluated separately.",
         ],
     ]
 

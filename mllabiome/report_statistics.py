@@ -678,6 +678,10 @@ def _statistics_fingerprint(
         root / "tables" / "mpma_b_outer_selection.parquet",
         root / "ensembling" / "ensemble_predictions.parquet",
         root / "ensembling" / "mpma_e_outer_selection.parquet",
+        root / "tables" / "mpma_b_final_candidate.json",
+        root / "ensembling" / "mpma_e_final_candidate.json",
+        root / "tables" / "mpma_b_final_outer_predictions.parquet",
+        root / "ensembling" / "mpma_e_final_outer_predictions.parquet",
         root / "configs.parquet",
         root / "inner_results" / "inner_results.parquet",
         root / "tables" / "qualification_gate.parquet",
@@ -697,7 +701,7 @@ def _statistics_fingerprint(
             float(value) for value in decision_curve_thresholds
         ],
         "files": [_file_signature(path) for path in paths],
-        "schema_version": 15,
+        "schema_version": 16,
     }
     text = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -930,7 +934,7 @@ def run_report_statistics(
     write_table(oof_decision_curve_path, advanced["decision_curve"])
     write_table(oof_roc_curve_path, advanced["roc_curve"])
     oof_manifest = {
-        "schema_version": 12,
+        "schema_version": 13,
         "protocol": str(protocol),
         "strategies": list(frames),
         "n_classes": int(advanced["n_classes"]),
@@ -981,11 +985,12 @@ def run_report_statistics(
         "evaluation_predictions": {
             strategy: evaluation_prediction_metadata(strategy) for strategy in frames
         },
-        "final_refit_specifications_excluded_from_performance_estimation": True,
+        "final_refit_specifications_excluded_from_performance_estimation": False,
+        "fixed_final_outer_cv_post_selection_unbiased": False,
     }
     dump_json_standard(oof_manifest, oof_manifest_path)
     manifest = {
-        "schema_version": 12,
+        "schema_version": 13,
         "fingerprint": fingerprint,
         "protocol": str(protocol),
         "strategies": list(frames),
@@ -1008,7 +1013,8 @@ def run_report_statistics(
         "evaluation_predictions": {
             strategy: evaluation_prediction_metadata(strategy) for strategy in frames
         },
-        "final_refit_specifications_excluded_from_performance_estimation": True,
+        "final_refit_specifications_excluded_from_performance_estimation": False,
+        "fixed_final_outer_cv_post_selection_unbiased": False,
     }
     dump_json_standard(manifest, manifest_path)
     if progress_callback is not None:

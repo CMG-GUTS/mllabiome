@@ -3350,6 +3350,9 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
         final_ensemble.get("max_size", report_final_ensemble["ensemble_size"])
     )
     dump_json_standard(report_final_ensemble, final_path)
+    from .fixed_final_performance import fixed_final_outer_performance
+
+    fixed_final_outer_performance(root, "MPMA-E", persist=True)
     selected = {
         "inner_val_best_mpma": final_mpma,
         "inner_val_best_mpmas_ensemble": final_ensemble,
@@ -3413,6 +3416,9 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
         "mpma_e_candidates": candidate_path,
         "mpma_e_summary": summary_path,
         "mpma_e_final_candidate": final_path,
+        "mpma_e_final_outer_predictions": ensemble_dir / "mpma_e_final_outer_predictions.parquet",
+        "mpma_e_final_outer_results": ensemble_dir / "mpma_e_final_outer_results.parquet",
+        "mpma_e_final_outer_summary": ensemble_dir / "mpma_e_final_outer_summary.json",
         "mpma_e_selection_resources": resource_path,
         **mpma_e_outputs,
     }
