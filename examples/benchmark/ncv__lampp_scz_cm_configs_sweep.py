@@ -5,7 +5,7 @@ from pathlib import Path
 from catboost import CatBoostClassifier
 from curated_microbiota.collections import lampp_scz
 from lightgbm import LGBMClassifier
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import Pipeline
@@ -153,34 +153,6 @@ MODELS = (
         ),
     ),
     # (
-    #     "LR_tuned_scaled",
-    #     GridSearchCV(
-    #         estimator=Pipeline(
-    #             [
-    #                 ("scaler", StandardScaler(with_mean=False)),
-    #                 (
-    #                     "lr",
-    #                     LogisticRegression(
-    #                         solver="saga",
-    #                         max_iter=5000,
-    #                         tol=1e-3,
-    #                         random_state=42,
-    #                     ),
-    #                 ),
-    #             ]
-    #         ),
-    #         param_grid={
-    #             "lr__C": [0.03, 0.3, 3.0],
-    #             "lr__l1_ratio": [0.0, 0.5, 1.0],
-    #         },
-    #         scoring="neg_log_loss",
-    #         cv=3,
-    #         refit=True,
-    #         n_jobs=1,
-    #         error_score="raise",
-    #     ),
-    # ),
-    # (
     #     "TabPFN",
     #     mll.TabPFNClassifier(
     #         n_estimators="auto",
@@ -211,26 +183,26 @@ MODELS = (
     #         verbose=False,
     #     ),
     # ),
-    (
-        "Causilo_default",
-        mll.CausiloClassifier(
-            random_state=42,
-        ),
-    ),
+    # (
+    #     "Causilo_default",
+    #     mll.CausiloClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
     # (
     #     "TabDPT_default",
     #     mll.TabDPTClassifier(
     #         random_state=42,
     #     ),
     # ),
-    (
-        "KumoTabular_small",
-        mll.KumoTabularClassifier(
-            size="small",
-            device="cpu",
-            random_state=42,
-        ),
-    ),
+    # (
+    #     "KumoTabular_small",
+    #     mll.KumoTabularClassifier(
+    #         size="small",
+    #         device="cpu",
+    #         random_state=42,
+    #     ),
+    # ),
     # (
     #     "KumoTabular_medium",
     #     mll.KumoTabularClassifier(
@@ -302,6 +274,68 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
+
+
+(
+    "ElasticNet_tuned",
+    GridSearchCV(
+        estimator=Pipeline([
+            ("scaler", StandardScaler(with_mean=False)),
+            ("lr", LogisticRegression(
+                solver="saga",
+                max_iter=10000,
+                tol=1e-4,
+                random_state=42,
+            )),
+        ]),
+        param_grid={
+            "lr__C": [0.01, 0.1, 1.0, 10.0],
+            "lr__l1_ratio": [0.25, 0.5, 0.75],
+        },
+        scoring="neg_log_loss",
+        cv=3,
+        refit=True,
+        n_jobs=1,
+        error_score="raise",
+    ),
+),
+
+
+(
+    "LASSO_tuned",
+    GridSearchCV(
+        estimator=Pipeline(
+            [
+                ("scaler", StandardScaler(with_mean=False)),
+                (
+                    "lr",
+                    LogisticRegression(
+                        penalty="l1",
+                        solver="saga",
+                        max_iter=10000,
+                        tol=1e-4,
+                        random_state=42,
+                    ),
+                ),
+            ]
+        ),
+        param_grid={
+            "lr__C": [0.01, 0.1, 1.0, 10.0],
+        },
+        scoring="neg_log_loss",
+        cv=3,
+        refit=True,
+        n_jobs=1,
+        error_score="raise",
+    ),
+),
+(
+    "ExtraTrees_default",
+    ExtraTreesClassifier(
+        random_state=42,
+    ),
+),
+
 )
 
 

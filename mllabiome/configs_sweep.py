@@ -706,6 +706,8 @@ def _lodo_feature_pair(
 
 
 def _inner_validation_label(plan: Evaluation) -> str | int:
+    if plan.outer_only:
+        return "disabled (outer folds only)"
     if not is_lodo_protocol(plan.protocol):
         return plan.inner_folds
     mode = str(plan.inner_grouping).strip().lower()
@@ -2212,9 +2214,10 @@ def _publish_completed_config(
     if not outer_keys:
         return False
     inner = frames["inner_metrics"]
-    if not inner_keys.issubset(
-        {str(key) for key, cid in _done_pairs(inner, "inner_key") if cid == config_id}
-    ):
+    observed_inner = {
+        str(key) for key, cid in _done_pairs(inner, "inner_key") if cid == config_id
+    }
+    if not inner_keys.issubset(observed_inner):
         return False
     outer = frames["outer_metrics"]
     qualified = frames["qualification"]
@@ -2270,7 +2273,12 @@ def _publish_completed_config(
         "metric": str(metric),
         "outer_count": len(outer_done),
         "expected_outer_count": len(outer_keys),
-        "inner_count": len(inner_keys),
+        "inner_count": len(observed_inner),
+        "evaluation_mode": (
+            "nested"
+            if inner_keys and inner_keys.issubset(observed_inner)
+            else "outer_only" if not observed_inner else "partial_inner"
+        ),
         "score": score,
         "configuration": config.iloc[0].where(pd.notna(config.iloc[0]), None).to_dict(),
         "hardware": machine_profile(),
@@ -2300,6 +2308,8 @@ def _recover_committed_configs(
     inner_splits_by_outer: Mapping[str, Sequence[Any]],
     metric: str,
     gate_enabled: bool,
+    *,
+    require_inner: bool = True,
 ) -> None:
     if not config_ids or not (root / "configs.db").exists():
         return
@@ -2315,11 +2325,14 @@ def _recover_committed_configs(
             )
         }
     expected_outer = {str(split["split_key"]) for split in outer_splits}
-    expected_inner = {
-        f"{str(split['split_key'])}__i{i}"
-        for split in outer_splits
-        for i in range(len(inner_splits_by_outer[str(split["split_key"])]))
-    }
+    expected_inner = (
+        {
+            f"{str(split['split_key'])}__i{i}"
+            for split in outer_splits
+            for i in range(len(inner_splits_by_outer[str(split["split_key"])]))
+        }
+        if require_inner else set()
+    )
     indexed = set(indexed_config_ids(root))
     for cid in sorted(config_ids & pending):
         if cid in indexed and (root / "configs" / f"{cid}.parquet").exists():
@@ -2354,15 +2367,19 @@ def _run_evaluation_tasks(
     context: _SweepEvaluationContext,
     metric: str,
     gate_enabled: bool,
+    require_inner: bool = True,
 ) -> _EvaluationRows:
     rows = _EvaluationRows.empty()
     remaining: dict[str, int] = {}
     expected_outer = {str(item["split_key"]) for item in context.outer_splits}
-    expected_inner = {
-        f"{str(item['split_key'])}__i{index}"
-        for item in context.outer_splits
-        for index in range(len(context.inner_splits_by_outer[str(item["split_key"])]))
-    }
+    expected_inner = (
+        {
+            f"{str(item['split_key'])}__i{index}"
+            for item in context.outer_splits
+            for index in range(len(context.inner_splits_by_outer[str(item["split_key"])]))
+        }
+        if require_inner else set()
+    )
     for task in tasks:
         remaining[task.config_id] = remaining.get(task.config_id, 0) + 1
     leaders = top_configs(root, metric, k=2147483647, loss=metric_is_loss(metric))
@@ -2450,6 +2467,7 @@ def _evaluation_run_summary(
         "logical_cpus": execution.logical_cpus,
         "physical_cpus": execution.physical_cpus,
         "n_jobs_completed": int(n_jobs_completed),
+        "evaluation_mode": "outer_only" if sweep.evaluation.outer_only else "nested",
         "n_outer_rows_added": len(rows.outer_metrics),
         "n_inner_rows_added": len(rows.inner_metrics),
         "n_qualification_rows_added": len(rows.qualification),
@@ -2627,6 +2645,7 @@ def _prepare_regression_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
             inner_splits_by_outer,
             str(sweep.evaluation.optimize_metric),
             bool(sweep.gate.enabled),
+            require_inner=not sweep.evaluation.outer_only,
         )
     current_outer_keys = {str(split["split_key"]) for split in outer_splits}
     existing = _load_existing_evaluation(
@@ -2752,6 +2771,7 @@ def _prepare_classification_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
             inner_splits_by_outer,
             str(sweep.evaluation.optimize_metric),
             bool(sweep.gate.enabled),
+            require_inner=not sweep.evaluation.outer_only,
         )
     current_outer_keys = {str(split["split_key"]) for split in outer_splits}
     existing = _load_existing_evaluation(
@@ -2817,7 +2837,10 @@ def _build_regression_tasks(
         test_idx = np.asarray(split["test_idx"], dtype=int)
         if len(train_idx) == 0 or len(test_idx) == 0:
             continue
-        inner_splits = context.inner_splits_by_outer.get(split_key, [])
+        inner_splits = (
+            () if sweep.evaluation.outer_only
+            else context.inner_splits_by_outer.get(split_key, [])
+        )
         inner_keys = [
             f"{split_key}__i{inner_no}" for inner_no in range(len(inner_splits))
         ]
@@ -2922,7 +2945,10 @@ def _build_classification_tasks(
         test_idx = np.asarray(split["test_idx"], dtype=int)
         if len(np.unique(y[train_idx])) < 2 or len(test_idx) == 0:
             continue
-        inner_splits = context.inner_splits_by_outer.get(split_key, [])
+        inner_splits = (
+            () if sweep.evaluation.outer_only
+            else context.inner_splits_by_outer.get(split_key, [])
+        )
         inner_keys = [
             f"{split_key}__i{inner_no}" for inner_no in range(len(inner_splits))
         ]
@@ -3145,6 +3171,7 @@ def _finish_evaluation(
         context=context,
         metric=canonical_metric_name(str(sweep.evaluation.optimize_metric)),
         gate_enabled=bool(sweep.gate.enabled),
+        require_inner=not sweep.evaluation.outer_only,
     )
     _write_selection_artifacts(context.root, sweep, class_labels)
     elapsed = time.perf_counter() - started
@@ -3246,7 +3273,14 @@ def _write_multi_target_summary(
 
 
 def evaluate(sweep: Sweep) -> dict[str, Path]:
+    if sweep.evaluation.outer_only and sweep.gate.enabled:
+        raise ValueError(
+            "outer_only=True requires QualificationGate(enabled=False): "
+            "a qualification score cannot be computed without inner folds."
+        )
     if sweep.uses_modalities:
+        if sweep.evaluation.outer_only:
+            raise NotImplementedError("outer_only currently supports non-multimodal sweeps only.")
         from .multimodal_sweep import evaluate_modality_sweep
 
         return evaluate_modality_sweep(sweep)

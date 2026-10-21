@@ -44,8 +44,8 @@ RESOLUTIONS = (
     # ("family", ("family",)),
     # ("genus", ("genus",)),
     # ("species", ("species",)),
-    # ("strain", ("strain",)),
-    ("raw", ("all",)),
+    ("strain", ("strain",)),
+    # ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
@@ -149,14 +149,14 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
-    # (
-    #     "KumoTabular_large",
-    #     mll.KumoTabularClassifier(
-    #         size="large",
-    #         device="cpu",
-    #         random_state=42,
-    #     ),
-    # ),
+    (
+        "KumoTabular_large",
+        mll.KumoTabularClassifier(
+            size="large",
+            device="cpu",
+            random_state=42,
+        ),
+    ),
     # (
     #     "LimiX2_default",
     #     mll.LimiX2Classifier(
@@ -189,12 +189,12 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
-    (
-        "Causilo_default",
-        mll.CausiloClassifier(
-            random_state=42,
-        ),
-    ),
+    # (
+    #     "Causilo_default",
+    #     mll.CausiloClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
     # (
     #     "KumoTabular_small",
     #     mll.KumoTabularClassifier(
@@ -216,6 +216,18 @@ MODELS = (
     #     mll.KumoTabularClassifier(
     #         size="large",
     #         device="cpu",
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "RealMLP_TD_default",
+    #     mll.RealMLPClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "TabICLv2_default",
+    #     mll.TabICLClassifier(
     #         random_state=42,
     #     ),
     # ),

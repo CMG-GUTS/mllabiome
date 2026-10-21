@@ -149,6 +149,8 @@ class Evaluation:
     ] = "repeated_nested_cv"
     outer_folds: int = 5
     inner_folds: int = 3
+                                                                                           
+    outer_only: bool = False
     repeats: int = 2
     random_state: int = 42
     split_manifest: str | Path | None = None
