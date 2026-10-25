@@ -2277,7 +2277,9 @@ def _publish_completed_config(
         "evaluation_mode": (
             "nested"
             if inner_keys and inner_keys.issubset(observed_inner)
-            else "outer_only" if not observed_inner else "partial_inner"
+            else "outer_only"
+            if not observed_inner
+            else "partial_inner"
         ),
         "score": score,
         "configuration": config.iloc[0].where(pd.notna(config.iloc[0]), None).to_dict(),
@@ -2331,7 +2333,8 @@ def _recover_committed_configs(
             for split in outer_splits
             for i in range(len(inner_splits_by_outer[str(split["split_key"])]))
         }
-        if require_inner else set()
+        if require_inner
+        else set()
     )
     indexed = set(indexed_config_ids(root))
     for cid in sorted(config_ids & pending):
@@ -2376,9 +2379,12 @@ def _run_evaluation_tasks(
         {
             f"{str(item['split_key'])}__i{index}"
             for item in context.outer_splits
-            for index in range(len(context.inner_splits_by_outer[str(item["split_key"])]))
+            for index in range(
+                len(context.inner_splits_by_outer[str(item["split_key"])])
+            )
         }
-        if require_inner else set()
+        if require_inner
+        else set()
     )
     for task in tasks:
         remaining[task.config_id] = remaining.get(task.config_id, 0) + 1
@@ -2397,8 +2403,10 @@ def _run_evaluation_tasks(
             for split in context.outer_splits
             for config_id in context.current_config_ids
             if _outer_pair_complete(
-                str(split["split_key"]), str(config_id),
-                context.outer_done, context.qualification_map,
+                str(split["split_key"]),
+                str(config_id),
+                context.outer_done,
+                context.qualification_map,
             )
         },
         classification=str(context.dataset.task) != "regression",
@@ -2838,7 +2846,8 @@ def _build_regression_tasks(
         if len(train_idx) == 0 or len(test_idx) == 0:
             continue
         inner_splits = (
-            () if sweep.evaluation.outer_only
+            ()
+            if sweep.evaluation.outer_only
             else context.inner_splits_by_outer.get(split_key, [])
         )
         inner_keys = [
@@ -2946,7 +2955,8 @@ def _build_classification_tasks(
         if len(np.unique(y[train_idx])) < 2 or len(test_idx) == 0:
             continue
         inner_splits = (
-            () if sweep.evaluation.outer_only
+            ()
+            if sweep.evaluation.outer_only
             else context.inner_splits_by_outer.get(split_key, [])
         )
         inner_keys = [
@@ -3139,7 +3149,9 @@ def _reuse_completed_evaluation(
     success(message)
     _write_selection_artifacts(context.root, sweep, class_labels)
     metric = canonical_metric_name(str(sweep.evaluation.optimize_metric))
-    ranked = top_configs(context.root, metric, k=2147483647, loss=metric_is_loss(metric))
+    ranked = top_configs(
+        context.root, metric, k=2147483647, loss=metric_is_loss(metric)
+    )
     evaluation_leaders(
         context.root,
         metric,
@@ -3192,12 +3204,15 @@ def _finish_evaluation(
         f"added {len(rows.outer_metrics):,} outer rows and {len(rows.inner_metrics):,} inner rows"
     )
     metric = canonical_metric_name(str(sweep.evaluation.optimize_metric))
-    ranked = top_configs(context.root, metric, k=2147483647, loss=metric_is_loss(metric))
+    ranked = top_configs(
+        context.root, metric, k=2147483647, loss=metric_is_loss(metric)
+    )
     evaluation_leaders(
         context.root,
         metric,
         ranked,
-        latest_config_id=rows.latest_config_id or latest_ranked_config(context.root, metric),
+        latest_config_id=rows.latest_config_id
+        or latest_ranked_config(context.root, metric),
         classification=task != "regression",
     )
     outputs = _existing_outputs(context.root)
@@ -3280,7 +3295,9 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
         )
     if sweep.uses_modalities:
         if sweep.evaluation.outer_only:
-            raise NotImplementedError("outer_only currently supports non-multimodal sweeps only.")
+            raise NotImplementedError(
+                "outer_only currently supports non-multimodal sweeps only."
+            )
         from .multimodal_sweep import evaluate_modality_sweep
 
         return evaluate_modality_sweep(sweep)

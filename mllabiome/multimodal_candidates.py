@@ -348,6 +348,13 @@ def _materialize_modality_representation(
         X, names, feature_blocks = materialize_mpdr_with_blocks(ds, selector)
         return np.asarray(X, dtype=np.float32), list(names), feature_blocks
     all_names = list(ds.feature_names_by_level["all"])
+    if len(selector) == 1 and selector[0].startswith("prefix:"):
+        prefix = selector[0].removeprefix("prefix:")
+        if not prefix:
+            raise ValueError("Representation feature prefix must not be empty")
+        selector = tuple(name for name in all_names if name.startswith(prefix))
+        if not selector:
+            raise ValueError(f"No features match representation prefix {prefix!r}")
     index = {name: i for i, name in enumerate(all_names)}
     missing = [name for name in selector if name not in index]
     if missing:
@@ -391,6 +398,8 @@ def _prepare_candidate_pair_details(
     random_state,
     transformation_factory_builder,
     lodo_feature_pair,
+    y_train=None,
+    task=None,
 ):
     tr_blocks = {}
     te_blocks = {}
@@ -436,10 +445,19 @@ def _prepare_candidate_pair_details(
         modality_sets=spec.integration.modality_sets,
         min_modalities=spec.integration.min_modalities,
         max_modalities=spec.integration.max_modalities,
+        sparsity=spec.integration.sparsity,
+        n_neighbors=spec.integration.n_neighbors,
+        n_iterations=spec.integration.n_iterations,
+        mofa_max_iter=spec.integration.mofa_max_iter,
     )
     model = IntegrationModel(integration, random_state=random_state)
     Xtr, Xte, coords = model.fit_transform_pair(
-        tr_blocks, te_blocks, coordinate_names, coordinate_metadata
+        tr_blocks,
+        te_blocks,
+        coordinate_names,
+        coordinate_metadata,
+        y_train=y_train,
+        task=task,
     )
     source_model = IntegrationModel(
         Integration("early_concat"), random_state=random_state
@@ -476,6 +494,8 @@ def _prepare_candidate_pair(
     random_state,
     transformation_factory_builder,
     lodo_feature_pair,
+    y_train=None,
+    task=None,
 ):
     details = _prepare_candidate_pair_details(
         spec,
@@ -487,6 +507,8 @@ def _prepare_candidate_pair(
         random_state,
         transformation_factory_builder,
         lodo_feature_pair,
+        y_train=y_train,
+        task=task,
     )
     return details["X_train"], details["X_test"], details["coordinates"]
 

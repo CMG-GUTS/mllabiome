@@ -51,6 +51,30 @@ def _cleanup_explainability_cache(root: Path) -> None:
 
 
 def _finalize_explainability(sweep: Sweep, outputs: dict[str, Path]) -> dict[str, Path]:
+    from .brain.traceability import annotate_saved_explanations
+
+    outputs = {**outputs, **annotate_saved_explanations(sweep)}
+    if getattr(sweep, "brain", None) is not None:
+        from .brain.representation_explainability import (
+            annotate_saved_brain_representations,
+        )
+
+        outputs.update(annotate_saved_brain_representations(sweep))
+    anatomical = getattr(sweep.explainability, "anatomical_traceability", None)
+    if anatomical is not None:
+        from .brain.anatomical_traceability import run_anatomical_traceability
+
+        outputs.update(run_anatomical_traceability(sweep, anatomical))
+    settings = getattr(sweep, "brain_traceability", None)
+    if settings is not None:
+        from .brain.explanation import (
+            BrainTraceabilityConfig,
+            trace_explained_brain_features,
+        )
+
+        if not isinstance(settings, BrainTraceabilityConfig):
+            raise TypeError("Sweep.brain_traceability requires BrainTraceabilityConfig")
+        outputs.update(trace_explained_brain_features(sweep, settings))
     if not bool(getattr(sweep.explainability, "keep_cache", False)):
         _cleanup_explainability_cache(Path(sweep.root()))
         if isinstance(outputs, dict):

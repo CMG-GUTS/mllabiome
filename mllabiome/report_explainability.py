@@ -823,6 +823,32 @@ def _explainability_report_blocks(
                 + "</p>"
             )
 
+        anatomical_figure = (
+            target_dir / "anatomical_traceability" / "network_to_anatomy.svg"
+        )
+        if anatomical_figure.exists():
+            parts.append("<h4>Anatomical traceability</h4>")
+            parts.append(
+                "<p>Selected BrainHarmonix-F embedding coordinates are linked to Schaefer-400 cortical parcels by within-subject ROI-replacement sensitivity. The connections represent the change in each frozen embedding coordinate after replacing a regional time series, not neural connectivity, direct causation, or attribution to the downstream outcome. Only the strongest displayed links are shown; full regional and subject-level estimates and sampling details are stored as traceability artifacts.</p>"
+            )
+            provenance_path = anatomical_figure.parent / "provenance.json"
+            if provenance_path.exists():
+                trace_meta = json.loads(provenance_path.read_text(encoding="utf-8"))
+                tested = trace_meta.get(
+                    "regions_tested", len(trace_meta.get("region_indices", []))
+                )
+                if tested and int(tested) < 400:
+                    parts.append(
+                        f"<p>Exploratory partial-parcel screen: {int(tested)} of 400 Schaefer parcels tested. Displayed regional rankings apply only to this tested subset.</p>"
+                    )
+            parts.append(
+                _fig(
+                    anatomical_figure,
+                    report_dir,
+                    "BrainHarmonix-F ROI occlusion: rows lateral, medial, superior; left and right hemisphere columns",
+                )
+            )
+
         parts.append("<h4>Global explanations</h4>")
 
         if len(classes) == 1:

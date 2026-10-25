@@ -1086,6 +1086,30 @@ def _regression_explainability_blocks(
 
         _write_regression_explainability_figures(target_dir, stability, int(top_k))
 
+        anatomical = target_dir / "anatomical_traceability" / "network_to_anatomy.svg"
+        if anatomical.is_file():
+            anatomical_block = _report._fig(
+                anatomical,
+                report_dir,
+                f"{label}: BrainHarmonix-F Schaefer-400 regional embedding sensitivity",
+            )
+            if not anatomical_block:
+                raise RuntimeError(
+                    f"Cannot embed existing anatomical traceability figure: {anatomical}"
+                )
+            parts.append("<h4>Anatomical traceability</h4>")
+            parts.append(
+                "<p>Selected embedding dimensions are linked to Schaefer-400 cortical parcels by within-subject ROI-replacement sensitivity. Regional associations describe changes in frozen embedding coordinates after replacement of a parcel time series, not structural or functional connectivity, a causal mechanism, or direct attribution of the clinical outcome.</p>"
+            )
+            provenance_path = anatomical.parent / "provenance.json"
+            provenance = _read_json(provenance_path)
+            tested = int(provenance.get("regions_tested", 0))
+            if tested and tested < 400:
+                parts.append(
+                    f"<p>Partial-parcel screen: {tested} of 400 parcels tested. Regional rankings only apply to the tested subset.</p>"
+                )
+            parts.append(anatomical_block)
+
         figure = _report._fig(
             target_dir / "figures" / "feature_support",
             report_dir,

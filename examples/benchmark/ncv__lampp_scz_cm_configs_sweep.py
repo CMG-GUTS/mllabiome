@@ -5,7 +5,11 @@ from pathlib import Path
 from catboost import CatBoostClassifier
 from curated_microbiota.collections import lampp_scz
 from lightgbm import LGBMClassifier
-from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier
+from sklearn.ensemble import (
+    ExtraTreesClassifier,
+    GradientBoostingClassifier,
+    RandomForestClassifier,
+)
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import Pipeline
@@ -52,25 +56,36 @@ RESOLUTIONS = (
 )
 
 COUNT_TRANSFORMATIONS = (
-    mll.Transformation("presence_absence"),
-    mll.Transformation("identity"),
-    mll.Transformation("clr", composition_scope="rank-wise"),
-    mll.Transformation(
-        "arcsine_sqrt",
-        composition_scope="rank-wise",
-    ),
-    mll.Transformation(
-        "hellinger",
-        composition_scope="rank-wise",
-    ),
-    mll.Transformation(
-        "relative_abundance",
-        composition_scope="rank-wise",
-    ),
-    mll.Transformation(
-        "log10",
-        composition_scope="rank-wise",
-    ),
+    # mll.Transformation("presence_absence"),
+    # mll.Transformation("identity"),
+    # mll.Transformation("clr", composition_scope="rank-wise"),
+    # mll.Transformation(
+    #     "arcsine_sqrt",
+    #     composition_scope="rank-wise",
+    # ),
+    # mll.Transformation(
+    #     "hellinger",
+    #     composition_scope="rank-wise",
+    # ),
+    # mll.Transformation(
+    #     "relative_abundance",
+    #     composition_scope="rank-wise",
+    # ),
+    # mll.Transformation(
+    #     "log10",
+    #     composition_scope="rank-wise",
+    # ),
+    # additional
+    # mll.Transformation("ilr", composition_scope="rank-wise"),
+    # mll.Transformation("alr", composition_scope="rank-wise"),
+    mll.Transformation("prev_weighted", composition_scope="rank-wise"),
+    # mll.Transformation("rank", composition_scope="rank-wise"),
+    # mll.Transformation("quantile", composition_scope="rank-wise"),
+    # mll.Transformation(
+    #     "yeo_johnson",
+    #     composition_scope="rank-wise",
+    # ),
+    # mll.Transformation("ecdf_rank"),
 )
 
 
@@ -114,44 +129,44 @@ MODELS = (
     #     ),
     # ),
     # # default standard models
-    (
-        "CB_default",
-        CatBoostClassifier(
-            random_seed=42,
-            thread_count=1,
-            verbose=False,
-            allow_writing_files=False,
-        ),
-    ),
-    (
-        "RF_default",
-        RandomForestClassifier(
-            random_state=42,
-        ),
-    ),
-    (
-        "LightGBM_default",
-        LGBMClassifier(
-            random_state=42,
-            n_jobs=1,
-            verbosity=-1,
-        ),
-    ),
-    (
-        "XGB_default",
-        XGBClassifier(
-            random_state=42,
-            n_jobs=1,
-            verbosity=0,
-            eval_metric="logloss",
-        ),
-    ),
-    (
-        "LR_default",
-        LogisticRegression(
-            random_state=42,
-        ),
-    ),
+    # (
+    #     "CB_default",
+    #     CatBoostClassifier(
+    #         random_seed=42,
+    #         thread_count=1,
+    #         verbose=False,
+    #         allow_writing_files=False,
+    #     ),
+    # ),
+    # (
+    #     "RF_default",
+    #     RandomForestClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "LightGBM_default",
+    #     LGBMClassifier(
+    #         random_state=42,
+    #         n_jobs=1,
+    #         verbosity=-1,
+    #     ),
+    # ),
+    # (
+    #     "XGB_default",
+    #     XGBClassifier(
+    #         random_state=42,
+    #         n_jobs=1,
+    #         verbosity=0,
+    #         eval_metric="logloss",
+    #     ),
+    # ),
+    # (
+    #     "LR_default",
+    #     LogisticRegression(
+    #         random_state=42,
+    #     ),
+    # ),
     # (
     #     "TabPFN",
     #     mll.TabPFNClassifier(
@@ -183,12 +198,12 @@ MODELS = (
     #         verbose=False,
     #     ),
     # ),
-    # (
-    #     "Causilo_default",
-    #     mll.CausiloClassifier(
-    #         random_state=42,
-    #     ),
-    # ),
+    (
+        "Causilo_default",
+        mll.CausiloClassifier(
+            random_state=42,
+        ),
+    ),
     # (
     #     "TabDPT_default",
     #     mll.TabDPTClassifier(
@@ -203,14 +218,14 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
-    # (
-    #     "KumoTabular_medium",
-    #     mll.KumoTabularClassifier(
-    #         size="medium",
-    #         device="cpu",
-    #         random_state=42,
-    #     ),
-    # ),
+    (
+        "KumoTabular_medium",
+        mll.KumoTabularClassifier(
+            size="medium",
+            device="cpu",
+            random_state=42,
+        ),
+    ),
     # (
     #     "KumoTabular_large",
     #     mll.KumoTabularClassifier(
@@ -274,68 +289,63 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
-
-
-(
-    "ElasticNet_tuned",
-    GridSearchCV(
-        estimator=Pipeline([
-            ("scaler", StandardScaler(with_mean=False)),
-            ("lr", LogisticRegression(
-                solver="saga",
-                max_iter=10000,
-                tol=1e-4,
-                random_state=42,
-            )),
-        ]),
-        param_grid={
-            "lr__C": [0.01, 0.1, 1.0, 10.0],
-            "lr__l1_ratio": [0.25, 0.5, 0.75],
-        },
-        scoring="neg_log_loss",
-        cv=3,
-        refit=True,
-        n_jobs=1,
-        error_score="raise",
-    ),
-),
-
-
-(
-    "LASSO_tuned",
-    GridSearchCV(
-        estimator=Pipeline(
-            [
-                ("scaler", StandardScaler(with_mean=False)),
-                (
-                    "lr",
-                    LogisticRegression(
-                        penalty="l1",
-                        solver="saga",
-                        max_iter=10000,
-                        tol=1e-4,
-                        random_state=42,
-                    ),
-                ),
-            ]
-        ),
-        param_grid={
-            "lr__C": [0.01, 0.1, 1.0, 10.0],
-        },
-        scoring="neg_log_loss",
-        cv=3,
-        refit=True,
-        n_jobs=1,
-        error_score="raise",
-    ),
-),
-(
-    "ExtraTrees_default",
-    ExtraTreesClassifier(
-        random_state=42,
-    ),
-),
-
+    # (
+    #     "ElasticNet_tuned",
+    #     GridSearchCV(
+    #         estimator=Pipeline([
+    #             ("scaler", StandardScaler(with_mean=False)),
+    #             ("lr", LogisticRegression(
+    #                 solver="saga",
+    #                 max_iter=10000,
+    #                 tol=1e-4,
+    #                 random_state=42,
+    #             )),
+    #         ]),
+    #         param_grid={
+    #             "lr__C": [0.01, 0.1, 1.0, 10.0],
+    #             "lr__l1_ratio": [0.25, 0.5, 0.75],
+    #         },
+    #         scoring="neg_log_loss",
+    #         cv=3,
+    #         refit=True,
+    #         n_jobs=1,
+    #         error_score="raise",
+    #     ),
+    # ),
+    # (
+    #     "LASSO_tuned",
+    #     GridSearchCV(
+    #         estimator=Pipeline(
+    #             [
+    #                 ("scaler", StandardScaler(with_mean=False)),
+    #                 (
+    #                     "lr",
+    #                     LogisticRegression(
+    #                         penalty="l1",
+    #                         solver="saga",
+    #                         max_iter=10000,
+    #                         tol=1e-4,
+    #                         random_state=42,
+    #                     ),
+    #                 ),
+    #             ]
+    #         ),
+    #         param_grid={
+    #             "lr__C": [0.01, 0.1, 1.0, 10.0],
+    #         },
+    #         scoring="neg_log_loss",
+    #         cv=3,
+    #         refit=True,
+    #         n_jobs=1,
+    #         error_score="raise",
+    #     ),
+    # ),
+    # (
+    #     "ExtraTrees_default",
+    #     ExtraTreesClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
 )
 
 
@@ -347,7 +357,7 @@ GATE = mll.QualificationGate(
 
 ENSEMBLE = mll.Ensemble(
     include_inactive=True,
-    max_sizes=(10,),
+    max_sizes=(3, 5, 10),
     selection_strategies=(
         "top_k",
         "best_per_resolution",

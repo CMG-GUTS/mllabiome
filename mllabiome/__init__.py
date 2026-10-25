@@ -31,7 +31,14 @@ from .explainability import (
     ExplainabilityConfigurationError,
     ExplainabilityDependencyError,
 )
-from .explainability_methods import ALE, LIME, SHAP, ALEInteractions, Permutation
+from .explainability_methods import (
+    ALE,
+    LIME,
+    SHAP,
+    ALEInteractions,
+    Permutation,
+    AnatomicalTraceability,
+)
 from .final_explainability import explain
 from .federated import Federated
 from .foundation_models import (
@@ -100,6 +107,8 @@ from .utils import (
 
 __all__ = [
     "ALE",
+    "Brain",
+    "BrainRepresentation",
     "CLASSIFICATION_METRIC_COLUMNS",
     "CausiloClassifier",
     "CausiloDependencyError",
@@ -121,6 +130,7 @@ __all__ = [
     "TRANSFORMATION_LABELS",
     "TRANSFORMATION_SPACE",
     "ALEInteractions",
+    "AnatomicalTraceability",
     "Data",
     "Metadata",
     "Dataset",
@@ -208,3 +218,5 @@ __all__ = [
 
 
 mll = sys.modules[__name__]
+
+from .brain.representations import Brain, BrainRepresentation

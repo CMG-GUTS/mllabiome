@@ -9,7 +9,7 @@ from pathlib import Path
 from rich.traceback import install as install_rich_traceback
 
 from .configs_sweep import Sweep, build_sweep_from_module
-from .console import error, progress, stage, success, warn
+from .console import error, info, progress, stage, success, warn
 from .figure_export import export_svg_tree
 from .markdown_export import export_markdown_results
 from .pipeline import run_stage
@@ -119,11 +119,13 @@ def main(argv: list[str] | None = None) -> None:
         parser.error(
             "Export flags are only valid with --stage report, --stage explore, or --explore."
         )
+    info(f"Loading sweep configuration · {args.config.resolve()}")
     try:
         sweep = _load_sweep(args.config)
     except Exception as exc:
         error(f"Could not load config: {exc}")
         parser.exit(2)
+    success("Sweep configuration ready")
     if args.export_md:
         try:
             exported = export_markdown_results(sweep.root())

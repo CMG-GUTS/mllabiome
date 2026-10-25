@@ -8,6 +8,14 @@ from typing import Any
 import numpy as np
 from sklearn.decomposition import PCA
 
+from .multimodal_fusion import (
+    AlignmentKernelFusion,
+    BlockPLSFusion,
+    InductiveSNFFusion,
+    SparseCovarianceFusion,
+)
+from .mofa_integration import GaussianMOFAFusion
+
 
 @dataclass(frozen=True)
 class Integration:
@@ -16,6 +24,10 @@ class Integration:
     modality_sets: tuple[tuple[str, ...], ...] | None = None
     min_modalities: int = 2
     max_modalities: int | None = None
+    sparsity: float = 0.25
+    n_neighbors: int = 10
+    n_iterations: int = 15
+    mofa_max_iter: int = 500
 
     @property
     def key(self) -> str:
@@ -36,6 +48,12 @@ class Integration:
             "weighted_mean_prediction": "late_weighted_mean_prediction",
             "median_prediction": "late_median_prediction",
             "super_learner": "late_super_learner",
+            "mkl": "intermediate_mkl",
+            "block_pls": "intermediate_block_pls",
+            "sparse_cross_covariance": "intermediate_sparse_cross_covariance",
+            "snf_inductive": "intermediate_snf_inductive",
+            "mofa": "intermediate_mofa",
+            "mofa_plus": "intermediate_mofa",
         }
         return aliases.get(value, value)
 
@@ -89,6 +107,7 @@ class IntegrationModel:
         self.models_: dict[str, PCA] = {}
         self.joint_model_: PCA | None = None
         self.coordinates_: list[IntegratedCoordinate] = []
+        self.fusion_model_: Any = None
 
     def fit_transform_pair(
         self,
@@ -96,6 +115,8 @@ class IntegrationModel:
         test: Mapping[str, np.ndarray],
         coordinate_names: Mapping[str, Sequence[str]],
         coordinate_metadata: Mapping[str, Sequence[Any]] | None = None,
+        y_train: np.ndarray | None = None,
+        task: str | None = None,
     ) -> tuple[np.ndarray, np.ndarray, list[IntegratedCoordinate]]:
         key = self.spec.key
         names = tuple(train)
@@ -142,6 +163,14 @@ class IntegrationModel:
             return self._modality_pca(train, test, coordinate_names)
         if key == "intermediate_joint_pca":
             return self._joint_pca(train, test, coordinate_names)
+        if key in {
+            "intermediate_mkl",
+            "intermediate_block_pls",
+            "intermediate_sparse_cross_covariance",
+            "intermediate_snf_inductive",
+            "intermediate_mofa",
+        }:
+            return self._fusion_pair(train, test, coordinate_names, y_train, task)
         raise ValueError(
             f"Integration {self.spec.name!r} is not a feature-space integration."
         )
@@ -172,6 +201,16 @@ class IntegrationModel:
                 ],
                 axis=1,
             )
+        if key in {
+            "intermediate_mkl",
+            "intermediate_block_pls",
+            "intermediate_sparse_cross_covariance",
+            "intermediate_snf_inductive",
+            "intermediate_mofa",
+        }:
+            if self.fusion_model_ is None:
+                raise ValueError("Fusion integration model is not fitted.")
+            return np.asarray(self.fusion_model_.transform(data), dtype=float)
         if key == "intermediate_joint_pca":
             if self.joint_model_ is None:
                 raise ValueError("Joint PCA integration model is not fitted.")
@@ -182,6 +221,116 @@ class IntegrationModel:
         raise ValueError(
             f"Integration {self.spec.name!r} is not a feature-space integration."
         )
+
+    def _fusion_pair(self, train, test, coordinate_names, y_train, task):
+        key = self.spec.key
+        requested = self.spec.component_values()[0]
+        if requested is not None and requested < 1:
+            raise ValueError("Fusion n_components must be a positive integer.")
+        if key == "intermediate_mkl":
+            if y_train is None:
+                raise ValueError(
+                    "Supervised kernel fusion requires fold-training outcomes."
+                )
+            model = AlignmentKernelFusion(requested).fit(train, y_train, task)
+        elif key == "intermediate_block_pls":
+            if y_train is None:
+                raise ValueError(
+                    "Supervised block PLS requires fold-training outcomes."
+                )
+            model = BlockPLSFusion(requested).fit(train, y_train, task)
+        elif key == "intermediate_mofa":
+            model = GaussianMOFAFusion(
+                requested if requested is not None else 8,
+                max_iter=self.spec.mofa_max_iter,
+                random_state=self.random_state,
+            ).fit(train)
+        elif key == "intermediate_sparse_cross_covariance":
+            model = SparseCovarianceFusion(requested, self.spec.sparsity).fit(train)
+        else:
+            model = InductiveSNFFusion(
+                requested, self.spec.n_neighbors, self.spec.n_iterations
+            ).fit(train)
+        self.fusion_model_ = model
+        Xtr = np.asarray(model.transform(train), dtype=float)
+        Xte = np.asarray(model.transform(test), dtype=float)
+        coords = []
+        if key == "intermediate_sparse_cross_covariance":
+            for name in model.modalities_:
+                source = tuple(str(value) for value in coordinate_names[name])
+                loadings = model.loadings_[name] / model.scales_[name][:, None]
+                for i, weights in enumerate(loadings.T):
+                    coords.append(
+                        IntegratedCoordinate(
+                            f"{name}::SPARSE_COV_{i + 1:04d}",
+                            "sparse_cross_covariance_component",
+                            name,
+                            source,
+                            tuple(float(value) for value in weights),
+                            False,
+                        )
+                    )
+        elif key == "intermediate_mofa":
+            source = tuple(
+                str(value)
+                for name in model.modalities_
+                for value in coordinate_names[name]
+            )
+            for i, weights in enumerate(model.projection_.T):
+                coords.append(
+                    IntegratedCoordinate(
+                        f"MOFA_{i + 1:04d}",
+                        "gaussian_mofa_posterior_factor",
+                        None,
+                        source,
+                        tuple(float(value) for value in weights),
+                        False,
+                    )
+                )
+        elif key == "intermediate_block_pls":
+            source = tuple(
+                str(value)
+                for name in model.modalities_
+                for value in coordinate_names[name]
+            )
+            scale = np.concatenate([model.scales_[name] for name in model.modalities_])
+            for i, weights in enumerate(model.model_.x_rotations_.T):
+                coords.append(
+                    IntegratedCoordinate(
+                        f"BLOCK_PLS_{i + 1:04d}",
+                        "supervised_block_pls_component",
+                        None,
+                        source,
+                        tuple(float(value) for value in weights / scale),
+                        False,
+                    )
+                )
+        else:
+            source = tuple(
+                str(value) for name in train for value in coordinate_names[name]
+            )
+            kind = (
+                "supervised_kernel_component"
+                if key == "intermediate_mkl"
+                else "inductive_snf_component"
+            )
+            for i in range(Xtr.shape[1]):
+                coords.append(
+                    IntegratedCoordinate(
+                        f"{key.upper()}_{i + 1:04d}",
+                        kind,
+                        None,
+                        source,
+                        (),
+                        False,
+                    )
+                )
+        if Xtr.shape[1] != len(coords):
+            raise RuntimeError(
+                "Fusion feature coordinates do not match the integrated matrix."
+            )
+        self.coordinates_ = coords
+        return Xtr, Xte, coords
 
     def _concat(self, train, test, coordinate_names, coordinate_metadata=None):
         tr_parts = []
@@ -304,6 +453,19 @@ def integration_modality_sets(
             raise ValueError(
                 f"Integration {spec.name!r} references unknown modalities: {unknown!r}."
             )
+        expected = 1 if spec.stage == "unimodal" else 2
+        if any(
+            len(set(values)) != len(values) or len(values) < expected for values in out
+        ):
+            raise ValueError(
+                "Integration modality sets must contain distinct modalities and satisfy the required minimum size."
+            )
+        if spec.key == "intermediate_sparse_cross_covariance" and any(
+            len(values) != 2 for values in out
+        ):
+            raise ValueError(
+                "Sparse cross-covariance integration requires exactly two modalities."
+            )
         return out
     if spec.stage == "unimodal":
         return tuple((name,) for name in names)
@@ -313,6 +475,9 @@ def integration_modality_sets(
         if spec.max_modalities is None
         else min(len(names), int(spec.max_modalities))
     )
+    if spec.key == "intermediate_sparse_cross_covariance":
+        minimum = max(minimum, 2)
+        maximum = min(maximum, 2)
     return tuple(
         values
         for size in range(minimum, maximum + 1)

@@ -95,6 +95,48 @@ benchmark = [
 
 
 [project.optional-dependencies]
+brain = [
+  "nilearn>=0.12",
+  "nibabel>=5.0",
+  "templateflow>=24.0",
+  "filelock>=3.13",
+]
+brainharmonix = [
+  "nilearn>=0.12",
+  "nibabel>=5.0",
+  "templateflow>=24.0",
+  "filelock>=3.13",
+  "torch>=2.0.1",
+  "brainmarks>=0.1.1,<0.2; python_version >= '3.11'",
+  "brainharmonix>=0.1.0; python_version >= '3.11'",
+  "safetensors>=0.4",
+  "huggingface-hub>=0.23",
+]
+
+cortexmae = [
+  "nilearn>=0.12",
+  "nibabel>=5.0",
+  "templateflow>=24.0",
+  "filelock>=3.13",
+  "torch>=2.0.1",
+  "cortex_mae>=0.1.1,<0.2; python_version >= '3.11'",
+  "huggingface-hub>=0.23",
+]
+
+omni = [
+  "nilearn>=0.12",
+  "nibabel>=5.0",
+  "filelock>=3.13",
+  "torch>=2.0.1",
+  "torchvision>=0.15",
+  "timm>=1.0",
+  "einops>=0.7",
+  "opencv-python>=4.8",
+  "Pillow>=10",
+  "PyYAML>=6",
+  "huggingface-hub>=0.23",
+]
+
 federated = [
   "flwr[simulation]>=1.39,<1.40; python_version >= '3.11'",
 ]
@@ -171,6 +213,10 @@ exaone = [
     "exaonetabular ; python_full_version >= '3.11'",
 ]
 
+mofa = [
+    "mofapy2==0.7.5",
+]
+
 [tool.uv]
 override-dependencies = [
   "numpy>=1.24.3,<3",
@@ -186,6 +232,7 @@ override-dependencies = [
 
 
 [tool.uv.sources]
+brainharmonix = { git = "https://github.com/MedARC-AI/Brain-Harmony.git", rev = "5398f8f5540222973cf82d13ac1eb4c4b38af636" }
 curated-microbiota = { git = "https://github.com/CMG-GUTS/curated-microbiota", tag = "v0.2.0" }
 curated-microbiota-gut-brain-axis = { git = "https://github.com/CMG-GUTS/curated-microbiota-gut-brain-axis", tag = "v0.1.0" }
 structured-data-models = { git = "https://github.com/NVIDIA/structured-data-models.git" }

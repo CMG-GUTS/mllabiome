@@ -63,7 +63,9 @@ class KumoTabularRegressor(RegressorMixin, BaseEstimator):
         else:
             resolved = torch.device(self.device)
         if resolved.type == "mps":
-            raise ValueError("Kumo Tabular regression does not support MPS preprocessing; use device='cpu'.")
+            raise ValueError(
+                "Kumo Tabular regression does not support MPS preprocessing; use device='cpu'."
+            )
         self.device_ = resolved
         self.n_features_in_ = array.shape[1]
         if hasattr(self, "feature_names_in_"):
@@ -115,7 +117,9 @@ class KumoTabularRegressor(RegressorMixin, BaseEstimator):
             )
         if hasattr(self, "feature_names_in_") and hasattr(X, "columns"):
             if not np.array_equal(np.asarray(X.columns), self.feature_names_in_):
-                raise ValueError("Prediction feature names must match training features.")
+                raise ValueError(
+                    "Prediction feature names must match training features."
+                )
         query = KumoTabularClassifier._as_table(
             self, array, columns=self.feature_columns_
         )
@@ -129,8 +133,8 @@ class KumoTabularRegressor(RegressorMixin, BaseEstimator):
             ),
         ):
             output = self.model_.predict(query)
-        quantiles = output.numerical.detach().cpu().numpy().astype(
-            np.float64, copy=False
+        quantiles = (
+            output.numerical.detach().cpu().numpy().astype(np.float64, copy=False)
         )
         names = tuple(output.columns[sdm.Stype.numerical])
         expected = tuple(f"q{i:03d}" for i in range(1, 1000))
@@ -139,7 +143,9 @@ class KumoTabularRegressor(RegressorMixin, BaseEstimator):
                 raise ValueError("Unexpected Kumo Tabular regression quantile columns.")
             quantiles = quantiles[:, [names.index(name) for name in expected]]
         if quantiles.shape != (array.shape[0], 999):
-            raise ValueError(f"Unexpected regression quantile shape: {quantiles.shape}.")
+            raise ValueError(
+                f"Unexpected regression quantile shape: {quantiles.shape}."
+            )
         if not np.isfinite(quantiles).all():
             raise ValueError("Kumo Tabular produced non-finite regression quantiles.")
         return quantiles

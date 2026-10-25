@@ -737,7 +737,13 @@ def _strategy_predictions(
         config_id = str(model["config_id"])
         if config_id not in member_cache:
             member_cache[config_id] = _fit_member(
-                sweep, dataset, profile_X, profile_names, model, deployment_dir, save_weights
+                sweep,
+                dataset,
+                profile_X,
+                profile_names,
+                model,
+                deployment_dir,
+                save_weights,
             )
         probabilities = member_cache[config_id][1]
         alpha = float(model.get("probability_softening_alpha", 0.0))
@@ -757,7 +763,13 @@ def _strategy_predictions(
         config_id = str(member["config_id"])
         if config_id not in member_cache:
             member_cache[config_id] = _fit_member(
-                sweep, dataset, profile_X, profile_names, member, deployment_dir, save_weights
+                sweep,
+                dataset,
+                profile_X,
+                profile_names,
+                member,
+                deployment_dir,
+                save_weights,
             )
         member_predictions.append(member_cache[config_id][1])
         audits.append(member_cache[config_id][2])
@@ -889,7 +901,9 @@ def run_inference(
         if background_path.is_file():
             try:
                 with np.load(background_path, allow_pickle=False) as existing:
-                    replace_background = str(existing["fingerprint"].item()) != fingerprint
+                    replace_background = (
+                        str(existing["fingerprint"].item()) != fingerprint
+                    )
             except (ValueError, OSError, KeyError):
                 pass
         if replace_background:
@@ -912,7 +926,9 @@ def run_inference(
             temp.replace(background_path)
     inference_root.mkdir(parents=True, exist_ok=True)
     tracker = ResourceTracker().start()
-    member_cache: dict[str, tuple[dict[str, Any] | None, np.ndarray, dict[str, Any]]] = {}
+    member_cache: dict[
+        str, tuple[dict[str, Any] | None, np.ndarray, dict[str, Any]]
+    ] = {}
     strategy_values: dict[str, np.ndarray] = {}
     audits: list[dict[str, Any]] = []
     try:

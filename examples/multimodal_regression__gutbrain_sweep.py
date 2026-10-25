@@ -28,7 +28,6 @@ INTEGRATIONS = (
     mll.Integration("intermediate_joint_pca", n_components=(16, 32)),
     mll.Integration("late_super_learner"),
     mll.Integration("early_concat"),
-
 )
 
 LEARNERS = (
@@ -60,15 +59,15 @@ LEARNERS = (
         ),
     ),
     (
-    "KumoTabular_small",
-    mll.KumoTabularRegressor(
-        size="small",
-        pretrained=True,
-        n_estimators=8,
-        device="cpu",
-        random_state=42,
+        "KumoTabular_small",
+        mll.KumoTabularRegressor(
+            size="small",
+            pretrained=True,
+            n_estimators=8,
+            device="cpu",
+            random_state=42,
+        ),
     ),
-),
     (
         "KumoTabular_medium",
         mll.KumoTabularClassifier(

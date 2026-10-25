@@ -41,7 +41,7 @@ class Samples:
 @dataclass(frozen=True)
 class Modality:
     name: str
-    path: Path | str
+    path: Path | str | tuple[Path | str, ...]
     format: str = "table"
     primary: bool = False
     sample_id_col: str | None = None
@@ -49,6 +49,7 @@ class Modality:
     feature_cols: str | tuple[str, ...] | None = None
     feature_prefixes: str | tuple[str, ...] | None = None
     allow_implicit_numeric_features: bool = False
+    sample_id_map: Mapping[str, str] | None = None
 
 
 @dataclass
@@ -141,8 +142,47 @@ def _read_samples(
 def _read_table_modality(
     modality: Modality, samples: Samples
 ) -> tuple[list[str], np.ndarray, list[str]]:
-    frame = pd.read_csv(Path(modality.path), sep=None, engine="python")
     id_col = str(modality.sample_id_col or samples.sample_id_col)
+    paths = modality.path if isinstance(modality.path, tuple) else (modality.path,)
+    frames = []
+    for entry in paths:
+        path = Path(entry)
+        frame = (
+            pd.read_parquet(path)
+            if path.suffix.lower() == ".parquet"
+            else pd.read_csv(path, sep=None, engine="python")
+        )
+        if id_col not in frame.columns:
+            raise ValueError(
+                f"Modality {modality.name!r} is missing sample ID column {id_col!r} in {path}"
+            )
+        frame[id_col] = frame[id_col].astype(str).str.strip()
+        if frame[id_col].duplicated().any():
+            raise ValueError(
+                f"Modality {modality.name!r} contains duplicate sample IDs in {path}"
+            )
+        if modality.sample_id_map is not None:
+            missing = set(frame[id_col]) - set(modality.sample_id_map)
+            if missing:
+                raise ValueError(f"Unmapped modality sample IDs: {sorted(missing)[:5]}")
+            frame[id_col] = frame[id_col].map(modality.sample_id_map)
+            if frame[id_col].duplicated().any():
+                raise ValueError(
+                    f"Duplicate subject identifiers after modality ID mapping: {path}"
+                )
+        frames.append(frame)
+    if not frames:
+        raise ValueError(f"Modality {modality.name!r} has no feature tables")
+    frame = frames[0]
+    for other in frames[1:]:
+        duplicates = set(frame.columns).intersection(other.columns) - {id_col}
+        if duplicates:
+            raise ValueError(
+                f"Repeated feature names in {modality.name!r}: {sorted(duplicates)[:5]}"
+            )
+        frame = frame.merge(
+            other, on=id_col, how="inner", validate="one_to_one", sort=False
+        )
     if id_col not in frame.columns:
         raise ValueError(
             f"Modality {modality.name!r} is missing sample ID column {id_col!r}."
@@ -513,7 +553,7 @@ def load_modalities(
                 modality, samples, metadata_ids
             )
             canonical_fmt = "matrix_tsv" if fmt == "matrix_tsv" else "mllab"
-        elif fmt in {"table", "tabular", "csv", "tsv", "matrix"}:
+        elif fmt in {"table", "tabular", "csv", "tsv", "matrix", "parquet"}:
             ids, X, features = _read_table_modality(modality, samples)
             canonical_fmt = "table"
         else:
@@ -607,7 +647,9 @@ def modality_fingerprints(dataset: ModalityDataset) -> dict[str, str]:
     }
 
 
-def modality_dataset_fingerprint(dataset: ModalityDataset) -> str:
+def modality_dataset_fingerprint(
+    dataset: ModalityDataset, fingerprints: Mapping[str, str] | None = None
+) -> str:
     hasher = hashlib.sha256()
     hasher.update(b"modality-dataset-v1")
     for value in (dataset.task, dataset.target_name, dataset.primary_modality):
@@ -619,7 +661,11 @@ def modality_dataset_fingerprint(dataset: ModalityDataset) -> str:
             payload = str(value).encode("utf-8")
             hasher.update(len(payload).to_bytes(8, "big"))
             hasher.update(payload)
-    for name, fingerprint in modality_fingerprints(dataset).items():
+    for name, fingerprint in sorted(
+        (
+            modality_fingerprints(dataset) if fingerprints is None else fingerprints
+        ).items()
+    ):
         for value in (name, fingerprint):
             payload = str(value).encode("utf-8")
             hasher.update(len(payload).to_bytes(8, "big"))
@@ -627,11 +673,16 @@ def modality_dataset_fingerprint(dataset: ModalityDataset) -> str:
     return hasher.hexdigest()
 
 
-def source_file_sha256(path: Path | str) -> str:
+def source_file_sha256(path: Path | str | tuple[Path | str, ...]) -> str:
     hasher = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            hasher.update(chunk)
+    sources = path if isinstance(path, tuple) else (path,)
+    for item in sources:
+        if len(sources) > 1:
+            hasher.update(b"modality-source-boundary")
+            hasher.update(Path(item).stat().st_size.to_bytes(8, "big"))
+        with Path(item).open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                hasher.update(chunk)
     return hasher.hexdigest()
 
 

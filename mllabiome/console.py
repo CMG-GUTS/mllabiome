@@ -13,6 +13,7 @@ from rich import box
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
+from rich.spinner import Spinner
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -212,7 +213,7 @@ def _evaluation_names(root: Path, identifiers: Sequence[str]) -> dict[str, str]:
             return {}
         names = {}
         for start in range(0, len(identifiers), 500):
-            chunk = list(identifiers[start:start + 500])
+            chunk = list(identifiers[start : start + 500])
             placeholders = ",".join("?" for _ in chunk)
             query = (
                 f"SELECT config_id, {', '.join(fields)} FROM configs "
@@ -256,8 +257,7 @@ def _evaluation_summary(
         if key in frame.columns:
             frame = frame.drop_duplicates(key, keep="last")
         scores = {
-            metric: aggregate_validation_metric(frame, metric)[0]
-            for metric in metrics
+            metric: aggregate_validation_metric(frame, metric)[0] for metric in metrics
         }
         result[section] = (scores, len(frame))
     return result
@@ -317,7 +317,9 @@ def evaluation_completion(
                 if math.isfinite(mean) and math.isfinite(std)
                 else "—"
             )
-        table.add_row(label, str(len(frame)), *values, style="bold" if label == "Inner" else None)
+        table.add_row(
+            label, str(len(frame)), *values, style="bold" if label == "Inner" else None
+        )
     console.print(
         Panel(
             table,
@@ -348,10 +350,15 @@ class EvaluationMonitor:
         self.metric = str(metric)
         self.classification = bool(classification)
         self.metrics = [self.metric]
-        extras = ("AUROC", "F1w", "MCC") if self.classification else ("R2", "MAE", "RMSE")
+        extras = (
+            ("AUROC", "F1w", "MCC") if self.classification else ("R2", "MAE", "RMSE")
+        )
         self.metrics.extend(item for item in extras if item != self.metric)
         self.names = _evaluation_names(self.root, pending_config_ids)
-        self.config_ids = sorted(set(map(str, pending_config_ids)), key=lambda item: (self.names.get(item, item), item))
+        self.config_ids = sorted(
+            set(map(str, pending_config_ids)),
+            key=lambda item: (self.names.get(item, item), item),
+        )
         self.expected_outer = set(map(str, outer_keys))
         self.expected_inner = set(map(str, inner_keys))
         self.all_config_ids = set(map(str, all_config_ids))
@@ -369,13 +376,17 @@ class EvaluationMonitor:
             for row in rows:
                 self._store(section, row, announce=False)
 
-    def _store(self, section: str, row: Mapping[str, object], *, announce: bool) -> bool:
+    def _store(
+        self, section: str, row: Mapping[str, object], *, announce: bool
+    ) -> bool:
         cid = str(row.get("config_id", ""))
         if cid not in self.inner:
             return False
         key_field = "inner_key" if section == "inner" else "split_key"
         key = str(row.get(key_field, ""))
-        if not key or key not in (self.expected_inner if section == "inner" else self.expected_outer):
+        if not key or key not in (
+            self.expected_inner if section == "inner" else self.expected_outer
+        ):
             return False
         bucket = self.inner[cid] if section == "inner" else self.outer[cid]
         previous = bucket.get(key)
@@ -385,8 +396,14 @@ class EvaluationMonitor:
         bucket[key] = value
         return True
 
-    def _valid(self, rows: Mapping[str, Mapping[str, object]]) -> list[dict[str, object]]:
-        return [dict(row) for row in rows.values() if str(row.get("ok", 0)) in {"1", "1.0", "True"}]
+    def _valid(
+        self, rows: Mapping[str, Mapping[str, object]]
+    ) -> list[dict[str, object]]:
+        return [
+            dict(row)
+            for row in rows.values()
+            if str(row.get("ok", 0)) in {"1", "1.0", "True"}
+        ]
 
     def _score(self, rows: Sequence[Mapping[str, object]], metric: str) -> str:
         import pandas as pd
@@ -396,7 +413,9 @@ class EvaluationMonitor:
         score, _ = aggregate_validation_metric(pd.DataFrame(rows), metric)
         return f"{score:.4f}" if math.isfinite(score) else "—"
 
-    def _counts(self, rows: Mapping[str, Mapping[str, object]], expected: set[str]) -> str:
+    def _counts(
+        self, rows: Mapping[str, Mapping[str, object]], expected: set[str]
+    ) -> str:
         valid = self._valid(rows)
         errors = len(rows) - len(valid)
         count = f"{len(valid)}/{len(expected)}"
@@ -450,10 +469,16 @@ class EvaluationMonitor:
             expand=False,
         )
         progress.add_task(
-            "Evaluation", total=max(1, self.total_pairs),
+            "Evaluation",
+            total=max(1, self.total_pairs),
             completed=min(len(self.completed_pairs), self.total_pairs),
         )
         return Group(
+            Spinner(
+                "dots",
+                text="Running evaluation · waiting for completed fold checkpoints",
+                style="cyan",
+            ),
             table,
             Panel(
                 progress,
@@ -502,7 +527,11 @@ class EvaluationMonitor:
                     self.config_ids,
                 ).fetchall()
                 with self._lock:
-                    missing = [(cid, key) for cid, key in keys if key not in self.inner.get(cid, {})]
+                    missing = [
+                        (cid, key)
+                        for cid, key in keys
+                        if key not in self.inner.get(cid, {})
+                    ]
                 if not missing:
                     return
                 events = []
@@ -517,7 +546,14 @@ class EvaluationMonitor:
                     for item in payload.get("inner_metrics", []):
                         with self._lock:
                             if self._store("inner", item, announce=True):
-                                events.append(("inner", cid, item, len(self._valid(self.inner[cid]))))
+                                events.append(
+                                    (
+                                        "inner",
+                                        cid,
+                                        item,
+                                        len(self._valid(self.inner[cid])),
+                                    )
+                                )
                 self._update(events)
         except (sqlite3.Error, OSError, ValueError, zlib.error):
             return
@@ -527,12 +563,15 @@ class EvaluationMonitor:
             self._poll()
 
     def __enter__(self):
-        console.print("[dim]Fold metrics are checkpointed as completed; outer results remain held out.[/dim]")
+        console.print(
+            "[dim]Fold metrics are checkpointed as completed; outer results remain held out.[/dim]"
+        )
         if console.is_terminal:
             self._live = Live(
                 self._render(),
                 console=console,
-                auto_refresh=False,
+                auto_refresh=True,
+                refresh_per_second=2,
                 transient=True,
                 vertical_overflow="visible",
             )
@@ -552,9 +591,15 @@ class EvaluationMonitor:
                 for row in result.get(f"{section}_metrics", []):
                     if self._store(section, row, announce=True):
                         cid = str(row["config_id"])
-                        bucket = self.inner[cid] if section == "inner" else self.outer[cid]
+                        bucket = (
+                            self.inner[cid] if section == "inner" else self.outer[cid]
+                        )
                         events.append((section, cid, row, len(self._valid(bucket))))
-                    if section == "outer" and str(row.get("ok", 0)) in {"1", "1.0", "True"}:
+                    if section == "outer" and str(row.get("ok", 0)) in {
+                        "1",
+                        "1.0",
+                        "True",
+                    }:
                         self._complete_pair(row)
             for row in result.get("qualification", []):
                 if str(row.get("qualified", 1)) in {"0", "0.0", "False"}:
@@ -567,7 +612,9 @@ class EvaluationMonitor:
         if pair[0] in self.expected_outer and pair[1] in self.all_config_ids:
             self.completed_pairs.add(pair)
 
-    def finalized(self, config_id: str, ranked: Sequence[tuple[str, float, int]]) -> None:
+    def finalized(
+        self, config_id: str, ranked: Sequence[tuple[str, float, int]]
+    ) -> None:
         self._poll()
         with self._lock:
             self.finished.add(config_id)
@@ -582,7 +629,9 @@ class EvaluationMonitor:
         )
 
     def unfinished(self, config_id: str) -> None:
-        warn(f"Configuration remains resumable · {self.names.get(config_id, config_id)} · incomplete or failed folds")
+        warn(
+            f"Configuration remains resumable · {self.names.get(config_id, config_id)} · incomplete or failed folds"
+        )
 
     def __exit__(self, exc_type, exc, tb):
         self._stop.set()

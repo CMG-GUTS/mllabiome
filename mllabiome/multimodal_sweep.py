@@ -82,6 +82,11 @@ from .metrics import (
     compute_regression_metrics,
     grouped_log_loss,
 )
+from .multimodal_incremental import (
+    candidate_fingerprints,
+    context_fingerprint,
+    validate_incremental,
+)
 from .modalities import (
     ModalityDataset,
     load_modalities,
@@ -269,6 +274,8 @@ def _fit_classification_candidate_fold(
         random_state,
         _count_transformation_factory,
         _lodo_feature_pair,
+        y_train=y[train_idx],
+        task="classification",
     )
     prep_end = time.perf_counter_ns()
     estimator = configure_estimator_threads(learner_factory(), threads_per_worker)
@@ -849,6 +856,8 @@ def _fit_regression_candidate_fold(
         random_state,
         _count_transformation_factory,
         _lodo_feature_pair,
+        y_train=y[train_idx],
+        task="regression",
     )
     prep_end = time.perf_counter_ns()
     estimator = configure_estimator_threads(learner_factory(), threads_per_worker)
@@ -1268,48 +1277,96 @@ def _prepare_modality_sweep_context(sweep: Sweep) -> _ModalitySweepContext:
         if dataset.task == "classification"
         else None
     )
-    evaluation_fingerprint = _scientific_digest(
+    evaluation_payload = {
+        "schema": "multimodal-benchmark-fingerprint-v1",
+        "dataset_fingerprint": dataset_hash,
+        "modality_fingerprints": modality_hashes,
+        "task": dataset.task,
+        "target": dataset.target_name,
+        "evaluation": {
+            "protocol": str(plan.protocol),
+            "inner_grouping": str(plan.inner_grouping),
+            "split_manifest": _scientific_value(plan.split_manifest),
+            "outer_folds": int(plan.outer_folds),
+            "inner_folds": int(plan.inner_folds),
+            "repeats": int(plan.repeats),
+            "random_state": int(plan.random_state),
+            "optimize_metric": _scientific_value(plan.optimize_metric),
+        },
+        "group_col": samples.group_col,
+        "effective_group_col": effective_group_col,
+        "group_assignments": (
+            None
+            if effective_groups is None
+            else _scientific_digest(
+                np.asarray(effective_groups, dtype=object).astype(str).tolist()
+            )
+        ),
+        "subject_id_policy": "auto_group_repeated_subjects",
+        "stratify_col": _scientific_value(samples.stratify_col),
+        "strata_assignments": (
+            None
+            if fingerprint_strata is None
+            else _scientific_digest(
+                np.asarray(fingerprint_strata, dtype=object).astype(str).tolist()
+            )
+        ),
+        "gate": _scientific_value(sweep.gate),
+        "multimodal_inclusion": _scientific_value(dataset.inclusion_report),
+    }
+    evaluation_fingerprint = _scientific_digest(evaluation_payload)
+    stable_context = context_fingerprint(
         {
-            "schema": "multimodal-benchmark-fingerprint-v1",
-            "dataset_fingerprint": dataset_hash,
-            "modality_fingerprints": modality_hashes,
+            "sample_file": source_hashes["samples"],
+            "sample_ids": dataset.sample_ids,
+            "subject_ids": dataset.subject_ids,
+            "targets": np.asarray(dataset.y).tolist(),
             "task": dataset.task,
             "target": dataset.target_name,
-            "evaluation": {
-                "protocol": str(plan.protocol),
-                "inner_grouping": str(plan.inner_grouping),
-                "split_manifest": _scientific_value(plan.split_manifest),
-                "outer_folds": int(plan.outer_folds),
-                "inner_folds": int(plan.inner_folds),
-                "repeats": int(plan.repeats),
-                "random_state": int(plan.random_state),
-                "optimize_metric": _scientific_value(plan.optimize_metric),
-            },
-            "group_col": samples.group_col,
+            "primary_modality": dataset.primary_modality,
+            "evaluation": evaluation_payload["evaluation"],
+            "group_col": evaluation_payload["group_col"],
             "effective_group_col": effective_group_col,
-            "group_assignments": (
-                None
-                if effective_groups is None
-                else _scientific_digest(
-                    np.asarray(effective_groups, dtype=object).astype(str).tolist()
-                )
-            ),
-            "subject_id_policy": "auto_group_repeated_subjects",
-            "stratify_col": _scientific_value(samples.stratify_col),
-            "strata_assignments": (
-                None
-                if fingerprint_strata is None
-                else _scientific_digest(
-                    np.asarray(fingerprint_strata, dtype=object).astype(str).tolist()
-                )
-            ),
-            "gate": _scientific_value(sweep.gate),
-            "multimodal_inclusion": _scientific_value(dataset.inclusion_report),
-        }
+            "group_assignments": evaluation_payload["group_assignments"],
+            "stratify_col": evaluation_payload["stratify_col"],
+            "strata_assignments": evaluation_payload["strata_assignments"],
+            "gate": evaluation_payload["gate"],
+        },
+        _scientific_digest,
     )
-    _validate_experiment_identity(
-        root, evaluation_fingerprint, redo=bool(sweep.evaluation.redo)
+    input_fingerprints = candidate_fingerprints(specs, matrices, names)
+    previous_ids = validate_incremental(
+        root,
+        evaluation_fingerprint,
+        stable_context,
+        input_fingerprints,
+        dataset,
+        source_hashes,
+        evaluation_payload,
+        _scientific_digest,
+        bool(sweep.evaluation.redo),
     )
+    compatible_fingerprints: set[str] = set()
+    previous_manifest = root / "manifest.json"
+    if previous_manifest.exists() and not sweep.evaluation.redo:
+        previous_payload = json.loads(previous_manifest.read_text(encoding="utf-8"))
+        previous_cache = previous_payload.get("evaluation_cache_fingerprint")
+        if isinstance(previous_cache, str) and previous_cache:
+            compatible_fingerprints.add(previous_cache)
+        previous_compatible = previous_payload.get(
+            "compatible_evaluation_fingerprints", []
+        )
+        if not isinstance(previous_compatible, list) or any(
+            not isinstance(item, str) for item in previous_compatible
+        ):
+            raise ValueError(
+                "Invalid compatible evaluation fingerprints in existing manifest"
+            )
+        compatible_fingerprints.update(previous_compatible)
+        info(
+            "Evaluation · verified existing experiment inputs; compatible completed candidates remain reusable"
+        )
+    compatible_fingerprints.discard(stable_context)
     if sweep.evaluation.redo:
         _clear_evaluation_checkpoints(root)
     _write_config_table(root, configs)
@@ -1329,7 +1386,10 @@ def _prepare_modality_sweep_context(sweep: Sweep) -> _ModalitySweepContext:
         "modality_fingerprints": modality_hashes,
         "source_file_sha256": source_hashes,
         "evaluation_fingerprint": evaluation_fingerprint,
-        "evaluation_cache_fingerprint": evaluation_fingerprint,
+        "evaluation_context_fingerprint": stable_context,
+        "candidate_input_fingerprints": previous_ids,
+        "evaluation_cache_fingerprint": stable_context,
+        "compatible_evaluation_fingerprints": sorted(compatible_fingerprints),
         "selection_metric": str(plan.optimize_metric),
         "gate_enabled": bool(sweep.gate.enabled),
         "evaluation_fingerprint_algorithm": "sha256-multimodal-benchmark-v1",
@@ -1717,7 +1777,13 @@ def _finalize_modality_sweep(
 
 
 def evaluate_modality_sweep(sweep: Sweep) -> dict[str, Path]:
+    info(
+        "Evaluation · loading aligned modalities and preparing fold-specific representations"
+    )
     context = _prepare_modality_sweep_context(sweep)
+    info(
+        f"Evaluation · enumerating {len(context.specs):,} candidate configurations over {len(context.outer_splits):,} outer splits"
+    )
     tasks, split_counts = _build_modality_tasks(sweep, context)
     execution = resolve_execution_plan(
         sweep.evaluation.n_jobs,
@@ -1824,6 +1890,8 @@ def fit_modality_candidate_oof_for_explainability(sweep, row):
             int(sweep.explainability.random_state),
             _count_transformation_factory,
             _lodo_feature_pair,
+            y_train=dataset.y[train_idx],
+            task="classification",
         )
         clf = configure_estimator_threads(learner_factory(), threads_per_worker)
         fit_classifier(
@@ -1948,6 +2016,8 @@ def fit_modality_regression_candidate_folds(sweep, row, progress_callback=None):
             int(sweep.explainability.random_state),
             _count_transformation_factory,
             _lodo_feature_pair,
+            y_train=dataset.y[train_idx],
+            task="regression",
         )
         model = configure_estimator_threads(learner_lookup[spec.learner](), 1)
         model.fit(details["X_train"], dataset.y[train_idx])

@@ -21,10 +21,10 @@ EVALUATION = lampp_ghs.splits(
     benchmark="mllabiome-benchmark-v2",
 ).mllabiome(
     optimize_metric="log_loss",
-    n_jobs=1,
+    n_jobs="auto",
 )
-                                                                        
-                                      
+
+
 EVALUATION.outer_only = True
 
 EXPLORE = mll.Explore(
@@ -41,60 +41,64 @@ EXPLORE = mll.Explore(
 )
 
 RESOLUTIONS = (
-    # ("phylum", ("phylum",)),  
-    ("family", ("family",)),
-    ("genus", ("genus",)),
-    ("species", ("species",)),
-    ("strain", ("strain",)),
+    # ("phylum", ("phylum",)),
+    # ("family", ("family",)),
+    # ("genus", ("genus",)),
+    # ("species", ("species",)),
+    # ("strain", ("strain",)),
     ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
-    mll.Transformation("identity"), 
+    # mll.Transformation("identity"),
+    # mll.Transformation(
+    #     "hellinger",
+    #     composition_scope="rank-wise",
+    # ),
     mll.Transformation(
-        "hellinger",
+        "log10",
         composition_scope="rank-wise",
     ),
 )
 
 MODELS = (
-    (
-        "TabPFN",
-        mll.TabPFNClassifier(
-            n_estimators="auto",
-            auto_scale_n_estimators=True,
-            model_path="auto",
-            device="auto",
-            inference_precision="auto",
-            fit_mode="fit_preprocessors",
-            memory_saving_mode="auto",
-            keep_cache_on_device=True,
-            random_state=42,
-            n_preprocessing_jobs=1,
-        ),
-    ),
-    (
-        "Causilo_default",
-        mll.CausiloClassifier(
-            random_state=42,
-        ),
-    ),
-    (
-        "KumoTabular_small",
-        mll.KumoTabularClassifier(
-            size="small",
-            device="cpu",
-            random_state=42,
-        ),
-    ),
-    (
-        "KumoTabular_medium",
-        mll.KumoTabularClassifier(
-            size="medium",
-            device="cpu",
-            random_state=42,
-        ),
-    ),
+    # (
+    #     "TabPFN",
+    #     mll.TabPFNClassifier(
+    #         n_estimators="auto",
+    #         auto_scale_n_estimators=True,
+    #         model_path="auto",
+    #         device="auto",
+    #         inference_precision="auto",
+    #         fit_mode="fit_preprocessors",
+    #         memory_saving_mode="auto",
+    #         keep_cache_on_device=True,
+    #         random_state=42,
+    #         n_preprocessing_jobs=1,
+    #     ),
+    # ),
+    # (
+    #     "Causilo_default",
+    #     mll.CausiloClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "KumoTabular_small",
+    #     mll.KumoTabularClassifier(
+    #         size="small",
+    #         device="cpu",
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "KumoTabular_medium",
+    #     mll.KumoTabularClassifier(
+    #         size="medium",
+    #         device="cpu",
+    #         random_state=42,
+    #     ),
+    # ),
     (
         "KumoTabular_large",
         mll.KumoTabularClassifier(

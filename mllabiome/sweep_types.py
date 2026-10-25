@@ -6,7 +6,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .brain.explanation import BrainTraceabilityConfig
+    from .brain.representations import Brain
 
 from .advanced_ensemble import ADVANCED_AGGREGATIONS
 from ._evaluation_protocols import (
@@ -22,6 +26,7 @@ from .ensemble_aggregation import (
 )
 from .explainability_methods import (
     ALE,
+    AnatomicalTraceability,
     SHAP,
     Permutation,
     apply_profile,
@@ -149,7 +154,7 @@ class Evaluation:
     ] = "repeated_nested_cv"
     outer_folds: int = 5
     inner_folds: int = 3
-                                                                                           
+
     outer_only: bool = False
     repeats: int = 2
     random_state: int = 42
@@ -343,6 +348,7 @@ class Explainability:
     targets: str | tuple[str, ...] = "auto"
     top_k: int = 30
     methods: tuple[Any, ...] = (SHAP(), Permutation(), ALE())
+    anatomical_traceability: AnatomicalTraceability | None = None
     classes: str | tuple[int | str, ...] = "auto"
     profile: str = "standard"
     random_state: int = 42
@@ -388,7 +394,19 @@ class Explainability:
         self.targets = _normalise_explainability_targets_config(targets)
         self.top_k = int(top_k)
         self.profile = normalise_profile(profile)
-        self.methods = tuple(apply_profile(m, self.profile) for m in methods)
+        anatomical = [m for m in methods if isinstance(m, AnatomicalTraceability)]
+        if len(anatomical) > 1:
+            raise ValueError("Only one AnatomicalTraceability configuration is allowed")
+        self.anatomical_traceability = anatomical[0] if anatomical else None
+        self.methods = tuple(
+            apply_profile(m, self.profile)
+            for m in methods
+            if not isinstance(m, AnatomicalTraceability)
+        )
+        if not self.methods:
+            raise ValueError(
+                "At least one predictive explainability method is required"
+            )
         self.classes = _normalise_explainability_classes_config(classes)
         self.random_state = int(random_state)
         self.local = local if local is not None else _legacy_local_explanations(legacy)
@@ -1033,6 +1051,8 @@ class Sweep:
     title: str = "mllabiome sweep"
     samples: Samples | None = None
     modalities: Sequence[Modality] = field(default_factory=tuple)
+    brain_traceability: BrainTraceabilityConfig | None = None
+    brain: Brain | None = None
     representations: Mapping[str, Sequence[Any]] = field(default_factory=dict)
     transformations: Mapping[str, Sequence[Any]] = field(default_factory=dict)
     integrations: Sequence[Integration] = field(
@@ -1040,6 +1060,10 @@ class Sweep:
     )
 
     def __post_init__(self) -> None:
+        if self.brain is not None:
+            from .brain.representations import attach_brain_representations
+
+            attach_brain_representations(self)
         validate_model_specs(self.learners, context="Sweep.learners / MODELS")
         from .resolutions import _parse_resolution
         from .siamcat import SIAMCATClassifier

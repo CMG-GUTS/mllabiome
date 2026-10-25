@@ -251,6 +251,24 @@ def _benchmark_identity(root: Path) -> tuple[str, str]:
     )
 
 
+def _accepted_benchmarks(root: Path) -> frozenset[str]:
+    path = root / "manifest.json"
+    if not path.exists():
+        return frozenset()
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    current = manifest.get("evaluation_cache_fingerprint")
+    previous = manifest.get("compatible_evaluation_fingerprints", [])
+    if not isinstance(previous, list) or any(
+        not isinstance(value, str) for value in previous
+    ):
+        raise ValueError(
+            "Invalid compatible evaluation fingerprints in experiment manifest"
+        )
+    return frozenset(
+        value for value in (current, *previous) if isinstance(value, str) and value
+    )
+
+
 def _register(
     conn: sqlite3.Connection, path: Path, meta: Mapping[str, Any], digest: str
 ) -> None:
@@ -325,9 +343,9 @@ def refresh_catalog(root: Path) -> tuple[int, int]:
     folder = root / "configs"
     if not folder.exists():
         return 0, 0
-    benchmark, _ = _benchmark_identity(root)
+    accepted = _accepted_benchmarks(root)
     expected_splits = split_digest(root)
-    if not benchmark or not expected_splits:
+    if not accepted or not expected_splits:
         return 0, 0
     added = 0
     rejected = 0
@@ -347,7 +365,7 @@ def refresh_catalog(root: Path) -> tuple[int, int]:
             if known.get(path.stem) == (stat.st_size, stat.st_mtime_ns):
                 continue
             meta = _file_metadata(path)
-            if benchmark and str(meta.get("benchmark", "")) != benchmark:
+            if str(meta.get("benchmark", "")) not in accepted:
                 rejected += 1
                 continue
             if expected_splits and str(meta.get("split_digest", "")) != expected_splits:
@@ -367,13 +385,13 @@ def refresh_catalog(root: Path) -> tuple[int, int]:
 def register_configuration(root: Path, config_id: str) -> None:
     path = _artifact_path(Path(root), config_id)
     meta = _file_metadata(path)
-    benchmark, _ = _benchmark_identity(Path(root))
+    accepted = _accepted_benchmarks(Path(root))
     expected_splits = split_digest(Path(root))
-    if not benchmark or not expected_splits:
+    if not accepted or not expected_splits:
         raise ValueError(
             "Benchmark and exact split identities are required before registering artifacts"
         )
-    if str(meta.get("benchmark", "")) != benchmark:
+    if str(meta.get("benchmark", "")) not in accepted:
         raise ValueError("Configuration does not match this benchmark")
     if str(meta.get("split_digest", "")) != expected_splits:
         raise ValueError("Configuration does not match the exact evaluation splits")
@@ -468,8 +486,12 @@ def top_configs(
             continue
         stat = artifact.stat()
         score = _inner_ranking_score(
-            str(root), str(config_id), str(metric), int(expected_inner),
-            stat.st_size, stat.st_mtime_ns,
+            str(root),
+            str(config_id),
+            str(metric),
+            int(expected_inner),
+            stat.st_size,
+            stat.st_mtime_ns,
         )
         if score is not None:
             ranked.append((str(config_id), score, int(outer_count)))

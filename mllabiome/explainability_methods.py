@@ -144,6 +144,48 @@ class ALEInteractions:
             raise ValueError("ALEInteractions.top_k must be at least 2.")
 
 
+@dataclass(frozen=True)
+class AnatomicalTraceability:
+    top_k: int = 5
+    max_subjects: int = 16
+    top_regions_per_feature: int = 2
+    region_indices: tuple[int, ...] = tuple(range(400))
+    method: str = "roi_occlusion"
+    rank_by: str = "consensus"
+    verification_tolerance: float = 0.0001
+    name: str = field(default="anatomical_traceability", init=False)
+
+    @classmethod
+    def quick(cls, **overrides):
+        options = {
+            "top_k": 5,
+            "max_subjects": 3,
+            "top_regions_per_feature": 2,
+            "region_indices": tuple(range(0, 400, 8)),
+        }
+        options.update(overrides)
+        return cls(**options)
+
+    def __post_init__(self) -> None:
+        if self.top_k < 1 or self.max_subjects < 1 or self.top_regions_per_feature < 1:
+            raise ValueError("AnatomicalTraceability limits must be positive")
+        if self.method != "roi_occlusion" or self.rank_by not in {
+            "consensus",
+            "importance_mean",
+        }:
+            raise ValueError("Unsupported anatomical traceability method or ranking")
+        if not self.region_indices or len(set(self.region_indices)) != len(
+            self.region_indices
+        ):
+            raise ValueError("Region indices must be nonempty and unique")
+        if any(
+            not isinstance(x, int) or x < 0 or x >= 400 for x in self.region_indices
+        ):
+            raise ValueError("Schaefer-400 indices must be integers in 0..399")
+        if not 0 < self.verification_tolerance < 0.1:
+            raise ValueError("Invalid embedding verification tolerance")
+
+
 _METHOD_TYPES = (SHAP, Permutation, ALE, LIME, ALEInteractions)
 
 

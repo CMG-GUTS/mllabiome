@@ -816,7 +816,9 @@ class WaypointEmbedding:
                 f"Waypoint requires positive total abundance for every sample; zero-abundance rows: {zero_rows[:10].tolist()}."
             )
         token_ids = list(token_indices)
-        token_names = [str(tokenizer._convert_id_to_token(token_id)) for token_id in token_ids]
+        token_names = [
+            str(tokenizer._convert_id_to_token(token_id)) for token_id in token_ids
+        ]
         token_matrix = np.column_stack(
             [arr[:, indices].sum(axis=1) for indices in token_indices.values()]
         )

@@ -30,10 +30,14 @@ def _specification(root: Path, strategy: str) -> dict[str, Any]:
 
 
 def _prediction_columns(frame: pd.DataFrame) -> list[str]:
-    columns = [str(column) for column in frame.columns if str(column).startswith("proba_")]
+    columns = [
+        str(column) for column in frame.columns if str(column).startswith("proba_")
+    ]
     columns = sorted(columns, key=lambda column: int(column.removeprefix("proba_")))
     if not columns or columns != [f"proba_{index}" for index in range(len(columns))]:
-        raise ValueError("Fixed-final evaluation requires consecutive probability columns")
+        raise ValueError(
+            "Fixed-final evaluation requires consecutive probability columns"
+        )
     return columns
 
 
@@ -75,21 +79,34 @@ def _fixed_mpma_e(root: Path, specification: dict[str, Any]) -> pd.DataFrame:
     members = specification.get("members", [])
     if isinstance(members, str):
         members = json.loads(members)
-    if not isinstance(members, list) or not members or len(set(map(str, members))) != len(members):
+    if (
+        not isinstance(members, list)
+        or not members
+        or len(set(map(str, members))) != len(members)
+    ):
         raise ValueError("Final MPMA-E must specify unique ensemble members")
     members = [str(member) for member in members]
     prepared = [_member_outer_predictions(root, member) for member in members]
     probability_columns = _prediction_columns(prepared[0])
     if any(_prediction_columns(frame) != probability_columns for frame in prepared[1:]):
         raise ValueError("Final MPMA-E members use incompatible class probabilities")
-    identity = "sample_index" if all("sample_index" in frame.columns for frame in prepared) else "sample_id"
+    identity = (
+        "sample_index"
+        if all("sample_index" in frame.columns for frame in prepared)
+        else "sample_id"
+    )
     key = ["outer_split_key", identity]
     reference = prepared[0]
     if any(frame.duplicated(key).any() for frame in prepared):
         raise ValueError("Final MPMA-E members contain duplicate outer observations")
     expected = set(map(tuple, reference[key].astype(str).to_numpy()))
-    if any(set(map(tuple, frame[key].astype(str).to_numpy())) != expected for frame in prepared[1:]):
-        raise ValueError("Final MPMA-E members do not cover identical outer observations")
+    if any(
+        set(map(tuple, frame[key].astype(str).to_numpy())) != expected
+        for frame in prepared[1:]
+    ):
+        raise ValueError(
+            "Final MPMA-E members do not cover identical outer observations"
+        )
     ordered = reference.copy()
     for column in key:
         ordered[column] = ordered[column].astype(str)
@@ -128,7 +145,14 @@ def _fixed_mpma_e(root: Path, specification: dict[str, Any]) -> pd.DataFrame:
         parameters=parameters,
     )
     result = ordered.drop(
-        columns=["config_id", "learner", "resolution", "levels", "count_transformation", "mpdr_id"],
+        columns=[
+            "config_id",
+            "learner",
+            "resolution",
+            "levels",
+            "count_transformation",
+            "mpdr_id",
+        ],
         errors="ignore",
     ).copy()
     for index, column in enumerate(probability_columns):
@@ -149,7 +173,9 @@ def _summarize_outer(predictions: pd.DataFrame) -> tuple[pd.DataFrame, dict[str,
         predicted = pd.to_numeric(fold["y_pred"], errors="raise").to_numpy(dtype=int)
         probabilities = fold[probability_columns].to_numpy(dtype=float)
         metrics = compute_metrics(truth, predicted, probabilities, classes)
-        fold_rows.append({"outer_split_key": str(split_key), "n_samples": len(fold), **metrics})
+        fold_rows.append(
+            {"outer_split_key": str(split_key), "n_samples": len(fold), **metrics}
+        )
     frame = pd.DataFrame(fold_rows)
     summary: dict[str, Any] = {
         "selection_basis": "all_inner_validation_for_final_refit",
@@ -159,11 +185,17 @@ def _summarize_outer(predictions: pd.DataFrame) -> tuple[pd.DataFrame, dict[str,
     for metric in frame.columns:
         if metric in {"outer_split_key", "n_samples"}:
             continue
-        values = pd.to_numeric(frame[metric], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+        values = (
+            pd.to_numeric(frame[metric], errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna()
+        )
         if values.empty:
             continue
         summary[f"outer_{metric}_mean"] = float(values.mean())
-        summary[f"outer_{metric}_std"] = float(values.std(ddof=1)) if len(values) > 1 else 0.0
+        summary[f"outer_{metric}_std"] = (
+            float(values.std(ddof=1)) if len(values) > 1 else 0.0
+        )
         summary[f"outer_{metric}_count"] = int(len(values))
     return frame, summary
 
@@ -185,7 +217,10 @@ def fixed_final_outer_performance(
         if strategy == "MPMA-B"
         else _fixed_mpma_e(root, specification)
     )
-    from .evaluation_predictions import _validate_outer_coverage, _validate_prediction_values
+    from .evaluation_predictions import (
+        _validate_outer_coverage,
+        _validate_prediction_values,
+    )
 
     _validate_prediction_values(predictions, strategy)
     _validate_outer_coverage(root, predictions, strategy)

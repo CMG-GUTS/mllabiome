@@ -5,8 +5,11 @@ from pathlib import Path
 from catboost import CatBoostClassifier
 from curated_microbiota.collections import lampp_crc
 from lightgbm import LGBMClassifier
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GridSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
 from mllabiome import mll
@@ -44,22 +47,22 @@ RESOLUTIONS = (
     # ("family", ("family",)),
     # ("genus", ("genus",)),
     # ("species", ("species",)),
-    ("strain", ("strain",)),
-    # ("raw", ("all",)),
+    # ("strain", ("strain",)),
+    ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
     # mll.Transformation("identity"),
-    # mll.Transformation("presence_absence"),
-    # mll.Transformation(
-    #     "relative_abundance",
-    #     composition_scope="rank-wise",
-    # ),
-    # mll.Transformation(
-    #     "arcsine_sqrt",
-    #     composition_scope="rank-wise",
-    # ),
-    # mll.Transformation("clr", composition_scope="rank-wise"),
+    mll.Transformation("presence_absence"),
+    mll.Transformation(
+        "relative_abundance",
+        composition_scope="rank-wise",
+    ),
+    mll.Transformation(
+        "arcsine_sqrt",
+        composition_scope="rank-wise",
+    ),
+    mll.Transformation("clr", composition_scope="rank-wise"),
     mll.Transformation(
         "hellinger",
         composition_scope="rank-wise",
@@ -68,6 +71,7 @@ COUNT_TRANSFORMATIONS = (
     #     "log10",
     #     composition_scope="rank-wise",
     # ),
+    # mll.Transformation("prev_weighted", composition_scope="rank-wise"),
 )
 
 MODELS = (
@@ -88,44 +92,44 @@ MODELS = (
     #     ),
     # ),
     # # default standard models
-    (
-        "CB_default",
-        CatBoostClassifier(
-            random_seed=42,
-            thread_count=1,
-            verbose=False,
-            allow_writing_files=False,
-        ),
-    ),
-    (
-        "RF_default",
-        RandomForestClassifier(
-            random_state=42,
-        ),
-    ),
-    (
-        "LightGBM_default",
-        LGBMClassifier(
-            random_state=42,
-            n_jobs=1,
-            verbosity=-1,
-        ),
-    ),
-    (
-        "XGB_default",
-        XGBClassifier(
-            random_state=42,
-            n_jobs=1,
-            verbosity=0,
-            eval_metric="logloss",
-        ),
-    ),
-    (
-        "LR_default",
-        LogisticRegression(
-            random_state=42,
-        ),
-    ),
+    # (
+    #     "CB_default",
+    #     CatBoostClassifier(
+    #         random_seed=42,
+    #         thread_count=1,
+    #         verbose=False,
+    #         allow_writing_files=False,
+    #     ),
+    # ),
+    # (
+    #     "RF_default",
+    #     RandomForestClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "LightGBM_default",
+    #     LGBMClassifier(
+    #         random_state=42,
+    #         n_jobs=1,
+    #         verbosity=-1,
+    #     ),
+    # ),
+    # (
+    #     "XGB_default",
+    #     XGBClassifier(
+    #         random_state=42,
+    #         n_jobs=1,
+    #         verbosity=0,
+    #         eval_metric="logloss",
+    #     ),
+    # ),
+    # (
+    #     "LR_default",
+    #     LogisticRegression(
+    #         random_state=42,
+    #     ),
+    # ),
     # (
     #     "TabPFN",
     #     mll.TabPFNClassifier(
@@ -211,14 +215,14 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
-    # (
-    #     "KumoTabular_large",
-    #     mll.KumoTabularClassifier(
-    #         size="large",
-    #         device="cpu",
-    #         random_state=42,
-    #     ),
-    # ),
+    (
+        "KumoTabular_large",
+        mll.KumoTabularClassifier(
+            size="large",
+            device="cpu",
+            random_state=42,
+        ),
+    ),
     # (
     #     "RealMLP_TD_default",
     #     mll.RealMLPClassifier(
@@ -228,6 +232,63 @@ MODELS = (
     # (
     #     "TabICLv2_default",
     #     mll.TabICLClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "ElasticNet_tuned",
+    #     GridSearchCV(
+    #         estimator=Pipeline([
+    #             ("scaler", StandardScaler(with_mean=False)),
+    #             ("lr", LogisticRegression(
+    #                 solver="saga",
+    #                 max_iter=10000,
+    #                 tol=1e-4,
+    #                 random_state=42,
+    #             )),
+    #         ]),
+    #         param_grid={
+    #             "lr__C": [0.01, 0.1, 1.0, 10.0],
+    #             "lr__l1_ratio": [0.25, 0.5, 0.75],
+    #         },
+    #         scoring="neg_log_loss",
+    #         cv=3,
+    #         refit=True,
+    #         n_jobs=1,
+    #         error_score="raise",
+    #     ),
+    # ),
+    # (
+    #     "LASSO_tuned",
+    #     GridSearchCV(
+    #         estimator=Pipeline(
+    #             [
+    #                 ("scaler", StandardScaler(with_mean=False)),
+    #                 (
+    #                     "lr",
+    #                     LogisticRegression(
+    #                         penalty="l1",
+    #                         solver="saga",
+    #                         max_iter=10000,
+    #                         tol=1e-4,
+    #                         random_state=42,
+    #                     ),
+    #                 ),
+    #             ]
+    #         ),
+    #         param_grid={
+    #             "lr__C": [0.01, 0.1, 1.0, 10.0],
+    #         },
+    #         scoring="neg_log_loss",
+    #         cv=3,
+    #         refit=True,
+    #         n_jobs=1,
+    #         error_score="raise",
+    #     ),
+    # ),
+    # (
+    #     "ExtraTrees_default",
+    #     ExtraTreesClassifier(
     #         random_state=42,
     #     ),
     # ),
