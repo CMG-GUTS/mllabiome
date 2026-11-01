@@ -8,8 +8,9 @@ from .console import info
 from .ensemble_sweep import sweep_ensemble
 from .explore import run_explore as execute_explore
 from .final_explainability import explain
-from .final_models import build_final_models, load_final_models
+from .final_models import build_final_models
 from .inference import run_inference as execute_inference
+from .inference_progress import inference_phase, inference_progress
 from .report import write_report
 from .robustness import run_robustness as execute_robustness
 from .stage_results import print_stage_results
@@ -120,26 +121,28 @@ def run_inference(sweep: Sweep) -> dict[str, Any]:
         outputs = execute_inference(sweep)
         print_stage_results(sweep, "inference")
         return outputs
-    children = target_sweeps(sweep)
+    with inference_phase("Resolve target configuration"):
+        children = target_sweeps(sweep)
     records: list[dict[str, Any]] = []
     outputs: dict[str, Any] = {}
-    for index, child in enumerate(children, start=1):
-        if _is_multi_target(sweep, children):
-            info(
-                f"Inference · target {index}/{len(children)} · {child.data.target_col}"
-            )
-        include_mpma_e = "mpma_e" in child.inference.targets
-        final_models_path = Path(child.root()) / "final_models.json"
-        if final_models_path.exists():
-            models = load_final_models(child.root())
-            if include_mpma_e and "MPMA-E" not in models:
-                models = build_final_models(child.root(), include_mpma_e=True)
-        else:
-            models = build_final_models(child.root(), include_mpma_e=include_mpma_e)
-        child_outputs = execute_inference(child, models=models)
-        target = str(child.data.target_col)
-        outputs[target] = child_outputs
-        records.append(_target_record(child, child_outputs))
+    with inference_progress(len(children)) as tracker:
+        for index, child in enumerate(children, start=1):
+            target = str(child.data.target_col)
+            if tracker is not None:
+                tracker.target(index, target)
+            else:
+                info(f"Inference · target {index}/{len(children)} · {target}")
+            include_mpma_e = "mpma_e" in child.inference.targets
+            with inference_phase(f"Target {target} · rebuild final model selection"):
+                models = build_final_models(child.root(), include_mpma_e=include_mpma_e)
+            if tracker is not None:
+                tracker.workflow_step("final model selection resolved")
+            with inference_phase(f"Target {target} · deploy selected models"):
+                child_outputs = execute_inference(child, models=models)
+            outputs[target] = child_outputs
+            records.append(_target_record(child, child_outputs))
+            if tracker is not None:
+                tracker.finish_target()
     if _is_multi_target(sweep, children):
         outputs["manifest"] = _write_stage_manifest(sweep, "inference", records)
     result = (

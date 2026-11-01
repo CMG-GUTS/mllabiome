@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 
+import gc
 import hashlib
 import importlib
 import json
+import os
 import platform
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -18,8 +21,16 @@ from sklearn.pipeline import Pipeline
 
 from ._version import __version__
 from .compute import ResourceTracker, machine_profile
+from .conformal import external_conformal_sets
 from .configs_sweep import Sweep, _scientific_digest
-from .data import Dataset, _taxonomic_rank, dataset_fingerprint, load_dataset
+from .data import (
+    Dataset,
+    _first_nonempty_tsv_row,
+    _read_feature_by_sample_tsv,
+    _taxonomic_rank,
+    dataset_fingerprint,
+    load_dataset,
+)
 from .data import metadata_path as training_metadata_path
 from .ensemble_aggregation import PROBABILITY_PRESERVING_AGGREGATIONS
 from .evaluation_splits import _groups_from_metadata
@@ -29,6 +40,8 @@ from .final_models import (
     hydrate_final_models,
 )
 from .learners import _learner_factory, _learner_name, fit_classifier
+from .inference_progress import current_inference_progress, inference_phase
+from .console import info
 from .metrics import _estimator_call, _predict_proba_aligned
 from .resolutions import (
     _normalise_levels,
@@ -109,15 +122,201 @@ def _atomic_joblib(value: Any, path: Path) -> None:
     temp.replace(path)
 
 
-def _read_optional_metadata(
-    path: Path | None, sample_id_col: str, sample_ids: list[str]
+def _prediction_checkpoint_path(deployment_dir: Path, config_id: str) -> Path:
+    return deployment_dir / "predictions" / f"{config_id}.npy"
+
+
+def _load_prediction_checkpoint(
+    path: Path,
+    signature: str,
+    n_samples: int,
+    n_outputs: int,
+    *,
+    require_bundle: bool,
+    bundle_path: Path,
+    bundle_signature: str,
+) -> tuple[np.ndarray, dict[str, Any]] | None:
+    metadata_path = path.with_suffix(".json")
+    if not path.is_file() or not metadata_path.is_file():
+        return None
+    if require_bundle and (
+        not bundle_path.is_file()
+        or not _bundle_signature_path(bundle_path).is_file()
+        or not _bundle_might_match(bundle_path, bundle_signature)
+    ):
+        return None
+    try:
+        record = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if not isinstance(record, dict) or record.get("signature") != signature:
+            return None
+        if record.get("sha256") != _sha256_file(path):
+            return None
+        with path.open("rb") as handle:
+            values = np.load(handle, allow_pickle=False)
+        if values.shape != (n_samples, n_outputs) or not np.isfinite(values).all():
+            return None
+        if not np.issubdtype(values.dtype, np.number):
+            return None
+        audit = record.get("audit")
+        if not isinstance(audit, dict):
+            return None
+        if n_outputs > 1:
+            if np.any(values < -1e-12) or np.any(values > 1.0 + 1e-12):
+                return None
+            if not np.allclose(values.sum(axis=1), 1.0, rtol=1e-6, atol=1e-6):
+                return None
+        return np.asarray(values, dtype=float), audit
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return None
+
+
+def _save_prediction_checkpoint(
+    path: Path,
+    signature: str,
+    values: np.ndarray,
+    audit: dict[str, Any],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_values = path.with_suffix(".npy.tmp")
+    with temp_values.open("wb") as handle:
+        np.save(handle, values, allow_pickle=False)
+    record = {
+        "schema_version": 1,
+        "signature": signature,
+        "sha256": _sha256_file(temp_values),
+        "audit": audit,
+    }
+    temp_metadata = path.with_suffix(".json.tmp")
+    temp_metadata.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+    temp_values.replace(path)
+    temp_metadata.replace(path.with_suffix(".json"))
+
+
+def _is_mps_oom(exc: BaseException) -> bool:
+    message = str(exc).casefold()
+    return "mps" in message and "out of memory" in message
+
+
+def _kumo_cpu_retry_enabled() -> bool:
+    return os.getenv(
+        "MLLABIOME_INFERENCE_KUMO_CPU_FALLBACK", ""
+    ).strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _fit_estimator_with_kumo_fallback(
+    estimator: Any,
+    learner_factory: Any,
+    train_X: np.ndarray,
+    y: np.ndarray,
+    groups: np.ndarray | None,
+    task: str,
+    feature_names: list[str],
+    config_id: str,
+) -> tuple[Any, str]:
+    failed_on_mps = False
+    try:
+        if task == "classification":
+            fit_classifier(estimator, train_X, y, groups)
+        else:
+            estimator.fit(train_X, y)
+    except RuntimeError as exc:
+        if not _is_mps_oom(exc):
+            raise
+        if not (
+            estimator.__class__.__module__ == "mllabiome.kumo"
+            and estimator.__class__.__name__ == "KumoTabularClassifier"
+        ):
+            raise
+        if not _kumo_cpu_retry_enabled():
+            raise RuntimeError(
+                f"Kumo member {config_id} exhausted MPS memory during its own fit. "
+                "Previous ensemble members are already processed sequentially. "
+                "To retry the same Kumo architecture on CPU, set "
+                "MLLABIOME_INFERENCE_KUMO_CPU_FALLBACK=1. "
+                "CPU execution can still require substantial system RAM."
+            ) from exc
+        failed_on_mps = True
+    if not failed_on_mps:
+        return estimator, str(getattr(estimator, "device_", "default"))
+    info(
+        f"Inference · member {config_id} · MPS fit exhausted available memory; retrying Kumo on CPU"
+    )
+    del estimator
+    _release_accelerator_memory(config_id)
+    estimator = configure_estimator_threads(learner_factory(), 1)
+    estimator.set_params(device="cpu")
+    if callable(getattr(estimator, "bind_schema", None)):
+        estimator.bind_schema(feature_names)
+    if task == "classification":
+        fit_classifier(estimator, train_X, y, groups)
+    else:
+        estimator.fit(train_X, y)
+    return estimator, "cpu"
+
+
+def _release_accelerator_memory(config_id: str) -> None:
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return
+    gc.collect()
+    if (
+        hasattr(torch, "backends")
+        and hasattr(torch.backends, "mps")
+        and torch.backends.mps.is_available()
+    ):
+        torch.mps.empty_cache()
+        if hasattr(torch.mps, "current_allocated_memory"):
+            allocated = torch.mps.current_allocated_memory() / (1024**3)
+            info(
+                f"Inference · member {config_id} · MPS allocated after cleanup: {allocated:.2f} GiB"
+            )
+    if torch.cuda.is_available() and torch.cuda.is_initialized():
+        torch.cuda.empty_cache()
+
+
+def _bundle_signature_path(path: Path) -> Path:
+    return path.with_suffix(".signature.json")
+
+
+def _bundle_might_match(path: Path, signature: str) -> bool:
+    signature_path = _bundle_signature_path(path)
+    if not signature_path.exists():
+        return True
+    try:
+        data = json.loads(signature_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("signature") == signature
+
+
+def _write_bundle_signature(path: Path, signature: str) -> None:
+    signature_path = _bundle_signature_path(path)
+    signature_path.parent.mkdir(parents=True, exist_ok=True)
+    temp = signature_path.with_suffix(signature_path.suffix + ".tmp")
+    temp.write_text(
+        json.dumps({"signature": signature}, sort_keys=True), encoding="utf-8"
+    )
+    temp.replace(signature_path)
+
+
+def _read_profile_metadata(
+    path: Path | None, sample_id_col: str
 ) -> pd.DataFrame | None:
     if path is None:
         return None
-    frame = pd.read_csv(path, sep="\t", dtype=str)
-    if sample_id_col not in frame.columns:
+    parsed_headers: dict[str, list[str]] = {}
+    frame = None
+    for delimiter in ("\t", ",", ";"):
+        candidate = pd.read_csv(path, sep=delimiter, dtype=str, encoding="utf-8-sig")
+        candidate.columns = candidate.columns.astype(str).str.strip()
+        if sample_id_col in candidate.columns:
+            frame = candidate
+            break
+        parsed_headers[repr(delimiter)] = candidate.columns.tolist()
+    if frame is None:
         raise ValueError(
-            f"Inference metadata is missing sample ID column {sample_id_col!r}."
+            f"Inference metadata {path} is missing sample ID column {sample_id_col!r}. "
+            f"Parsed headers by delimiter: {parsed_headers!r}."
         )
     frame[sample_id_col] = frame[sample_id_col].astype(str).str.strip()
     if frame[sample_id_col].duplicated().any():
@@ -127,6 +326,14 @@ def _read_optional_metadata(
         raise ValueError(
             f"Inference metadata contains duplicate sample IDs: {duplicates[:5]!r}."
         )
+    return frame
+
+
+def _align_profile_metadata(
+    frame: pd.DataFrame | None, sample_id_col: str, sample_ids: list[str]
+) -> pd.DataFrame | None:
+    if frame is None:
+        return None
     indexed = frame.set_index(sample_id_col)
     missing = [sample_id for sample_id in sample_ids if sample_id not in indexed.index]
     if missing:
@@ -136,10 +343,33 @@ def _read_optional_metadata(
     return indexed.loc[sample_ids].reset_index()
 
 
-def _read_matrix_profile(path: Path) -> tuple[np.ndarray, list[str], list[str]]:
-    frame = pd.read_csv(path, sep="\t", index_col=0, low_memory=False)
-    frame.index = frame.index.astype(str).str.strip()
-    frame.columns = frame.columns.astype(str).str.strip()
+def _read_optional_metadata(
+    path: Path | None, sample_id_col: str, sample_ids: list[str]
+) -> pd.DataFrame | None:
+    return _align_profile_metadata(
+        _read_profile_metadata(path, sample_id_col), sample_id_col, sample_ids
+    )
+
+
+def _read_matrix_profile(
+    path: Path, metadata_sample_ids: list[str] | None = None
+) -> tuple[np.ndarray, list[str], list[str]]:
+    if metadata_sample_ids is None:
+        first = _first_nonempty_tsv_row(path)
+        if _taxonomic_rank(first[0].lstrip("#").strip()) is not None:
+            first_values = pd.to_numeric(pd.Series(first[1:]), errors="coerce")
+            if len(first_values) and first_values.notna().all():
+                raise ValueError(
+                    "Headerless inference abundance matrices require Inference.metadata_path to establish sample IDs."
+                )
+        frame = pd.read_csv(path, sep="\t", index_col=0, low_memory=False)
+        frame.index = frame.index.astype(str).str.strip()
+        frame.columns = frame.columns.astype(str).str.strip()
+    else:
+        frame, selected = _read_feature_by_sample_tsv(path, metadata_sample_ids)
+        frame = frame.loc[:, selected]
+        frame.index = frame.index.astype(str).str.strip()
+        frame.columns = frame.columns.astype(str).str.strip()
     if frame.empty or frame.shape[1] == 0:
         raise ValueError("Inference abundance matrix is empty.")
     if frame.index.duplicated().any():
@@ -215,8 +445,13 @@ def _profile_for_sweep(
     if not path.exists():
         raise FileNotFoundError(path)
     sample_id_col = plan.sample_id_col or sweep.data.sample_id_col
+    metadata_path = None if plan.metadata_path is None else Path(plan.metadata_path)
+    metadata_frame = _read_profile_metadata(metadata_path, sample_id_col)
     if inference_family == "matrix_tsv":
-        X, features, sample_ids = _read_matrix_profile(path)
+        metadata_ids = (
+            None if metadata_frame is None else metadata_frame[sample_id_col].tolist()
+        )
+        X, features, sample_ids = _read_matrix_profile(path, metadata_ids)
     else:
         X, features, sample_ids = _read_wide_profile(
             path, sample_id_col, training.feature_names_by_level["all"]
@@ -226,8 +461,7 @@ def _profile_for_sweep(
         raise ValueError(
             f"Inference data overlap the training cohort by {len(overlap)} sample ID(s); first IDs: {overlap[:5]!r}."
         )
-    metadata_path = None if plan.metadata_path is None else Path(plan.metadata_path)
-    metadata = _read_optional_metadata(metadata_path, sample_id_col, sample_ids)
+    metadata = _align_profile_metadata(metadata_frame, sample_id_col, sample_ids)
     audit = {
         "training_format": training_format,
         "inference_format": inference_format,
@@ -283,7 +517,6 @@ def _selected_levels(sweep: Sweep, model: dict[str, Any]) -> tuple[str, ...]:
 
 
 def _abundance_scale(X: np.ndarray) -> str:
-
     values = np.asarray(X, dtype=float)
     if values.ndim != 2:
         raise ValueError(
@@ -293,44 +526,32 @@ def _abundance_scale(X: np.ndarray) -> str:
         raise ValueError("Abundance-scale detection received NaN or infinite values.")
     if np.any(values < 0):
         raise ValueError("Abundance-scale detection received negative values.")
-
     totals = values.sum(axis=1)
     informative = totals > 0
     if not np.any(informative):
         return "zero"
-
     informative_values = values[informative]
     informative_totals = totals[informative]
     positive = informative_values[informative_values > 0]
-    integer_fraction = (
-        float(np.mean(np.isclose(positive, np.rint(positive), atol=1e-8)))
-        if positive.size
-        else 0.0
+    integer_fraction = float(
+        np.mean(np.isclose(positive, np.rint(positive), atol=1e-8))
     )
-
     proportion_fraction = float(
         np.mean(np.isclose(informative_totals, 1.0, rtol=0.03, atol=0.03))
     )
     percentage_fraction = float(
         np.mean(np.isclose(informative_totals, 100.0, rtol=0.03, atol=2.0))
     )
-
     if proportion_fraction >= 0.80:
         return "proportion"
     if percentage_fraction >= 0.80:
         return "percentage"
-
-    proportion_upper = 1.0 + 0.03
-    projected_proportion_fraction = float(
-        np.mean(
-            (informative_totals <= proportion_upper)
-            & (np.max(informative_values, axis=1) <= proportion_upper)
-        )
-    )
-    if projected_proportion_fraction >= 0.80:
+    if (
+        float(np.max(informative_values)) <= 1.03
+        and float(np.mean(informative_totals <= 1.03)) >= 0.80
+    ):
         return "proportion"
-
-    if integer_fraction >= 0.98 and float(np.median(informative_totals)) > 1.0:
+    if integer_fraction >= 0.98 and float(np.max(informative_values)) > 100.0:
         return "counts"
     return "nonnegative_abundance"
 
@@ -350,9 +571,11 @@ def _scale_validation_mode(
     training_scale: str,
     inference_scale: str,
 ) -> str:
-
     if _transformation_base_token(model) == "presence_absence":
         return "skipped_presence_absence"
+    verified = {"proportion", "percentage", "counts"}
+    if training_scale not in verified or inference_scale not in verified:
+        return "inconclusive"
     if training_scale == inference_scale:
         return "matched"
     return "mismatch"
@@ -576,13 +799,25 @@ def _learner_item(sweep: Sweep, model: dict[str, Any]) -> Any:
     return matches[0]
 
 
-def _member_signature(dataset: Dataset, model: dict[str, Any]) -> str:
+def _member_signature(
+    dataset: Dataset,
+    model: dict[str, Any],
+    *,
+    random_state: int,
+    group_col: str | None,
+) -> str:
+    groups = _groups_from_metadata(dataset.metadata, group_col)
     return _scientific_digest(
         {
             "schema": _DEPLOYMENT_SCHEMA,
             "package_version": __version__,
             "training_dataset_fingerprint": dataset_fingerprint(dataset),
             "model": model,
+            "random_state": int(random_state),
+            "group_col": group_col,
+            "training_groups": None
+            if groups is None
+            else [str(value) for value in groups],
         }
     )
 
@@ -595,39 +830,109 @@ def _fit_member(
     model: dict[str, Any],
     deployment_dir: Path,
     save_weights: bool,
+    *,
+    input_signature: str | None = None,
 ) -> tuple[dict[str, Any] | None, np.ndarray, dict[str, Any]]:
     config_id = str(model["config_id"])
-    signature = _member_signature(dataset, model)
+    tracker = current_inference_progress()
+    if tracker is not None:
+        tracker.begin_member(config_id, str(model.get("learner", "")))
+    with inference_phase(
+        f"Member {config_id} · validate selected model and cache fingerprint"
+    ):
+        signature = _member_signature(
+            dataset,
+            model,
+            random_state=int(sweep.evaluation.random_state),
+            group_col=sweep.data.group_col,
+        )
+    if tracker is not None:
+        tracker.member_step("fingerprint checked")
     bundle_path = deployment_dir / "members" / f"{config_id}.joblib"
-    bundle = None
-    if save_weights and bundle_path.exists():
-        try:
-            candidate = joblib.load(bundle_path)
-            if isinstance(candidate, dict) and candidate.get("signature") == signature:
-                bundle = candidate
-        except Exception:
-            bundle = None
-    levels = _selected_levels(sweep, model)
-    train_X, train_names, blocks = materialize_mpdr_with_blocks(dataset, levels)
-    test_raw, test_names = _profile_resolution(profile_X, profile_names, levels)
-
-    test_X, audit = _align_resolution(
-        np.asarray(train_X, dtype=np.float64),
-        list(train_names),
-        test_raw,
-        test_names,
-        policy=sweep.inference.feature_policy,
+    prediction_path = _prediction_checkpoint_path(deployment_dir, config_id)
+    checkpoint_signature = (
+        None
+        if input_signature is None
+        else _scientific_digest(
+            {"schema": 1, "model": signature, "input": input_signature}
+        )
     )
+    if checkpoint_signature is not None:
+        with inference_phase(
+            f"Member {config_id} · inspect saved external probabilities"
+        ):
+            cached = _load_prediction_checkpoint(
+                prediction_path,
+                checkpoint_signature,
+                len(profile_X),
+                len(dataset.classes) if dataset.task == "classification" else 1,
+                require_bundle=save_weights,
+                bundle_path=bundle_path,
+                bundle_signature=signature,
+            )
+        if cached is not None:
+            info(
+                f"Inference · member {config_id} · reusing verified external prediction checkpoint"
+            )
+            if tracker is not None:
+                tracker.finish_member(config_id)
+            return None, cached[0], cached[1]
+    bundle = None
+    if bundle_path.exists():
+        if not _bundle_might_match(bundle_path, signature):
+            info(
+                f"Inference · member {config_id} · cache fingerprint changed; skip loading stale model"
+            )
+        else:
+            with inference_phase(
+                f"Member {config_id} · inspect saved deployment bundle"
+            ):
+                try:
+                    candidate = joblib.load(bundle_path)
+                    if (
+                        isinstance(candidate, dict)
+                        and candidate.get("signature") == signature
+                    ):
+                        bundle = candidate
+                    else:
+                        del candidate
+                        _release_accelerator_memory(config_id)
+                except Exception:
+                    bundle = None
+                    _release_accelerator_memory(config_id)
+    if tracker is not None:
+        tracker.member_step("cached bundle inspected")
+    levels = _selected_levels(sweep, model)
+    info(
+        f"Inference · member {config_id} · resolution={model.get('resolution', '')} "
+        f"levels={','.join(levels)} · transform={model.get('count_transformation', '')} "
+        f"· learner={model.get('learner', '')}"
+    )
+    with inference_phase(f"Member {config_id} · materialise and align representation"):
+        train_X, train_names, blocks = materialize_mpdr_with_blocks(dataset, levels)
+        test_raw, test_names = _profile_resolution(profile_X, profile_names, levels)
+        test_X, audit = _align_resolution(
+            np.asarray(train_X, dtype=np.float64),
+            list(train_names),
+            test_raw,
+            test_names,
+            policy=sweep.inference.feature_policy,
+        )
 
-    training_scale = _abundance_scale(np.asarray(train_X, dtype=float))
-    inference_scale = _abundance_scale(np.asarray(test_X, dtype=float))
+    if tracker is not None:
+        tracker.member_step("features aligned")
+    training_scale = sweep.inference.training_abundance_scale or _abundance_scale(
+        np.asarray(dataset.X_by_level["all"], dtype=float)
+    )
+    inference_scale = sweep.inference.inference_abundance_scale or _abundance_scale(
+        np.asarray(profile_X, dtype=float)
+    )
     scale_validation = _scale_validation_mode(model, training_scale, inference_scale)
     if scale_validation == "mismatch":
         raise ValueError(
             f"Inference abundance scale differs from training for config {config_id!r}: "
             f"training={training_scale!r}, inference={inference_scale!r}. "
-            "The external matrix has already been resolved and aligned to the "
-            "training feature schema, so this indicates a genuine unit/scale mismatch."
+            "Verify that training and external profiles use the same abundance units."
         )
     if bundle is None:
         ct_item = _transformation_item(sweep, blocks, model)
@@ -638,19 +943,39 @@ def _fit_member(
             feature_names=list(train_names),
         )
         transformer = factory()
-        train_transformed, test_transformed = transformer.apply_pair(
-            np.asarray(train_X, dtype=np.float64), test_X
-        )
+        with inference_phase(
+            f"Member {config_id} · fit transformation and transform external profiles"
+        ):
+            train_transformed, test_transformed = transformer.apply_pair(
+                np.asarray(train_X, dtype=np.float64), test_X
+            )
+        if tracker is not None:
+            tracker.member_step("preprocessing fitted")
         learner = _learner_item(sweep, model)
         _, learner_factory = _learner_factory(learner, task=dataset.task)
         estimator = configure_estimator_threads(learner_factory(), 1)
         if callable(getattr(estimator, "bind_schema", None)):
             estimator.bind_schema(transformer.get_feature_names_out(list(train_names)))
-        if dataset.task == "classification":
-            groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
-            fit_classifier(estimator, train_transformed, dataset.y, groups)
-        else:
-            estimator.fit(train_transformed, dataset.y)
+        with inference_phase(
+            f"Member {config_id} · refit {model.get('learner', '')} on full training cohort"
+        ):
+            groups = (
+                _groups_from_metadata(dataset.metadata, sweep.data.group_col)
+                if dataset.task == "classification"
+                else None
+            )
+            estimator, effective_device = _fit_estimator_with_kumo_fallback(
+                estimator,
+                learner_factory,
+                train_transformed,
+                dataset.y,
+                groups,
+                dataset.task,
+                list(transformer.get_feature_names_out(list(train_names))),
+                config_id,
+            )
+        if tracker is not None:
+            tracker.member_step("learner fitted")
         transformed_names = transformer.get_feature_names_out(list(train_names))
         bundle = {
             "schema_version": _DEPLOYMENT_SCHEMA,
@@ -669,19 +994,41 @@ def _fit_member(
             "feature_filter": transformer.feature_filter_metadata(),
             "transformer": transformer,
             "estimator": estimator,
+            "effective_fit_device": effective_device,
         }
         if save_weights:
-            _atomic_joblib(bundle, bundle_path)
+            with inference_phase(
+                f"Member {config_id} · save fitted model and preprocessing"
+            ):
+                _atomic_joblib(bundle, bundle_path)
+                _write_bundle_signature(bundle_path, signature)
+        if tracker is not None:
+            tracker.member_step(
+                "fitted bundle saved" if save_weights else "bundle persistence skipped"
+            )
     else:
+        info(
+            f"Inference · member {config_id} · reusing cached fitted model and preprocessing"
+        )
         expected_names = [str(value) for value in bundle.get("raw_feature_names", [])]
         if expected_names != list(train_names):
             raise ValueError(
                 f"Cached deployment feature schema for {config_id!r} does not match the current training data."
             )
-        test_transformed = bundle["transformer"].apply(test_X)
+        with inference_phase(
+            f"Member {config_id} · transform external profiles using cached preprocessing"
+        ):
+            test_transformed = bundle["transformer"].apply(test_X)
+        if tracker is not None:
+            tracker.member_step("cached preprocessing applied")
+            tracker.member_step("cached learner reused")
+            tracker.member_step("cached weights reused")
     estimator = bundle["estimator"]
     if dataset.task == "classification":
-        proba = _predict_proba_aligned(estimator, test_transformed, dataset.classes)
+        with inference_phase(
+            f"Member {config_id} · predict external class probabilities"
+        ):
+            proba = _predict_proba_aligned(estimator, test_transformed, dataset.classes)
         if (
             not np.isfinite(proba).all()
             or np.any(proba < -1e-12)
@@ -697,13 +1044,16 @@ def _fit_member(
             )
         predictions = np.asarray(proba, dtype=float)
     else:
-        predictions = np.asarray(
-            _estimator_call(estimator, "predict", test_transformed), dtype=float
-        ).reshape(-1, 1)
+        with inference_phase(f"Member {config_id} · predict external outcomes"):
+            predictions = np.asarray(
+                _estimator_call(estimator, "predict", test_transformed), dtype=float
+            ).reshape(-1, 1)
         if not np.isfinite(predictions).all():
             raise ValueError(
                 f"Deployment model {config_id!r} produced non-finite predictions."
             )
+    if tracker is not None:
+        tracker.member_step("external predictions computed")
     audit.update(
         {
             "config_id": config_id,
@@ -716,9 +1066,17 @@ def _fit_member(
             "abundance_scale_validation": scale_validation,
             "deployment_signature": signature,
             "bundle_path": str(bundle_path) if save_weights else None,
+            "effective_fit_device": str(bundle.get("effective_fit_device", "unknown")),
         }
     )
-    return bundle if save_weights else None, predictions, audit
+    if checkpoint_signature is not None:
+        with inference_phase(f"Member {config_id} · checkpoint external predictions"):
+            _save_prediction_checkpoint(
+                prediction_path, checkpoint_signature, predictions, audit
+            )
+    if tracker is not None:
+        tracker.finish_member(config_id)
+    return None, predictions, audit
 
 
 def _strategy_predictions(
@@ -731,20 +1089,29 @@ def _strategy_predictions(
     save_weights: bool,
     strategy: str,
     member_cache: dict[str, tuple[dict[str, Any] | None, np.ndarray, dict[str, Any]]],
+    input_signature: str | None = None,
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
     if strategy == "MPMA-B":
         model = models["MPMA-B"]
         config_id = str(model["config_id"])
         if config_id not in member_cache:
-            member_cache[config_id] = _fit_member(
-                sweep,
-                dataset,
-                profile_X,
-                profile_names,
-                model,
-                deployment_dir,
-                save_weights,
-            )
+            try:
+                member_cache[config_id] = _fit_member(
+                    sweep,
+                    dataset,
+                    profile_X,
+                    profile_names,
+                    model,
+                    deployment_dir,
+                    save_weights,
+                    **(
+                        {}
+                        if input_signature is None
+                        else {"input_signature": input_signature}
+                    ),
+                )
+            finally:
+                _release_accelerator_memory(config_id)
         probabilities = member_cache[config_id][1]
         alpha = float(model.get("probability_softening_alpha", 0.0))
         if alpha > 0.0:
@@ -759,18 +1126,27 @@ def _strategy_predictions(
         )
     member_predictions = []
     audits = []
-    for member in unit["members"]:
+    for index, member in enumerate(unit["members"], start=1):
         config_id = str(member["config_id"])
+        info(f"Inference · MPMA-E member {index}/{len(unit['members'])} · {config_id}")
         if config_id not in member_cache:
-            member_cache[config_id] = _fit_member(
-                sweep,
-                dataset,
-                profile_X,
-                profile_names,
-                member,
-                deployment_dir,
-                save_weights,
-            )
+            try:
+                member_cache[config_id] = _fit_member(
+                    sweep,
+                    dataset,
+                    profile_X,
+                    profile_names,
+                    member,
+                    deployment_dir,
+                    save_weights,
+                    **(
+                        {}
+                        if input_signature is None
+                        else {"input_signature": input_signature}
+                    ),
+                )
+            finally:
+                _release_accelerator_memory(config_id)
         member_predictions.append(member_cache[config_id][1])
         audits.append(member_cache[config_id][2])
     stack = np.stack(member_predictions, axis=0)
@@ -781,9 +1157,21 @@ def _strategy_predictions(
             float(member.get("aggregation_weight", member.get("weight")))
             for member in unit["members"]
         ]
-    predictions = aggregate_member_predictions(
-        stack, aggregation, weights, unit.get("aggregation_parameters", {})
-    )
+    parameters = unit.get("aggregation_parameters", {})
+    if weights is not None:
+        info(f"Inference · MPMA-E · selected {aggregation} weights={weights!r}")
+    elif isinstance(parameters, dict) and "member_weights" in parameters:
+        info(
+            f"Inference · MPMA-E · selected {aggregation} weights={parameters['member_weights']!r}"
+        )
+    else:
+        info(f"Inference · MPMA-E · selected aggregation={aggregation}")
+    with inference_phase(
+        f"MPMA-E · aggregate {len(member_predictions)} members using {aggregation}"
+    ):
+        predictions = aggregate_member_predictions(
+            stack, aggregation, weights, parameters
+        )
     if dataset.task == "classification" and aggregation in set(
         PROBABILITY_PRESERVING_AGGREGATIONS
     ):
@@ -864,12 +1252,16 @@ def run_inference(
             "Inference requires completed evaluation artifacts. Run --stage evaluate first. Missing: "
             + ", ".join(missing)
         )
-    models = (
-        build_final_models(root, include_mpma_e="mpma_e" in sweep.inference.targets)
-        if models is None
-        else models
-    )
-    models = hydrate_final_models(root, models)
+    with inference_phase("Load and verify final selected model specifications"):
+        models = (
+            build_final_models(root, include_mpma_e="mpma_e" in sweep.inference.targets)
+            if models is None
+            else models
+        )
+        models = hydrate_final_models(root, models)
+    tracker = current_inference_progress()
+    if tracker is not None:
+        tracker.workflow_step("model specifications verified")
     requested = tuple(
         "MPMA-B" if value == "mpma_b" else "MPMA-E" for value in sweep.inference.targets
     )
@@ -880,6 +1272,16 @@ def run_inference(
     selected_models = [models["MPMA-B"]]
     if "MPMA-E" in requested:
         selected_models.extend(models["MPMA-E"]["members"])
+    tracker = current_inference_progress()
+    if tracker is not None:
+        predicted_models = []
+        if "MPMA-B" in requested:
+            predicted_models.append(models["MPMA-B"])
+        if "MPMA-E" in requested:
+            predicted_models.extend(models["MPMA-E"]["members"])
+        tracker.plan_models(
+            list(dict.fromkeys(str(model["config_id"]) for model in predicted_models))
+        )
     levels = []
     for model in selected_models:
         levels.extend(
@@ -887,13 +1289,24 @@ def run_inference(
             for level in _selected_levels(sweep, model)
             if level not in _RAW_LEVELS
         )
-    training = load_dataset(sweep.data, tuple(dict.fromkeys(levels)) or ("all",))
-    profile_X, profile_names, sample_ids, metadata, input_audit = _profile_for_sweep(
-        sweep, training
+    with inference_phase("Load full training cohort and selected taxonomic ranks"):
+        training = load_dataset(sweep.data, tuple(dict.fromkeys(levels)) or ("all",))
+    info(f"Inference · training cohort · {len(training.sample_ids)} samples")
+    if tracker is not None:
+        tracker.workflow_step("training data loaded")
+    with inference_phase("Read external abundance profiles and align metadata"):
+        profile_X, profile_names, sample_ids, metadata, input_audit = (
+            _profile_for_sweep(sweep, training)
+        )
+    info(
+        f"Inference · external cohort · {len(sample_ids)} samples · {len(profile_names)} features"
     )
+    if tracker is not None:
+        tracker.workflow_step("external profiles aligned")
     inference_root = root / "inference"
     deployment_dir = inference_root / "deployment"
     if sweep.inference.save_weights:
+        info("Inference · preparing reusable deployment weights and background")
         deployment_dir.mkdir(parents=True, exist_ok=True)
         background_path = deployment_dir / "background.npz"
         fingerprint = dataset_fingerprint(training)
@@ -925,45 +1338,119 @@ def run_inference(
                 )
             temp.replace(background_path)
     inference_root.mkdir(parents=True, exist_ok=True)
-    tracker = ResourceTracker().start()
+    if tracker is not None:
+        tracker.workflow_step("deployment storage ready")
+    resources_tracker = ResourceTracker().start()
+    input_signature = _scientific_digest(
+        {
+            "schema": 1,
+            "profile_sha256": input_audit["abundance_sha256"],
+            "sample_ids": sample_ids,
+            "feature_names": profile_names,
+            "feature_policy": sweep.inference.feature_policy,
+            "training_abundance_scale": sweep.inference.training_abundance_scale,
+            "inference_abundance_scale": sweep.inference.inference_abundance_scale,
+            "class_labels": list(training.class_labels),
+            "task": training.task,
+        }
+    )
     member_cache: dict[
         str, tuple[dict[str, Any] | None, np.ndarray, dict[str, Any]]
     ] = {}
     strategy_values: dict[str, np.ndarray] = {}
     audits: list[dict[str, Any]] = []
     try:
-        for strategy in requested:
-            values, rows = _strategy_predictions(
-                sweep,
-                training,
-                profile_X,
-                profile_names,
-                models,
-                deployment_dir,
-                sweep.inference.save_weights,
-                strategy,
-                member_cache,
-            )
+        for index, strategy in enumerate(requested, start=1):
+            info(f"Inference · strategy {index}/{len(requested)} · {strategy}")
+            with inference_phase(
+                f"Strategy {strategy} · fit or reuse selected learners and predict"
+            ):
+                values, rows = _strategy_predictions(
+                    sweep,
+                    training,
+                    profile_X,
+                    profile_names,
+                    models,
+                    deployment_dir,
+                    sweep.inference.save_weights,
+                    strategy,
+                    member_cache,
+                    input_signature=input_signature,
+                )
             strategy_values[strategy] = values
             audits.extend(rows)
     finally:
-        resources = tracker.stop()
+        resources = resources_tracker.stop()
+    if tracker is not None:
+        tracker.workflow_step("selected models predicted")
+    info("Inference · preparing sample and prediction outputs")
     samples_path = inference_root / "samples.npz"
     temp = samples_path.with_suffix(".tmp")
-    with temp.open("wb") as handle:
-        np.savez_compressed(
-            handle,
-            X=profile_X,
-            names=np.asarray(profile_names, dtype=str),
-            samples=np.asarray(sample_ids, dtype=str),
-            fingerprint=np.asarray(input_audit["abundance_sha256"]),
-        )
-    temp.replace(samples_path)
+    with inference_phase("Save external sample matrix for deployment provenance"):
+        with temp.open("wb") as handle:
+            np.savez_compressed(
+                handle,
+                X=profile_X,
+                names=np.asarray(profile_names, dtype=str),
+                samples=np.asarray(sample_ids, dtype=str),
+                fingerprint=np.asarray(input_audit["abundance_sha256"]),
+            )
+        temp.replace(samples_path)
+    if tracker is not None:
+        tracker.workflow_step("external sample matrix saved")
     predictions = _prediction_frame(sample_ids, training, strategy_values)
+    with inference_phase(
+        "Verify fitted model provenance for optional conformal prediction"
+    ):
+        calibration_groups = _groups_from_metadata(
+            training.metadata, sweep.data.group_col
+        )
+        model_signature = _scientific_digest(
+            {
+                "models": models,
+                "dataset": dataset_fingerprint(training),
+                "random_state": int(sweep.evaluation.random_state),
+                "group_col": sweep.data.group_col,
+                "training_groups": None
+                if calibration_groups is None
+                else [str(value) for value in calibration_groups],
+            }
+        )
+    with inference_phase("Hash saved fitted learners for deployment provenance"):
+        model_artifact_hashes = {
+            str(row["config_id"]): _sha256_file(Path(row["bundle_path"]))
+            for row in audits
+            if row.get("bundle_path") is not None
+        }
+    conformal_report = None
+    if sweep.inference.conformal_alpha is not None:
+        if training.task != "classification":
+            raise ValueError(
+                "Split conformal classification is unavailable for regression."
+            )
+        with inference_phase(
+            "Construct conformal prediction sets from independent calibration cohort"
+        ):
+            predictions, conformal_report = external_conformal_sets(
+                predictions,
+                Path(sweep.inference.conformal_calibration_predictions),
+                Path(sweep.inference.conformal_calibration_labels),
+                class_labels=list(training.class_labels),
+                strategies=requested,
+                alpha=float(sweep.inference.conformal_alpha),
+                training_ids=training.sample_ids,
+                test_ids=sample_ids,
+                model_signature=model_signature,
+                model_artifact_hashes=model_artifact_hashes,
+            )
+    if tracker is not None:
+        tracker.workflow_step("prediction provenance and calibration verified")
     predictions_path = inference_root / "predictions.tsv"
-    _atomic_tsv(predictions, predictions_path)
+    with inference_phase("Write external predictions"):
+        _atomic_tsv(predictions, predictions_path)
     metadata_predictions_path = None
     if metadata is not None:
+        info("Inference · join external metadata with predictions")
         sample_id_col = sweep.inference.sample_id_col or sweep.data.sample_id_col
         annotation = metadata.copy()
         if sample_id_col != "sample_id":
@@ -994,6 +1481,7 @@ def run_inference(
         ]
     )
     feature_audit_path = inference_root / "feature_audit.tsv"
+    info("Inference · write feature alignment and transformation audit")
     _atomic_tsv(feature_audit, feature_audit_path)
     deployment_manifest_path = None
     if sweep.inference.save_weights:
@@ -1005,6 +1493,7 @@ def run_inference(
             list(unique_audits.values()),
         )
         deployment_manifest_path = deployment_dir / "manifest.json"
+        info("Inference · write deployment manifest with selected ensemble parameters")
         dump_json_standard(deployment_manifest, deployment_manifest_path)
     manifest = {
         "schema_version": _INFERENCE_SCHEMA,
@@ -1014,6 +1503,10 @@ def run_inference(
         "targets": list(requested),
         "training_samples": len(training.sample_ids),
         "inference_samples": len(sample_ids),
+        "model_signature": model_signature,
+        "model_artifact_hashes": model_artifact_hashes,
+        "training_dataset_fingerprint": dataset_fingerprint(training),
+        "conformal": conformal_report,
         "input": input_audit,
         "feature_policy": sweep.inference.feature_policy,
         "save_weights": sweep.inference.save_weights,
@@ -1033,8 +1526,14 @@ def run_inference(
         "machine": machine_profile(),
         "python_version": platform.python_version(),
     }
+    if tracker is not None:
+        tracker.workflow_step("prediction outputs and audits written")
     manifest_path = inference_root / "manifest.json"
-    dump_json_standard(manifest, manifest_path)
+    with inference_phase("Write final inference manifest and model provenance"):
+        dump_json_standard(manifest, manifest_path)
+    if tracker is not None:
+        tracker.workflow_step("inference manifest saved")
+    info(f"Inference · completed · predictions={predictions_path}")
     outputs = {
         "predictions": predictions_path,
         "feature_audit": feature_audit_path,

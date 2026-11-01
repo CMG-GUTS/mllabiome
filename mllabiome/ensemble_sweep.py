@@ -27,6 +27,7 @@ from .ensemble_aggregation import (
 )
 from .ensemble_progress import EnsembleSearchProgress
 from .integrations import integration_modality_sets
+from .learner_families import learner_family_from_spec
 from .metrics import (
     _renormalize_proba,
     aggregate_validation_metric,
@@ -43,7 +44,7 @@ from .mpma_vnext import rank_oof_loss, similarity_members
 from .storage import read_table, table_exists, write_table
 from .utils import TAXONOMIC_LEVELS, dump_json_standard
 
-_ENSEMBLE_SEARCH_SCHEMA = "mpmae_search_v10"
+_ENSEMBLE_SEARCH_SCHEMA = "mpmae_search_v12"
 _SUPER_LEARNER_WEIGHT_TOL = 1e-8
 _SUPER_LEARNER_MIN_WEIGHT = 0.01
 _SUPER_LEARNER_OPT_MAXITER = 1000
@@ -183,6 +184,8 @@ def _validate_plan(plan: Ensemble) -> None:
         "top_k",
         "best_per_resolution",
         "best_per_learner_type",
+        "best_deep_ml_pair",
+        "best_deep_ml_complementary_pair",
         "quality_diversity",
         "oof_top_k",
         "oof_similarity",
@@ -290,7 +293,12 @@ def _ensemble_configs(
             "regularized_super_learner",
         }
         for method in _plan_methods(plan):
-            for max_size in _plan_max_sizes(plan):
+            sizes = (
+                (2,)
+                if method in {"best_deep_ml_pair", "best_deep_ml_complementary_pair"}
+                else _plan_max_sizes(plan)
+            )
+            for max_size in sizes:
                 for aggregation in _plan_aggregations(plan):
                     if method in learned_weight_selectors:
                         if aggregation != "weighted_mean_proba" and (
@@ -512,8 +520,9 @@ def _aligned_stack(
         raise ValueError(
             "Prediction table contains conflicting y_true values for a sample."
         )
+    extra_cols = ["study_group"] if "study_group" in predictions.columns else []
     ordered = (
-        predictions[key_cols + ["y_true"]]
+        predictions[key_cols + ["y_true"] + extra_cols]
         .drop_duplicates(key_cols, keep="last")
         .sort_values(key_cols)
         .reset_index(drop=True)
@@ -688,6 +697,40 @@ def _evaluate_selected_members(
     if stack.shape[0] != len(members):
         raise ValueError("MPMA-E member count and prediction stack disagree.")
     aggregation = str(spec["aggregation_strategy"])
+    probabilistic_methods = {
+        "bayesian_model_averaging",
+        "mixture_of_experts",
+        "cross_study_dro",
+        "sparse_nonnegative_stacking",
+    }
+    samples_deduplicated = False
+    if (
+        aggregation in probabilistic_methods
+        and ordered is not None
+        and "sample_id" in ordered.columns
+        and ordered["sample_id"].duplicated().any()
+    ):
+        identifiers = ordered["sample_id"].astype(str).to_numpy()
+        unique = np.unique(identifiers)
+        rows = []
+        averages = []
+        for identifier in unique:
+            positions = np.flatnonzero(identifiers == identifier)
+            frame = ordered.iloc[positions]
+            if frame["y_true"].nunique() != 1:
+                raise ValueError(
+                    "Repeated OOF predictions conflict on the true class for a sample."
+                )
+            if "study_group" in frame and frame["study_group"].nunique() != 1:
+                raise ValueError(
+                    "Repeated OOF predictions conflict on the study assignment for a sample."
+                )
+            rows.append(frame.iloc[0].to_dict())
+            averages.append(stack[:, positions, :].mean(axis=1))
+        ordered = pd.DataFrame(rows).reset_index(drop=True)
+        stack = np.stack(averages, axis=1)
+        y_true = ordered["y_true"].to_numpy(dtype=int)
+        samples_deduplicated = True
     active_weights: np.ndarray | None = None
     aggregation_parameters: dict[str, Any] | None = aggregation_parameters_override
     aggregation_weight_source = (
@@ -733,11 +776,25 @@ def _evaluate_selected_members(
             proba, aggregation_parameters, aggregation_extra = fit_crossfitted_advanced(
                 stack,
                 y_true,
-                _stacking_fold_keys(ordered),
+                ordered["study_group"].astype(str).to_numpy()
+                if aggregation == "cross_study_dro" and "study_group" in ordered.columns
+                else np.asarray(
+                    [
+                        f"sample_fold_{i % min(5, len(ordered))}"
+                        for i in range(len(ordered))
+                    ]
+                )
+                if aggregation in probabilistic_methods and samples_deduplicated
+                else _probabilistic_meta_fold_keys(ordered, aggregation)
+                if aggregation in probabilistic_methods
+                else _stacking_fold_keys(ordered),
                 aggregation,
                 metric,
                 _metric_value,
                 _metric_is_loss,
+                ordered["study_group"].to_numpy(dtype=str)
+                if aggregation == "cross_study_dro" and "study_group" in ordered.columns
+                else None,
             )
         else:
             proba, aggregation_parameters, aggregation_extra = (
@@ -777,7 +834,8 @@ def _evaluate_selected_members(
                 > 1e-12
             )
         )
-        if aggregation == "ecdf_learned_quantile" and aggregation_parameters is not None
+        if aggregation_parameters is not None
+        and "member_weights" in aggregation_parameters
         else len(members),
         "aggregation_weight_source": aggregation_weight_source,
         "weight_source": aggregation_weight_source,
@@ -864,6 +922,106 @@ def _select_best_per_learner_type(
         out.append(cid)
         seen.add(learner_type)
     return out
+
+
+def _deep_ml_candidates(
+    scores: pd.Series, configs: pd.DataFrame
+) -> tuple[list[str], list[str]]:
+    required = {"config_id", "learner_class", "learner_params"}
+    if not required.issubset(configs.columns):
+        return [], []
+    meta = configs.drop_duplicates("config_id", keep="last").set_index("config_id")
+    families: dict[str, list[str]] = {"deep_learning": [], "machine_learning": []}
+    for value in scores.index:
+        config_id = str(value)
+        if config_id not in meta.index:
+            continue
+        row = meta.loc[config_id]
+        family = learner_family_from_spec(
+            str(row["learner_class"]) if pd.notna(row["learner_class"]) else "",
+            row["learner_params"] if pd.notna(row["learner_params"]) else None,
+        )
+        if family in families:
+            families[family].append(config_id)
+    return families["deep_learning"], families["machine_learning"]
+
+
+def _select_deep_ml_pair(
+    scores: pd.Series,
+    predictions: pd.DataFrame,
+    configs: pd.DataFrame,
+    pcols: list[str],
+    metric: str,
+    complementary: bool,
+) -> tuple[list[str], pd.DataFrame | None, np.ndarray | None, dict[str, Any]]:
+    deep, machine = _deep_ml_candidates(scores, configs)
+    extra: dict[str, Any] = {
+        "learner_family_source": "persisted_estimator_class_and_nested_parameters",
+        "deep_learning_candidates": len(deep),
+        "machine_learning_candidates": len(machine),
+    }
+    if not deep or not machine:
+        return [], None, None, extra
+    if not complementary:
+        members = [deep[0], machine[0]]
+        ordered, stack = _aligned_stack(predictions, members, pcols, inner=True)
+        return (
+            (members, ordered, stack, extra)
+            if ordered is not None and stack is not None
+            else ([], None, None, extra)
+        )
+    search_limit = 20
+    deep = deep[:search_limit]
+    machine = machine[:search_limit]
+    library = deep + machine
+    common, aligned = _aligned_stack(predictions, library, pcols, inner=True)
+    chosen: tuple[str, str] | None = None
+    best_value: float | None = None
+    best_ordered: pd.DataFrame | None = None
+    best_stack: np.ndarray | None = None
+    if common is not None and aligned is not None:
+        labels = common["y_true"].to_numpy(dtype=int)
+        positions = {config_id: index for index, config_id in enumerate(library)}
+        for dl_id in deep:
+            for ml_id in machine:
+                stack = aligned[[positions[dl_id], positions[ml_id]]]
+                probability = (stack[0] + stack[1]) / 2.0
+                value = _metric_value(labels, probability, metric)
+                if np.isfinite(value) and (
+                    best_value is None or _metric_better(value, best_value, metric)
+                ):
+                    best_value = float(value)
+                    chosen = (dl_id, ml_id)
+                    best_ordered = common
+                    best_stack = stack
+    else:
+        for dl_id in deep:
+            for ml_id in machine:
+                members = [dl_id, ml_id]
+                ordered, stack = _aligned_stack(predictions, members, pcols, inner=True)
+                if ordered is None or stack is None:
+                    continue
+                probability = (stack[0] + stack[1]) / 2.0
+                value = _metric_value(
+                    ordered["y_true"].to_numpy(dtype=int), probability, metric
+                )
+                if not np.isfinite(value):
+                    continue
+                if best_value is None or _metric_better(value, best_value, metric):
+                    best_value = float(value)
+                    chosen = (dl_id, ml_id)
+                    best_ordered = ordered
+                    best_stack = stack
+    extra["candidate_library_policy"] = (
+        "top_20_each_family_inner_oof_equal_probability_pair"
+    )
+    extra["pair_search_deep_count"] = len(deep)
+    extra["pair_search_ml_count"] = len(machine)
+    extra["pair_search_evaluated_on"] = "inner_validation_predictions_only"
+    if chosen is None:
+        return [], None, None, extra
+    extra["pair_selection_score"] = best_value
+    return list(chosen), best_ordered, best_stack, extra
 
 
 def _member_error_correlation(stack: np.ndarray, y_true: np.ndarray) -> np.ndarray:
@@ -1766,6 +1924,34 @@ def _stacking_fold_keys(ordered: pd.DataFrame) -> np.ndarray:
     return keys
 
 
+def _probabilistic_meta_fold_keys(ordered: pd.DataFrame, method: str) -> np.ndarray:
+    if method == "cross_study_dro":
+        if "study_group" not in ordered.columns:
+            raise ValueError(
+                "cross_study_dro requires explicit study_group labels aligned to held-out predictions."
+            )
+        groups = ordered["study_group"].astype(str).to_numpy()
+        if len(np.unique(groups)) < 3:
+            raise ValueError(
+                "Cross-study DRO requires at least three studies for study-held-out meta-validation."
+            )
+        return groups
+    sample_ids = ordered["sample_id"].astype(str).to_numpy()
+    if len(np.unique(sample_ids)) != len(sample_ids):
+        identifiers = np.unique(sample_ids)
+        n_folds = min(5, len(identifiers))
+        if n_folds < 2:
+            raise ValueError(
+                "Meta-model validation requires at least two unique samples."
+            )
+        keys = {
+            sample_id: f"sample_group_{index % n_folds}"
+            for index, sample_id in enumerate(identifiers)
+        }
+        return np.asarray([keys[ident] for ident in sample_ids], dtype=str)
+    return _stacking_fold_keys(ordered)
+
+
 def _stacker_sample_weights(fold_keys: np.ndarray) -> np.ndarray:
     keys = np.asarray(fold_keys).astype(str)
     unique, counts = np.unique(keys, return_counts=True)
@@ -2106,6 +2292,18 @@ def _candidate_from_simple_selector(
             members = _select_best_per_resolution(scores, configs)[:max_size]
         elif method == "best_per_learner_type":
             members = _select_best_per_learner_type(scores, configs)[:max_size]
+        elif method in {"best_deep_ml_pair", "best_deep_ml_complementary_pair"}:
+            members, ordered_pair, stack_pair, pair_extra = _select_deep_ml_pair(
+                scores,
+                predictions,
+                configs,
+                pcols,
+                metric,
+                method == "best_deep_ml_complementary_pair",
+            )
+            if not members:
+                return None
+            extra.update(pair_extra)
         elif method == "quality_diversity":
             library = [str(value) for value in scores.index.tolist()]
             ordered_library, library_stack = _aligned_stack(
@@ -2132,7 +2330,10 @@ def _candidate_from_simple_selector(
             raise ValueError(f"Unsupported simple ensemble selector: {method!r}.")
         if len(members) < 2:
             return None
-        ordered, stack = _aligned_stack(predictions, members, pcols, inner=True)
+        if method in {"best_deep_ml_pair", "best_deep_ml_complementary_pair"}:
+            ordered, stack = ordered_pair, stack_pair
+        else:
+            ordered, stack = _aligned_stack(predictions, members, pcols, inner=True)
         if ordered is None or stack is None:
             return None
         y_true = ordered["y_true"].to_numpy(dtype=int)
@@ -2854,6 +3055,8 @@ def _candidate_table_for_inner(
                 "oof_similarity",
                 "best_per_resolution",
                 "best_per_learner_type",
+                "best_deep_ml_pair",
+                "best_deep_ml_complementary_pair",
                 "quality_diversity",
                 "diversity",
                 "performance_diversity",
@@ -3225,6 +3428,12 @@ def select_final_mpma_e_candidate(
 
 
 def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
+    if bool(getattr(sweep.evaluation, "outer_only", False)):
+        raise ValueError(
+            "MPMA-E ensemble selection requires inner-fold validation results. "
+            "Set outer_only=False and rerun evaluation in a new experiment "
+            "directory, or skip the ensemble stage for outer-only runs."
+        )
     if sweep_task(sweep) == "regression":
         from .regression_ensemble import sweep_regression_ensemble
 
@@ -3245,6 +3454,38 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
     outer_predictions = read_table(outer_path)
     inner_results = read_table(inner_result_path)
     inner_predictions = read_table(inner_prediction_path)
+    if "cross_study_dro" in sweep.ensemble.aggregation_strategies:
+        if not sweep.data.group_col:
+            raise ValueError(
+                "cross_study_dro requires Data.group_col identifying true studies."
+            )
+        study_data = load_dataset(sweep.data, ("all",))
+        if sweep.data.group_col not in study_data.metadata.columns:
+            raise ValueError(
+                "The declared study column is absent from training metadata."
+            )
+        mapping = pd.DataFrame(
+            {
+                "sample_id": [str(x) for x in study_data.sample_ids],
+                "study_group": study_data.metadata[sweep.data.group_col]
+                .astype(str)
+                .str.strip()
+                .to_numpy(),
+            }
+        )
+        if (
+            mapping["sample_id"].duplicated().any()
+            or mapping["study_group"].eq("").any()
+            or study_data.metadata[sweep.data.group_col].isna().any()
+        ):
+            raise ValueError(
+                "Study identifiers must be nonmissing and uniquely linked to samples."
+            )
+        inner_predictions = inner_predictions.merge(
+            mapping, on="sample_id", how="left", validate="many_to_one"
+        )
+        if inner_predictions["study_group"].isna().any():
+            raise ValueError("Some inner prediction samples have no declared study.")
     configs = read_table(config_path)
     qualification = None
     if sweep.gate.enabled:

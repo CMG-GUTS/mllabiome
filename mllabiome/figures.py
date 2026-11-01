@@ -20,6 +20,7 @@ _TRANSFORM_DISPLAY = {
     "arcsine_sqrt": "arcsin√RA",
     "log10_relative_abundance_half_min_pseudocount": "log10(RA + ε)",
     "centered_log_ratio_multiplicative_replacement": "CLR",
+    "rclr": "RCLR",
     "additive_log_ratio_first_reference_multiplicative_replacement": "ALR",
     "isometric_log_ratio_egozcue_multiplicative_replacement": "ILR",
     "standardize": "z-score",
@@ -42,6 +43,7 @@ _COMPOSITION_BASES = {
     "arcsine_sqrt",
     "log10_relative_abundance_half_min_pseudocount",
     "centered_log_ratio_multiplicative_replacement",
+    "rclr",
     "additive_log_ratio_first_reference_multiplicative_replacement",
     "isometric_log_ratio_egozcue_multiplicative_replacement",
     "standardized_centered_log_ratio_multiplicative_replacement",
@@ -1220,3 +1222,7 @@ def _write_representation_impact_figure(
     save_svg(fig, out_base.with_suffix(".svg"), dpi=300)
 
     plt.close(fig)
+
+    from .generalisation_figure import write_generalisation_figures
+
+    write_generalisation_figures(root, metric_col)

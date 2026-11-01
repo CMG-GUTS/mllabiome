@@ -164,6 +164,7 @@ TRANSFORMATION_LABELS: tuple[TransformationLabel, ...] = (
         ("binary", "pa", "p/a", "presence-absence", "presence absence"),
     ),
     TransformationLabel("hellinger", ("sqrt", "sqrt_abundance", "hellinger")),
+    TransformationLabel("sqrt_raw", (), "extended"),
     TransformationLabel(
         "arcsine_sqrt", ("arcsin_sqrt", "asin_sqrt", "asin", "arcsine sqrt")
     ),
@@ -171,6 +172,7 @@ TRANSFORMATION_LABELS: tuple[TransformationLabel, ...] = (
         "log10_relative_abundance_half_min_pseudocount",
         ("log_tss", "logtss", "log_tss_floor", "log10", "log10-ra"),
     ),
+    TransformationLabel("rclr", ("robust_clr", "robust_centered_log_ratio")),
     TransformationLabel(
         "centered_log_ratio_multiplicative_replacement",
         (
@@ -254,6 +256,7 @@ TRANSFORMATION_LABELS: tuple[TransformationLabel, ...] = (
         ("prev_weighted", "prevalence_weighted", "prev_wt", "prev-wt-ra"),
         "extended",
     ),
+    TransformationLabel("prevalence_rank_fusion", (), "extended"),
 )
 TRANSFORMATION_SPACE = TRANSFORMATION_LABELS
 _TRANSFORMATION_LABEL_BY_KEY: dict[str, TransformationLabel] = {}
@@ -303,6 +306,64 @@ def _relative_abundance(X: np.ndarray) -> np.ndarray:
     return np.divide(out, sums, out=np.zeros_like(out), where=sums > 0)
 
 
+_PREVALENCE_RANK_FUSION_DEFAULTS = {
+    "alpha": 0.25,
+    "c": 100.0,
+    "gamma": 1.0,
+    "pseudo": 0.5,
+}
+
+
+def _prevalence_rank_fusion_parameters(
+    options: dict[str, Any] | None = None,
+) -> dict[str, float]:
+    supplied = {} if options is None else dict(options)
+    unknown = set(supplied) - set(_PREVALENCE_RANK_FUSION_DEFAULTS)
+    if unknown:
+        raise TypeError(
+            f"Unknown prevalence_rank_fusion parameters: {sorted(unknown)!r}."
+        )
+    values = {**_PREVALENCE_RANK_FUSION_DEFAULTS, **supplied}
+    for key, value in values.items():
+        if isinstance(value, bool) or not isinstance(
+            value, (int, float, np.integer, np.floating)
+        ):
+            raise ValueError(f"Invalid {key} parameter: {value!r}.")
+        values[key] = float(value)
+        if not np.isfinite(values[key]):
+            raise ValueError(f"Invalid {key} parameter: {value!r}.")
+    if not 0 <= values["alpha"] <= 1:
+        raise ValueError("alpha must be between 0 and 1.")
+    if values["c"] <= 0 or values["gamma"] <= 0:
+        raise ValueError("c and gamma must be positive.")
+    if values["pseudo"] < 0:
+        raise ValueError("pseudo must be non-negative.")
+    return values
+
+
+def _split_transformation_parameters(value: str) -> tuple[str, dict[str, float]]:
+    text = str(value).strip()
+    if not text.endswith("]") or "[" not in text:
+        return text, {}
+    raw_name, encoded = text.rsplit("[", 1)
+    if transformation_label(raw_name.split("@", 1)[0]).key != "prevalence_rank_fusion":
+        return text, {}
+    entries = encoded[:-1].split(",")
+    pairs: dict[str, float] = {}
+    for entry in entries:
+        key, separator, raw_value = entry.partition("=")
+        key = key.strip()
+        if not separator or not key or key in pairs:
+            raise ValueError(f"Invalid prevalence_rank_fusion identity {value!r}.")
+        try:
+            pairs[key] = float(raw_value.strip())
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid prevalence_rank_fusion identity {value!r}."
+            ) from exc
+    return raw_name, _prevalence_rank_fusion_parameters(pairs)
+
+
 def _positive_composition(
     X: np.ndarray, *, allow_zero_rows: bool = False
 ) -> np.ndarray:
@@ -347,6 +408,21 @@ def _clr_matrix(X: np.ndarray, *, allow_zero_rows: bool = False) -> np.ndarray:
             f"CLR transformation changed the abundance matrix shape: expected {positive.shape}, got {out.shape}."
         )
     return out
+
+
+def _rclr_matrix(X: np.ndarray) -> np.ndarray:
+    raw = _matrix(X, nonnegative=True)
+    present = raw > 0.0
+    logged = np.zeros_like(raw, dtype=np.float64)
+    np.log(raw, out=logged, where=present)
+    counts = present.sum(axis=1, keepdims=True)
+    means = np.divide(
+        logged.sum(axis=1, keepdims=True),
+        counts,
+        out=np.zeros((raw.shape[0], 1), dtype=np.float64),
+        where=counts > 0,
+    )
+    return np.where(present, logged - means, 0.0)
 
 
 def _egozcue_basis(n_components: int) -> np.ndarray:
@@ -439,9 +515,19 @@ def _finite_output(
 
 
 class _BuiltinTransformer:
-    def __init__(self, name: str, random_state: int = 42):
+    def __init__(
+        self,
+        name: str,
+        random_state: int = 42,
+        parameters: dict[str, float] | None = None,
+    ):
         self.name = transformation_label(name).key
         self.random_state = int(random_state)
+        self.parameters = (
+            _prevalence_rank_fusion_parameters(parameters)
+            if self.name == "prevalence_rank_fusion"
+            else {}
+        )
         self.pseudocount_: float | None = None
         self.scaler_: Any | None = None
         self.variable_mask_: np.ndarray | None = None
@@ -465,8 +551,12 @@ class _BuiltinTransformer:
             return (_matrix(X, nonnegative=True) > 0).astype(np.float64)
         if name == "hellinger":
             return np.sqrt(_relative_abundance(X))
+        if name == "sqrt_raw":
+            return np.sqrt(_matrix(X, nonnegative=True))
         if name == "arcsine_sqrt":
             return np.arcsin(np.sqrt(_relative_abundance(X)))
+        if name == "rclr":
+            return _rclr_matrix(X)
         if name == "centered_log_ratio_multiplicative_replacement":
             return _clr_matrix(X, allow_zero_rows=allow_zero_rows)
         if name == "additive_log_ratio_training_reference_multiplicative_replacement":
@@ -569,6 +659,12 @@ class _BuiltinTransformer:
         elif name == "prevalence_weighted_relative_abundance":
             abundance = _matrix(X, nonnegative=True)
             self.prevalence_ = (abundance > 0).mean(axis=0).astype(np.float64)
+        elif name == "prevalence_rank_fusion":
+            abundance = _matrix(X, nonnegative=True)
+            pseudo = self.parameters["pseudo"]
+            self.prevalence_ = ((abundance > 0).sum(axis=0) + pseudo) / (
+                abundance.shape[0] + 2.0 * pseudo
+            )
         elif name not in {
             "additive_log_ratio_training_reference_multiplicative_replacement",
             "isometric_log_ratio_egozcue_multiplicative_replacement",
@@ -594,8 +690,10 @@ class _BuiltinTransformer:
             "relative_abundance",
             "presence_absence",
             "hellinger",
+            "sqrt_raw",
             "arcsine_sqrt",
             "centered_log_ratio_multiplicative_replacement",
+            "rclr",
             "additive_log_ratio_training_reference_multiplicative_replacement",
             "isometric_log_ratio_egozcue_multiplicative_replacement",
             "within_sample_fractional_rank",
@@ -724,6 +822,32 @@ class _BuiltinTransformer:
                 expected_shape=expected_shape,
                 context=f"Built-in transformation {name!r}",
             )
+        if name == "prevalence_rank_fusion":
+            if self.prevalence_ is None:
+                raise RuntimeError("Transformation has not been fitted.")
+            raw = _matrix(X, nonnegative=True)
+            ranks = np.zeros_like(raw)
+            for i in range(raw.shape[0]):
+                detected = raw[i] > 0
+                count = int(detected.sum())
+                if count:
+                    ranks[i, detected] = rankdata(
+                        raw[i, detected], method="average"
+                    ) / (count + 1.0)
+            rel = _relative_abundance(raw)
+            weighted_rel = _relative_abundance(
+                rel * np.power(self.prevalence_[None, :], self.parameters["gamma"])
+            )
+            c = self.parameters["c"]
+            alpha = self.parameters["alpha"]
+            out = alpha * ranks + (1.0 - alpha) * np.log1p(c * weighted_rel) / np.log1p(
+                c
+            )
+            return _finite_output(
+                out,
+                expected_shape=expected_shape,
+                context=f"Built-in transformation {name!r}",
+            )
         raise KeyError(f"Unknown abundance transformation {name!r}.")
 
     def perturbation_geometry(self) -> str:
@@ -733,6 +857,7 @@ class _BuiltinTransformer:
             "hellinger": "hellinger_sphere",
             "arcsine_sqrt": "arcsine_simplex",
             "centered_log_ratio_multiplicative_replacement": "clr_zero_sum",
+            "rclr": "rclr_observed_support_zero_sum",
             "standardized_centered_log_ratio_multiplicative_replacement": "standardized_clr_affine",
             "log10_relative_abundance_half_min_pseudocount": "log_relative_abundance",
             "yeo_johnson_relative_abundance": "transformed_simplex",
@@ -759,6 +884,7 @@ class _BuiltinTransformer:
             "power_yeo_johnson",
             "quantile_normal_numeric",
             "training_ecdf_rank",
+            "rclr",
             "additive_log_ratio_training_reference_multiplicative_replacement",
             "isometric_log_ratio_egozcue_multiplicative_replacement",
         }:
@@ -888,6 +1014,18 @@ class _BuiltinTransformer:
             else [str(x) for x in list(input_features)]
         )
         names = self.get_feature_names_out(features)
+        if self.name == "rclr":
+            return [
+                TransformationCoordinate(
+                    name=name,
+                    coordinate_type="rclr_support_dependent_logcontrast",
+                    anchor_feature=feature,
+                    components=(feature,),
+                    coefficients=(1.0,),
+                    exact_feature_identity=False,
+                )
+                for name, feature in zip(names, features)
+            ]
         if self.name in {
             "centered_log_ratio_multiplicative_replacement",
             "standardized_centered_log_ratio_multiplicative_replacement",
@@ -990,6 +1128,7 @@ _COMPOSITION_SENSITIVE = frozenset(
         "arcsine_sqrt",
         "log10_relative_abundance_half_min_pseudocount",
         "centered_log_ratio_multiplicative_replacement",
+        "rclr",
         "additive_log_ratio_training_reference_multiplicative_replacement",
         "isometric_log_ratio_egozcue_multiplicative_replacement",
         "standardized_centered_log_ratio_multiplicative_replacement",
@@ -998,6 +1137,7 @@ _COMPOSITION_SENSITIVE = frozenset(
         "robust_scaled_relative_abundance",
         "within_sample_fractional_rank",
         "prevalence_weighted_relative_abundance",
+        "prevalence_rank_fusion",
     }
 )
 _LOG_RATIO_COORDINATES = frozenset(
@@ -1049,6 +1189,7 @@ def _split_transformation_filter_identity(value: Any) -> tuple[str, str | None]:
 
 def _parse_transformation_identity(value: Any) -> tuple[str, str]:
     text, _ = _split_transformation_filter_identity(value)
+    text, _ = _split_transformation_parameters(text)
     if "@" in text:
         raw_name, raw_scope = text.rsplit("@", 1)
         if raw_scope.strip().lower() in _COMPOSITION_SCOPES:
@@ -1070,10 +1211,16 @@ def _transformation_identity(
     name: str,
     scope: str | None = None,
     feature_filter: PrevalenceFilter | None = None,
+    *,
+    parameters: dict[str, float] | None = None,
 ) -> str:
     base = transformation_label(str(name)).key
     resolved = _normalise_composition_scope(base, scope)
     identity = f"{base}@{resolved}" if base in _COMPOSITION_SENSITIVE else base
+    if base == "prevalence_rank_fusion":
+        values = _prevalence_rank_fusion_parameters(parameters)
+        suffix = ",".join(f"{key}={value:g}" for key, value in sorted(values.items()))
+        identity = f"{identity}[{suffix}]"
     filter_identity = _feature_filter_identity(feature_filter)
     if filter_identity is not None:
         identity = f"{identity}|filter={filter_identity}"
@@ -1102,8 +1249,11 @@ class Transform:
         feature_filter: PrevalenceFilter | None = None,
         **options: Any,
     ) -> None:
-        requested = str(name).strip()
-        info = transformation_label(requested)
+        requested, parsed_parameters = _split_transformation_parameters(
+            str(name).strip()
+        )
+        base, parsed_scope = _parse_transformation_identity(requested)
+        info = transformation_label(base)
         if fn is None and info.category == "custom":
             raise KeyError(
                 f"Unknown abundance transformation {requested!r}. Provide a callable for a custom transformation."
@@ -1114,17 +1264,24 @@ class Transform:
             )
         self.name = info.key
         self.composition_scope = _normalise_composition_scope(
-            self.name, composition_scope
+            self.name, parsed_scope if composition_scope is None else composition_scope
         )
         if feature_filter is not None and not isinstance(
             feature_filter, PrevalenceFilter
         ):
             raise TypeError("feature_filter must be a PrevalenceFilter or None.")
         self.feature_filter = None if feature_filter is None else feature_filter.fresh()
-        self._options = dict(options)
+        self._options = (
+            _prevalence_rank_fusion_parameters({**parsed_parameters, **options})
+            if self.name == "prevalence_rank_fusion"
+            else dict(options)
+        )
         self.resolutions = None
         self.identity = _transformation_identity(
-            self.name, self.composition_scope, self.feature_filter
+            self.name,
+            self.composition_scope,
+            self.feature_filter,
+            parameters=self._options if self.name == "prevalence_rank_fusion" else None,
         )
         if self.name == "qwen3_ollama_embedding":
             if (
@@ -1140,7 +1297,7 @@ class Transform:
             implementation = QwenOllamaEmbedding(**self._options)
             self.identity = implementation.identity
             self.resolutions = implementation.resolutions
-        elif self._options:
+        elif self._options and self.name != "prevalence_rank_fusion":
             raise TypeError(
                 f"Transformation {self.name!r} does not accept parameters {sorted(self._options)!r}."
             )
@@ -1183,13 +1340,26 @@ class CountTransformation:
         pseudo_count: float | None = None,
         random_state: int = 42,
         composition_scope: str | None = None,
+        **options: float,
     ):
-        base, parsed_scope = _parse_transformation_identity(name)
+        parsed_name, parsed_parameters = _split_transformation_parameters(name)
+        base, parsed_scope = _parse_transformation_identity(parsed_name)
         self.name = base
+        self.parameters = (
+            _prevalence_rank_fusion_parameters({**parsed_parameters, **options})
+            if base == "prevalence_rank_fusion"
+            else {}
+        )
+        if base != "prevalence_rank_fusion" and options:
+            raise TypeError(
+                f"Transformation {base!r} does not accept parameters {sorted(options)!r}."
+            )
         self.composition_scope = _normalise_composition_scope(
             base, parsed_scope if composition_scope is None else composition_scope
         )
-        self.identity = _transformation_identity(base, self.composition_scope)
+        self.identity = _transformation_identity(
+            base, self.composition_scope, parameters=self.parameters
+        )
         if pseudo_count is not None:
             raise ValueError(
                 "pseudo_count is not configurable. 'log10_relative_abundance_half_min_pseudocount' estimates exactly half the minimum positive relative abundance from the training fold."
@@ -1201,9 +1371,9 @@ class CountTransformation:
         self.n_features_out_: int | None = None
 
     def fit(self, X: np.ndarray) -> CountTransformation:
-        self._impl = _BuiltinTransformer(self.name, random_state=self.random_state).fit(
-            X
-        )
+        self._impl = _BuiltinTransformer(
+            self.name, random_state=self.random_state, parameters=self.parameters
+        ).fit(X)
         self.n_features_in_ = self._impl.n_features_in_
         self.n_features_out_ = self._impl.n_features_out_
         return self
@@ -1286,7 +1456,8 @@ def _count_transformation_name(item: Any) -> str:
                     transformation
                 )
                 base, scope = _parse_transformation_identity(raw_identity)
-                identity = _transformation_identity(base, scope)
+                _, parameters = _split_transformation_parameters(raw_identity)
+                identity = _transformation_identity(base, scope, parameters=parameters)
                 if filter_identity is not None:
                     identity = f"{identity}|filter={filter_identity}"
                 qualified.append(f"{modality}:{identity}")
@@ -1294,7 +1465,8 @@ def _count_transformation_name(item: Any) -> str:
                 return "+".join(qualified)
     raw_identity, filter_identity = _split_transformation_filter_identity(text)
     base, scope = _parse_transformation_identity(raw_identity)
-    identity = _transformation_identity(base, scope)
+    _, parameters = _split_transformation_parameters(raw_identity)
+    identity = _transformation_identity(base, scope, parameters=parameters)
     if filter_identity is not None:
         identity = f"{identity}|filter={filter_identity}"
     return identity
@@ -1321,8 +1493,12 @@ def _effective_count_transformation_spec(
     if base in _COMPOSITION_SENSITIVE and feature_blocks is not None:
         block_count = sum(1 for _, indices in feature_blocks if tuple(indices))
         if block_count <= 1:
+            _, parameters = _split_transformation_parameters(name)
             name = _transformation_identity(
-                base, "rank-wise", getattr(spec, "feature_filter", None)
+                base,
+                "rank-wise",
+                getattr(spec, "feature_filter", None),
+                parameters=parameters,
             )
             if isinstance(spec, Transform) and spec.composition_scope != "rank-wise":
                 spec = Transform(
@@ -1330,6 +1506,7 @@ def _effective_count_transformation_spec(
                     fn=spec._fn,
                     composition_scope="rank-wise",
                     feature_filter=spec.feature_filter,
+                    **spec._options,
                 )
     return name, spec
 
@@ -1439,8 +1616,19 @@ class CountTransformationAdapter:
         self.name = base
         self.composition_scope = _normalise_composition_scope(base, requested_scope)
         self.feature_filter = spec_filter
+        _, identity_parameters = _split_transformation_parameters(raw_identity)
+        self.parameters = (
+            _prevalence_rank_fusion_parameters(
+                {**identity_parameters, **getattr(spec, "_options", {})}
+            )
+            if base == "prevalence_rank_fusion"
+            else {}
+        )
         self.identity = _transformation_identity(
-            base, self.composition_scope, self.feature_filter
+            base,
+            self.composition_scope,
+            self.feature_filter,
+            parameters=self.parameters,
         )
         self.spec = spec
         self.random_state = int(random_state)
@@ -1462,6 +1650,7 @@ class CountTransformationAdapter:
                 self.name,
                 random_state=self.random_state,
                 composition_scope="joint",
+                **self.parameters,
             )
         if isinstance(self.spec, Transform):
             if self.spec.name == "qwen3_ollama_embedding":
@@ -1473,6 +1662,7 @@ class CountTransformationAdapter:
                     self.spec.name,
                     random_state=self.random_state,
                     composition_scope="joint",
+                    **self.parameters,
                 )
             return _fresh_custom_transformer(self.spec)
         if isinstance(self.spec, BaseEstimator):

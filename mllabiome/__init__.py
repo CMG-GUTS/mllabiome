@@ -202,6 +202,9 @@ __all__ = [
     "explain",
     "foundation_model_references",
     "load_dataset",
+    "learner_family",
+    "learner_family_from_spec",
+    "register_learner_family",
     "load_modalities",
     "materialize_mpdr",
     "mll",
@@ -220,3 +223,9 @@ __all__ = [
 mll = sys.modules[__name__]
 
 from .brain.representations import Brain, BrainRepresentation
+
+from .learner_families import (
+    learner_family,
+    learner_family_from_spec,
+    register_learner_family,
+)

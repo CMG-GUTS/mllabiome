@@ -6,6 +6,12 @@ from typing import Any, Callable, Mapping
 import numpy as np
 from scipy.optimize import minimize, minimize_scalar
 from scipy.special import expit, softmax
+
+from .probabilistic_ensembles import (
+    METHODS as PROBABILISTIC_METHODS,
+    fit_probabilistic,
+    predict_probabilistic,
+)
 from sklearn.ensemble import (
     ExtraTreesClassifier,
     GradientBoostingClassifier,
@@ -18,6 +24,7 @@ ADVANCED_AGGREGATIONS = frozenset(
         "extra_trees_stacking",
         "boosted_stacking",
         "gated_stacking",
+        *PROBABILISTIC_METHODS,
         "hierarchical_dirichlet_stacking",
         "temperature_scaled_mean_proba",
         "sigmoid_calibrated_mean_proba",
@@ -417,7 +424,11 @@ def _predict_hierarchical(stack: np.ndarray, params: Mapping[str, Any]) -> np.nd
 
 
 def fit_advanced_model(
-    method: str, stack: np.ndarray, y_true: np.ndarray, strength: float | None = None
+    method: str,
+    stack: np.ndarray,
+    y_true: np.ndarray,
+    strength: float | None = None,
+    study_keys: np.ndarray | None = None,
 ) -> dict[str, Any]:
     values = _probability_matrix(stack)
     labels = np.asarray(y_true, dtype=int)
@@ -431,10 +442,14 @@ def fit_advanced_model(
         return _fit_meta_tree(method, values, labels)
     if method in {"temperature_scaled_mean_proba", "sigmoid_calibrated_mean_proba"}:
         return _fit_temperature(values, labels, method)
-    if method == "gated_stacking":
-        return _fit_gating(
+    if method in {"gated_stacking", "mixture_of_experts"}:
+        result = _fit_gating(
             values, labels, float(strength if strength is not None else 0.1)
         )
+        result["kind"] = method
+        return result
+    if method in PROBABILISTIC_METHODS:
+        return fit_probabilistic(method, values, labels, strength, study_keys)
     if method == "hierarchical_dirichlet_stacking":
         return _fit_hierarchical(
             values, labels, float(strength if strength is not None else 0.5)
@@ -465,8 +480,10 @@ def apply_advanced_aggregation(
         output = _predict_meta_tree(values, parameters)
     elif kind in {"temperature_scaled_mean_proba", "sigmoid_calibrated_mean_proba"}:
         output = _predict_temperature(values, parameters)
-    elif kind == "gated_stacking":
+    elif kind in {"gated_stacking", "mixture_of_experts"}:
         output = _predict_gating(values, parameters)
+    elif kind in PROBABILISTIC_METHODS:
+        output = predict_probabilistic(values, parameters)
     else:
         output = _predict_hierarchical(values, parameters)
     if (
@@ -486,6 +503,7 @@ def fit_crossfitted_advanced(
     metric: str,
     score: Callable[[np.ndarray, np.ndarray, str], float],
     loss_metric: Callable[[str], bool],
+    study_keys: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict[str, Any], dict[str, Any]]:
     values = _probability_matrix(stack)
     labels = np.asarray(y_true, dtype=int)
@@ -493,13 +511,24 @@ def fit_crossfitted_advanced(
     if len(keys) != len(labels):
         raise ValueError("Meta-model folds and labels have different lengths.")
     unique = np.unique(keys)
+    studies = None if study_keys is None else np.asarray(study_keys, dtype=str)
+    if studies is not None and len(studies) != len(labels):
+        raise ValueError("Study identifiers and validation rows differ in length.")
+    if method == "cross_study_dro" and studies is None:
+        raise ValueError(
+            "Cross-study DRO requires true study labels from Data.group_col."
+        )
     if len(unique) < 2:
         raise ValueError("Advanced stacking requires at least two validation folds.")
     choices: tuple[float | None, ...] = (
         (0.05, 0.5)
-        if method == "gated_stacking"
+        if method in {"gated_stacking", "mixture_of_experts"}
         else (0.25, 1.0)
         if method == "hierarchical_dirichlet_stacking"
+        else (0.05, 0.2)
+        if method == "cross_study_dro"
+        else (0.001, 0.005)
+        if method == "sparse_nonnegative_stacking"
         else (None,)
     )
     best: tuple[float, np.ndarray, float | None] | None = None
@@ -515,7 +544,11 @@ def fit_crossfitted_advanced(
                 break
             try:
                 fitted = fit_advanced_model(
-                    method, values[:, train], labels[train], strength
+                    method,
+                    values[:, train],
+                    labels[train],
+                    strength,
+                    None if studies is None else studies[train],
                 )
                 heldout[test] = apply_advanced_aggregation(values[:, test], fitted)
             except (ValueError, RuntimeError, FloatingPointError):
@@ -540,7 +573,7 @@ def fit_crossfitted_advanced(
             f"{method} could not produce complete cross-fitted predictions."
         )
     chosen_score, crossfit, strength = best
-    parameters = fit_advanced_model(method, values, labels, strength)
+    parameters = fit_advanced_model(method, values, labels, strength, studies)
     diagnostics = {
         "stacking_crossfit_score": float(chosen_score),
         "stacking_internal_folds": int(len(unique)),

@@ -535,6 +535,10 @@ def write_mpma_b_selection_outputs(
     ):
         return {}
     inner = read_table(inner_path)
+    required_columns = {"split_key", "inner_key", "config_id", metric}
+
+    if inner.empty or not required_columns.issubset(inner.columns):
+        return {}
     use_oof = (
         getattr(plan, "mpma_b_selection", "legacy") == "consensus_medoid7"
         or getattr(plan, "mpma_b_softening", "none") == "discrimination_oof"

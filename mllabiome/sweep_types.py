@@ -620,6 +620,8 @@ def _validate_sweep_configuration(sweep: Any) -> None:
         "top_k",
         "best_per_resolution",
         "best_per_learner_type",
+        "best_deep_ml_pair",
+        "best_deep_ml_complementary_pair",
         "quality_diversity",
         "oof_top_k",
         "oof_similarity",
@@ -709,6 +711,8 @@ def _validate_sweep_configuration(sweep: Any) -> None:
             )
     else:
         classification_only_selection = {
+            "best_deep_ml_pair",
+            "best_deep_ml_complementary_pair",
             "quality_diversity",
             "diversity",
             "performance_diversity",
@@ -980,6 +984,11 @@ class Inference:
     feature_policy: str = "strict"
     allow_training_sample_overlap: bool = False
     save_weights: bool = True
+    training_abundance_scale: str | None = None
+    inference_abundance_scale: str | None = None
+    conformal_alpha: float | None = None
+    conformal_calibration_predictions: Path | str | None = None
+    conformal_calibration_labels: Path | str | None = None
 
     def __post_init__(self) -> None:
         targets = tuple(
@@ -1012,6 +1021,36 @@ class Inference:
             )
         if not isinstance(self.save_weights, bool):
             raise TypeError("Inference.save_weights must be a boolean.")
+        if self.conformal_alpha is not None and not self.save_weights:
+            raise ValueError(
+                "Conformal prediction requires save_weights=True to verify frozen model artifacts."
+            )
+        conformal_fields = (
+            self.conformal_alpha,
+            self.conformal_calibration_predictions,
+            self.conformal_calibration_labels,
+        )
+        if any(value is not None for value in conformal_fields):
+            if not all(value is not None for value in conformal_fields):
+                raise ValueError(
+                    "Conformal inference requires alpha, calibration predictions and calibration labels."
+                )
+            if not 0 < float(self.conformal_alpha) < 1:
+                raise ValueError("Inference.conformal_alpha must lie in (0, 1).")
+        for field_name in ("training_abundance_scale", "inference_abundance_scale"):
+            raw_scale = getattr(self, field_name)
+            scale = None if raw_scale is None else str(raw_scale).strip().casefold()
+            if scale in {"", "auto"}:
+                scale = None
+            if scale is not None and scale not in {
+                "counts",
+                "percentage",
+                "proportion",
+            }:
+                raise ValueError(
+                    f"Inference.{field_name} must be 'counts', 'percentage', 'proportion', or None."
+                )
+            object.__setattr__(self, field_name, scale)
         sample_id_col = (
             None if self.sample_id_col is None else str(self.sample_id_col).strip()
         )

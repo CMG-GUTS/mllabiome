@@ -10,7 +10,7 @@ import pandas as pd
 
 from . import report as _report_module
 from ._evaluation_protocols import is_lodo_protocol
-from .console import console, path_table, phase_progress, stage, success
+from .console import console, info, path_table, phase_progress, stage, success
 from .final_models import load_final_models
 from .storage import read_table
 from .utils import report_html_path
@@ -1916,6 +1916,13 @@ def write_report(sweep: Any, emit_html: bool = True) -> dict[str, Path]:
     tables_dir = report_dir / "tables"
     performance_path = tables_dir / "strategy_oof_performance.parquet"
     if _read_table(performance_path).empty:
+        if bool(getattr(sweep.evaluation, "outer_only", False)):
+            info(
+                "Outer-only evaluation has no inner-selected MPMA-B/MPMA-E "
+                "strategy predictions; skipping strategy-level OOF inference. "
+                "Per-configuration outer-fold results remain in the report."
+            )
+            return outputs
         raise RuntimeError(
             "Report statistics did not produce strategy_oof_performance.parquet."
         )

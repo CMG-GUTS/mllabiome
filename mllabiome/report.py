@@ -1830,9 +1830,15 @@ def _procedure_table(sweep: Sweep, root: Path) -> pd.DataFrame:
         ],
         [
             "Inner folds",
-            f"{ev.inner_folds}-fold {str(ev.inner_grouping).replace('_', ' ')} inner CV"
-            if is_lodo_protocol(ev.protocol)
-            else ev.inner_folds,
+            (
+                "disabled (outer folds only)"
+                if ev.outer_only
+                else (
+                    f"{ev.inner_folds}-fold {str(ev.inner_grouping).replace('_', ' ')} inner CV"
+                    if is_lodo_protocol(ev.protocol)
+                    else ev.inner_folds
+                )
+            ),
         ],
         ["Repeats", ev.repeats],
         ["Selection metric", ev.optimize_metric],
@@ -2492,6 +2498,8 @@ class _ReportAnalysis:
 @dataclass(frozen=True)
 class _ReportVisuals:
     representation_figure: str
+    generalisation_figure: str
+    optimisation_generalisation_figure: str
     mpma_e_figure: str
     explainability_html: str
     explainability_summary_html: str
@@ -2613,6 +2621,30 @@ def _build_report_visuals(
             report_dir,
             "Data representations and learner impact on held-out performance",
         )
+        from .generalisation_figure import write_generalisation_figures
+        from .metrics import canonical_metric_name
+
+        selected_metric = canonical_metric_name(str(sweep.evaluation.optimize_metric))
+        results = write_generalisation_figures(root, selected_metric)
+        auroc_path, _ = results["AUROC"]
+        generalisation_figure = (
+            _fig(
+                auroc_path.with_suffix(""),
+                report_dir,
+                "AUROC: inner-validation and outer-held-out performance across configurations",
+            )
+            if auroc_path
+            else ""
+        )
+        optimisation_generalisation_figure = ""
+        if selected_metric != "AUROC":
+            selected_path, _ = results[selected_metric]
+            if selected_path:
+                optimisation_generalisation_figure = _fig(
+                    selected_path.with_suffix(""),
+                    report_dir,
+                    f"{selected_metric}: inner-validation and outer-held-out performance across configurations",
+                )
         mpma_e_figure = _fig(
             root / "figures" / "mpma_e",
             report_dir,
@@ -2632,6 +2664,8 @@ def _build_report_visuals(
         explainability_summary_html = explainability_summary_block(root, report_dir)
     return _ReportVisuals(
         representation_figure=representation_figure,
+        generalisation_figure=generalisation_figure,
+        optimisation_generalisation_figure=optimisation_generalisation_figure,
         mpma_e_figure=mpma_e_figure,
         explainability_html=explainability_html,
         explainability_summary_html=explainability_summary_html,
@@ -3216,6 +3250,35 @@ def _render_report_html(
         if visuals.representation_figure
         else "<p>No representation-impact figure is available yet.</p>"
     )
+    generalisation_description = (
+        "<p>Each point is one configuration. Inner-fold metrics are averaged within "
+        "each matched outer split, then inner and outer scores are averaged across "
+        "the matching splits for that configuration. Light blue denotes inner "
+        "validation and dark blue denotes outer held-out performance. The "
+        "difference describes a generalisation shift, not an independent estimate "
+        "of deployment performance.</p>"
+    )
+    generalisation_figure = (
+        "<h3>Inner validation versus outer held-out performance</h3>"
+        + generalisation_description
+        + "<h4>AUROC</h4>"
+        + visuals.generalisation_figure
+        if visuals.generalisation_figure
+        else ""
+    )
+    optimisation_generalisation_figure = (
+        "<h4>Optimisation metric: "
+        + html.escape(str(sweep.evaluation.optimize_metric))
+        + "</h4>"
+        + visuals.optimisation_generalisation_figure
+        if visuals.optimisation_generalisation_figure
+        else ""
+    )
+    if optimisation_generalisation_figure and not generalisation_figure:
+        generalisation_figure = (
+            "<h3>Inner validation versus outer held-out performance</h3>"
+            + generalisation_description
+        )
     pairwise_html = (
         _html_table(analysis.primary_pairwise)
         if not analysis.primary_pairwise.empty
@@ -3254,6 +3317,7 @@ def _render_report_html(
 <h2 id=\"representation-impact\">Data representations and learner impact on performance</h2>
 {_representation_impact_note(str(sweep.evaluation.optimize_metric), bool(getattr(sweep, "uses_modalities", False)))}
 {representation_figure}
+{generalisation_figure}
 <section id=\"mpma-e-specification\">
 <h3 id=\"mpma-e\">Final MPMA-E specification</h3>
 {visuals.mpma_e_figure}
@@ -3300,6 +3364,8 @@ def _write_report_manifest(
                     figure
                     for figure in [
                         visuals.representation_figure,
+                        visuals.generalisation_figure,
+                        visuals.optimisation_generalisation_figure,
                         visuals.mpma_e_figure,
                     ]
                     if figure
@@ -3317,6 +3383,7 @@ def _write_report_manifest(
 
 
 def _report_outputs(
+    sweep: Sweep,
     report_dir: Path,
     tables_dir: Path,
     analysis: _ReportAnalysis,
@@ -3345,6 +3412,20 @@ def _report_outputs(
         "important_features": tables.feature_summary_path,
         "hardware_environment": tables.hardware_summary_path,
     }
+    from .generalisation_figure import generalisation_paths
+    from .metrics import canonical_metric_name
+
+    metric_names = ["AUROC"]
+    selected_metric = canonical_metric_name(str(sweep.evaluation.optimize_metric))
+    if selected_metric != "AUROC":
+        metric_names.append(selected_metric)
+    for name in metric_names:
+        figure, table = generalisation_paths(report_dir.parent, name)
+        key = figure.stem
+        if figure.is_file():
+            outputs[key + "_figure"] = figure
+        if table.is_file():
+            outputs[key + "_summary"] = table
     composite_svg = report_dir / "explainability_composite.svg"
     if composite_svg.is_file():
         outputs["explainability_composite_svg"] = composite_svg
@@ -3380,6 +3461,8 @@ def write_report(sweep: Sweep, emit_html: bool = True) -> dict[str, Path]:
         compute_environment=analysis.compute_environment,
     )
     success("Report completed")
-    outputs = _report_outputs(report_dir, tables_dir, analysis, tables, emit_html)
+    outputs = _report_outputs(
+        sweep, report_dir, tables_dir, analysis, tables, emit_html
+    )
     path_table("Report outputs", outputs)
     return outputs
