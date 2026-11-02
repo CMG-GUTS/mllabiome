@@ -85,6 +85,10 @@ def _explainability_for_target(
 
 
 def target_sweeps(sweep: Sweep) -> list[Sweep]:
+    from .joint_sweep import is_joint_sweep
+
+    if is_joint_sweep(sweep):
+        raise ValueError("Joint target sweeps cannot be expanded into independent targets.")
     targets = _target_columns(sweep.data)
     if len(targets) == 1 and _normalise_sweep_task(sweep.data.task) not in {
         "multilabel",

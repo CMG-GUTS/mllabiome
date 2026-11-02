@@ -8,7 +8,9 @@ from typing import Any
 import pandas as pd
 
 from .configs_sweep import Sweep, target_sweeps
-from .console import summary_table, warn
+from .console import console, summary_table, warn
+from rich import box
+from rich.table import Table
 from .storage import read_table, table_exists
 from .utils import report_html_path, tail_ellipsis
 
@@ -499,6 +501,60 @@ def _report_rows(sweep: Sweep) -> list[tuple[str, object]]:
 
 
 def print_stage_results(sweep: Sweep, stage_name: str) -> None:
+    from .joint_sweep import is_joint_sweep
+
+    if is_joint_sweep(sweep):
+        root = Path(sweep.root())
+        if stage_name == "evaluate":
+            summary = _read_json(root / "joint_summary.json")
+            if summary:
+                name = str(summary.get("optimize_metric", ""))
+                score = summary.get("mean_repeat_metrics", {}).get(name)
+                rows = [("Task", summary.get("task", "")), ("Targets", ", ".join(summary.get("targets", ()))), ("Samples", summary.get("n_samples", 0)), ("Configurations", summary.get("n_candidates", 0))]
+                if _finite(score) is not None:
+                    rows.append((f"Held-out {name}", f"{float(score):.4f}"))
+                summary_table("Evaluation results ready", rows)
+                from .joint_reporting import configuration_scores
+
+                candidates = configuration_scores(root, summary)
+                if candidates:
+                    table = Table(title="All evaluated configurations · inner validation ranking", box=box.SIMPLE_HEAD, pad_edge=False)
+                    table.add_column("Rank", justify="right")
+                    table.add_column("Learner", style="bold")
+                    table.add_column("Resolution")
+                    table.add_column("Transformation")
+                    table.add_column(f"Inner {name}", justify="right")
+                    table.add_column("Selected", justify="right")
+                    for index, candidate in enumerate(candidates, 1):
+                        table.add_row(
+                            str(index),
+                            str(candidate["learner"]),
+                            str(candidate["resolution"]),
+                            str(candidate["transformation"]),
+                            f"{float(candidate['inner_mean']):.5f}",
+                            f"{int(candidate['selected_outer_splits'])}/{summary['n_outer_splits']}",
+                        )
+                    console.print(table)
+                    console.print("[dim]Inner scores are for model selection; held-out scores are for the selected model on each outer split.[/dim]")
+        elif stage_name == "explore":
+            manifest = _read_json(root / "explore_manifest.json")
+            if manifest:
+                summary_table("Exploration results ready", [("Targets", len(manifest.get("targets", ())))])
+        elif stage_name == "report":
+            report_rows = _report_rows(sweep)
+            if report_rows:
+                summary_table("Report ready", report_rows)
+        elif stage_name == "ensemble":
+            result = root / "tables" / "joint_ensemble_outer_metrics.tsv"
+            if result.exists():
+                frame = pd.read_csv(result, sep="\t")
+                summary_table("Ensemble results ready", [("Strategies", frame["strategy"].nunique()), ("Outer fold evaluations", len(frame))])
+        elif stage_name == "explain":
+            manifest = root / "explainability" / "explainability_manifest.json"
+            if manifest.exists():
+                data = _read_json(manifest)
+                summary_table("Explainability results ready", [("Targets", ", ".join(data.get("targets", ()))), ("Methods", ", ".join(data.get("methods", ())))])
+        return
     try:
         if stage_name == "explore":
             rows = _explore_rows(sweep)

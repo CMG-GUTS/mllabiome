@@ -145,6 +145,12 @@ def _invalidate_stale(root: Path, models: dict, explainability) -> None:
 
 
 def explain(sweep: Sweep) -> dict[str, Path]:
+    from .joint_sweep import is_joint_sweep
+
+    if is_joint_sweep(sweep):
+        from .joint_explainability import explain_joint
+
+        return explain_joint(sweep)
     source = sweep.samples if getattr(sweep, "uses_modalities", False) else sweep.data
     if (
         str(getattr(source, "task", "classification")).strip().casefold()

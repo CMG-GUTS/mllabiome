@@ -29,6 +29,7 @@ CLASSIFICATION_METRIC_COLUMNS = [
     "AP",
     "AP_macro",
     "MCC",
+    "AUROC_MCC",
     "F1w",
     "F1_macro",
     "Precision",

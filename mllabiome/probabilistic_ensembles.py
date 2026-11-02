@@ -5,16 +5,15 @@ from typing import Any, Mapping
 import numpy as np
 from scipy.optimize import minimize
 from scipy.special import softmax
+from sklearn.metrics import matthews_corrcoef, roc_auc_score
 
 
-METHODS = frozenset(
-    {
-        "bayesian_model_averaging",
-        "mixture_of_experts",
-        "cross_study_dro",
-        "sparse_nonnegative_stacking",
-    }
-)
+METHODS = frozenset({
+    "bayesian_model_averaging",
+    "mixture_of_experts",
+    "cross_study_dro",
+    "sparse_nonnegative_stacking",
+})
 
 
 def _validated(stack: np.ndarray, labels: np.ndarray | None = None) -> np.ndarray:
@@ -29,35 +28,52 @@ def _validated(stack: np.ndarray, labels: np.ndarray | None = None) -> np.ndarra
     values = values / totals
     if labels is not None:
         y = np.asarray(labels, dtype=int)
-        if (
-            y.shape != (values.shape[1],)
-            or (y < 0).any()
-            or (y >= values.shape[2]).any()
-        ):
+        if y.shape != (values.shape[1],) or (y < 0).any() or (y >= values.shape[2]).any():
             raise ValueError("Meta-learner labels do not match member probabilities.")
     return values
 
 
-def _fit_bma(values: np.ndarray, labels: np.ndarray) -> dict[str, Any]:
-    truth = np.clip(values[:, np.arange(len(labels)), labels].T, 1e-12, 1)
-    log_predictive = np.log(truth)
+def _fit_bma(
+    values: np.ndarray, labels: np.ndarray, optimize_metric: str | None = None
+) -> dict[str, Any]:
+    metric = str(optimize_metric or "log_loss")
+    composite = metric == "AUROC_MCC"
+    if not composite:
+        truth = np.clip(values[:, np.arange(len(labels)), labels].T, 1e-12, 1)
+        log_predictive = np.log(truth)
+    elif values.shape[2] != 2 or len(np.unique(labels)) != 2:
+        raise ValueError("AUROC_MCC bootstrap model averaging requires both binary classes.")
     draws = 128
     rng = np.random.default_rng(42)
     concentration = max(1.0, min(40.0, float(np.sqrt(len(labels)))))
     posterior = np.empty((draws, values.shape[0]), dtype=float)
+    if composite:
+        positive_proba = values[:, :, 1]
+        hard_predictions = values.argmax(axis=2)
     for index in range(draws):
         sampling = rng.dirichlet(np.ones(len(labels)))
-        score = sampling @ log_predictive
-        posterior[index] = softmax(concentration * score)
+        if composite:
+            # Bayesian-bootstrap sample weights. Both terms are evaluated with
+            # the SAME resampled observations, on their chance-adjusted scale.
+            scores = np.empty(values.shape[0], dtype=float)
+            for member in range(values.shape[0]):
+                auc = roc_auc_score(labels, positive_proba[member], sample_weight=sampling)
+                mcc = matthews_corrcoef(labels, hard_predictions[member], sample_weight=sampling)
+                scores[member] = 0.5 * (2.0 * auc - 1.0) + 0.5 * mcc
+        else:
+            scores = sampling @ log_predictive
+        posterior[index] = softmax(concentration * scores)
     weights = posterior.mean(axis=0)
     return {
         "kind": "bayesian_model_averaging",
-        "weight_method": "bayesian_bootstrap_pseudo_bma_plus",
+        "weight_method": (
+            "bayesian_bootstrap_metric_softmax_AUROC_MCC"
+            if composite else "bayesian_bootstrap_pseudo_bma_plus"
+        ),
+        "weighting_objective": "AUROC_MCC" if composite else "log_predictive_score",
         "member_weights": weights.tolist(),
         "member_weight_std": posterior.std(axis=0, ddof=1).tolist(),
-        "member_weight_interval_95": np.quantile(
-            posterior, [0.025, 0.975], axis=0
-        ).T.tolist(),
+        "member_weight_interval_95": np.quantile(posterior, [0.025, 0.975], axis=0).T.tolist(),
         "bootstrap_replicates": draws,
         "effective_evidence_size": concentration,
         "n_members": int(values.shape[0]),
@@ -65,9 +81,7 @@ def _fit_bma(values: np.ndarray, labels: np.ndarray) -> dict[str, Any]:
     }
 
 
-def _simplex_weights(
-    scores: np.ndarray, strength: float, study_keys: np.ndarray | None = None
-) -> np.ndarray:
+def _simplex_weights(scores: np.ndarray, strength: float, study_keys: np.ndarray | None = None) -> np.ndarray:
     n_samples, n_members = scores.shape
     if study_keys is not None:
         groups, inverse = np.unique(study_keys, return_inverse=True)
@@ -75,9 +89,7 @@ def _simplex_weights(
             raise ValueError("Cross-study DRO requires two or more observed studies.")
         counts = np.bincount(inverse)
         if np.min(counts) < 3:
-            raise ValueError(
-                "Cross-study DRO requires at least three held-out predictions per study."
-            )
+            raise ValueError("Cross-study DRO requires at least three held-out predictions per study.")
     else:
         inverse = None
         groups = None
@@ -93,11 +105,7 @@ def _simplex_weights(
             values = np.bincount(inverse, weights=losses) / np.bincount(inverse)
             temperature = float(strength)
             active = softmax(values / temperature)
-            value = float(
-                temperature
-                * np.log(np.exp((values - values.max()) / temperature).sum())
-                + values.max()
-            )
+            value = float(temperature * np.log(np.exp((values - values.max()) / temperature).sum()) + values.max())
             gradient = np.zeros(n_members, dtype=float)
             for index in range(len(groups)):
                 gradient += active[index] * derivatives[inverse == index].mean(axis=0)
@@ -113,13 +121,7 @@ def _simplex_weights(
         jac=True,
         method="SLSQP",
         bounds=[(0.0, 1.0)] * n_members,
-        constraints=[
-            {
-                "type": "eq",
-                "fun": lambda x: np.sum(x) - 1.0,
-                "jac": lambda x: np.ones_like(x),
-            }
-        ],
+        constraints=[{"type": "eq", "fun": lambda x: np.sum(x) - 1.0, "jac": lambda x: np.ones_like(x)}],
         options={"maxiter": 600, "ftol": 1e-11},
     )
     if not fitted.success or not np.isfinite(fitted.x).all():
@@ -128,9 +130,7 @@ def _simplex_weights(
     return weights / weights.sum()
 
 
-def _fit_sparse(
-    values: np.ndarray, labels: np.ndarray, strength: float
-) -> dict[str, Any]:
+def _fit_sparse(values: np.ndarray, labels: np.ndarray, strength: float) -> dict[str, Any]:
     truth = np.clip(values[:, np.arange(len(labels)), labels].T, 1e-12, 1)
     selected: list[int] = []
     remaining = set(range(len(values)))
@@ -172,29 +172,24 @@ def fit_probabilistic(
     labels: np.ndarray,
     strength: float | None = None,
     study_keys: np.ndarray | None = None,
+    optimize_metric: str | None = None,
 ) -> dict[str, Any]:
     values = _validated(stack, labels)
     y = np.asarray(labels, dtype=int)
     if not np.array_equal(np.unique(y), np.arange(values.shape[2])):
         raise ValueError("Every class is required for meta-learner training.")
     if method == "bayesian_model_averaging":
-        return _fit_bma(values, y)
+        return _fit_bma(values, y, optimize_metric)
     if method == "sparse_nonnegative_stacking":
-        return _fit_sparse(
-            values, y, float(strength if strength is not None else 0.002)
-        )
+        return _fit_sparse(values, y, float(strength if strength is not None else 0.002))
     if method == "cross_study_dro":
         if study_keys is None:
-            raise ValueError(
-                "Cross-study DRO needs explicit biological study labels from Data.group_col."
-            )
+            raise ValueError("Cross-study DRO needs explicit biological study labels from Data.group_col.")
         groups = np.asarray(study_keys, dtype=str)
         if len(groups) != len(y) or any(not x.strip() for x in groups):
             raise ValueError("Cross-study DRO study identifiers are invalid.")
         scores = np.clip(values[:, np.arange(len(y)), y].T, 1e-12, 1)
-        weights = _simplex_weights(
-            scores, float(strength if strength is not None else 0.1), groups
-        )
+        weights = _simplex_weights(scores, float(strength if strength is not None else 0.1), groups)
         return {
             "kind": method,
             "member_weights": weights.tolist(),
@@ -206,25 +201,16 @@ def fit_probabilistic(
     raise ValueError(f"Unknown probabilistic aggregation {method!r}.")
 
 
-def predict_probabilistic(
-    stack: np.ndarray, parameters: Mapping[str, Any]
-) -> np.ndarray:
+def predict_probabilistic(stack: np.ndarray, parameters: Mapping[str, Any]) -> np.ndarray:
     values = _validated(stack)
     if (
         str(parameters.get("kind")) not in METHODS - {"mixture_of_experts"}
         or int(parameters.get("n_members", -1)) != values.shape[0]
         or int(parameters.get("n_classes", -1)) != values.shape[2]
     ):
-        raise ValueError(
-            "Stored probabilistic ensemble parameters do not match predictions."
-        )
+        raise ValueError("Stored probabilistic ensemble parameters do not match predictions.")
     weights = np.asarray(parameters.get("member_weights"), dtype=float)
-    if (
-        weights.shape != (values.shape[0],)
-        or not np.isfinite(weights).all()
-        or (weights < 0).any()
-        or weights.sum() <= 0
-    ):
+    if weights.shape != (values.shape[0],) or not np.isfinite(weights).all() or (weights < 0).any() or weights.sum() <= 0:
         raise ValueError("Invalid stored probabilistic ensemble weights.")
     weights /= weights.sum()
     return np.tensordot(weights, values, axes=(0, 0))

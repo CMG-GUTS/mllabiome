@@ -343,12 +343,7 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
     if not isinstance(aggregation_parameters, dict):
         raise ValueError("Final MPMA-E aggregation_parameters must be a JSON object")
 
-    if aggregation in {
-        "ecdf_learned_quantile",
-        "sparse_nonnegative_stacking",
-        "bayesian_model_averaging",
-        "cross_study_dro",
-    }:
+    if aggregation in {"ecdf_learned_quantile", "sparse_nonnegative_stacking", "bayesian_model_averaging", "cross_study_dro"}:
         learned_weights = np.asarray(
             aggregation_parameters.get("member_weights", ()), dtype=float
         )
@@ -370,12 +365,7 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
             if stored_weights is not None
             else len(member_ids)
         )
-    if effective_count < (
-        1
-        if aggregation
-        in {"ecdf_learned_quantile", "sparse_nonnegative_stacking", "cross_study_dro"}
-        else 2
-    ):
+    if effective_count < (1 if aggregation in {"ecdf_learned_quantile", "sparse_nonnegative_stacking", "cross_study_dro"} else 2):
         raise ValueError("Final MPMA-E must have sufficient effective members")
     declared_effective = int(unit.get("effective_member_count", effective_count))
     if declared_effective != effective_count:

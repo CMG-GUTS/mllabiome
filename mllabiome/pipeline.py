@@ -43,6 +43,42 @@ def _write_stage_manifest(
 
 
 def run_explore(sweep: Sweep) -> dict[str, Any]:
+    from .joint_sweep import is_joint_sweep
+
+    if is_joint_sweep(sweep):
+        from dataclasses import replace
+
+        from .joint_sweep import _targets
+        from .sweep_types import _normalise_sweep_task
+
+        targets = _targets(sweep)
+        classification = _normalise_sweep_task(sweep.data.task) == "multilabel"
+        target_task = "classification" if classification else "regression"
+        default_metric = "log_loss" if classification else "RMSE"
+        records = []
+        outputs = {}
+        for index, target in enumerate(targets, start=1):
+            info(f"Explore · target {index}/{len(targets)} · {target}")
+            data = replace(
+                sweep.data,
+                task=target_task,
+                target_col=target,
+                joint=False,
+                metadata_cols=tuple(dict.fromkeys((*sweep.data.metadata_cols, *(name for name in targets if name != target)))),
+            )
+            child = replace(
+                sweep,
+                data=data,
+                experiment_dir=Path(sweep.root()) / "targets" / target,
+                evaluation=replace(sweep.evaluation, optimize_metric=default_metric),
+                ensemble=replace(sweep.ensemble, optimize_metric=default_metric),
+            )
+            result = execute_explore(child, redo=bool(sweep.evaluation.redo))
+            records.append(_target_record(child, result))
+            outputs[target] = result
+        outputs["manifest"] = _write_stage_manifest(sweep, "explore", records)
+        print_stage_results(sweep, "explore")
+        return outputs
     legacy_report = Path(sweep.root()) / "explore" / "index.html"
     if legacy_report.exists():
         legacy_report.unlink()
@@ -79,6 +115,14 @@ def run_evaluate(sweep: Sweep) -> dict[str, Any]:
 
 
 def run_ensemble(sweep: Sweep) -> dict[str, Any]:
+    from .joint_sweep import is_joint_sweep
+
+    if is_joint_sweep(sweep):
+        from .joint_ensemble import ensemble_joint
+
+        outputs = ensemble_joint(sweep)
+        print_stage_results(sweep, "ensemble")
+        return outputs
     if getattr(sweep, "uses_modalities", False):
         outputs = sweep_ensemble(sweep)
         build_final_models(sweep.root())
@@ -134,7 +178,9 @@ def run_inference(sweep: Sweep) -> dict[str, Any]:
                 info(f"Inference · target {index}/{len(children)} · {target}")
             include_mpma_e = "mpma_e" in child.inference.targets
             with inference_phase(f"Target {target} · rebuild final model selection"):
-                models = build_final_models(child.root(), include_mpma_e=include_mpma_e)
+                models = build_final_models(
+                    child.root(), include_mpma_e=include_mpma_e
+                )
             if tracker is not None:
                 tracker.workflow_step("final model selection resolved")
             with inference_phase(f"Target {target} · deploy selected models"):
@@ -155,6 +201,14 @@ def run_inference(sweep: Sweep) -> dict[str, Any]:
 
 
 def run_explain(sweep: Sweep) -> dict[str, Any]:
+    from .joint_sweep import is_joint_sweep
+
+    if is_joint_sweep(sweep):
+        from .joint_explainability import explain_joint
+
+        outputs = explain_joint(sweep)
+        print_stage_results(sweep, "explain")
+        return outputs
     if getattr(sweep, "uses_modalities", False):
         outputs = explain(sweep)
         print_stage_results(sweep, "explain")
@@ -213,6 +267,12 @@ def run_robustness(sweep: Sweep) -> dict[str, Any]:
 
 
 def run_report(sweep: Sweep) -> dict[str, Any]:
+    from .joint_sweep import is_joint_sweep, report_joint
+
+    if is_joint_sweep(sweep):
+        outputs = report_joint(sweep)
+        print_stage_results(sweep, "report")
+        return outputs
     if getattr(sweep, "uses_modalities", False):
         task = sweep_task(sweep)
         outputs = (
@@ -227,6 +287,10 @@ def run_report(sweep: Sweep) -> dict[str, Any]:
 
 
 def run_all(sweep: Sweep) -> dict[str, Any]:
+    from .joint_sweep import is_joint_sweep
+
+    if is_joint_sweep(sweep) and (sweep.inference is not None or sweep.robustness is not None):
+        raise NotImplementedError("Joint-model inference and robustness require task-aware implementations before running all stages.")
     explore_output: dict[str, Any] = {}
     if not getattr(sweep, "uses_modalities", False):
         info("Pipeline · explore")
@@ -263,6 +327,10 @@ def run_all(sweep: Sweep) -> dict[str, Any]:
 
 
 def run_stage(sweep: Sweep, stage_name: str) -> dict[str, Any]:
+    from .joint_sweep import is_joint_sweep
+
+    if is_joint_sweep(sweep) and stage_name not in {"all", "explore", "evaluate", "ensemble", "explain", "report"}:
+        raise NotImplementedError(f"Stage {stage_name!r} does not yet support joint multi-target models.")
     if stage_name == "all":
         return run_all(sweep)
     if stage_name == "explore":

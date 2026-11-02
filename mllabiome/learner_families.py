@@ -50,27 +50,23 @@ _ML_PATHS = (
     "mllabiome.ridge_softmax.RidgeSoftmaxClassifier",
 )
 
-_SINGLE_WRAPPERS = frozenset(
-    {
-        "sklearn.pipeline.Pipeline",
-        "sklearn.model_selection._search.GridSearchCV",
-        "sklearn.model_selection._search.RandomizedSearchCV",
-        "sklearn.calibration.CalibratedClassifierCV",
-        "sklearn.multiclass.OneVsRestClassifier",
-        "sklearn.multiclass.OneVsOneClassifier",
-        "sklearn.multioutput.MultiOutputClassifier",
-        "sklearn.feature_selection._rfe.RFE",
-        "sklearn.feature_selection._rfe.RFECV",
-        "mllabiome.rank_calibration.GroupedRankCalibratedClassifier",
-    }
-)
+_SINGLE_WRAPPERS = frozenset({
+    "sklearn.pipeline.Pipeline",
+    "sklearn.model_selection._search.GridSearchCV",
+    "sklearn.model_selection._search.RandomizedSearchCV",
+    "sklearn.calibration.CalibratedClassifierCV",
+    "sklearn.multiclass.OneVsRestClassifier",
+    "sklearn.multiclass.OneVsOneClassifier",
+    "sklearn.multioutput.MultiOutputClassifier",
+    "sklearn.feature_selection._rfe.RFE",
+    "sklearn.feature_selection._rfe.RFECV",
+    "mllabiome.rank_calibration.GroupedRankCalibratedClassifier",
+})
 
-_MULTI_WRAPPERS = frozenset(
-    {
-        "sklearn.ensemble._voting.VotingClassifier",
-        "sklearn.ensemble._stacking.StackingClassifier",
-    }
-)
+_MULTI_WRAPPERS = frozenset({
+    "sklearn.ensemble._voting.VotingClassifier",
+    "sklearn.ensemble._stacking.StackingClassifier",
+})
 
 _REGISTERED: dict[type, str] = {}
 
@@ -112,10 +108,7 @@ def _type_family(path: str) -> str | None:
     for registered, family in reversed(tuple(_REGISTERED.items())):
         if issubclass(cls, registered):
             return family
-    for paths, family in (
-        (_DEEP_PATHS, "deep_learning"),
-        (_ML_PATHS, "machine_learning"),
-    ):
+    for paths, family in ((_DEEP_PATHS, "deep_learning"), (_ML_PATHS, "machine_learning")):
         for base_path in paths:
             base = _resolve_class(base_path)
             if base is not None and issubclass(cls, base):
@@ -124,18 +117,12 @@ def _type_family(path: str) -> str | None:
 
 
 def _nested_estimator(value: Any) -> dict[str, Any] | None:
-    if (
-        isinstance(value, dict)
-        and isinstance(value.get("class"), str)
-        and isinstance(value.get("params"), dict)
-    ):
+    if isinstance(value, dict) and isinstance(value.get("class"), str) and isinstance(value.get("params"), dict):
         return value
     return None
 
 
-def _family_for_spec(
-    path: str, params: dict[str, Any], visited: set[str]
-) -> str | None:
+def _family_for_spec(path: str, params: dict[str, Any], visited: set[str]) -> str | None:
     if not path or path in visited:
         return None
     if path in _SINGLE_WRAPPERS:
@@ -165,14 +152,8 @@ def _family_for_spec(
             child = _nested_estimator(item[1])
             if child is None:
                 return None
-            families.add(
-                _family_for_spec(str(child["class"]), child["params"], visited | {path})
-            )
-        return (
-            next(iter(families))
-            if len(families) == 1 and None not in families
-            else None
-        )
+            families.add(_family_for_spec(str(child["class"]), child["params"], visited | {path}))
+        return next(iter(families)) if len(families) == 1 and None not in families else None
     return _type_family(path)
 
 

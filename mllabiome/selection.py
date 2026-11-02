@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .selection_policy import rank_auroc_log_loss
 from .metrics import (
     aggregate_validation_metric,
     canonical_metric_name,
@@ -168,6 +169,130 @@ def _complete_config_scores(
     return pd.DataFrame(rows)
 
 
+def _base_selection_scores(
+    inner: pd.DataFrame,
+    configs: pd.DataFrame,
+    base_selection: Any,
+    *,
+    by_outer: bool,
+) -> pd.DataFrame:
+    metrics = tuple(base_selection.metrics)
+    constrained = base_selection.auroc_tolerance is not None
+    required = {"config_id", "inner_key", *metrics}
+    if constrained:
+        required.add("log_loss")
+    if by_outer:
+        required.add("split_key")
+    missing = required - set(inner.columns)
+    if missing:
+        raise ValueError(f"Inner results lack base-selection columns: {sorted(missing)}")
+    eligible = set(configs["config_id"].astype(str)) if "config_id" in configs else set()
+    if not eligible:
+        return pd.DataFrame()
+    frame = inner.copy()
+    frame["config_id"] = frame["config_id"].astype(str)
+    frame["inner_key"] = frame["inner_key"].astype(str)
+    if "split_key" in frame:
+        frame["split_key"] = frame["split_key"].astype(str)
+    frame = frame.loc[frame["config_id"].isin(eligible)]
+    keys = ["split_key", "inner_key"] if "split_key" in inner else ["inner_key"]
+    frame = frame.drop_duplicates(["config_id", *keys], keep="last")
+    for metric in set(metrics) | ({"log_loss"} if constrained else set()):
+        frame[metric] = pd.to_numeric(frame[metric], errors="coerce")
+    if "ok" in frame:
+        frame = frame.loc[pd.to_numeric(frame["ok"], errors="coerce").fillna(0).eq(1)]
+    frame = frame.loc[np.isfinite(frame[list(set(metrics) | ({"log_loss"} if constrained else set()))].to_numpy(dtype=float)).all(axis=1)]
+    scope = ["split_key"] if by_outer else []
+    if by_outer:
+        full = inner.copy()
+        full["split_key"] = full["split_key"].astype(str)
+        full["inner_key"] = full["inner_key"].astype(str)
+        expected = {
+            str(key): set(group["inner_key"].astype(str))
+            for key, group in full.groupby("split_key", sort=True)
+        }
+    else:
+        if "split_key" in inner:
+            full = inner[["split_key", "inner_key"]].astype(str)
+            expected = {None: set(map(tuple, full.drop_duplicates().to_numpy()))}
+        else:
+            expected = {None: set(inner["inner_key"].astype(str))}
+    rows = []
+    grouped = frame.groupby([*scope, "config_id"], sort=True)
+    for group_key, group in grouped:
+        split_key, config_id = group_key if by_outer else (None, group_key[0] if isinstance(group_key, tuple) else group_key)
+        if by_outer:
+            observed = set(group["inner_key"].astype(str))
+        elif "split_key" in group:
+            observed = set(zip(group["split_key"].astype(str), group["inner_key"].astype(str)))
+        else:
+            observed = set(group["inner_key"].astype(str))
+        if observed != expected.get(split_key, set()) or not observed:
+            continue
+        transformed = np.zeros(len(group), dtype=float)
+        row = {
+            "config_id": str(config_id),
+            "selection_metric": "+".join(f"{k}:{v:g}" for k, v in base_selection.metrics.items()),
+            "n_inner_folds": int(len(group)),
+        }
+        if by_outer:
+            row["outer_split_key"] = str(split_key)
+        for metric, weight in base_selection.metrics.items():
+            values = group[metric].to_numpy(dtype=float)
+            if base_selection.normalization == "chance_adjusted" and metric == "AUROC":
+                values = 2.0 * values - 1.0
+            elif metric_is_loss(metric):
+                values = -values
+            transformed += float(weight) * values
+            row[f"inner_{metric}_mean"] = float(group[metric].mean())
+            row[f"inner_{metric}_std"] = float(group[metric].std(ddof=1)) if len(group) > 1 else 0.0
+        row["inner_score"] = float(transformed.mean())
+        row["inner_score_std"] = float(transformed.std(ddof=1)) if len(transformed) > 1 else 0.0
+        if constrained:
+            row["inner_log_loss_mean"] = float(group["log_loss"].mean())
+            row["inner_log_loss_std"] = float(group["log_loss"].std(ddof=1)) if len(group) > 1 else 0.0
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _rank_base_selection(scores: pd.DataFrame, base_selection: Any) -> pd.DataFrame:
+    if base_selection.auroc_tolerance is not None:
+        return rank_auroc_log_loss(
+            scores, "inner_AUROC_mean", "inner_log_loss_mean",
+            base_selection.auroc_tolerance, ("config_id",),
+        )
+    return scores.sort_values(
+        ["inner_score", "config_id"], ascending=[False, True], kind="mergesort"
+    )
+
+
+def _selected_base_row(
+    best: dict[str, Any],
+    metadata: dict[str, Any],
+    *,
+    final: bool,
+    base_selection: Any,
+) -> dict[str, Any]:
+    row = dict(best)
+    row["selection_basis"] = (
+        "all_inner_validation_for_final_refit"
+        if final else "outer_fold_inner_validation"
+    )
+    row["selection_strategy"] = "auroc_constrained_log_loss" if base_selection.auroc_tolerance is not None else "weighted_inner_metrics"
+    if base_selection.auroc_tolerance is not None:
+        row["auroc_tolerance"] = float(base_selection.auroc_tolerance)
+    row["selection_normalization"] = base_selection.normalization
+    row["selection_weights"] = dict(base_selection.metrics)
+    row["include_inactive"] = True
+    for key in (
+        "mpdr_id", "count_transformation", "resolution", "levels", "learner",
+        "candidate_family", "modalities", "integration", "integration_n_components",
+    ):
+        if key in metadata:
+            row[key] = metadata[key]
+    return row
+
+
 def select_mpma_b_by_outer_fold(
     inner: pd.DataFrame,
     configs: pd.DataFrame,
@@ -175,7 +300,21 @@ def select_mpma_b_by_outer_fold(
     plan: Any | None = None,
     qualification: pd.DataFrame | None = None,
     inner_predictions: pd.DataFrame | None = None,
+    base_selection: Any | None = None,
 ) -> pd.DataFrame:
+    if base_selection is not None:
+        scores = _base_selection_scores(inner, configs, base_selection, by_outer=True)
+        if scores.empty:
+            return pd.DataFrame()
+        metadata = _config_metadata(configs)
+        selections = []
+        for outer_split_key, group in scores.groupby("outer_split_key", sort=True):
+            winner = _rank_base_selection(group, base_selection).iloc[0].to_dict()
+            selections.append(_selected_base_row(
+                winner, metadata.get(str(winner["config_id"]), {}),
+                final=False, base_selection=base_selection,
+            ))
+        return pd.DataFrame(selections)
     metric = canonical_metric_name(metric)
     eligible_ids = _eligible_config_ids(configs, plan)
     if not eligible_ids:
@@ -265,7 +404,17 @@ def select_final_mpma_candidate(
     plan: Any | None = None,
     qualification: pd.DataFrame | None = None,
     inner_predictions: pd.DataFrame | None = None,
+    base_selection: Any | None = None,
 ) -> dict[str, Any]:
+    if base_selection is not None:
+        scores = _base_selection_scores(inner, configs, base_selection, by_outer=False)
+        if scores.empty:
+            return {}
+        winner = _rank_base_selection(scores, base_selection).iloc[0].to_dict()
+        return _selected_base_row(
+            winner, _config_metadata(configs).get(str(winner["config_id"]), {}),
+            final=True, base_selection=base_selection,
+        )
     metric = canonical_metric_name(metric)
     eligible_ids = _eligible_config_ids(configs, plan)
     if not eligible_ids:
@@ -522,6 +671,7 @@ def write_mpma_b_selection_outputs(
     root: Path | str,
     metric: str,
     plan: Any | None = None,
+    base_selection: Any | None = None,
 ) -> dict[str, Path]:
     root = Path(root)
     metric = canonical_metric_name(metric)
@@ -535,7 +685,7 @@ def write_mpma_b_selection_outputs(
     ):
         return {}
     inner = read_table(inner_path)
-    required_columns = {"split_key", "inner_key", "config_id", metric}
+    required_columns = {"split_key", "inner_key", "config_id", *(base_selection.metrics if base_selection is not None else (metric,))}
 
     if inner.empty or not required_columns.issubset(inner.columns):
         return {}
@@ -561,6 +711,7 @@ def write_mpma_b_selection_outputs(
         plan=plan,
         qualification=qualification,
         inner_predictions=inner_predictions,
+        base_selection=base_selection,
     )
     selected_predictions = selected_mpma_b_outer_predictions(
         selection, outer_predictions
@@ -574,6 +725,7 @@ def write_mpma_b_selection_outputs(
         plan=plan,
         qualification=qualification,
         inner_predictions=inner_predictions,
+        base_selection=base_selection,
     )
     tables_dir = root / "tables"
     predictions_dir = root / "predictions"
@@ -591,10 +743,20 @@ def write_mpma_b_selection_outputs(
     write_table(fold_metrics_path, fold_metrics)
     dump_json_standard(summary, summary_path)
     dump_json_standard(final_candidate, final_path)
+    ranking_path = tables_dir / "mpma_b_base_selection_rankings.parquet"
+    if base_selection is not None:
+        rankings = _base_selection_scores(
+            inner, configs, base_selection, by_outer=False
+        )
+        if not rankings.empty:
+            rankings = _rank_base_selection(rankings, base_selection).reset_index(drop=True)
+            rankings.insert(0, "rank", np.arange(1, len(rankings) + 1))
+            write_table(ranking_path, rankings)
     return {
         "mpma_b_selection": selection_path,
         "mpma_b_predictions": prediction_path,
         "mpma_b_outer_results": fold_metrics_path,
         "mpma_b_summary": summary_path,
         "mpma_b_final_candidate": final_path,
+        **({"mpma_b_base_selection_rankings": ranking_path} if base_selection is not None and table_exists(ranking_path) else {}),
     }

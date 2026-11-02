@@ -111,6 +111,7 @@ class Data:
     target_col: str | tuple[str, ...] = "label"
     task: str = "classification"
     target_tasks: Mapping[str, str] | None = None
+    joint: bool = False
     group_col: str | None = None
     stratify_col: str | tuple[str, ...] | None = None
     subject_id_col: str | None = None
@@ -125,6 +126,8 @@ class Data:
     target_positive_classes: Mapping[str, int | str] | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.joint, bool):
+            raise TypeError("Data.joint must be a boolean.")
         if self.metadata is not None and not isinstance(self.metadata, Metadata):
             raise TypeError("Data.metadata must be an instance of Metadata.")
         if self.metadata is not None and self.metadata_path is not None:
@@ -187,6 +190,146 @@ class Dataset:
         if self.positive_class is None:
             return None
         return self.class_labels[int(self.positive_class)]
+
+
+@dataclass
+class UnlabeledDataset:
+    X_by_level: dict[str, np.ndarray]
+    feature_names_by_level: dict[str, list[str]]
+    sample_ids: list[str]
+    subject_ids: list[str]
+
+
+def load_inference_dataset(spec: Any, training: Dataset, training_spec: Data) -> UnlabeledDataset:
+    sample_id_col = spec.sample_id_col or training_spec.sample_id_col
+    train_format = str(training_spec.format).strip().casefold().replace("-", "_")
+    if train_format == "auto":
+        train_format = (
+            "mllab"
+            if Path(training_spec.abundance_path).suffix.lower() in {".tsv", ".txt"}
+            and metadata_path(training_spec) is not None
+            else "wide_csv"
+        )
+    specified_format = str(spec.format).strip().casefold().replace("-", "_")
+    inference_format = train_format if specified_format == "same" else specified_format
+    matrix_formats = {"mllab", "matrix_tsv", "metaphlan", "metaphlan_tsv", "profile_tsv"}
+    wide_formats = {"csv", "wide_csv"}
+    if train_format not in matrix_formats | wide_formats:
+        raise ValueError(f"Unsupported training format {train_format!r}.")
+    if inference_format not in matrix_formats | wide_formats:
+        raise ValueError(f"Unsupported inference format {inference_format!r}.")
+    if (train_format in matrix_formats) != (inference_format in matrix_formats):
+        raise ValueError("Training and inference formats must belong to the same format family.")
+
+    metadata = None
+    if spec.metadata_path is not None:
+        parsed_headers = {}
+        for delimiter in ("\t", ",", ";"):
+            candidate = pd.read_csv(
+                spec.metadata_path,
+                sep=delimiter,
+                dtype=str,
+                encoding="utf-8-sig",
+            )
+            candidate.columns = candidate.columns.astype(str).str.strip()
+            if sample_id_col in candidate.columns:
+                metadata = candidate
+                break
+            alternatives = [
+                name
+                for name in candidate.columns
+                if "".join(character for character in name.casefold() if character.isalnum())
+                == "".join(character for character in sample_id_col.casefold() if character.isalnum())
+            ]
+            if len(alternatives) == 1:
+                metadata = candidate.rename(columns={alternatives[0]: sample_id_col})
+                break
+            parsed_headers[repr(delimiter)] = candidate.columns.tolist()
+        if metadata is None:
+            raise ValueError(
+                f"Inference metadata {spec.metadata_path} is missing sample ID column "
+                f"{sample_id_col!r}. Parsed headers by delimiter: {parsed_headers!r}."
+            )
+        identifiers = metadata[sample_id_col]
+        if identifiers.isna().any():
+            raise ValueError("Inference metadata contains missing sample IDs.")
+        metadata[sample_id_col] = identifiers.astype(str).str.strip()
+        if metadata[sample_id_col].eq("").any():
+            raise ValueError("Inference metadata contains empty sample IDs.")
+        if metadata[sample_id_col].duplicated().any():
+            raise ValueError("Inference metadata contains duplicate sample IDs.")
+
+    if inference_format in matrix_formats:
+        path = Path(spec.abundance_path)
+        if metadata is not None:
+            abundance, sample_ids = _read_feature_by_sample_tsv(path, metadata[sample_id_col].tolist())
+        else:
+            header = _first_nonempty_tsv_row(path)
+            if _taxonomic_rank(header[0].lstrip("#").strip()) is not None:
+                numeric_header = pd.to_numeric(pd.Series(header[1:]), errors="coerce")
+                if len(numeric_header) and numeric_header.notna().all():
+                    raise ValueError("Headerless inference matrices require sample metadata.")
+            abundance = pd.read_csv(path, sep="\t", index_col=0, low_memory=False)
+            abundance.index = abundance.index.astype(str).str.strip()
+            abundance.columns = abundance.columns.astype(str).str.strip()
+            sample_ids = abundance.columns.tolist()
+        feature_names = abundance.index.astype(str).str.strip().tolist()
+        values = abundance.loc[:, sample_ids].T.apply(pd.to_numeric, errors="coerce")
+    else:
+        frame = pd.read_csv(spec.abundance_path, sep=None, engine="python")
+        if sample_id_col not in frame.columns:
+            raise ValueError(f"Inference data is missing {sample_id_col!r}.")
+        sample_ids = frame[sample_id_col].astype(str).str.strip().tolist()
+        feature_names = [str(name) for name in frame.columns if name != sample_id_col]
+        values = frame[feature_names].apply(pd.to_numeric, errors="coerce")
+
+    if not sample_ids or not feature_names:
+        raise ValueError("Inference data contains no samples or no features.")
+    if any(not sample_id for sample_id in sample_ids) or len(sample_ids) != len(set(sample_ids)):
+        raise ValueError("Inference sample IDs must be nonempty and unique.")
+    if len(feature_names) != len(set(feature_names)):
+        raise ValueError("Inference feature names must be unique.")
+    if values.isna().any().any():
+        raise ValueError("Inference abundance matrix contains missing or non-numeric values.")
+    X = values.to_numpy(dtype=np.float32)
+    if not np.isfinite(X).all() or np.any(X < 0):
+        raise ValueError("Inference abundance values must be finite and nonnegative.")
+    if not spec.allow_training_sample_overlap and set(sample_ids).intersection(training.sample_ids):
+        raise ValueError("Inference sample IDs overlap the training cohort.")
+
+    expected = list(training.feature_names_by_level["all"])
+    provided = {name: index for index, name in enumerate(feature_names)}
+    missing = [name for name in expected if name not in provided]
+    extra = [name for name in feature_names if name not in set(expected)]
+    if spec.feature_policy not in {"strict", "zero_fill"}:
+        raise ValueError(f"Unsupported feature policy {spec.feature_policy!r}.")
+    if spec.feature_policy == "strict" and (missing or extra):
+        raise ValueError(
+            f"Inference feature schema mismatch: {len(missing)} missing and {len(extra)} extra features."
+        )
+    aligned = np.zeros((len(sample_ids), len(expected)), dtype=np.float32)
+    for index, name in enumerate(expected):
+        if name in provided:
+            aligned[:, index] = X[:, provided[name]]
+
+    names_by_level = {level: list(names) for level, names in training.feature_names_by_level.items()}
+    expected_positions = {name: index for index, name in enumerate(expected)}
+    X_by_level = {
+        level: aligned[:, [expected_positions[name] for name in names]]
+        for level, names in names_by_level.items()
+    }
+    if metadata is not None:
+        indexed_metadata = metadata.set_index(sample_id_col)
+        unknown = [name for name in sample_ids if name not in indexed_metadata.index]
+        if unknown:
+            raise ValueError(f"Inference metadata is missing {len(unknown)} sample IDs.")
+    subject_id_col = training_spec.subject_id_col
+    subject_ids = (
+        indexed_metadata.loc[sample_ids, subject_id_col].astype(str).tolist()
+        if metadata is not None and subject_id_col is not None and subject_id_col in metadata.columns
+        else list(sample_ids)
+    )
+    return UnlabeledDataset(X_by_level, names_by_level, list(sample_ids), subject_ids)
 
 
 def _hash_text(hasher: Any, value: Any) -> None:
@@ -528,6 +671,8 @@ def _encode_y(
 
 def _reserved_wide_csv_columns(spec: Data, target_col: str) -> set[str]:
     reserved = {spec.sample_id_col, target_col, *metadata_columns(spec)}
+    if spec.joint or spec.task == "multilabel":
+        reserved.update((spec.target_col,) if isinstance(spec.target_col, str) else spec.target_col)
     if spec.subject_id_col:
         reserved.add(spec.subject_id_col)
     if spec.group_col:

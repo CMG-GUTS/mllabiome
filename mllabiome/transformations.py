@@ -358,9 +358,7 @@ def _split_transformation_parameters(value: str) -> tuple[str, dict[str, float]]
         try:
             pairs[key] = float(raw_value.strip())
         except ValueError as exc:
-            raise ValueError(
-                f"Invalid prevalence_rank_fusion identity {value!r}."
-            ) from exc
+            raise ValueError(f"Invalid prevalence_rank_fusion identity {value!r}.") from exc
     return raw_name, _prevalence_rank_fusion_parameters(pairs)
 
 
@@ -840,8 +838,9 @@ class _BuiltinTransformer:
             )
             c = self.parameters["c"]
             alpha = self.parameters["alpha"]
-            out = alpha * ranks + (1.0 - alpha) * np.log1p(c * weighted_rel) / np.log1p(
-                c
+            out = (
+                alpha * ranks
+                + (1.0 - alpha) * np.log1p(c * weighted_rel) / np.log1p(c)
             )
             return _finite_output(
                 out,

@@ -52,6 +52,7 @@ def canonical_metric_name(metric: str) -> str:
         "average_precision": "AP",
         "ap": "AP",
         "mcc": "MCC",
+        "auroc_mcc": "AUROC_MCC",
         "nmcc": "MCC",
         "f1w": "F1w",
         "precision": "Precision",
@@ -512,6 +513,11 @@ def compute_metrics(
                 np.average(pr_auc_values, weights=pr_auc_weights)
             )
             out["AP_macro"] = float(np.mean(ap_values))
+
+    # Same chance-adjusted weighted objective as
+    # BaseSelection(metrics={"AUROC": 0.5, "MCC": 0.5}, normalization="chance_adjusted").
+    if np.isfinite(out["AUROC"]) and np.isfinite(out["MCC"]):
+        out["AUROC_MCC"] = 0.5 * (2.0 * out["AUROC"] - 1.0) + 0.5 * out["MCC"]
 
     return {
         key: round(value, 6) if np.isfinite(value) else float("nan")

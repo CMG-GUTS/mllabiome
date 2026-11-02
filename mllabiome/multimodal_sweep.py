@@ -1738,7 +1738,10 @@ def _finalize_modality_sweep(
                 bool(sweep.gate.enabled),
             )
     write_mpma_b_selection_outputs(
-        context.root, sweep.evaluation.optimize_metric, plan=sweep.ensemble
+        context.root,
+        sweep.evaluation.optimize_metric,
+        plan=sweep.ensemble,
+        base_selection=sweep.base_selection,
     )
     _write_rankings_and_figures(
         context.root,

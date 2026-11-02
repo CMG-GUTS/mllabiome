@@ -35,6 +35,7 @@ from .explainability_methods import (
 )
 from .integrations import Integration
 from .learners import validate_model_specs
+from .selection_policy import validate_auroc_tolerance
 from .metrics import (
     canonical_metric_name,
     metric_passes_threshold,
@@ -115,6 +116,41 @@ class MPMA:
     config_id: str
     mpdr: MPDR
     learner: str
+
+
+@dataclass
+class BaseSelection:
+    metrics: Mapping[str, float] = field(
+        default_factory=lambda: {"AUROC": 0.5, "MCC": 0.5}
+    )
+    normalization: str = "chance_adjusted"
+    include_inactive: bool = True
+    auroc_tolerance: float | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.metrics, Mapping) or not self.metrics:
+            raise ValueError("BaseSelection.metrics must be a nonempty mapping.")
+        weights: dict[str, float] = {}
+        for name, weight in self.metrics.items():
+            metric = canonical_metric_name(str(name))
+            value = float(weight)
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError("BaseSelection metric weights must be nonnegative and finite.")
+            weights[metric] = weights.get(metric, 0.0) + value
+        total = sum(weights.values())
+        if total <= 0.0:
+            raise ValueError("BaseSelection metric weights must contain a positive value.")
+        self.metrics = {name: value / total for name, value in weights.items() if value > 0.0}
+        self.normalization = str(self.normalization).strip().casefold()
+        if self.normalization not in {"chance_adjusted", "none"}:
+            raise ValueError("BaseSelection.normalization must be 'chance_adjusted' or 'none'.")
+        if self.normalization == "chance_adjusted" and not set(self.metrics).issubset({"AUROC", "MCC"}):
+            raise ValueError("Chance-adjusted selection supports AUROC and MCC only.")
+        self.auroc_tolerance = validate_auroc_tolerance(self.auroc_tolerance, "BaseSelection.auroc_tolerance")
+        if self.auroc_tolerance is not None and self.metrics != {"AUROC": 1.0}:
+            raise ValueError("AUROC/log-loss base selection requires metrics={'AUROC': 1.0}.")
+        if not self.include_inactive:
+            raise ValueError("Base selection must include inactive configurations.")
 
 
 @dataclass
@@ -235,6 +271,7 @@ class Ensemble:
         "median_proba",
     )
     optimize_metric: Any = "auto"
+    auroc_tolerance: float | None = None
     mpma_b_selection: str = "legacy"
     mpma_b_softening: str = "none"
     mpma_b_candidate_learners: tuple[str, ...] = ()
@@ -255,6 +292,9 @@ class Ensemble:
 
     def __post_init__(self) -> None:
         self.optimize_metric = canonical_metric_name(str(self.optimize_metric))
+        self.auroc_tolerance = validate_auroc_tolerance(self.auroc_tolerance, "Ensemble.auroc_tolerance")
+        if self.auroc_tolerance is not None and self.optimize_metric != "AUROC":
+            raise ValueError("AUROC/log-loss ensemble selection requires optimize_metric='AUROC'.")
         self.mpma_b_selection = str(self.mpma_b_selection)
         self.mpma_b_softening = str(self.mpma_b_softening)
         self.mpma_b_candidate_learners = tuple(
@@ -550,6 +590,7 @@ def _validate_metric(
         if n_classes is not None and n_classes > 2:
             binary_only = {
                 "AUROC",
+                "AUROC_MCC",
                 "AUCPR",
                 "AP",
                 "Sensitivity",
@@ -587,6 +628,28 @@ def _validate_sweep_configuration(sweep: Any) -> None:
     task = _normalise_sweep_task(source.task)
     protocol = str(sweep.evaluation.protocol)
     n_classes = _configured_class_count(source) if task == "classification" else None
+    joint = not sweep.uses_modalities and (task == "multilabel" or (task == "multioutput" and source.joint))
+    if joint:
+        targets = (source.target_col,) if isinstance(source.target_col, str) else tuple(source.target_col)
+        if len(targets) < 2 or len(set(targets)) != len(targets):
+            raise ValueError("Joint modeling requires at least two unique target columns.")
+        if task == "multioutput" and (not source.target_tasks or any(t not in source.target_tasks or _normalise_sweep_task(source.target_tasks[t]) != "regression" for t in targets)):
+            raise ValueError("Joint multioutput currently supports exclusively regression targets; assign target_tasks for every target.")
+        if sweep.gate.enabled:
+            raise ValueError("QualificationGate is not available for joint target evaluation.")
+        if sweep.evaluation.outer_only:
+            raise ValueError("Joint target evaluation requires nested cross-validation.")
+        if sweep.base_selection.auroc_tolerance is not None or sweep.ensemble.auroc_tolerance is not None:
+            raise ValueError("AUROC tolerance selection is unsupported for joint targets.")
+        allowed = {"log_loss", "brier", "f1_micro", "f1_macro", "f1_samples", "subset_accuracy", "hamming_loss", "AUROC_macro", "AP_macro"} if task == "multilabel" else {"normalized_rmse", "RMSE", "MAE", "MSE", "R2"}
+        if str(sweep.evaluation.optimize_metric) not in allowed:
+            raise ValueError(f"Joint {task} optimize_metric must be one of {sorted(allowed)}.")
+        return
+    if task != "classification" and (sweep.base_selection.auroc_tolerance is not None or sweep.ensemble.auroc_tolerance is not None):
+        raise ValueError("AUROC/log-loss selection requires binary classification.")
+    if task == "classification":
+        for name in sweep.base_selection.metrics:
+            _validate_metric(name, task, protocol, n_classes, "BaseSelection.metrics")
     sweep.evaluation.optimize_metric = _validate_metric(
         str(sweep.evaluation.optimize_metric),
         task,
@@ -765,6 +828,8 @@ def _validate_sweep_configuration(sweep: Any) -> None:
 def validate_sweep_class_count(sweep: Any, n_classes: int) -> None:
     if int(n_classes) < 2:
         raise ValueError("Classification requires at least two outcome classes.")
+    if int(n_classes) != 2 and (sweep.base_selection.auroc_tolerance is not None or sweep.ensemble.auroc_tolerance is not None):
+        raise ValueError("AUROC/log-loss selection requires binary classification.")
     protocol = str(sweep.evaluation.protocol)
     sweep.evaluation.optimize_metric = _validate_metric(
         str(sweep.evaluation.optimize_metric),
@@ -773,6 +838,8 @@ def validate_sweep_class_count(sweep: Any, n_classes: int) -> None:
         int(n_classes),
         "Evaluation.optimize_metric",
     )
+    for name in sweep.base_selection.metrics:
+        _validate_metric(name, "classification", protocol, int(n_classes), "BaseSelection.metrics")
     if sweep.gate.enabled:
         sweep.gate.metric = _validate_metric(
             str(sweep.gate.metric),
@@ -1022,19 +1089,11 @@ class Inference:
         if not isinstance(self.save_weights, bool):
             raise TypeError("Inference.save_weights must be a boolean.")
         if self.conformal_alpha is not None and not self.save_weights:
-            raise ValueError(
-                "Conformal prediction requires save_weights=True to verify frozen model artifacts."
-            )
-        conformal_fields = (
-            self.conformal_alpha,
-            self.conformal_calibration_predictions,
-            self.conformal_calibration_labels,
-        )
+            raise ValueError("Conformal prediction requires save_weights=True to verify frozen model artifacts.")
+        conformal_fields = (self.conformal_alpha, self.conformal_calibration_predictions, self.conformal_calibration_labels)
         if any(value is not None for value in conformal_fields):
             if not all(value is not None for value in conformal_fields):
-                raise ValueError(
-                    "Conformal inference requires alpha, calibration predictions and calibration labels."
-                )
+                raise ValueError("Conformal inference requires alpha, calibration predictions and calibration labels.")
             if not 0 < float(self.conformal_alpha) < 1:
                 raise ValueError("Inference.conformal_alpha must lie in (0, 1).")
         for field_name in ("training_abundance_scale", "inference_abundance_scale"):
@@ -1043,9 +1102,7 @@ class Inference:
             if scale in {"", "auto"}:
                 scale = None
             if scale is not None and scale not in {
-                "counts",
-                "percentage",
-                "proportion",
+                "counts", "percentage", "proportion"
             }:
                 raise ValueError(
                     f"Inference.{field_name} must be 'counts', 'percentage', 'proportion', or None."
@@ -1080,6 +1137,7 @@ class Sweep:
     learners: Any = field(default_factory=tuple)
     learner_resolutions: Mapping[str, Sequence[str]] = field(default_factory=dict)
     evaluation: Evaluation = field(default_factory=Evaluation)
+    base_selection: BaseSelection = field(default_factory=BaseSelection)
     federated: Federated | None = None
     gate: QualificationGate = field(default_factory=QualificationGate)
     ensemble: Ensemble = field(default_factory=Ensemble)
@@ -1097,8 +1155,11 @@ class Sweep:
     integrations: Sequence[Integration] = field(
         default_factory=lambda: (Integration("unimodal"),)
     )
+    include_representation_impact: bool = True
 
     def __post_init__(self) -> None:
+        if not isinstance(self.include_representation_impact, bool):
+            raise TypeError("Sweep.include_representation_impact must be a boolean.")
         if self.brain is not None:
             from .brain.representations import attach_brain_representations
 
@@ -1221,10 +1282,12 @@ def build_sweep_from_module(mod: Any) -> Sweep:
         return Sweep(
             data=None,
             title=getattr(mod, "TITLE", Path(mod.EXPERIMENT_DIR).name),
+            include_representation_impact=getattr(mod, "INCLUDE_REPRESENTATION_IMPACT", True),
             experiment_dir=mod.EXPERIMENT_DIR,
             learners=learners,
             learner_resolutions=getattr(mod, "LEARNER_RESOLUTIONS", {}),
             evaluation=getattr(mod, "EVALUATION", Evaluation()),
+            base_selection=getattr(mod, "BASE_SELECTION", BaseSelection()),
             federated=getattr(mod, "FEDERATED", None),
             gate=getattr(mod, "GATE", QualificationGate()),
             ensemble=ensemble,
@@ -1281,6 +1344,7 @@ def build_sweep_from_module(mod: Any) -> Sweep:
 
     return Sweep(
         title=getattr(mod, "TITLE", Path(mod.EXPERIMENT_DIR).name),
+        include_representation_impact=getattr(mod, "INCLUDE_REPRESENTATION_IMPACT", True),
         experiment_dir=mod.EXPERIMENT_DIR,
         data=data,
         resolutions=resolutions,
@@ -1288,6 +1352,7 @@ def build_sweep_from_module(mod: Any) -> Sweep:
         learners=learners,
         learner_resolutions=getattr(mod, "LEARNER_RESOLUTIONS", {}),
         evaluation=getattr(mod, "EVALUATION", Evaluation()),
+        base_selection=getattr(mod, "BASE_SELECTION", BaseSelection()),
         federated=getattr(mod, "FEDERATED", None),
         gate=getattr(mod, "GATE", QualificationGate()),
         ensemble=getattr(mod, "ENSEMBLE", Ensemble()),

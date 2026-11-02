@@ -393,9 +393,9 @@ def aggregate_regression_predictions(
     stack: np.ndarray, aggregation: str, weights: np.ndarray | list[float] | None = None
 ) -> np.ndarray:
     values = np.asarray(stack, dtype=float)
-    if values.ndim != 2 or values.shape[0] < 1 or not np.isfinite(values).all():
+    if values.ndim not in (2, 3) or values.shape[0] < 1 or not np.isfinite(values).all():
         raise ValueError(
-            "Regression ensemble predictions must have shape n_members x n_samples and be finite."
+            "Ensemble predictions must have shape n_members x n_samples [x n_targets] and be finite."
         )
     method = _canonical_aggregation(aggregation)
     if method == "mean_prediction":
@@ -537,11 +537,15 @@ def _caruana(
     y_true: np.ndarray,
     metric: str,
     max_members: int,
+    score_function=None,
+    minimize_score: bool | None = None,
 ) -> tuple[list[str], np.ndarray, list[float]]:
-    running = np.zeros(stack.shape[1], dtype=float)
+    loss = metric_is_loss(metric) if minimize_score is None else bool(minimize_score)
+    scorer = (lambda actual, prediction: _metric_value(actual, prediction, metric)) if score_function is None else score_function
+    running = np.zeros_like(stack[0], dtype=float)
     chosen: list[int] = []
     trajectory: list[float] = []
-    best_score = float("inf") if metric_is_loss(metric) else float("-inf")
+    best_score = float("inf") if loss else float("-inf")
     best_prefix = 0
     stale = 0
     ceiling = min(1000, max(100, 25 * max_members))
@@ -554,20 +558,20 @@ def _caruana(
             if index not in distinct and len(distinct) >= max_members:
                 continue
             pred = (running + stack[index]) / float(step + 1)
-            score = _metric_value(y_true, pred, metric)
+            score = scorer(y_true, pred)
             candidates.append((score, index, cid))
         if not candidates:
             break
         candidates.sort(
             key=lambda x: (
-                (x[0], x[1], x[2]) if metric_is_loss(metric) else (-x[0], x[1], x[2])
+                (x[0], x[1], x[2]) if loss else (-x[0], x[1], x[2])
             )
         )
         score, index, _ = candidates[0]
         chosen.append(index)
         running += stack[index]
         trajectory.append(float(score))
-        if best_prefix == 0 or metric_better(score, best_score, metric, tol=1e-10):
+        if best_prefix == 0 or ((score < best_score - 1e-10) if loss else (score > best_score + 1e-10)):
             best_score = float(score)
             best_prefix = len(chosen)
             stale = 0
@@ -599,7 +603,11 @@ def _fit_convex_regression_weights(
     metric: str,
     start: np.ndarray | None = None,
     min_weight: float = 0.0,
+    score_function=None,
+    minimize_score: bool | None = None,
 ) -> np.ndarray:
+    scorer = (lambda actual, prediction: _metric_value(actual, prediction, metric)) if score_function is None else score_function
+    loss = metric_is_loss(metric) if minimize_score is None else bool(minimize_score)
     n = int(stack.shape[0])
     if n < 2:
         raise ValueError("Convex regression weighting requires at least two members.")
@@ -626,8 +634,8 @@ def _fit_convex_regression_weights(
         pred = aggregate_regression_predictions(
             stack, "weighted_mean_prediction", weights
         )
-        score = _metric_value(y_true, pred, metric)
-        return float(score if metric_is_loss(metric) else -score)
+        score = scorer(y_true, pred)
+        return float(score if loss else -score)
 
     result = minimize(
         objective,
@@ -663,12 +671,16 @@ def _fit_super_learner(
     y_true: np.ndarray,
     metric: str,
     max_members: int,
+    score_function=None,
+    minimize_score: bool | None = None,
 ) -> tuple[list[str], np.ndarray]:
+    scorer = (lambda actual, prediction: _metric_value(actual, prediction, metric)) if score_function is None else score_function
+    loss = metric_is_loss(metric) if minimize_score is None else bool(minimize_score)
     if len(library) < 2 or len(set(library)) != len(library) or max_members < 2:
         raise ValueError("Regression Super Learner requires two distinct members.")
     if stack.shape[0] != len(library):
         raise ValueError("Regression Super Learner library and stack disagree.")
-    full = _fit_convex_regression_weights(stack, y_true, metric)
+    full = _fit_convex_regression_weights(stack, y_true, metric, score_function=scorer, minimize_score=loss)
     ranked = sorted(
         range(len(library)),
         key=lambda index: (-float(full[index]), str(library[index])),
@@ -686,10 +698,10 @@ def _fit_super_learner(
             predictions = (1.0 - _MIN_EFFECTIVE_WEIGHT) * stack[
                 anchor
             ] + _MIN_EFFECTIVE_WEIGHT * stack[index]
-            value = _metric_value(y_true, predictions, metric)
+            value = scorer(y_true, predictions)
             partners.append(
                 (
-                    float(value if metric_is_loss(metric) else -value),
+                    float(value if loss else -value),
                     str(library[index]),
                     index,
                 )
@@ -697,7 +709,8 @@ def _fit_super_learner(
         keep.append(min(partners)[2])
     keep = sorted(keep)
     weights = _fit_convex_regression_weights(
-        stack[keep], y_true, metric, full[keep], min_weight=_MIN_EFFECTIVE_WEIGHT
+        stack[keep], y_true, metric, full[keep], min_weight=_MIN_EFFECTIVE_WEIGHT,
+        score_function=scorer, minimize_score=loss,
     )
     return [library[index] for index in keep], weights
 

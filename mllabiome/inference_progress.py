@@ -19,9 +19,7 @@ from rich.progress import (
 from .console import console, info, success, warn
 
 
-_CURRENT: ContextVar[InferenceProgress | None] = ContextVar(
-    "mllabiome_inference_progress", default=None
-)
+_CURRENT: ContextVar[InferenceProgress | None] = ContextVar("mllabiome_inference_progress", default=None)
 
 
 class InferenceProgress:
@@ -60,12 +58,8 @@ class InferenceProgress:
         )
         self._progress.__enter__()
         self._targets = self._progress.add_task("Targets", total=self.total_targets)
-        self._workflow = self._progress.add_task(
-            "Inference stages", total=10, visible=False
-        )
-        self._models = self._progress.add_task(
-            "Selected models", total=1, visible=False
-        )
+        self._workflow = self._progress.add_task("Inference stages", total=10, visible=False)
+        self._models = self._progress.add_task("Selected models", total=1, visible=False)
         self._steps = self._progress.add_task("Model steps", total=7, visible=False)
         self._operation = self._progress.add_task("Starting inference", total=None)
         self._token = _CURRENT.set(self)
@@ -78,9 +72,7 @@ class InferenceProgress:
             if self._progress is not None and self._operation is not None:
                 self._progress.update(
                     self._operation,
-                    description="Inference complete"
-                    if exc_type is None
-                    else "Inference failed",
+                    description="Inference complete" if exc_type is None else "Inference failed",
                     visible=exc_type is not None,
                 )
             if self._progress is not None:
@@ -97,17 +89,8 @@ class InferenceProgress:
             self._step_count = 0
             self._workflow_count = 0
             if self._progress is not None:
-                self._progress.update(
-                    self._workflow,
-                    description="Inference stages",
-                    total=10,
-                    completed=0,
-                    visible=True,
-                )
-                self._progress.update(
-                    self._targets,
-                    description=f"Targets · {label} ({index}/{self.total_targets})",
-                )
+                self._progress.update(self._workflow, description="Inference stages", total=10, completed=0, visible=True)
+                self._progress.update(self._targets, description=f"Targets · {label} ({index}/{self.total_targets})")
                 self._progress.update(self._models, visible=False)
                 self._progress.update(self._steps, visible=False)
 
@@ -193,14 +176,10 @@ class InferenceProgress:
                 self._phases.pop()
             if self._progress is not None:
                 if failed:
-                    self._progress.console.print(
-                        f"[red]✗[/red] {label} · failed ({duration:.1f}s)"
-                    )
+                    self._progress.console.print(f"[red]✗[/red] {label} · failed ({duration:.1f}s)")
                 self._progress.update(
                     self._operation,
-                    description=self._phases[-1]
-                    if self._phases
-                    else f"{label} · done ({duration:.1f}s)",
+                    description=self._phases[-1] if self._phases else f"{label} · done ({duration:.1f}s)",
                 )
 
 

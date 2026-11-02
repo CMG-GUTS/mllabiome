@@ -198,9 +198,9 @@ def _is_mps_oom(exc: BaseException) -> bool:
 
 
 def _kumo_cpu_retry_enabled() -> bool:
-    return os.getenv(
-        "MLLABIOME_INFERENCE_KUMO_CPU_FALLBACK", ""
-    ).strip().casefold() in {"1", "true", "yes", "on"}
+    return os.getenv("MLLABIOME_INFERENCE_KUMO_CPU_FALLBACK", "").strip().casefold() in {
+        "1", "true", "yes", "on"
+    }
 
 
 def _fit_estimator_with_kumo_fallback(
@@ -238,9 +238,7 @@ def _fit_estimator_with_kumo_fallback(
         failed_on_mps = True
     if not failed_on_mps:
         return estimator, str(getattr(estimator, "device_", "default"))
-    info(
-        f"Inference · member {config_id} · MPS fit exhausted available memory; retrying Kumo on CPU"
-    )
+    info(f"Inference · member {config_id} · MPS fit exhausted available memory; retrying Kumo on CPU")
     del estimator
     _release_accelerator_memory(config_id)
     estimator = configure_estimator_threads(learner_factory(), 1)
@@ -259,17 +257,11 @@ def _release_accelerator_memory(config_id: str) -> None:
     if torch is None:
         return
     gc.collect()
-    if (
-        hasattr(torch, "backends")
-        and hasattr(torch.backends, "mps")
-        and torch.backends.mps.is_available()
-    ):
+    if hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         torch.mps.empty_cache()
         if hasattr(torch.mps, "current_allocated_memory"):
             allocated = torch.mps.current_allocated_memory() / (1024**3)
-            info(
-                f"Inference · member {config_id} · MPS allocated after cleanup: {allocated:.2f} GiB"
-            )
+            info(f"Inference · member {config_id} · MPS allocated after cleanup: {allocated:.2f} GiB")
     if torch.cuda.is_available() and torch.cuda.is_initialized():
         torch.cuda.empty_cache()
 
@@ -293,15 +285,11 @@ def _write_bundle_signature(path: Path, signature: str) -> None:
     signature_path = _bundle_signature_path(path)
     signature_path.parent.mkdir(parents=True, exist_ok=True)
     temp = signature_path.with_suffix(signature_path.suffix + ".tmp")
-    temp.write_text(
-        json.dumps({"signature": signature}, sort_keys=True), encoding="utf-8"
-    )
+    temp.write_text(json.dumps({"signature": signature}, sort_keys=True), encoding="utf-8")
     temp.replace(signature_path)
 
 
-def _read_profile_metadata(
-    path: Path | None, sample_id_col: str
-) -> pd.DataFrame | None:
+def _read_profile_metadata(path: Path | None, sample_id_col: str) -> pd.DataFrame | None:
     if path is None:
         return None
     parsed_headers: dict[str, list[str]] = {}
@@ -392,9 +380,7 @@ def _read_matrix_profile(
     if not np.isfinite(values).all():
         raise ValueError("Inference abundance matrix contains NaN or infinite values.")
     if np.any(values < 0):
-        raise ValueError(
-            "Inference abundance matrix contains negative abundance values."
-        )
+        raise ValueError("Inference abundance matrix contains negative abundance values.")
     return values, frame.index.astype(str).tolist(), frame.columns.astype(str).tolist()
 
 
@@ -449,7 +435,9 @@ def _profile_for_sweep(
     metadata_frame = _read_profile_metadata(metadata_path, sample_id_col)
     if inference_family == "matrix_tsv":
         metadata_ids = (
-            None if metadata_frame is None else metadata_frame[sample_id_col].tolist()
+            None
+            if metadata_frame is None
+            else metadata_frame[sample_id_col].tolist()
         )
         X, features, sample_ids = _read_matrix_profile(path, metadata_ids)
     else:
@@ -546,10 +534,9 @@ def _abundance_scale(X: np.ndarray) -> str:
         return "proportion"
     if percentage_fraction >= 0.80:
         return "percentage"
-    if (
-        float(np.max(informative_values)) <= 1.03
-        and float(np.mean(informative_totals <= 1.03)) >= 0.80
-    ):
+    if float(np.max(informative_values)) <= 1.03 and float(
+        np.mean(informative_totals <= 1.03)
+    ) >= 0.80:
         return "proportion"
     if integer_fraction >= 0.98 and float(np.max(informative_values)) > 100.0:
         return "counts"
@@ -815,9 +802,7 @@ def _member_signature(
             "model": model,
             "random_state": int(random_state),
             "group_col": group_col,
-            "training_groups": None
-            if groups is None
-            else [str(value) for value in groups],
+            "training_groups": None if groups is None else [str(value) for value in groups],
         }
     )
 
@@ -837,9 +822,7 @@ def _fit_member(
     tracker = current_inference_progress()
     if tracker is not None:
         tracker.begin_member(config_id, str(model.get("learner", "")))
-    with inference_phase(
-        f"Member {config_id} · validate selected model and cache fingerprint"
-    ):
+    with inference_phase(f"Member {config_id} · validate selected model and cache fingerprint"):
         signature = _member_signature(
             dataset,
             model,
@@ -851,16 +834,12 @@ def _fit_member(
     bundle_path = deployment_dir / "members" / f"{config_id}.joblib"
     prediction_path = _prediction_checkpoint_path(deployment_dir, config_id)
     checkpoint_signature = (
-        None
-        if input_signature is None
-        else _scientific_digest(
+        None if input_signature is None else _scientific_digest(
             {"schema": 1, "model": signature, "input": input_signature}
         )
     )
     if checkpoint_signature is not None:
-        with inference_phase(
-            f"Member {config_id} · inspect saved external probabilities"
-        ):
+        with inference_phase(f"Member {config_id} · inspect saved external probabilities"):
             cached = _load_prediction_checkpoint(
                 prediction_path,
                 checkpoint_signature,
@@ -871,28 +850,19 @@ def _fit_member(
                 bundle_signature=signature,
             )
         if cached is not None:
-            info(
-                f"Inference · member {config_id} · reusing verified external prediction checkpoint"
-            )
+            info(f"Inference · member {config_id} · reusing verified external prediction checkpoint")
             if tracker is not None:
                 tracker.finish_member(config_id)
             return None, cached[0], cached[1]
     bundle = None
     if bundle_path.exists():
         if not _bundle_might_match(bundle_path, signature):
-            info(
-                f"Inference · member {config_id} · cache fingerprint changed; skip loading stale model"
-            )
+            info(f"Inference · member {config_id} · cache fingerprint changed; skip loading stale model")
         else:
-            with inference_phase(
-                f"Member {config_id} · inspect saved deployment bundle"
-            ):
+            with inference_phase(f"Member {config_id} · inspect saved deployment bundle"):
                 try:
                     candidate = joblib.load(bundle_path)
-                    if (
-                        isinstance(candidate, dict)
-                        and candidate.get("signature") == signature
-                    ):
+                    if isinstance(candidate, dict) and candidate.get("signature") == signature:
                         bundle = candidate
                     else:
                         del candidate
@@ -921,11 +891,13 @@ def _fit_member(
 
     if tracker is not None:
         tracker.member_step("features aligned")
-    training_scale = sweep.inference.training_abundance_scale or _abundance_scale(
-        np.asarray(dataset.X_by_level["all"], dtype=float)
+    training_scale = (
+        sweep.inference.training_abundance_scale
+        or _abundance_scale(np.asarray(dataset.X_by_level["all"], dtype=float))
     )
-    inference_scale = sweep.inference.inference_abundance_scale or _abundance_scale(
-        np.asarray(profile_X, dtype=float)
+    inference_scale = (
+        sweep.inference.inference_abundance_scale
+        or _abundance_scale(np.asarray(profile_X, dtype=float))
     )
     scale_validation = _scale_validation_mode(model, training_scale, inference_scale)
     if scale_validation == "mismatch":
@@ -943,9 +915,7 @@ def _fit_member(
             feature_names=list(train_names),
         )
         transformer = factory()
-        with inference_phase(
-            f"Member {config_id} · fit transformation and transform external profiles"
-        ):
+        with inference_phase(f"Member {config_id} · fit transformation and transform external profiles"):
             train_transformed, test_transformed = transformer.apply_pair(
                 np.asarray(train_X, dtype=np.float64), test_X
             )
@@ -956,13 +926,10 @@ def _fit_member(
         estimator = configure_estimator_threads(learner_factory(), 1)
         if callable(getattr(estimator, "bind_schema", None)):
             estimator.bind_schema(transformer.get_feature_names_out(list(train_names)))
-        with inference_phase(
-            f"Member {config_id} · refit {model.get('learner', '')} on full training cohort"
-        ):
+        with inference_phase(f"Member {config_id} · refit {model.get('learner', '')} on full training cohort"):
             groups = (
                 _groups_from_metadata(dataset.metadata, sweep.data.group_col)
-                if dataset.task == "classification"
-                else None
+                if dataset.task == "classification" else None
             )
             estimator, effective_device = _fit_estimator_with_kumo_fallback(
                 estimator,
@@ -997,27 +964,19 @@ def _fit_member(
             "effective_fit_device": effective_device,
         }
         if save_weights:
-            with inference_phase(
-                f"Member {config_id} · save fitted model and preprocessing"
-            ):
+            with inference_phase(f"Member {config_id} · save fitted model and preprocessing"):
                 _atomic_joblib(bundle, bundle_path)
                 _write_bundle_signature(bundle_path, signature)
         if tracker is not None:
-            tracker.member_step(
-                "fitted bundle saved" if save_weights else "bundle persistence skipped"
-            )
+            tracker.member_step("fitted bundle saved" if save_weights else "bundle persistence skipped")
     else:
-        info(
-            f"Inference · member {config_id} · reusing cached fitted model and preprocessing"
-        )
+        info(f"Inference · member {config_id} · reusing cached fitted model and preprocessing")
         expected_names = [str(value) for value in bundle.get("raw_feature_names", [])]
         if expected_names != list(train_names):
             raise ValueError(
                 f"Cached deployment feature schema for {config_id!r} does not match the current training data."
             )
-        with inference_phase(
-            f"Member {config_id} · transform external profiles using cached preprocessing"
-        ):
+        with inference_phase(f"Member {config_id} · transform external profiles using cached preprocessing"):
             test_transformed = bundle["transformer"].apply(test_X)
         if tracker is not None:
             tracker.member_step("cached preprocessing applied")
@@ -1025,9 +984,7 @@ def _fit_member(
             tracker.member_step("cached weights reused")
     estimator = bundle["estimator"]
     if dataset.task == "classification":
-        with inference_phase(
-            f"Member {config_id} · predict external class probabilities"
-        ):
+        with inference_phase(f"Member {config_id} · predict external class probabilities"):
             proba = _predict_proba_aligned(estimator, test_transformed, dataset.classes)
         if (
             not np.isfinite(proba).all()
@@ -1071,9 +1028,7 @@ def _fit_member(
     )
     if checkpoint_signature is not None:
         with inference_phase(f"Member {config_id} · checkpoint external predictions"):
-            _save_prediction_checkpoint(
-                prediction_path, checkpoint_signature, predictions, audit
-            )
+            _save_prediction_checkpoint(prediction_path, checkpoint_signature, predictions, audit)
     if tracker is not None:
         tracker.finish_member(config_id)
     return None, predictions, audit
@@ -1104,11 +1059,7 @@ def _strategy_predictions(
                     model,
                     deployment_dir,
                     save_weights,
-                    **(
-                        {}
-                        if input_signature is None
-                        else {"input_signature": input_signature}
-                    ),
+                    **({} if input_signature is None else {"input_signature": input_signature}),
                 )
             finally:
                 _release_accelerator_memory(config_id)
@@ -1139,11 +1090,7 @@ def _strategy_predictions(
                     member,
                     deployment_dir,
                     save_weights,
-                    **(
-                        {}
-                        if input_signature is None
-                        else {"input_signature": input_signature}
-                    ),
+                    **({} if input_signature is None else {"input_signature": input_signature}),
                 )
             finally:
                 _release_accelerator_memory(config_id)
@@ -1161,14 +1108,10 @@ def _strategy_predictions(
     if weights is not None:
         info(f"Inference · MPMA-E · selected {aggregation} weights={weights!r}")
     elif isinstance(parameters, dict) and "member_weights" in parameters:
-        info(
-            f"Inference · MPMA-E · selected {aggregation} weights={parameters['member_weights']!r}"
-        )
+        info(f"Inference · MPMA-E · selected {aggregation} weights={parameters['member_weights']!r}")
     else:
         info(f"Inference · MPMA-E · selected aggregation={aggregation}")
-    with inference_phase(
-        f"MPMA-E · aggregate {len(member_predictions)} members using {aggregation}"
-    ):
+    with inference_phase(f"MPMA-E · aggregate {len(member_predictions)} members using {aggregation}"):
         predictions = aggregate_member_predictions(
             stack, aggregation, weights, parameters
         )
@@ -1279,9 +1222,7 @@ def run_inference(
             predicted_models.append(models["MPMA-B"])
         if "MPMA-E" in requested:
             predicted_models.extend(models["MPMA-E"]["members"])
-        tracker.plan_models(
-            list(dict.fromkeys(str(model["config_id"]) for model in predicted_models))
-        )
+        tracker.plan_models(list(dict.fromkeys(str(model["config_id"]) for model in predicted_models)))
     levels = []
     for model in selected_models:
         levels.extend(
@@ -1295,12 +1236,10 @@ def run_inference(
     if tracker is not None:
         tracker.workflow_step("training data loaded")
     with inference_phase("Read external abundance profiles and align metadata"):
-        profile_X, profile_names, sample_ids, metadata, input_audit = (
-            _profile_for_sweep(sweep, training)
+        profile_X, profile_names, sample_ids, metadata, input_audit = _profile_for_sweep(
+            sweep, training
         )
-    info(
-        f"Inference · external cohort · {len(sample_ids)} samples · {len(profile_names)} features"
-    )
+    info(f"Inference · external cohort · {len(sample_ids)} samples · {len(profile_names)} features")
     if tracker is not None:
         tracker.workflow_step("external profiles aligned")
     inference_root = root / "inference"
@@ -1362,9 +1301,7 @@ def run_inference(
     try:
         for index, strategy in enumerate(requested, start=1):
             info(f"Inference · strategy {index}/{len(requested)} · {strategy}")
-            with inference_phase(
-                f"Strategy {strategy} · fit or reuse selected learners and predict"
-            ):
+            with inference_phase(f"Strategy {strategy} · fit or reuse selected learners and predict"):
                 values, rows = _strategy_predictions(
                     sweep,
                     training,
@@ -1399,21 +1336,15 @@ def run_inference(
     if tracker is not None:
         tracker.workflow_step("external sample matrix saved")
     predictions = _prediction_frame(sample_ids, training, strategy_values)
-    with inference_phase(
-        "Verify fitted model provenance for optional conformal prediction"
-    ):
-        calibration_groups = _groups_from_metadata(
-            training.metadata, sweep.data.group_col
-        )
+    with inference_phase("Verify fitted model provenance for optional conformal prediction"):
+        calibration_groups = _groups_from_metadata(training.metadata, sweep.data.group_col)
         model_signature = _scientific_digest(
             {
                 "models": models,
                 "dataset": dataset_fingerprint(training),
                 "random_state": int(sweep.evaluation.random_state),
                 "group_col": sweep.data.group_col,
-                "training_groups": None
-                if calibration_groups is None
-                else [str(value) for value in calibration_groups],
+                "training_groups": None if calibration_groups is None else [str(value) for value in calibration_groups],
             }
         )
     with inference_phase("Hash saved fitted learners for deployment provenance"):
@@ -1425,12 +1356,8 @@ def run_inference(
     conformal_report = None
     if sweep.inference.conformal_alpha is not None:
         if training.task != "classification":
-            raise ValueError(
-                "Split conformal classification is unavailable for regression."
-            )
-        with inference_phase(
-            "Construct conformal prediction sets from independent calibration cohort"
-        ):
+            raise ValueError("Split conformal classification is unavailable for regression.")
+        with inference_phase("Construct conformal prediction sets from independent calibration cohort"):
             predictions, conformal_report = external_conformal_sets(
                 predictions,
                 Path(sweep.inference.conformal_calibration_predictions),

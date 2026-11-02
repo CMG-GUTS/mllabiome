@@ -1302,7 +1302,8 @@ def _write_feature_support_figure(
 
 
 def _write_regression_ale_figure(
-    target_dir: Path, importance: pd.DataFrame, curves: pd.DataFrame, top_k: int
+    target_dir: Path, importance: pd.DataFrame, curves: pd.DataFrame, top_k: int,
+    *, probability_output: bool = False
 ) -> dict[str, Path]:
     if curves.empty:
         return {}
@@ -1336,7 +1337,7 @@ def _write_regression_ale_figure(
         stem,
         max_panels=min(12, int(top_k)),
         x_label="Model-input feature value",
-        y_label="Contribution to predicted outcome (target units)",
+        y_label="Contribution to positive-label probability" if probability_output else "Contribution to predicted outcome (target units)",
     )
     return {"ale_curves_svg": stem.with_suffix(".svg")}
 
@@ -1387,6 +1388,8 @@ def _write_regression_explainability_figures(
     importance: pd.DataFrame | None = None,
     top_k: int = 15,
     interaction_abundance: pd.DataFrame | None = None,
+    *,
+    probability_output: bool = False,
 ) -> dict[str, Path]:
     frame = importance if importance is not None else pd.DataFrame()
     if frame.empty:
@@ -1416,7 +1419,7 @@ def _write_regression_explainability_figures(
     if table_exists(curve_path):
         outputs.update(
             _write_regression_ale_figure(
-                target_dir, frame, read_table(curve_path), int(top_k)
+                target_dir, frame, read_table(curve_path), int(top_k), probability_output=probability_output
             )
         )
     interaction_path = target_dir / "ale_interactions.parquet"

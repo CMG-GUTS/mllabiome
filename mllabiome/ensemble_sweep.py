@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
+from scipy.stats import rankdata
 from sklearn.linear_model import LogisticRegression
 
 from .advanced_ensemble import ADVANCED_AGGREGATIONS, fit_crossfitted_advanced
@@ -39,12 +40,13 @@ from .metrics import metric_is_loss as _metric_is_loss
 from .metrics import metric_requires_probability_semantics
 from .mpma_e_figure import write_single_task_mpma_e_figure
 from .ensemble_quantile_learning import fit_grouped_quantile
+from .selection_policy import rank_auroc_log_loss
 from .selection import _qualified_config_ids_for_splits, select_final_mpma_candidate
 from .mpma_vnext import rank_oof_loss, similarity_members
 from .storage import read_table, table_exists, write_table
 from .utils import TAXONOMIC_LEVELS, dump_json_standard
 
-_ENSEMBLE_SEARCH_SCHEMA = "mpmae_search_v12"
+_ENSEMBLE_SEARCH_SCHEMA = "mpmae_search_v14"
 _SUPER_LEARNER_WEIGHT_TOL = 1e-8
 _SUPER_LEARNER_MIN_WEIGHT = 0.01
 _SUPER_LEARNER_OPT_MAXITER = 1000
@@ -123,6 +125,8 @@ def _resolved_super_learner_loss(plan: Ensemble) -> str:
     metric = canonical_metric_name(str(plan.optimize_metric)).casefold()
     if metric in {"brier", "brier_loss"}:
         return "brier"
+    if metric == "auroc_mcc":
+        return "AUROC_MCC"
     return "log_loss"
 
 
@@ -293,11 +297,7 @@ def _ensemble_configs(
             "regularized_super_learner",
         }
         for method in _plan_methods(plan):
-            sizes = (
-                (2,)
-                if method in {"best_deep_ml_pair", "best_deep_ml_complementary_pair"}
-                else _plan_max_sizes(plan)
-            )
+            sizes = (2,) if method in {"best_deep_ml_pair", "best_deep_ml_complementary_pair"} else _plan_max_sizes(plan)
             for max_size in sizes:
                 for aggregation in _plan_aggregations(plan):
                     if method in learned_weight_selectors:
@@ -429,6 +429,7 @@ def _complete_inner_scores(
     metric: str,
     eligible_ids: set[str],
     qualification: pd.DataFrame | None = None,
+    auroc_tolerance: float | None = None,
 ) -> pd.Series:
     required = {"inner_key", "config_id"}
     missing = required - set(inner.columns)
@@ -474,19 +475,45 @@ def _complete_inner_scores(
     pcols = _proba_cols(pred)
     if not pcols:
         raise ValueError("Inner predictions do not contain probability columns.")
+    # Support pre-existing evaluation tables written before AUROC_MCC was registered.
+    # Compute the score per inner fold, as BaseSelection does, before averaging.
+    if metric == "AUROC_MCC" and metric not in frame.columns:
+        if not {"AUROC", "MCC"}.issubset(frame.columns):
+            raise ValueError("AUROC_MCC selection requires inner AUROC and MCC columns.")
+        auc = pd.to_numeric(frame["AUROC"], errors="coerce")
+        mcc = pd.to_numeric(frame["MCC"], errors="coerce")
+        frame[metric] = 0.5 * (2.0 * auc - 1.0) + 0.5 * mcc
     rows: list[tuple[str, float]] = []
+    loss_rows: dict[str, float] = {}
+    if auroc_tolerance is not None and "log_loss" not in frame.columns:
+        raise ValueError("AUROC/log-loss ensemble selection requires inner log_loss results.")
     for config_id in complete:
         ordered, stack = _aligned_stack(pred, [config_id], pcols, inner=True)
         if ordered is None or stack is None:
             continue
         group = frame[frame["config_id"].eq(str(config_id))].copy()
         group = group.drop_duplicates("inner_key", keep="last")
+        if auroc_tolerance is not None:
+            observed = group[["AUROC", "log_loss"]].apply(pd.to_numeric, errors="coerce")
+            if not np.isfinite(observed.to_numpy(dtype=float)).all():
+                continue
         value, _ = aggregate_validation_metric(group, metric)
-        if np.isfinite(value):
-            rows.append((str(config_id), float(value)))
+        if not np.isfinite(value):
+            continue
+        if auroc_tolerance is not None:
+            loss, _ = aggregate_validation_metric(group, "log_loss")
+            if not np.isfinite(loss):
+                continue
+            loss_rows[str(config_id)] = float(loss)
+        rows.append((str(config_id), float(value)))
     if not rows:
         return pd.Series(dtype=float)
     scores = pd.Series(dict(rows), dtype=float)
+    if auroc_tolerance is not None:
+        table = pd.DataFrame({"config_id": scores.index, "AUROC": scores.to_numpy(dtype=float)})
+        table["log_loss"] = table["config_id"].map(loss_rows)
+        ranked = rank_auroc_log_loss(table, "AUROC", "log_loss", auroc_tolerance, ("config_id",))
+        return scores.loc[ranked["config_id"].tolist()]
     if _metric_is_loss(metric):
         order = sorted(scores.index, key=lambda cid: (float(scores[cid]), str(cid)))
     else:
@@ -574,6 +601,25 @@ def _metric_value(y_true: np.ndarray, proba: np.ndarray, metric: str) -> float:
         target[np.arange(len(y_true)), np.asarray(y_true, dtype=int)] = 1.0
         value = float(np.mean(np.sum((proba - target) ** 2, axis=1)))
         return value if np.isfinite(value) else float("inf")
+    if metric == "AUROC_MCC":
+        if proba.shape[1] != 2:
+            raise ValueError("AUROC_MCC requires binary classification probabilities.")
+        truth = np.asarray(y_true, dtype=int)
+        positives = truth == 1
+        n_pos = int(np.count_nonzero(positives))
+        n_neg = len(truth) - n_pos
+        if not n_pos or not n_neg:
+            return float("-inf")
+        ranks = rankdata(proba[:, 1], method="average")
+        auc = (ranks[positives].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+        predicted = proba[:, 1] > proba[:, 0]  # ties select class 0
+        tp = int(np.count_nonzero(positives & predicted))
+        fp = int(np.count_nonzero(~positives & predicted))
+        fn = n_pos - tp
+        tn = n_neg - fp
+        denominator = np.sqrt(float((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn)))
+        mcc = (tp * tn - fp * fn) / denominator if denominator else 0.0
+        return round(float(0.5 * (2.0 * auc - 1.0) + 0.5 * mcc), 6)
     classes = np.arange(proba.shape[1], dtype=int)
     y_pred = classes[proba.argmax(axis=1)]
     values = compute_metrics(y_true, y_pred, proba, classes)
@@ -697,19 +743,9 @@ def _evaluate_selected_members(
     if stack.shape[0] != len(members):
         raise ValueError("MPMA-E member count and prediction stack disagree.")
     aggregation = str(spec["aggregation_strategy"])
-    probabilistic_methods = {
-        "bayesian_model_averaging",
-        "mixture_of_experts",
-        "cross_study_dro",
-        "sparse_nonnegative_stacking",
-    }
+    probabilistic_methods = {"bayesian_model_averaging", "mixture_of_experts", "cross_study_dro", "sparse_nonnegative_stacking"}
     samples_deduplicated = False
-    if (
-        aggregation in probabilistic_methods
-        and ordered is not None
-        and "sample_id" in ordered.columns
-        and ordered["sample_id"].duplicated().any()
-    ):
+    if aggregation in probabilistic_methods and ordered is not None and "sample_id" in ordered.columns and ordered["sample_id"].duplicated().any():
         identifiers = ordered["sample_id"].astype(str).to_numpy()
         unique = np.unique(identifiers)
         rows = []
@@ -718,13 +754,9 @@ def _evaluate_selected_members(
             positions = np.flatnonzero(identifiers == identifier)
             frame = ordered.iloc[positions]
             if frame["y_true"].nunique() != 1:
-                raise ValueError(
-                    "Repeated OOF predictions conflict on the true class for a sample."
-                )
+                raise ValueError("Repeated OOF predictions conflict on the true class for a sample.")
             if "study_group" in frame and frame["study_group"].nunique() != 1:
-                raise ValueError(
-                    "Repeated OOF predictions conflict on the study assignment for a sample."
-                )
+                raise ValueError("Repeated OOF predictions conflict on the study assignment for a sample.")
             rows.append(frame.iloc[0].to_dict())
             averages.append(stack[:, positions, :].mean(axis=1))
         ordered = pd.DataFrame(rows).reset_index(drop=True)
@@ -778,12 +810,7 @@ def _evaluate_selected_members(
                 y_true,
                 ordered["study_group"].astype(str).to_numpy()
                 if aggregation == "cross_study_dro" and "study_group" in ordered.columns
-                else np.asarray(
-                    [
-                        f"sample_fold_{i % min(5, len(ordered))}"
-                        for i in range(len(ordered))
-                    ]
-                )
+                else np.asarray([f"sample_fold_{i % min(5, len(ordered))}" for i in range(len(ordered))])
                 if aggregation in probabilistic_methods and samples_deduplicated
                 else _probabilistic_meta_fold_keys(ordered, aggregation)
                 if aggregation in probabilistic_methods
@@ -834,8 +861,7 @@ def _evaluate_selected_members(
                 > 1e-12
             )
         )
-        if aggregation_parameters is not None
-        and "member_weights" in aggregation_parameters
+        if aggregation_parameters is not None and "member_weights" in aggregation_parameters
         else len(members),
         "aggregation_weight_source": aggregation_weight_source,
         "weight_source": aggregation_weight_source,
@@ -924,9 +950,7 @@ def _select_best_per_learner_type(
     return out
 
 
-def _deep_ml_candidates(
-    scores: pd.Series, configs: pd.DataFrame
-) -> tuple[list[str], list[str]]:
+def _deep_ml_candidates(scores: pd.Series, configs: pd.DataFrame) -> tuple[list[str], list[str]]:
     required = {"config_id", "learner_class", "learner_params"}
     if not required.issubset(configs.columns):
         return [], []
@@ -965,11 +989,7 @@ def _select_deep_ml_pair(
     if not complementary:
         members = [deep[0], machine[0]]
         ordered, stack = _aligned_stack(predictions, members, pcols, inner=True)
-        return (
-            (members, ordered, stack, extra)
-            if ordered is not None and stack is not None
-            else ([], None, None, extra)
-        )
+        return (members, ordered, stack, extra) if ordered is not None and stack is not None else ([], None, None, extra)
     search_limit = 20
     deep = deep[:search_limit]
     machine = machine[:search_limit]
@@ -1002,9 +1022,7 @@ def _select_deep_ml_pair(
                 if ordered is None or stack is None:
                     continue
                 probability = (stack[0] + stack[1]) / 2.0
-                value = _metric_value(
-                    ordered["y_true"].to_numpy(dtype=int), probability, metric
-                )
+                value = _metric_value(ordered["y_true"].to_numpy(dtype=int), probability, metric)
                 if not np.isfinite(value):
                     continue
                 if best_value is None or _metric_better(value, best_value, metric):
@@ -1012,9 +1030,7 @@ def _select_deep_ml_pair(
                     chosen = (dl_id, ml_id)
                     best_ordered = ordered
                     best_stack = stack
-    extra["candidate_library_policy"] = (
-        "top_20_each_family_inner_oof_equal_probability_pair"
-    )
+    extra["candidate_library_policy"] = "top_20_each_family_inner_oof_equal_probability_pair"
     extra["pair_search_deep_count"] = len(deep)
     extra["pair_search_ml_count"] = len(machine)
     extra["pair_search_evaluated_on"] = "inner_validation_predictions_only"
@@ -1025,8 +1041,14 @@ def _select_deep_ml_pair(
 
 
 def _member_error_correlation(stack: np.ndarray, y_true: np.ndarray) -> np.ndarray:
-    target = np.zeros((len(y_true), stack.shape[2]), dtype=float)
-    target[np.arange(len(y_true)), np.asarray(y_true, dtype=int)] = 1.0
+    actual = np.asarray(y_true)
+    if actual.ndim == 2:
+        target = np.asarray(actual, dtype=float)
+        if target.shape != stack.shape[1:]:
+            raise ValueError("Multi-target ensemble reference and predictions have incompatible dimensions.")
+    else:
+        target = np.zeros((len(y_true), stack.shape[2]), dtype=float)
+        target[np.arange(len(y_true)), np.asarray(y_true, dtype=int)] = 1.0
     residual = (target[None, :, :] - np.asarray(stack, dtype=float)).reshape(
         stack.shape[0], -1
     )
@@ -1103,13 +1125,17 @@ def _select_performance_diversity(
     y_true: np.ndarray,
     metric: str,
     max_members: int,
+    score_function=None,
+    minimize_score: bool | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
+    loss = _metric_is_loss(metric) if minimize_score is None else bool(minimize_score)
+    scorer = (lambda actual, proba: _metric_value(actual, proba, metric)) if score_function is None else score_function
     n_members = len(member_ids)
     limit = min(max(2, int(max_members)), n_members)
     corr = np.abs(_member_error_correlation(stack, y_true))
     quality = _rank_quality(n_members)
     best_members: list[int] | None = None
-    best_score = float("inf") if _metric_is_loss(metric) else float("-inf")
+    best_score = float("inf") if loss else float("-inf")
     best_alpha = 0.0
     best_size = 0
     evaluations: list[dict[str, Any]] = []
@@ -1125,13 +1151,11 @@ def _select_performance_diversity(
             candidates.sort(key=lambda item: (-item[0], item[1]))
             selected.append(int(candidates[0][1]))
             proba = np.mean(stack[selected], axis=0)
-            score = _metric_value(y_true, proba, metric)
+            score = scorer(y_true, proba)
             evaluations.append(
                 {"alpha": float(alpha), "size": int(size), "score": float(score)}
             )
-            better = best_members is None or _metric_better(
-                float(score), float(best_score), metric, tol=1e-12
-            )
+            better = best_members is None or (float(score) < float(best_score) - 1e-12 if loss else float(score) > float(best_score) + 1e-12)
             tied = (
                 best_members is not None
                 and abs(float(score) - float(best_score)) <= 1e-12
@@ -1381,6 +1405,7 @@ def _caruana_select(
     y_true: np.ndarray,
     metric: str,
     max_members: int,
+    auroc_tolerance: float | None = None,
 ) -> tuple[list[str], np.ndarray, float, list[float], dict[str, Any]]:
     if len(member_ids) < 2 or len(set(member_ids)) != len(member_ids):
         raise ValueError("Caruana requires at least two distinct candidate models.")
@@ -1402,6 +1427,7 @@ def _caruana_select(
     best_prefix = 0
     stale_steps = 0
     stop_reason = "iteration_ceiling"
+    prefixes: list[dict[str, float | int]] = []
 
     for step in range(max_iterations):
         distinct = set(chosen_indices)
@@ -1421,30 +1447,55 @@ def _caruana_select(
         if not candidate_scores:
             stop_reason = "no_candidates"
             break
-        if _metric_is_loss(metric):
-            candidate_scores.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
-        else:
-            candidate_scores.sort(
-                key=lambda item: (-item[0], item[1], item[2], item[3])
+        if auroc_tolerance is not None:
+            ranked = rank_auroc_log_loss(
+                pd.DataFrame(candidate_scores, columns=["AUROC", "log_loss", "index", "config_id"]),
+                "AUROC", "log_loss", auroc_tolerance, ("index",),
             )
-        score, _, selected_idx, _ = candidate_scores[0]
+            selected = ranked.iloc[0]
+            score = float(selected["AUROC"])
+            candidate_loss = float(selected["log_loss"])
+            selected_idx = int(selected["index"])
+        else:
+            if _metric_is_loss(metric):
+                candidate_scores.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+            else:
+                candidate_scores.sort(
+                    key=lambda item: (-item[0], item[1], item[2], item[3])
+                )
+            score, candidate_loss, selected_idx, _ = candidate_scores[0]
         chosen_indices.append(int(selected_idx))
         running_sum = running_sum + stack[selected_idx]
         trajectory.append(float(score))
 
         valid = len(set(chosen_indices)) >= 2
-        improved = valid and (
-            best_prefix == 0
-            or _metric_better(
-                float(score), float(best_score), metric, tol=improvement_tol
+        if auroc_tolerance is not None:
+            if valid:
+                prefixes.append({"AUROC": float(score), "log_loss": float(candidate_loss), "length": len(chosen_indices)})
+                ranked_prefixes = rank_auroc_log_loss(
+                    pd.DataFrame(prefixes), "AUROC", "log_loss", auroc_tolerance, ("length",),
+                )
+                chosen_prefix = ranked_prefixes.iloc[0]
+                next_best = int(chosen_prefix["length"])
+                if next_best != best_prefix:
+                    stale_steps = 0
+                else:
+                    stale_steps += 1
+                best_prefix = next_best
+                best_score = float(chosen_prefix["AUROC"])
+        else:
+            improved = valid and (
+                best_prefix == 0
+                or _metric_better(
+                    float(score), float(best_score), metric, tol=improvement_tol
+                )
             )
-        )
-        if improved:
-            best_score = float(score)
-            best_prefix = len(chosen_indices)
-            stale_steps = 0
-        elif valid:
-            stale_steps += 1
+            if improved:
+                best_score = float(score)
+                best_prefix = len(chosen_indices)
+                stale_steps = 0
+            elif valid:
+                stale_steps += 1
 
         if (
             best_prefix >= 2
@@ -1578,6 +1629,9 @@ def _super_learner_loss(
         target = np.zeros_like(proba)
         target[np.arange(len(y_true)), y_true] = 1.0
         return float(np.mean(np.sum((proba - target) ** 2, axis=1)))
+    if loss == "AUROC_MCC":
+        # Minimize the NEGATIVE of the exact selection score.
+        return -_metric_value(y_true, proba, "AUROC_MCC")
     raise ValueError(f"Unknown Super Learner loss: {loss!r}.")
 
 
@@ -1598,6 +1652,118 @@ def _super_learner_gradient(
             "nc,mnc->m", residual, stack, optimize=True
         )
     raise ValueError(f"Unknown Super Learner loss: {loss!r}.")
+
+
+def _fit_nonsmooth_composite_weights(
+    stack: np.ndarray,
+    y_true: np.ndarray,
+    start: np.ndarray | None = None,
+    min_weight: float = 0.0,
+) -> np.ndarray:
+    """Deterministic, bounded coordinate search on the probability simplex.
+
+    AUROC uses ranks and MCC uses hard predictions, so SLSQP gradients are
+    inappropriate. We optimize the *actual* composite, not a surrogate loss.
+    This is a local search; global optimality is not guaranteed.
+    """
+    n_members = int(stack.shape[0])
+    floor = float(min_weight)
+    if n_members < 2 or floor < 0 or not np.isfinite(floor) or floor * n_members >= 1:
+        raise ValueError("Infeasible composite ensemble simplex.")
+    initial = _uniform_weights(n_members) if start is None else np.asarray(start, dtype=float)
+    if initial.shape != (n_members,) or not np.isfinite(initial).all() or np.any(initial < 0) or initial.sum() <= 0:
+        raise ValueError("Invalid initial composite ensemble weights.")
+    initial = initial / initial.sum()
+    # Project initial weights to the simplex with a fixed minimum per member.
+    initial = floor + (1 - floor * n_members) * initial
+
+    def score(weights: np.ndarray) -> float:
+        return _metric_value(y_true, _weighted_probability_mean(stack, weights), "AUROC_MCC")
+
+    # Complementary initializations reduce dependence on a single local optimum.
+    seeds = [initial, _uniform_weights(n_members)]
+    if n_members <= 10:
+        seeds.extend(
+            floor + (1 - floor * n_members) * np.eye(n_members)[index]
+            for index in range(n_members)
+        )
+    best = initial.copy()
+    best_value = score(best)
+    fractions = (1.0, 0.5, 0.25, 0.1, 0.025)
+    for seed in seeds:
+        weights = np.asarray(seed, dtype=float).copy()
+        value = score(weights)
+        for _ in range(16):
+            winning_weights = None
+            winning_value = value
+            for donor in range(n_members):
+                available = max(0.0, float(weights[donor]) - floor)
+                if available <= 1e-12:
+                    continue
+                for receiver in range(n_members):
+                    if receiver == donor:
+                        continue
+                    for fraction in fractions:
+                        proposed = weights.copy()
+                        transfer = available * fraction
+                        proposed[donor] -= transfer
+                        proposed[receiver] += transfer
+                        candidate_score = score(proposed)
+                        if candidate_score > winning_value + 1e-9:
+                            winning_value = candidate_score
+                            winning_weights = proposed
+            if winning_weights is None:
+                break
+            weights, value = winning_weights, winning_value
+        if value > best_value + 1e-9:
+            best, best_value = weights.copy(), value
+    return best / best.sum()
+
+
+def _fit_composite_super_learner(
+    member_ids: list[str], stack: np.ndarray, y_true: np.ndarray, max_members: int
+) -> tuple[list[str], np.ndarray, float]:
+    """Greedy support search followed by direct composite weight optimization."""
+    n_members = len(member_ids)
+    if n_members < 2 or len(set(member_ids)) != n_members or max_members < 2:
+        raise ValueError("Composite Super Learner needs two distinct candidate models.")
+    # Choose a strong starting member using exactly the ensemble objective.
+    singles = [
+        _metric_value(y_true, stack[index], "AUROC_MCC")
+        for index in range(n_members)
+    ]
+    anchor = max(range(n_members), key=lambda index: (singles[index], -index))
+    selected = [anchor]
+    current = stack[anchor]
+    current_score = float(singles[anchor])
+    weights = np.array([1.0])
+    for _ in range(min(max_members, n_members) - 1):
+        candidate: tuple[float, int, float] | None = None
+        for index in range(n_members):
+            if index in selected:
+                continue
+            # Preserve positive final weights and search several mixture scales.
+            for alpha in (0.01, 0.025, 0.05, 0.1, 0.2, 0.35, 0.5, 0.75):
+                mixed = (1.0 - alpha) * current + alpha * stack[index]
+                value = _metric_value(y_true, mixed, "AUROC_MCC")
+                if candidate is None or value > candidate[0] + 1e-9:
+                    candidate = (value, index, alpha)
+        if candidate is None:
+            break
+        if len(selected) >= 2 and candidate[0] <= current_score + 1e-9:
+            break
+        _, index, alpha = candidate
+        selected.append(index)
+        start = np.append((1 - alpha) * weights, alpha)
+        weights = _fit_nonsmooth_composite_weights(
+            stack[selected], y_true, start, min_weight=_SUPER_LEARNER_MIN_WEIGHT
+        )
+        current = _weighted_probability_mean(stack[selected], weights)
+        current_score = _metric_value(y_true, current, "AUROC_MCC")
+    if len(selected) < 2:
+        raise RuntimeError("Composite Super Learner could not find two members.")
+    # min_weight constrains all retained members, consistent with Super Learner.
+    return [member_ids[i] for i in selected], weights, float(-current_score)
 
 
 def _fit_convex_probability_weights(
@@ -1621,6 +1787,8 @@ def _fit_convex_probability_weights(
     if float(x0.sum()) <= 0.0:
         raise ValueError("Initial convex ensemble weights must have positive mass.")
     x0 = x0 / float(x0.sum())
+    if loss == "AUROC_MCC":
+        return _fit_nonsmooth_composite_weights(stack, y_true, x0, min_weight=floor)
     scale = 1.0 - floor * n_members
     if floor:
         x0 = np.maximum(x0 - floor, 0.0)
@@ -1838,6 +2006,8 @@ def _fit_super_learner(
         or max_members < 2
     ):
         raise ValueError("Super Learner requires at least two distinct members.")
+    if loss == "AUROC_MCC":
+        return _fit_composite_super_learner(member_ids, stack, y_true, max_members)
     full_weights = _fit_convex_probability_weights(stack, y_true, loss)
     indices = _select_super_learner_support(
         member_ids,
@@ -1927,27 +2097,18 @@ def _stacking_fold_keys(ordered: pd.DataFrame) -> np.ndarray:
 def _probabilistic_meta_fold_keys(ordered: pd.DataFrame, method: str) -> np.ndarray:
     if method == "cross_study_dro":
         if "study_group" not in ordered.columns:
-            raise ValueError(
-                "cross_study_dro requires explicit study_group labels aligned to held-out predictions."
-            )
+            raise ValueError("cross_study_dro requires explicit study_group labels aligned to held-out predictions.")
         groups = ordered["study_group"].astype(str).to_numpy()
         if len(np.unique(groups)) < 3:
-            raise ValueError(
-                "Cross-study DRO requires at least three studies for study-held-out meta-validation."
-            )
+            raise ValueError("Cross-study DRO requires at least three studies for study-held-out meta-validation.")
         return groups
     sample_ids = ordered["sample_id"].astype(str).to_numpy()
     if len(np.unique(sample_ids)) != len(sample_ids):
         identifiers = np.unique(sample_ids)
         n_folds = min(5, len(identifiers))
         if n_folds < 2:
-            raise ValueError(
-                "Meta-model validation requires at least two unique samples."
-            )
-        keys = {
-            sample_id: f"sample_group_{index % n_folds}"
-            for index, sample_id in enumerate(identifiers)
-        }
+            raise ValueError("Meta-model validation requires at least two unique samples.")
+        keys = {sample_id: f"sample_group_{index % n_folds}" for index, sample_id in enumerate(identifiers)}
         return np.asarray([keys[ident] for ident in sample_ids], dtype=str)
     return _stacking_fold_keys(ordered)
 
@@ -2294,11 +2455,7 @@ def _candidate_from_simple_selector(
             members = _select_best_per_learner_type(scores, configs)[:max_size]
         elif method in {"best_deep_ml_pair", "best_deep_ml_complementary_pair"}:
             members, ordered_pair, stack_pair, pair_extra = _select_deep_ml_pair(
-                scores,
-                predictions,
-                configs,
-                pcols,
-                metric,
+                scores, predictions, configs, pcols, metric,
                 method == "best_deep_ml_complementary_pair",
             )
             if not members:
@@ -2494,12 +2651,15 @@ def _candidate_from_late_fusion(
         extra.update(
             {
                 "selection_weight_source": f"late_convex_{loss}",
-                "super_learner_loss": loss,
-                "super_learner_loss_rule": "brier_if_optimize_metric_is_brier_else_log_loss",
+                "super_learner_loss": "negative_AUROC_MCC" if loss == "AUROC_MCC" else loss,
+                "super_learner_loss_rule": "direct_composite_if_AUROC_MCC_else_brier_or_log_loss",
                 "super_learner_loss_value": float(loss_value),
+                "super_learner_objective_score": float(-loss_value) if loss == "AUROC_MCC" else "",
                 "super_learner_internal_weight_tol": float(_SUPER_LEARNER_WEIGHT_TOL),
                 "super_learner_internal_min_weight": float(_SUPER_LEARNER_MIN_WEIGHT),
-                "super_learner_internal_optimizer": "SLSQP",
+                "super_learner_internal_optimizer": (
+                    "pairwise_coordinate_search" if loss == "AUROC_MCC" else "SLSQP"
+                ),
                 "super_learner_internal_maxiter": int(_SUPER_LEARNER_OPT_MAXITER),
                 "super_learner_internal_ftol": float(_SUPER_LEARNER_OPT_FTOL),
             }
@@ -2539,13 +2699,14 @@ def _candidate_from_caruana(
     predictions: pd.DataFrame,
     pcols: list[str],
     metric: str,
+    auroc_tolerance: float | None = None,
 ) -> dict[str, Any] | None:
     library, ordered, stack = _complete_library_stack(scores, predictions, pcols)
     if ordered is None or stack is None:
         return None
     y_true = ordered["y_true"].to_numpy(dtype=int)
     members, native_weights, _, trajectory, diagnostics = _caruana_select(
-        library, stack, y_true, metric, int(spec["max_size"])
+        library, stack, y_true, metric, int(spec["max_size"]), auroc_tolerance
     )
     selected_indices = [library.index(value) for value in members]
     selected_stack = stack[selected_indices]
@@ -2727,12 +2888,15 @@ def _candidate_from_super_learner(
             "candidate_library_policy": "all_complete_inner_oof_mpmas",
             "candidate_library_size": len(library),
             "selection_weight_source": f"convex_{super_loss}",
-            "super_learner_loss": super_loss,
-            "super_learner_loss_rule": "brier_if_optimize_metric_is_brier_else_log_loss",
+            "super_learner_loss": "negative_AUROC_MCC" if super_loss == "AUROC_MCC" else super_loss,
+            "super_learner_loss_rule": "direct_composite_if_AUROC_MCC_else_brier_or_log_loss",
             "super_learner_loss_value": float(loss_value),
+            "super_learner_objective_score": float(-loss_value) if super_loss == "AUROC_MCC" else "",
             "super_learner_internal_weight_tol": float(_SUPER_LEARNER_WEIGHT_TOL),
             "super_learner_internal_min_weight": float(_SUPER_LEARNER_MIN_WEIGHT),
-            "super_learner_internal_optimizer": "SLSQP",
+            "super_learner_internal_optimizer": (
+                "pairwise_coordinate_search" if super_loss == "AUROC_MCC" else "SLSQP"
+            ),
             "super_learner_internal_maxiter": int(_SUPER_LEARNER_OPT_MAXITER),
             "super_learner_internal_ftol": float(_SUPER_LEARNER_OPT_FTOL),
         },
@@ -2980,6 +3144,7 @@ def _candidate_table_for_inner(
         metric,
         eligible,
         qualification,
+        plan.auroc_tolerance,
     )
     if scores.empty:
         return pd.DataFrame()
@@ -3065,7 +3230,9 @@ def _candidate_table_for_inner(
                     spec, scores, pred, configs, pcols, metric, plan
                 )
             elif method == "caruana":
-                row = _candidate_from_caruana(spec, scores, pred, pcols, metric)
+                row = _candidate_from_caruana(
+                    spec, scores, pred, pcols, metric, plan.auroc_tolerance
+                )
             elif method == "bagged_caruana":
                 row = _candidate_from_bagged_caruana(spec, scores, pred, pcols, metric)
             elif method == "caruana_multistart":
@@ -3134,19 +3301,20 @@ def _candidate_table_for_inner(
         .fillna(999)
         .astype(int)
     )
-    out = out.sort_values(
-        [
-            score_col,
-            "_method_priority",
-            "_aggregation_priority",
-            "member_count",
-            "max_size",
-            "ensemble_config_id",
-        ],
-        ascending=[_metric_is_loss(metric), True, True, True, True, True],
-        kind="mergesort",
-    ).drop(columns=["_method_priority", "_aggregation_priority"])
-    return out.reset_index(drop=True)
+    priority = ("_method_priority", "_aggregation_priority", "member_count", "max_size", "ensemble_config_id")
+    if plan.auroc_tolerance is not None:
+        out = rank_auroc_log_loss(
+            out, score_col, "log_loss_mean", plan.auroc_tolerance, priority
+        )
+        out["selection_rule"] = "auroc_constrained_log_loss"
+        out["auroc_tolerance"] = float(plan.auroc_tolerance)
+    else:
+        out = out.sort_values(
+            [score_col, *priority],
+            ascending=[_metric_is_loss(metric), *([True] * len(priority))],
+            kind="mergesort",
+        )
+    return out.drop(columns=["_method_priority", "_aggregation_priority"]).reset_index(drop=True)
 
 
 def _parse_json_list(value: Any, field: str) -> list[Any]:
@@ -3264,6 +3432,9 @@ def select_mpma_e_by_outer_fold(
                 "selection_basis": "outer_fold_inner_oof_predictions_only",
                 "selection_metric": str(metric),
                 "inner_score": float(winner[score_col]),
+                "inner_log_loss": float(winner["log_loss_mean"]),
+                "selection_rule": "auroc_constrained_log_loss" if plan.auroc_tolerance is not None else "single_metric",
+                "auroc_tolerance": plan.auroc_tolerance,
                 "selection_strategy": str(winner["selection_strategy"]),
                 "aggregation_strategy": aggregation,
                 "max_size": int(winner.get("max_size", len(members))),
@@ -3391,6 +3562,9 @@ def select_final_mpma_e_candidate(
             else "all_inner_oof_predictions_for_final_refit"
         ),
         "selection_metric": str(metric),
+        "selection_rule": "auroc_constrained_log_loss" if plan.auroc_tolerance is not None else "single_metric",
+        "auroc_tolerance": plan.auroc_tolerance,
+        "inner_log_loss": float(first["log_loss_mean"]),
         "optimize_metric": compatibility_metric,
         "member_score_metric": compatibility_metric,
         "inner_score": float(first["inner_score"]),
@@ -3456,34 +3630,17 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
     inner_predictions = read_table(inner_prediction_path)
     if "cross_study_dro" in sweep.ensemble.aggregation_strategies:
         if not sweep.data.group_col:
-            raise ValueError(
-                "cross_study_dro requires Data.group_col identifying true studies."
-            )
+            raise ValueError("cross_study_dro requires Data.group_col identifying true studies.")
         study_data = load_dataset(sweep.data, ("all",))
         if sweep.data.group_col not in study_data.metadata.columns:
-            raise ValueError(
-                "The declared study column is absent from training metadata."
-            )
-        mapping = pd.DataFrame(
-            {
-                "sample_id": [str(x) for x in study_data.sample_ids],
-                "study_group": study_data.metadata[sweep.data.group_col]
-                .astype(str)
-                .str.strip()
-                .to_numpy(),
-            }
-        )
-        if (
-            mapping["sample_id"].duplicated().any()
-            or mapping["study_group"].eq("").any()
-            or study_data.metadata[sweep.data.group_col].isna().any()
-        ):
-            raise ValueError(
-                "Study identifiers must be nonmissing and uniquely linked to samples."
-            )
-        inner_predictions = inner_predictions.merge(
-            mapping, on="sample_id", how="left", validate="many_to_one"
-        )
+            raise ValueError("The declared study column is absent from training metadata.")
+        mapping = pd.DataFrame({
+            "sample_id": [str(x) for x in study_data.sample_ids],
+            "study_group": study_data.metadata[sweep.data.group_col].astype(str).str.strip().to_numpy(),
+        })
+        if mapping["sample_id"].duplicated().any() or mapping["study_group"].eq("").any() or study_data.metadata[sweep.data.group_col].isna().any():
+            raise ValueError("Study identifiers must be nonmissing and uniquely linked to samples.")
+        inner_predictions = inner_predictions.merge(mapping, on="sample_id", how="left", validate="many_to_one")
         if inner_predictions["study_group"].isna().any():
             raise ValueError("Some inner prediction samples have no declared study.")
     configs = read_table(config_path)
@@ -3512,6 +3669,7 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
             "excluded transformations": sweep.ensemble.exclude_transformations
             or "none",
             "optimize metric": metric,
+            "AUROC/log-loss tolerance": sweep.ensemble.auroc_tolerance,
         },
     )
     resource_tracker = ResourceTracker(
@@ -3568,6 +3726,7 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
         plan=sweep.ensemble,
         qualification=qualification,
         inner_predictions=inner_predictions,
+        base_selection=sweep.base_selection,
     )
     selection_path = ensemble_dir / "mpma_e_outer_selection.parquet"
     prediction_path = ensemble_dir / "ensemble_predictions.parquet"

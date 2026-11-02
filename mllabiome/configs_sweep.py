@@ -84,6 +84,7 @@ from .sweep_types import MPDR
 from .sweep_types import MPMA as MPMA
 from .sweep_types import Ensemble as Ensemble
 from .sweep_types import Evaluation
+from .sweep_types import BaseSelection as BaseSelection
 from .sweep_types import Explainability as Explainability
 from .sweep_types import Explore as Explore
 from .sweep_types import Inference as Inference
@@ -344,6 +345,7 @@ def _experiment_fingerprint(sweep: Sweep, evaluation_fingerprint: str) -> str:
         "schema": "experiment-fingerprint-v2",
         "evaluation_fingerprint": str(evaluation_fingerprint),
         "ensemble": _scientific_value(sweep.ensemble),
+        "base_selection": _scientific_value(sweep.base_selection),
         "explainability": _scientific_value(sweep.explainability),
         "integrations": _scientific_value(sweep.integrations),
         "representations": _scientific_value(sweep.representations),
@@ -2450,7 +2452,12 @@ def _write_selection_artifacts(
     tracker = ResourceTracker(
         sample_interval_s=sweep.evaluation.resource_sample_interval_s
     ).start()
-    write_mpma_b_selection_outputs(root, metric, plan=sweep.ensemble)
+    write_mpma_b_selection_outputs(
+        root,
+        metric,
+        plan=sweep.ensemble,
+        base_selection=sweep.base_selection if class_labels else None,
+    )
     dump_json_standard(
         tracker.stop(), root / "tables" / "mpma_b_selection_resources.json"
     )
@@ -3301,6 +3308,10 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
         from .multimodal_sweep import evaluate_modality_sweep
 
         return evaluate_modality_sweep(sweep)
+    from .joint_sweep import is_joint_sweep, evaluate_joint
+
+    if is_joint_sweep(sweep):
+        return evaluate_joint(sweep)
     children = target_sweeps(sweep)
     if len(children) > 1 or children[0] is not sweep:
         for index, child in enumerate(children, start=1):
@@ -3396,6 +3407,7 @@ def _existing_outputs(root: Path) -> dict[str, Path]:
         "mpma_b_outer_results": root / "results" / "mpma_b_outer_results.parquet",
         "mpma_b_summary": root / "tables" / "mpma_b_strategy_summary.json",
         "mpma_b_final_candidate": root / "tables" / "mpma_b_final_candidate.json",
+        "mpma_b_base_selection_rankings": root / "tables" / "mpma_b_base_selection_rankings.parquet",
         "job_resources": root / "tables" / "job_resources.parquet",
         "cv_splits": root / "tables" / "cv_splits.parquet",
         "mpma_b_selection_resources": root

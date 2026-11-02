@@ -55,22 +55,19 @@ dependencies = [
   "matplotlib>=3.6",
   "polars>=0.20",
   "pyarrow>=12",
-
   "xgboost>=2",
   "lightgbm>=4",
   "catboost>=1.2",
   "flaml>=2",
-
   "shap>=0.44",
   "lime>=0.2.0.1",
   "PyALE>=1.2.0",
-
   "scikit-bio>=0.7.0",
   "networkx>=3",
-
   "rich>=13",
   "tqdm>=4.66",
   "psutil>=7.2.2",
+  "imbalanced-learn>=0.14.2",
 ]
 
 
@@ -245,10 +242,6 @@ mllabiome = "mllabiome.cli:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "mllabiome._version.__version__" }
-
-
-[tool.setuptools.packages.find]
-include = ["mllabiome*"]
 
 
 [tool.setuptools.package-data]

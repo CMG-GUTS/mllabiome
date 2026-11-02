@@ -42,12 +42,12 @@ EXPLORE = mll.Explore(
 
 RESOLUTIONS = (
     # ("phylum", ("phylum",)),
-    # ("class", ("class",)),
-    # ("order", ("order",)),
+    ("class", ("class",)),
+    ("order", ("order",)),
     # ("family", ("family",)),
     # ("genus", ("genus",)),
     # ("species", ("species",)),
-    # ("strain", ("strain",)),
+    ("strain", ("strain",)),
     ("raw", ("all",)),
 )
 
@@ -63,10 +63,10 @@ COUNT_TRANSFORMATIONS = (
     #     composition_scope="rank-wise",
     # ),
     # mll.Transformation("clr", composition_scope="rank-wise"),
-    # mll.Transformation(
-    #     "hellinger",
-    #     composition_scope="rank-wise",
-    # ),
+    mll.Transformation(
+        "hellinger",
+        composition_scope="rank-wise",
+    ),
     # mll.Transformation(
     #     "log10",
     #     composition_scope="rank-wise",
@@ -161,14 +161,14 @@ MODELS = (
     # #         random_state=42,
     # #     ),
     # # ),
-    # # (
-    # #     "KumoTabular_large",
-    # #     mll.KumoTabularClassifier(
-    # #         size="large",
-    # #         device="cpu",
-    # #         random_state=42,
-    # #     ),
-    # # ),
+    # (
+    #     "KumoTabular_large",
+    #     mll.KumoTabularClassifier(
+    #         size="large",
+    #         device="mps",
+    #         random_state=42,
+    #     ),
+    # ),
     # # (
     # #     "LimiX2_default",
     # #     mll.LimiX2Classifier(
@@ -207,14 +207,14 @@ MODELS = (
     # #         random_state=42,
     # #     ),
     # # ),
-    # # (
-    # #     "KumoTabular_small",
-    # #     mll.KumoTabularClassifier(
-    # #         size="small",
-    # #         device="mps",
-    # #         random_state=42,
-    # #     ),
-    # # ),
+    (
+        "KumoTabular_small",
+        mll.KumoTabularClassifier(
+            size="small",
+            device="mps",
+            random_state=42,
+        ),
+    ),
     # (
     #     "KumoTabular_medium",
     #     mll.KumoTabularClassifier(
@@ -300,36 +300,36 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
-    (
-        "KumoTabular_small_n4",
-        mll.KumoTabularClassifier(
-            size="small",
-            device="mps",
-            pretrained=True,
-            n_estimators=4,
-            random_state=42,
-        ),
-    ),
-    (
-        "KumoTabular_medium_e4",
-        mll.KumoTabularClassifier(
-            size="medium",
-            device="mps",
-            pretrained=True,
-            n_estimators=4,
-            random_state=42,
-        ),
-    ),
-    (
-        "KumoTabular_large_e4",
-        mll.KumoTabularClassifier(
-            size="large",
-            device="mps",
-            pretrained=True,
-            n_estimators=4,
-            random_state=42,
-        ),
-    ),
+    # (
+    #     "KumoTabular_small_n4",
+    #     mll.KumoTabularClassifier(
+    #         size="small",
+    #         device="mps",
+    #         pretrained=True,
+    #         n_estimators=4,
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "KumoTabular_medium_e4",
+    #     mll.KumoTabularClassifier(
+    #         size="medium",
+    #         device="mps",
+    #         pretrained=True,
+    #         n_estimators=4,
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     "KumoTabular_large_e4",
+    #     mll.KumoTabularClassifier(
+    #         size="large",
+    #         device="mps",
+    #         pretrained=True,
+    #         n_estimators=4,
+    #         random_state=42,
+    #     ),
+    # ),
 )
 
 
@@ -339,27 +339,35 @@ GATE = mll.QualificationGate(
     threshold=0.02,
 )
 
+BASE_SELECTION = mll.BaseSelection(
+    metrics={
+        "AUROC": 0.5,
+        "MCC": 0.5,
+    },
+    normalization="chance_adjusted",
+    include_inactive=True,
+)
+
 ENSEMBLE = mll.Ensemble(
     include_inactive=True,
-    max_sizes=(10,),
+    max_sizes=(5,),
     selection_strategies=(
         "top_k",
         "best_per_resolution",
         "best_per_learner_type",
         "performance_diversity",
+        "best_deep_ml_complementary_pair",
         "caruana",
-        "bagged_caruana",
         "super_learner",
-        "safe_super_learner",
+        "quality_diversity",
+        "diversity",
     ),
     aggregation_strategies=(
         "mean_proba",
         "weighted_mean_proba",
-        "median_proba",
-        "logistic_stacking",
-        "rf_stacking",
+        "bayesian_model_averaging",
     ),
-    optimize_metric="log_loss",
+    optimize_metric="AUROC",
 )
 
 
@@ -368,7 +376,7 @@ EXPLAINABILITY = mll.Explainability(
     profile="screening",
     methods=(
         mll.Permutation(),
-        mll.SHAP(),
+        # mll.SHAP(),
         mll.ALE(),
         mll.LIME(),
         mll.ALEInteractions(
@@ -404,6 +412,7 @@ SWEEP = mll.Sweep(
     evaluation=EVALUATION,
     gate=GATE,
     explore=EXPLORE,
+    base_selection=BASE_SELECTION,
     ensemble=ENSEMBLE,
     explainability=EXPLAINABILITY,
     robustness=ROBUSTNESS,

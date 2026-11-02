@@ -10,6 +10,7 @@ from .configs_sweep import (
     MPMA,
     Ensemble,
     Evaluation,
+    BaseSelection,
     Explainability,
     Explore,
     Inference,
@@ -114,6 +115,8 @@ __all__ = [
     "CausiloDependencyError",
     "EXAONETabularClassifier",
     "EXAONETabularDependencyError",
+    "JointMLPClassifier",
+    "JointMLPRegressor",
     "KumoTabularClassifier",
     "KumoTabularRegressor",
     "KumoTabularDependencyError",
@@ -136,6 +139,7 @@ __all__ = [
     "Dataset",
     "Ensemble",
     "Evaluation",
+    "BaseSelection",
     "Federated",
     "Explore",
     "Explainability",
@@ -224,8 +228,6 @@ mll = sys.modules[__name__]
 
 from .brain.representations import Brain, BrainRepresentation
 
-from .learner_families import (
-    learner_family,
-    learner_family_from_spec,
-    register_learner_family,
-)
+from .learner_families import learner_family, learner_family_from_spec, register_learner_family
+
+from .joint_mlp import JointMLPClassifier, JointMLPRegressor

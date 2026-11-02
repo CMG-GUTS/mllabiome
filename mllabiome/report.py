@@ -2616,35 +2616,35 @@ def _build_report_visuals(
 ) -> _ReportVisuals:
     with phase_progress("Report outputs", 2) as phase:
         phase.phase("representation and MPMA-E figure")
-        representation_figure = _fig(
-            root / "figures" / "representation_impact",
-            report_dir,
-            "Data representations and learner impact on held-out performance",
-        )
-        from .generalisation_figure import write_generalisation_figures
-        from .metrics import canonical_metric_name
+        representation_figure = ""
+        generalisation_figure = ""
+        optimisation_generalisation_figure = ""
+        if sweep.include_representation_impact:
+            representation_figure = _fig(
+                root / "figures" / "representation_impact",
+                report_dir,
+                "Data representations and learner impact on held-out performance",
+            )
+            from .generalisation_figure import write_generalisation_figures
+            from .metrics import canonical_metric_name
 
-        selected_metric = canonical_metric_name(str(sweep.evaluation.optimize_metric))
-        results = write_generalisation_figures(root, selected_metric)
-        auroc_path, _ = results["AUROC"]
-        generalisation_figure = (
-            _fig(
+            selected_metric = canonical_metric_name(str(sweep.evaluation.optimize_metric))
+            results = write_generalisation_figures(root, selected_metric)
+            auroc_path, _ = results["AUROC"]
+            generalisation_figure = _fig(
                 auroc_path.with_suffix(""),
                 report_dir,
                 "AUROC: inner-validation and outer-held-out performance across configurations",
-            )
-            if auroc_path
-            else ""
-        )
-        optimisation_generalisation_figure = ""
-        if selected_metric != "AUROC":
-            selected_path, _ = results[selected_metric]
-            if selected_path:
-                optimisation_generalisation_figure = _fig(
-                    selected_path.with_suffix(""),
-                    report_dir,
-                    f"{selected_metric}: inner-validation and outer-held-out performance across configurations",
-                )
+            ) if auroc_path else ""
+            optimisation_generalisation_figure = ""
+            if selected_metric != "AUROC":
+                selected_path, _ = results[selected_metric]
+                if selected_path:
+                    optimisation_generalisation_figure = _fig(
+                        selected_path.with_suffix(""),
+                        report_dir,
+                        f"{selected_metric}: inner-validation and outer-held-out performance across configurations",
+                    )
         mpma_e_figure = _fig(
             root / "figures" / "mpma_e",
             report_dir,
@@ -3231,6 +3231,50 @@ def _exploration_report_html(root: Path, report_dir: Path) -> str:
     return "\n".join(parts)
 
 
+def _render_standard_report_sections(
+    procedure,
+    exploration,
+    performance,
+    explainability_summary,
+    representation,
+    final_specification,
+    top_configurations,
+    comparisons,
+    explainability,
+    robustness,
+    compute,
+    hardware,
+):
+    content = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>mllabiome report</title><link rel="icon" type="image/svg+xml" href="{_favicon_href()}"><style>{_report_css()}</style></head>
+<body>
+{_report_nav_html(bool(robustness), bool(exploration))}
+<div class="report-shell"><main id="top" class="report-content">
+<h2 id="performance-evaluation" class="first-section">Task definition and evaluation procedure</h2>
+{procedure}
+{exploration}
+<h2 id="performance-summary">Task performance summary</h2>
+{performance}
+<h2 id="explainability-summary">Explainability summary</h2>
+{explainability_summary}
+{representation}
+{final_specification}
+{top_configurations}
+{comparisons}
+<h2 id="explainability">Explainability</h2>
+<h3>Feature attribution</h3>
+{explainability}
+{robustness}
+<h2 id="compute">Computational resources</h2>
+{compute}
+<h4>Hardware and runtime environment</h4>
+{hardware}
+{_report_footer_html()}
+</main></div></body></html>"""
+    return _sanitize_report_html(content)
+
+
 def _render_report_html(
     sweep: Sweep,
     analysis: _ReportAnalysis,
@@ -3251,32 +3295,30 @@ def _render_report_html(
         else "<p>No representation-impact figure is available yet.</p>"
     )
     generalisation_description = (
-        "<p>Each point is one configuration. Inner-fold metrics are averaged within "
-        "each matched outer split, then inner and outer scores are averaged across "
-        "the matching splits for that configuration. Light blue denotes inner "
-        "validation and dark blue denotes outer held-out performance. The "
-        "difference describes a generalisation shift, not an independent estimate "
-        "of deployment performance.</p>"
+        '<p>Each point is one configuration. Inner-fold metrics are averaged within '
+        'each matched outer split, then inner and outer scores are averaged across '
+        'the matching splits for that configuration. Light blue denotes inner '
+        'validation and dark blue denotes outer held-out performance. The '
+        'difference describes a generalisation shift, not an independent estimate '
+        'of deployment performance.</p>'
     )
     generalisation_figure = (
-        "<h3>Inner validation versus outer held-out performance</h3>"
+        '<h3>Inner validation versus outer held-out performance</h3>'
         + generalisation_description
-        + "<h4>AUROC</h4>"
+        + '<h4>AUROC</h4>'
         + visuals.generalisation_figure
-        if visuals.generalisation_figure
-        else ""
+        if visuals.generalisation_figure else ""
     )
     optimisation_generalisation_figure = (
-        "<h4>Optimisation metric: "
+        '<h4>Optimisation metric: '
         + html.escape(str(sweep.evaluation.optimize_metric))
-        + "</h4>"
+        + '</h4>'
         + visuals.optimisation_generalisation_figure
-        if visuals.optimisation_generalisation_figure
-        else ""
+        if visuals.optimisation_generalisation_figure else ""
     )
     if optimisation_generalisation_figure and not generalisation_figure:
         generalisation_figure = (
-            "<h3>Inner validation versus outer held-out performance</h3>"
+            '<h3>Inner validation versus outer held-out performance</h3>'
             + generalisation_description
         )
     pairwise_html = (
@@ -3298,53 +3340,38 @@ def _render_report_html(
         if not tables.hardware_summary.empty
         else "<p>Hardware details are unavailable for this run.</p>"
     )
-    html_text = f"""<!doctype html>
-<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
-<title>mllabiome report</title><link rel=\"icon\" type=\"image/svg+xml\" href=\"{_favicon_href()}\"><style>{_report_css()}</style></head>
-<body>
-{_report_nav_html(bool(robustness_html), bool(exploration_html))}
-<div class=\"report-shell\"><main id=\"top\" class=\"report-content\">
-<h2 id=\"performance-evaluation\" class=\"first-section\">Task definition and evaluation procedure</h2>
-{_procedure_grid_html(analysis.procedure)}
-{analysis.multimodal_inclusion_html}
-{exploration_html}
-<h2 id=\"performance-summary\">Task performance summary</h2>
-{_performance_methodology_html(sweep.evaluation.protocol, 2000)}
-{_html_table(analysis.strategy_html, raw_html_cols=strategy_metric_cols)}
-{_baseline_rf_report_note(analysis.strategy_rows)}
-<h2 id=\"explainability-summary\">Explainability summary</h2>
-{visuals.explainability_summary_html}
-<h2 id=\"representation-impact\">Data representations and learner impact on performance</h2>
-{_representation_impact_note(str(sweep.evaluation.optimize_metric), bool(getattr(sweep, "uses_modalities", False)))}
-{representation_figure}
-{generalisation_figure}
-<section id=\"mpma-e-specification\">
-<h3 id=\"mpma-e\">Final MPMA-E specification</h3>
-{visuals.mpma_e_figure}
-{_html_table(analysis.ensemble_summary)}
-{_html_table(analysis.ensemble_members)}
-</section>
-<h2 id=\"top-mpmas\">{_top_mpma_heading(analysis.top_mpmas)}</h2>
-{_html_table(analysis.top_mpmas, raw_html_cols=top_metric_cols)}
-<h3 id=\"statistics\">Outer-unit strategy comparisons</h3>
-{_inferential_layer_html(sweep.evaluation.protocol, sweep.evaluation.optimize_metric)}
-{pairwise_html}
-
-<h2 id=\"explainability\">Explainability</h2>
-<h3>Feature attribution</h3>
-{explainability_html}
-
-{robustness_html}
-
-<h2 id=\"compute\">Computational resources</h2>
-<p>Compute is summarized by additive CPU core-hours, model-fit count, and peak resident memory for the worker process tree. CPU time includes child processes and external R processes when used. MPMA-B and MPMA-E share the MPMA search pool, so their compute totals overlap. Baseline RF, SIAMCAT and AutoML are listed when those comparators were actually evaluated; no cost is imputed for a comparator that was not run.</p>
-{_html_table(analysis.compute_display)}
-<h4>Hardware and runtime environment</h4>
-{hardware_html}
-{_report_footer_html()}
-</main></div></body></html>
-"""
-    return _sanitize_report_html(html_text)
+    representation_section = (
+        '<h2 id="representation-impact">Data representations and learner impact on performance</h2>'
+        + _representation_impact_note(
+            str(sweep.evaluation.optimize_metric), bool(getattr(sweep, "uses_modalities", False))
+        )
+        + representation_figure
+        + generalisation_figure
+        + optimisation_generalisation_figure
+        if sweep.include_representation_impact else ""
+    )
+    return _render_standard_report_sections(
+        procedure=_procedure_grid_html(analysis.procedure) + analysis.multimodal_inclusion_html,
+        exploration=exploration_html,
+        performance=_performance_methodology_html(sweep.evaluation.protocol, 2000)
+        + _html_table(analysis.strategy_html, raw_html_cols=strategy_metric_cols)
+        + _baseline_rf_report_note(analysis.strategy_rows),
+        explainability_summary=visuals.explainability_summary_html,
+        representation=representation_section,
+        final_specification='<section id="mpma-e-specification"><h3 id="mpma-e">Final MPMA-E specification</h3>'
+        + visuals.mpma_e_figure + _html_table(analysis.ensemble_summary)
+        + _html_table(analysis.ensemble_members) + '</section>',
+        top_configurations='<h2 id="top-mpmas">' + _top_mpma_heading(analysis.top_mpmas)
+        + '</h2>' + _html_table(analysis.top_mpmas, raw_html_cols=top_metric_cols),
+        comparisons='<h3 id="statistics">Outer-unit strategy comparisons</h3>'
+        + _inferential_layer_html(sweep.evaluation.protocol, sweep.evaluation.optimize_metric)
+        + pairwise_html,
+        explainability=explainability_html,
+        robustness=robustness_html,
+        compute='<p>Compute is summarized by additive CPU core-hours, model-fit count, and peak resident memory for the worker process tree. CPU time includes child processes and external R processes when used. MPMA-B and MPMA-E share the MPMA search pool, so their compute totals overlap. Baseline RF, SIAMCAT and AutoML are listed when those comparators were actually evaluated; no cost is imputed for a comparator that was not run.</p>'
+        + _html_table(analysis.compute_display),
+        hardware=hardware_html,
+    )
 
 
 def _write_report_manifest(
@@ -3435,6 +3462,14 @@ def _report_outputs(
 
 
 def write_report(sweep: Sweep, emit_html: bool = True) -> dict[str, Path]:
+    from .joint_sweep import is_joint_sweep
+
+    if is_joint_sweep(sweep):
+        if not emit_html:
+            raise ValueError("Joint reports require emit_html=True.")
+        from .joint_sweep import report_joint
+
+        return report_joint(sweep)
     root = sweep.root()
     report_dir, tables_dir = _prepare_report_directories(root)
     stage("Report", str(report_dir))
@@ -3461,8 +3496,6 @@ def write_report(sweep: Sweep, emit_html: bool = True) -> dict[str, Path]:
         compute_environment=analysis.compute_environment,
     )
     success("Report completed")
-    outputs = _report_outputs(
-        sweep, report_dir, tables_dir, analysis, tables, emit_html
-    )
+    outputs = _report_outputs(sweep, report_dir, tables_dir, analysis, tables, emit_html)
     path_table("Report outputs", outputs)
     return outputs

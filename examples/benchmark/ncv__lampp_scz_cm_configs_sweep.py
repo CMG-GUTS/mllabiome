@@ -49,10 +49,10 @@ RESOLUTIONS = (
     # ("class", ("class",)),
     # ("order", ("order",)),
     # ("family", ("family",)),
-    # ("genus", ("genus",)),
+    ("genus", ("genus",)),
     # ("species", ("species",)),
     # ("strain", ("strain",)),
-    ("raw", ("all",)),
+    # ("raw", ("all",)),
 )
 
 COUNT_TRANSFORMATIONS = (
@@ -63,10 +63,10 @@ COUNT_TRANSFORMATIONS = (
     #     "arcsine_sqrt",
     #     composition_scope="rank-wise",
     # ),
-    # mll.Transformation(
-    #     "hellinger",
-    #     composition_scope="rank-wise",
-    # ),
+    mll.Transformation(
+        "hellinger",
+        composition_scope="rank-wise",
+    ),
     # mll.Transformation(
     #     "relative_abundance",
     #     composition_scope="rank-wise",
@@ -79,17 +79,17 @@ COUNT_TRANSFORMATIONS = (
     # mll.Transformation("ilr", composition_scope="rank-wise"),
     # mll.Transformation("alr", composition_scope="rank-wise"),
     mll.Transformation("prev_weighted", composition_scope="rank-wise"),
-    # mll.Transformation("rank", composition_scope="rank-wise"),
-    # mll.Transformation("quantile", composition_scope="rank-wise"),
+    mll.Transformation("rank", composition_scope="rank-wise"),
+    mll.Transformation("quantile", composition_scope="rank-wise"),
     # mll.Transformation(
     #     "yeo_johnson",
     #     composition_scope="rank-wise",
     # ),
     # mll.Transformation("ecdf_rank"),
-    # mll.Transformation(
-    #     "rclr",
-    #     composition_scope="rank-wise",
-    # ),
+    mll.Transformation(
+        "rclr",
+        composition_scope="rank-wise",
+    ),
     # mll.Transformation(
     #     "prevalence_rank_fusion",
     #     composition_scope="rank-wise",
@@ -379,12 +379,12 @@ MODELS = (
 #             eval_metric="logloss",
 #         ),
 #     ),
-#     (
-#         "LR_default",
-#         LogisticRegression(
-#             random_state=42,
-#         ),
-#     ),
+    (
+        "LR_default",
+        LogisticRegression(
+            random_state=42,
+        ),
+    ),
 #     (
 #         "RF_default",
 #         RandomForestClassifier(
@@ -410,88 +410,88 @@ MODELS = (
 #            eval_metric="logloss",
 #        ),
 #    ),
-#    (
-#        "RF_500_balanced",
-#        RandomForestClassifier(
-#            n_estimators=500,
-#            class_weight="balanced",
-#            random_state=42,
-#            n_jobs=1,
-#        ),
-#    ),
-#    (
-#    "LR_elasticnet",
-#    Pipeline([
-#        ("scaler", StandardScaler(with_mean=False)),
-#        (
-#            "lr",
-#            LogisticRegression(
-#                solver="saga",
-#                C=0.1,
-#                l1_ratio=0.5,
-#                max_iter=10000,
-#                tol=1e-4,
-#                random_state=42,
-#            ),
-#        ),
-#    ]),
-# ),
-#    (
-#        "RF_1000_entropy",
-#        RandomForestClassifier(
-#            n_estimators=1000,
-#            criterion="entropy",
-#            min_samples_leaf=5,
-#            max_features=0.30,
-#            random_state=42,
-#            n_jobs=1,
-#        ),
-#    ),
-#    (
-#        "RF_200",
-#        RandomForestClassifier(
-#            n_estimators=200,
-#            random_state=42,
-#            n_jobs=1,
-#        ),
-#    ),
-#    (
-#        "LR_lasso",
-#        Pipeline([
-#            ("scaler", StandardScaler(with_mean=False)),
-#            (
-#                "lr",
-#                LogisticRegression(
-#                    solver="saga",
-#                    l1_ratio=1.0,
-#                    C=1.0,
-#                    max_iter=10000,
-#                    tol=1e-4,
-#                    random_state=42,
-#                ),
-#            ),
-#        ]),
-#    ),
-    # (
-    #     "KumoTabular_small_e4",
-    #     mll.KumoTabularClassifier(
-    #         size="small",
-    #         device="mps",
-    #         pretrained=True,
-    #         n_estimators=4,
-    #         random_state=42,
-    #     ),
-    # ),
-    # (
-    #     "KumoTabular_medium_e4",
-    #     mll.KumoTabularClassifier(
-    #         size="medium",
-    #         device="mps",
-    #         pretrained=True,
-    #         n_estimators=4,
-    #         random_state=42,
-    #     ),
-    # ),
+   (
+       "RF_500_balanced",
+       RandomForestClassifier(
+           n_estimators=500,
+           class_weight="balanced",
+           random_state=42,
+           n_jobs=1,
+       ),
+   ),
+   (
+   "LR_elasticnet",
+   Pipeline([
+       ("scaler", StandardScaler(with_mean=False)),
+       (
+           "lr",
+           LogisticRegression(
+               solver="saga",
+               C=0.1,
+               l1_ratio=0.5,
+               max_iter=10000,
+               tol=1e-4,
+               random_state=42,
+           ),
+       ),
+   ]),
+),
+   (
+       "RF_1000_entropy",
+       RandomForestClassifier(
+           n_estimators=1000,
+           criterion="entropy",
+           min_samples_leaf=5,
+           max_features=0.30,
+           random_state=42,
+           n_jobs=1,
+       ),
+   ),
+   (
+       "RF_200",
+       RandomForestClassifier(
+           n_estimators=200,
+           random_state=42,
+           n_jobs=1,
+       ),
+   ),
+   (
+       "LR_lasso",
+       Pipeline([
+           ("scaler", StandardScaler(with_mean=False)),
+           (
+               "lr",
+               LogisticRegression(
+                   solver="saga",
+                   l1_ratio=1.0,
+                   C=1.0,
+                   max_iter=10000,
+                   tol=1e-4,
+                   random_state=42,
+               ),
+           ),
+       ]),
+   ),
+    (
+        "KumoTabular_small_e4",
+        mll.KumoTabularClassifier(
+            size="small",
+            device="mps",
+            pretrained=True,
+            n_estimators=4,
+            random_state=42,
+        ),
+    ),
+    (
+        "KumoTabular_medium_e4",
+        mll.KumoTabularClassifier(
+            size="medium",
+            device="mps",
+            pretrained=True,
+            n_estimators=4,
+            random_state=42,
+        ),
+    ),
     # (
     #     "KumoTabular_large_e4",
     #     mll.KumoTabularClassifier(
@@ -502,16 +502,16 @@ MODELS = (
     #         random_state=42,
     #     ),
     # ),
-    (
-        "KumoTabular_large_e10",
-        mll.KumoTabularClassifier(
-            size="large",
-            device="mps",
-            pretrained=True,
-            n_estimators=10,
-            random_state=42,
-        ),
-    ),
+    # (
+    #     "KumoTabular_large_e10",
+    #     mll.KumoTabularClassifier(
+    #         size="large",
+    #         device="mps",
+    #         pretrained=True,
+    #         n_estimators=10,
+    #         random_state=42,
+    #     ),
+    # ),
 )
 
 
@@ -519,6 +519,15 @@ GATE = mll.QualificationGate(
     enabled=False,
     metric="MCC",
     threshold=0.02,
+)
+
+BASE_SELECTION = mll.BaseSelection(
+    metrics={
+        "AUROC": 0.5,
+        "MCC": 0.5,
+    },
+    normalization="chance_adjusted",
+    include_inactive=True,
 )
 
 
@@ -540,8 +549,8 @@ ENSEMBLE = mll.Ensemble(
         "best_deep_ml_complementary_pair",
 
         # Diversity-based
-        # "quality_diversity",
-        # "diversity",
+        "quality_diversity",
+        "diversity",
         # "performance_diversity",
 
         # Out-of-fold prediction-based
@@ -566,8 +575,8 @@ ENSEMBLE = mll.Ensemble(
     # ==================================================
     aggregation_strategies=(
         # Probability averaging
-        "mean_proba",
-        "weighted_mean_proba",
+        # "mean_proba",
+        # "weighted_mean_proba",
         # "median_proba",
         # "trimmed_mean_proba",
         # "geometric_mean_proba",
@@ -682,6 +691,7 @@ SWEEP = mll.Sweep(
     count_transformations=COUNT_TRANSFORMATIONS,
     learners=MODELS,
     evaluation=EVALUATION,
+    base_selection=BASE_SELECTION,
     gate=GATE,
     explore=EXPLORE,
     ensemble=ENSEMBLE,
