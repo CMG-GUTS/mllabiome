@@ -27,7 +27,7 @@ def _candidates():
     )
 
 
-def test_siamcat_is_species_relative_abundance_once_with_duplicate_resolutions():
+def test_siamcat_uses_relative_abundance_once_per_taxonomic_rank():
     configurations = build_sweep_configs(
         (
             ("raw", ("raw",)),
@@ -45,7 +45,8 @@ def test_siamcat_is_species_relative_abundance_once_with_duplicate_resolutions()
     )
     siamcat = configurations[configurations.learner.eq("SIAMCAT_Default")]
     assert siamcat[["resolution", "count_transformation"]].values.tolist() == [
-        ["species", "relative_abundance@rank-wise"]
+        ["genus", "relative_abundance@rank-wise"],
+        ["species", "relative_abundance@rank-wise"],
     ]
     assert configurations.config_id.is_unique
     assert "RF_alias" not in configurations.learner.tolist()
@@ -175,6 +176,7 @@ def test_scheduler_only_queues_eligible_unique_pairs():
     sweep = SimpleNamespace(
         evaluation=SimpleNamespace(
             protocol="nested_cv",
+            outer_only=False,
             optimize_metric="log_loss",
             random_state=42,
             resource_sample_interval_s=0.1,

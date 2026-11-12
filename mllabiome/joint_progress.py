@@ -24,7 +24,11 @@ class JointEvaluationMonitor:
         self.live = None
 
     def _render(self):
-        table = Table(title="Joint evaluation · configurations", box=box.SIMPLE_HEAD, pad_edge=False)
+        table = Table(
+            title="Joint evaluation · configurations",
+            box=box.SIMPLE_HEAD,
+            pad_edge=False,
+        )
         table.add_column("Learner", style="bold")
         table.add_column("Resolution")
         table.add_column("Transformation")
@@ -36,7 +40,13 @@ class JointEvaluationMonitor:
             identifier = item["config_id"]
             values = self.scores[identifier]
             mean = float(np.mean(values)) if values else math.nan
-            status = "[green]Complete[/green]" if len(values) == self.expected else "[cyan]Evaluating[/cyan]" if values else "[dim]Queued[/dim]"
+            status = (
+                "[green]Complete[/green]"
+                if len(values) == self.expected
+                else "[cyan]Evaluating[/cyan]"
+                if values
+                else "[dim]Queued[/dim]"
+            )
             table.add_row(
                 str(item["learner"]),
                 str(item["resolution"]),
@@ -49,16 +59,24 @@ class JointEvaluationMonitor:
         return table
 
     def __enter__(self):
-        summary_table("Joint nested cross-validation", [
-            ("Configurations", len(self.configurations)),
-            ("Outer splits", self.n_splits),
-            ("Inner folds per split", ", ".join(map(str, sorted(set(self.inner_fold_counts))))),
-            ("Selection metric", self.metric),
-            ("Inner training fits", len(self.configurations) * self.expected),
-            ("Outer refits", self.n_splits),
-        ])
+        summary_table(
+            "Joint nested cross-validation",
+            [
+                ("Configurations", len(self.configurations)),
+                ("Outer splits", self.n_splits),
+                (
+                    "Inner folds per split",
+                    ", ".join(map(str, sorted(set(self.inner_fold_counts)))),
+                ),
+                ("Selection metric", self.metric),
+                ("Inner training fits", len(self.configurations) * self.expected),
+                ("Outer refits", self.n_splits),
+            ],
+        )
         if console.is_terminal:
-            self.live = Live(self._render(), console=console, refresh_per_second=4, transient=False)
+            self.live = Live(
+                self._render(), console=console, refresh_per_second=4, transient=False
+            )
             self.live.__enter__()
         else:
             console.print(self._render())
@@ -75,7 +93,9 @@ class JointEvaluationMonitor:
         if self.live is not None:
             self.live.update(self._render(), refresh=True)
         else:
-            info(f"Joint evaluation · outer split {self.completed}/{self.n_splits} complete · {split_key}")
+            info(
+                f"Joint evaluation · outer split {self.completed}/{self.n_splits} complete · {split_key}"
+            )
 
     def __exit__(self, exc_type, exc, tb):
         if self.live is not None:

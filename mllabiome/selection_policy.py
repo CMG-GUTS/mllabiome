@@ -24,7 +24,9 @@ def rank_auroc_log_loss(
 ) -> pd.DataFrame:
     missing = {auc_col, loss_col, *tie_columns} - set(frame.columns)
     if missing:
-        raise ValueError(f"AUROC/log-loss selection requires columns: {sorted(missing)}.")
+        raise ValueError(
+            f"AUROC/log-loss selection requires columns: {sorted(missing)}."
+        )
     if frame.empty:
         return frame.copy()
     ranked = frame.copy()

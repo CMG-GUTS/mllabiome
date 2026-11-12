@@ -7,6 +7,7 @@ import pytest
 from sklearn.dummy import DummyClassifier
 
 import mllabiome.configs_sweep as cs
+import mllabiome.evaluation_splits as split_runtime
 from mllabiome.configs_sweep import Evaluation, QualificationGate, Sweep, evaluate
 from mllabiome.data import Data, Dataset
 from mllabiome.storage import read_table
@@ -485,6 +486,10 @@ def test_outer_test_labels_cannot_change_inner_results_or_gate_decisions(
     flipped_y[test_idx] = 1 - flipped_y[test_idx]
     datasets = [_dataset(12, y=base_y), _dataset(12, y=flipped_y)]
     outputs = []
+    # Let the real split resolver write tables/cv_splits.parquet (and its
+    # identity digest), while controlling only the generated assignments.
+    monkeypatch.setattr(split_runtime, "_outer_splits", lambda *a, **kw: [fixed_outer])
+    monkeypatch.setattr(split_runtime, "_inner_splits", lambda *a, **kw: fixed_inner)
 
     for run_no, dataset in enumerate(datasets):
         factories = {
@@ -492,11 +497,6 @@ def test_outer_test_labels_cannot_change_inner_results_or_gate_decisions(
             "constant": lambda: ConstantEstimator(0),
         }
         _patch_runtime(monkeypatch, dataset, factories)
-        monkeypatch.setattr(
-            cs,
-            "_resolved_evaluation_splits",
-            lambda *args, **kwargs: ([fixed_outer], {"fixed_outer": fixed_inner}),
-        )
         sweep = _sweep(
             tmp_path / f"leakage_{run_no}",
             learners=("signal", "constant"),
@@ -518,7 +518,22 @@ def test_outer_test_labels_cannot_change_inner_results_or_gate_decisions(
         .sort_values(["config_id", "inner_key"])
         .reset_index(drop=True)
     )
-    pd.testing.assert_frame_equal(inner_a, inner_b, check_dtype=False)
+    # Execution-time measurements vary across runs even when the model's
+    # training data, predictions, and inner-CV decisions are identical.
+    # A label-leakage check should compare all deterministic fields, not timings.
+    timing_columns = {
+        "preprocess_seconds",
+        "model_setup_seconds",
+        "fit_seconds",
+        "predict_seconds",
+        "score_seconds",
+        "fold_wall_seconds",
+    }
+    pd.testing.assert_frame_equal(
+        inner_a.drop(columns=list(timing_columns), errors="ignore"),
+        inner_b.drop(columns=list(timing_columns), errors="ignore"),
+        check_dtype=False,
+    )
     qual_a = (
         outputs[0][1].sort_values(["config_id", "split_key"]).reset_index(drop=True)
     )

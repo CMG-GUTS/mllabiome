@@ -262,13 +262,13 @@ def _fit_individual_folds(
         groups,
         group_col=sweep.data.group_col,
     )
-    learners = _learner_factories(sweep)
+    from .explainability_config import _configured_learner_factory
+
     transform_key = str(row["count_transformation"])
     learner_key = str(row["learner"])
-    if learner_key not in learners:
-        raise ValueError(
-            f"Configured regression learner {learner_key!r} is unavailable for explainability."
-        )
+    learner_factory = _configured_learner_factory(
+        sweep, learner_key, config_id=str(row["config_id"]), task="regression"
+    )
     folds: list[dict[str, Any]] = []
     for fold_no, split in enumerate(splits, start=1):
         train_idx = np.asarray(split["train_idx"], dtype=int)
@@ -284,6 +284,7 @@ def _fit_individual_folds(
             fold_blocks,
             resolution_feature_blocks=feature_blocks,
             feature_names=names,
+            config_id=str(row["config_id"]),
         )
         transform = transform_factory()
         X_train_representation, X_test_representation = transform.apply_pair(
@@ -291,7 +292,7 @@ def _fit_individual_folds(
         )
         representation_coordinate_metadata = _coordinate_metadata_rows(transform, names)
         representation_names = transform.get_feature_names_out(names)
-        model = configure_estimator_threads(learners[learner_key](), 1)
+        model = configure_estimator_threads(learner_factory(), 1)
         model.fit(X_train_representation, dataset.y[train_idx])
         train_pred = np.asarray(
             _estimator_call(model, "predict", X_train_representation), dtype=float
@@ -407,7 +408,8 @@ def _fit_ensemble_folds(
         groups,
         group_col=sweep.data.group_col,
     )
-    learners = _learner_factories(sweep)
+    from .explainability_config import _configured_learner_factory
+
     materialized: list[tuple[pd.Series, np.ndarray, list[str], Any]] = []
     for row in member_rows:
         levels = _row_levels(row)
@@ -456,11 +458,20 @@ def _fit_ensemble_folds(
                 fold_blocks,
                 resolution_feature_blocks=feature_blocks,
                 feature_names=kept_names,
+                config_id=str(row["config_id"]),
             )
             transform = transform_factory()
             X_train_member, X_test_member = transform.apply_pair(X_train0, X_test0)
             transformed_names = transform.get_feature_names_out(kept_names)
-            model = configure_estimator_threads(learners[learner_key](), 1)
+            model = configure_estimator_threads(
+                _configured_learner_factory(
+                    sweep,
+                    learner_key,
+                    config_id=str(row["config_id"]),
+                    task="regression",
+                )(),
+                1,
+            )
             model.fit(X_train_member, dataset.y[train_idx])
             stop = start + X_train_member.shape[1]
             fitted.append({"slice": slice(start, stop), "estimator": model})
@@ -1302,8 +1313,12 @@ def _write_feature_support_figure(
 
 
 def _write_regression_ale_figure(
-    target_dir: Path, importance: pd.DataFrame, curves: pd.DataFrame, top_k: int,
-    *, probability_output: bool = False
+    target_dir: Path,
+    importance: pd.DataFrame,
+    curves: pd.DataFrame,
+    top_k: int,
+    *,
+    probability_output: bool = False,
 ) -> dict[str, Path]:
     if curves.empty:
         return {}
@@ -1337,7 +1352,9 @@ def _write_regression_ale_figure(
         stem,
         max_panels=min(12, int(top_k)),
         x_label="Model-input feature value",
-        y_label="Contribution to positive-label probability" if probability_output else "Contribution to predicted outcome (target units)",
+        y_label="Contribution to positive-label probability"
+        if probability_output
+        else "Contribution to predicted outcome (target units)",
     )
     return {"ale_curves_svg": stem.with_suffix(".svg")}
 
@@ -1419,7 +1436,11 @@ def _write_regression_explainability_figures(
     if table_exists(curve_path):
         outputs.update(
             _write_regression_ale_figure(
-                target_dir, frame, read_table(curve_path), int(top_k), probability_output=probability_output
+                target_dir,
+                frame,
+                read_table(curve_path),
+                int(top_k),
+                probability_output=probability_output,
             )
         )
     interaction_path = target_dir / "ale_interactions.parquet"

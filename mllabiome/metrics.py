@@ -514,8 +514,6 @@ def compute_metrics(
             )
             out["AP_macro"] = float(np.mean(ap_values))
 
-    # Same chance-adjusted weighted objective as
-    # BaseSelection(metrics={"AUROC": 0.5, "MCC": 0.5}, normalization="chance_adjusted").
     if np.isfinite(out["AUROC"]) and np.isfinite(out["MCC"]):
         out["AUROC_MCC"] = 0.5 * (2.0 * out["AUROC"] - 1.0) + 0.5 * out["MCC"]
 

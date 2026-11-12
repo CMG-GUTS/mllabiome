@@ -126,6 +126,8 @@ class BaseSelection:
     normalization: str = "chance_adjusted"
     include_inactive: bool = True
     auroc_tolerance: float | None = None
+    strategy: str = "weighted_inner_metrics"
+    pareto_compare_metric: str = "log_loss"
 
     def __post_init__(self) -> None:
         if not isinstance(self.metrics, Mapping) or not self.metrics:
@@ -135,20 +137,59 @@ class BaseSelection:
             metric = canonical_metric_name(str(name))
             value = float(weight)
             if not math.isfinite(value) or value < 0.0:
-                raise ValueError("BaseSelection metric weights must be nonnegative and finite.")
+                raise ValueError(
+                    "BaseSelection metric weights must be nonnegative and finite."
+                )
             weights[metric] = weights.get(metric, 0.0) + value
         total = sum(weights.values())
         if total <= 0.0:
-            raise ValueError("BaseSelection metric weights must contain a positive value.")
-        self.metrics = {name: value / total for name, value in weights.items() if value > 0.0}
+            raise ValueError(
+                "BaseSelection metric weights must contain a positive value."
+            )
+        self.metrics = {
+            name: value / total for name, value in weights.items() if value > 0.0
+        }
         self.normalization = str(self.normalization).strip().casefold()
         if self.normalization not in {"chance_adjusted", "none"}:
-            raise ValueError("BaseSelection.normalization must be 'chance_adjusted' or 'none'.")
-        if self.normalization == "chance_adjusted" and not set(self.metrics).issubset({"AUROC", "MCC"}):
+            raise ValueError(
+                "BaseSelection.normalization must be 'chance_adjusted' or 'none'."
+            )
+        if self.normalization == "chance_adjusted" and not set(self.metrics).issubset(
+            {"AUROC", "MCC"}
+        ):
             raise ValueError("Chance-adjusted selection supports AUROC and MCC only.")
-        self.auroc_tolerance = validate_auroc_tolerance(self.auroc_tolerance, "BaseSelection.auroc_tolerance")
+        self.strategy = str(self.strategy).strip().casefold()
+        pareto_strategies = {
+            "pareto_auroc_logloss_ideal",
+            "pareto_auroc_mcc_ideal",
+            "pareto_best_inner_ideal",
+        }
+        if self.strategy not in {"weighted_inner_metrics", *pareto_strategies}:
+            raise ValueError("Unsupported BaseSelection.strategy")
+        if self.strategy in pareto_strategies:
+            if self.metrics != {"AUROC": 1.0} or self.normalization != "none":
+                raise ValueError(
+                    "Pareto base selection requires metrics={'AUROC': 1.0} and normalization='none'."
+                )
+            if self.auroc_tolerance is not None:
+                raise ValueError(
+                    "Pareto base selection does not use an AUROC tolerance."
+                )
+        self.pareto_compare_metric = canonical_metric_name(self.pareto_compare_metric)
+        if (
+            self.strategy == "pareto_best_inner_ideal"
+            and self.pareto_compare_metric not in {"AUROC", "MCC", "log_loss"}
+        ):
+            raise ValueError(
+                "Pareto automatic comparison requires AUROC, MCC or log_loss."
+            )
+        self.auroc_tolerance = validate_auroc_tolerance(
+            self.auroc_tolerance, "BaseSelection.auroc_tolerance"
+        )
         if self.auroc_tolerance is not None and self.metrics != {"AUROC": 1.0}:
-            raise ValueError("AUROC/log-loss base selection requires metrics={'AUROC': 1.0}.")
+            raise ValueError(
+                "AUROC/log-loss base selection requires metrics={'AUROC': 1.0}."
+            )
         if not self.include_inactive:
             raise ValueError("Base selection must include inactive configurations.")
 
@@ -271,7 +312,10 @@ class Ensemble:
         "median_proba",
     )
     optimize_metric: Any = "auto"
+    selection_mode: str = "nested"
+    pooled_super_learner_pool_size: int = 64
     auroc_tolerance: float | None = None
+    final_selection_strategy: str = "single_metric"
     mpma_b_selection: str = "legacy"
     mpma_b_softening: str = "none"
     mpma_b_candidate_learners: tuple[str, ...] = ()
@@ -290,11 +334,147 @@ class Ensemble:
     exclude_resolutions: tuple[str, ...] = ()
     exclude_transformations: tuple[str, ...] = ()
 
+    caruana_iterations: int = 125
+    caruana_max_unique_members: int | None = None
+    caruana_early_stopping: bool = False
+    caruana_patience: int = 25
+    caruana_min_iterations: int = 25
+    caruana_sorted_initial_models: int = 0
+    probability_degeneracy_policy: str = "report"
+    probability_degeneracy_tolerance: float = 1e-6
+    advanced_selection_pool_size: int = 128
+    population_iterations: int = 400
+    population_archive_size: int = 32
+    population_random_state: int = 42
+    qdo_archive_bins: int = 6
+    drep_rho: float = 0.5
+    pseo_bqp_omega: float = 0.5
+    pseo_bqp_swap_passes: int = 4
+
     def __post_init__(self) -> None:
         self.optimize_metric = canonical_metric_name(str(self.optimize_metric))
-        self.auroc_tolerance = validate_auroc_tolerance(self.auroc_tolerance, "Ensemble.auroc_tolerance")
+        self.auroc_tolerance = validate_auroc_tolerance(
+            self.auroc_tolerance, "Ensemble.auroc_tolerance"
+        )
+        if (
+            isinstance(self.caruana_iterations, bool)
+            or not isinstance(self.caruana_iterations, int)
+            or self.caruana_iterations < 1
+        ):
+            raise ValueError("Ensemble.caruana_iterations must be a positive integer.")
+        if self.caruana_max_unique_members is not None and (
+            isinstance(self.caruana_max_unique_members, bool)
+            or not isinstance(self.caruana_max_unique_members, int)
+            or self.caruana_max_unique_members < 1
+        ):
+            raise ValueError(
+                "Ensemble.caruana_max_unique_members must be None or a positive integer."
+            )
+        if (
+            isinstance(self.caruana_sorted_initial_models, bool)
+            or not isinstance(self.caruana_sorted_initial_models, int)
+            or not 0 <= self.caruana_sorted_initial_models <= self.caruana_iterations
+        ):
+            raise ValueError(
+                "Ensemble.caruana_sorted_initial_models must lie between 0 and caruana_iterations."
+            )
+        if (
+            self.caruana_max_unique_members is not None
+            and self.caruana_sorted_initial_models > self.caruana_max_unique_members
+        ):
+            raise ValueError(
+                "Ensemble.caruana_sorted_initial_models cannot exceed caruana_max_unique_members."
+            )
+        self.caruana_early_stopping = bool(self.caruana_early_stopping)
+        if (
+            isinstance(self.caruana_patience, bool)
+            or not isinstance(self.caruana_patience, int)
+            or self.caruana_patience < 1
+        ):
+            raise ValueError("Ensemble.caruana_patience must be a positive integer.")
+        if (
+            isinstance(self.caruana_min_iterations, bool)
+            or not isinstance(self.caruana_min_iterations, int)
+            or self.caruana_min_iterations < 1
+        ):
+            raise ValueError(
+                "Ensemble.caruana_min_iterations must be a positive integer."
+            )
+        self.probability_degeneracy_policy = str(self.probability_degeneracy_policy)
+        if self.probability_degeneracy_policy not in {"off", "report", "exclude"}:
+            raise ValueError(
+                "Ensemble.probability_degeneracy_policy must be off, report, or exclude."
+            )
+        self.probability_degeneracy_tolerance = float(
+            self.probability_degeneracy_tolerance
+        )
+        if (
+            not math.isfinite(self.probability_degeneracy_tolerance)
+            or self.probability_degeneracy_tolerance < 0
+        ):
+            raise ValueError(
+                "Ensemble.probability_degeneracy_tolerance must be finite and nonnegative."
+            )
+        for name, minimum in (
+            ("advanced_selection_pool_size", 0),
+            ("population_iterations", 1),
+            ("population_archive_size", 2),
+            ("qdo_archive_bins", 2),
+            ("pseo_bqp_swap_passes", 0),
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                raise ValueError(f"Ensemble.{name} must be an integer >= {minimum}.")
+        if (
+            isinstance(self.population_random_state, bool)
+            or not isinstance(self.population_random_state, int)
+            or self.population_random_state < 0
+        ):
+            raise ValueError(
+                "Ensemble.population_random_state must be a nonnegative integer."
+            )
+        self.drep_rho = float(self.drep_rho)
+        if not math.isfinite(self.drep_rho) or not 0.0 < self.drep_rho < 1.0:
+            raise ValueError("Ensemble.drep_rho must lie strictly between 0 and 1.")
+        self.pseo_bqp_omega = float(self.pseo_bqp_omega)
+        if (
+            not math.isfinite(self.pseo_bqp_omega)
+            or not 0.0 <= self.pseo_bqp_omega <= 1.0
+        ):
+            raise ValueError("Ensemble.pseo_bqp_omega must lie between 0 and 1.")
+        self.selection_mode = str(self.selection_mode)
+        if self.selection_mode not in {"nested", "pooled_grid"}:
+            raise ValueError("Ensemble.selection_mode must be nested or pooled_grid.")
+        self.final_selection_strategy = (
+            str(self.final_selection_strategy).strip().casefold()
+        )
+        if self.final_selection_strategy not in {
+            "single_metric",
+            "pareto_auroc_logloss_ideal",
+        }:
+            raise ValueError(
+                "Ensemble.final_selection_strategy must be single_metric or pareto_auroc_logloss_ideal."
+            )
+        if self.final_selection_strategy == "pareto_auroc_logloss_ideal":
+            if self.selection_mode != "pooled_grid":
+                raise ValueError(
+                    "Pareto final ensemble selection requires selection_mode='pooled_grid'."
+                )
+            if self.auroc_tolerance is not None:
+                raise ValueError(
+                    "Pareto final ensemble selection cannot be combined with auroc_tolerance."
+                )
+        if (
+            not isinstance(self.pooled_super_learner_pool_size, int)
+            or self.pooled_super_learner_pool_size < 0
+        ):
+            raise ValueError(
+                "Ensemble.pooled_super_learner_pool_size must be a nonnegative integer."
+            )
         if self.auroc_tolerance is not None and self.optimize_metric != "AUROC":
-            raise ValueError("AUROC/log-loss ensemble selection requires optimize_metric='AUROC'.")
+            raise ValueError(
+                "AUROC/log-loss ensemble selection requires optimize_metric='AUROC'."
+            )
         self.mpma_b_selection = str(self.mpma_b_selection)
         self.mpma_b_softening = str(self.mpma_b_softening)
         self.mpma_b_candidate_learners = tuple(
@@ -396,6 +576,7 @@ class Explainability:
     keep_cache: bool = False
     n_jobs: int | str | None = None
     parallel_backend: str | None = None
+    skip_member: tuple[str, ...] = ()
 
     def __init__(
         self,
@@ -409,6 +590,7 @@ class Explainability:
         keep_cache: bool = False,
         n_jobs: int | str | None = None,
         parallel_backend: str | None = None,
+        skip_member: str | Sequence[str] | None = None,
         **unknown_options: Any,
     ) -> None:
         legacy_keys = {
@@ -452,6 +634,7 @@ class Explainability:
         self.local = local if local is not None else _legacy_local_explanations(legacy)
         self.keep_cache = bool(keep_cache)
         self.n_jobs = n_jobs
+        self.skip_member = _normalise_explainability_skip_member(skip_member)
         self.parallel_backend = (
             None if parallel_backend is None else str(parallel_backend)
         )
@@ -536,6 +719,27 @@ def _effective_local_explanations_mode(explainability: Any) -> str:
     if requested:
         return "requested"
     return "none"
+
+
+def _normalise_explainability_skip_member(
+    value: str | Sequence[str] | None,
+) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    values = (value,) if isinstance(value, str) else value
+    if not isinstance(values, Sequence):
+        raise TypeError(
+            "Explainability.skip_member must be a string or a sequence of strings."
+        )
+    names = []
+    for item in values:
+        if not isinstance(item, str):
+            raise TypeError("Explainability.skip_member entries must be strings.")
+        name = item.strip().casefold()
+        if not name:
+            raise ValueError("Explainability.skip_member entries must be nonempty.")
+        names.append(name)
+    return tuple(dict.fromkeys(names))
 
 
 def _normalise_explainability_targets_config(
@@ -628,25 +832,79 @@ def _validate_sweep_configuration(sweep: Any) -> None:
     task = _normalise_sweep_task(source.task)
     protocol = str(sweep.evaluation.protocol)
     n_classes = _configured_class_count(source) if task == "classification" else None
-    joint = not sweep.uses_modalities and (task == "multilabel" or (task == "multioutput" and source.joint))
+    joint = not sweep.uses_modalities and (
+        task == "multilabel" or (task == "multioutput" and source.joint)
+    )
     if joint:
-        targets = (source.target_col,) if isinstance(source.target_col, str) else tuple(source.target_col)
+        targets = (
+            (source.target_col,)
+            if isinstance(source.target_col, str)
+            else tuple(source.target_col)
+        )
         if len(targets) < 2 or len(set(targets)) != len(targets):
-            raise ValueError("Joint modeling requires at least two unique target columns.")
-        if task == "multioutput" and (not source.target_tasks or any(t not in source.target_tasks or _normalise_sweep_task(source.target_tasks[t]) != "regression" for t in targets)):
-            raise ValueError("Joint multioutput currently supports exclusively regression targets; assign target_tasks for every target.")
+            raise ValueError(
+                "Joint modeling requires at least two unique target columns."
+            )
+        if task == "multioutput" and (
+            not source.target_tasks
+            or any(
+                t not in source.target_tasks
+                or _normalise_sweep_task(source.target_tasks[t]) != "regression"
+                for t in targets
+            )
+        ):
+            raise ValueError(
+                "Joint multioutput currently supports exclusively regression targets; assign target_tasks for every target."
+            )
         if sweep.gate.enabled:
-            raise ValueError("QualificationGate is not available for joint target evaluation.")
+            raise ValueError(
+                "QualificationGate is not available for joint target evaluation."
+            )
         if sweep.evaluation.outer_only:
-            raise ValueError("Joint target evaluation requires nested cross-validation.")
-        if sweep.base_selection.auroc_tolerance is not None or sweep.ensemble.auroc_tolerance is not None:
-            raise ValueError("AUROC tolerance selection is unsupported for joint targets.")
-        allowed = {"log_loss", "brier", "f1_micro", "f1_macro", "f1_samples", "subset_accuracy", "hamming_loss", "AUROC_macro", "AP_macro"} if task == "multilabel" else {"normalized_rmse", "RMSE", "MAE", "MSE", "R2"}
+            raise ValueError(
+                "Joint target evaluation requires nested cross-validation."
+            )
+        if (
+            sweep.base_selection.auroc_tolerance is not None
+            or sweep.ensemble.auroc_tolerance is not None
+        ):
+            raise ValueError(
+                "AUROC tolerance selection is unsupported for joint targets."
+            )
+        if sweep.ensemble.final_selection_strategy == "pareto_auroc_logloss_ideal":
+            raise ValueError(
+                "Pareto AUROC/log-loss final ensemble selection requires binary classification."
+            )
+        allowed = (
+            {
+                "log_loss",
+                "brier",
+                "f1_micro",
+                "f1_macro",
+                "f1_samples",
+                "subset_accuracy",
+                "hamming_loss",
+                "AUROC_macro",
+                "AP_macro",
+            }
+            if task == "multilabel"
+            else {"normalized_rmse", "RMSE", "MAE", "MSE", "R2"}
+        )
         if str(sweep.evaluation.optimize_metric) not in allowed:
-            raise ValueError(f"Joint {task} optimize_metric must be one of {sorted(allowed)}.")
+            raise ValueError(
+                f"Joint {task} optimize_metric must be one of {sorted(allowed)}."
+            )
         return
-    if task != "classification" and (sweep.base_selection.auroc_tolerance is not None or sweep.ensemble.auroc_tolerance is not None):
+    if task != "classification" and (
+        sweep.base_selection.auroc_tolerance is not None
+        or sweep.ensemble.auroc_tolerance is not None
+    ):
         raise ValueError("AUROC/log-loss selection requires binary classification.")
+    if sweep.ensemble.final_selection_strategy == "pareto_auroc_logloss_ideal":
+        if task != "classification" or (n_classes is not None and int(n_classes) != 2):
+            raise ValueError(
+                "Pareto AUROC/log-loss final ensemble selection requires binary classification."
+            )
     if task == "classification":
         for name in sweep.base_selection.metrics:
             _validate_metric(name, task, protocol, n_classes, "BaseSelection.metrics")
@@ -690,7 +948,13 @@ def _validate_sweep_configuration(sweep: Any) -> None:
         "oof_similarity",
         "diversity",
         "performance_diversity",
+        "pareto_optimal_auroc_logloss",
+        "pareto_optimal_ml_dl_auroc_logloss",
+        "pareto_optimal_ml_dl_auroc_logloss_capped",
+        "pareto_optimal_taxonomic_rank_auroc_logloss",
+        "pareto_optimal_taxonomic_rank_auroc_logloss_capped",
         "caruana",
+        "caruana_constrained",
         "bagged_caruana",
         "caruana_multistart",
         "beam",
@@ -698,6 +962,10 @@ def _validate_sweep_configuration(sweep: Any) -> None:
         "adaptive_super_learner",
         "safe_super_learner",
         "regularized_super_learner",
+        "qo_es",
+        "qdo_es",
+        "drep",
+        "pseo_bqp",
     }
     if sweep.ensemble.include_model_ensembles:
         unknown_selection = sorted(
@@ -709,6 +977,7 @@ def _validate_sweep_configuration(sweep: Any) -> None:
             )
         learned = set(sweep.ensemble.selection_strategies) & {
             "caruana",
+            "caruana_constrained",
             "bagged_caruana",
             "caruana_multistart",
             "beam",
@@ -716,8 +985,17 @@ def _validate_sweep_configuration(sweep: Any) -> None:
             "adaptive_super_learner",
             "safe_super_learner",
             "regularized_super_learner",
+            "qo_es",
+            "qdo_es",
         }
         simple = set(sweep.ensemble.selection_strategies) - learned
+        if (
+            learned & {"qo_es", "qdo_es"}
+            and "weighted_mean_proba" not in sweep.ensemble.aggregation_strategies
+        ):
+            raise ValueError(
+                "QO-ES and QDO-ES require weighted_mean_proba to preserve learned selection frequencies."
+            )
     else:
         learned = set()
         simple = set()
@@ -735,6 +1013,10 @@ def _validate_sweep_configuration(sweep: Any) -> None:
                 "subject_macro_log_loss requires an explicit subject_id_col so repeated observations are aggregated by biological subject."
             )
         if sweep.ensemble.include_model_ensembles:
+            if not simple and set(sweep.ensemble.aggregation_strategies) == {"cawpe"}:
+                raise ValueError(
+                    "CAWPE requires a non-learned member selector; Caruana and Super Learner have their own learned weights."
+                )
             unknown = sorted(
                 set(sweep.ensemble.aggregation_strategies) - set(SUPPORTED_AGGREGATIONS)
             )
@@ -753,7 +1035,13 @@ def _validate_sweep_configuration(sweep: Any) -> None:
                         f"Remove incompatible aggregation strategy(s) {invalid}; allowed strategies are "
                         f"{sorted(PROBABILITY_PRESERVING_AGGREGATIONS)}."
                     )
-            if simple and not any(
+            if simple - {
+                "pareto_optimal_auroc_logloss",
+                "pareto_optimal_ml_dl_auroc_logloss",
+                "pareto_optimal_ml_dl_auroc_logloss_capped",
+                "pareto_optimal_taxonomic_rank_auroc_logloss",
+                "pareto_optimal_taxonomic_rank_auroc_logloss_capped",
+            } and not any(
                 aggregation != "weighted_mean_proba"
                 for aggregation in sweep.ensemble.aggregation_strategies
             ):
@@ -774,6 +1062,12 @@ def _validate_sweep_configuration(sweep: Any) -> None:
             )
     else:
         classification_only_selection = {
+            "caruana_constrained",
+            "pareto_optimal_auroc_logloss",
+            "pareto_optimal_ml_dl_auroc_logloss",
+            "pareto_optimal_ml_dl_auroc_logloss_capped",
+            "pareto_optimal_taxonomic_rank_auroc_logloss",
+            "pareto_optimal_taxonomic_rank_auroc_logloss_capped",
             "best_deep_ml_pair",
             "best_deep_ml_complementary_pair",
             "quality_diversity",
@@ -785,6 +1079,10 @@ def _validate_sweep_configuration(sweep: Any) -> None:
             "adaptive_super_learner",
             "safe_super_learner",
             "regularized_super_learner",
+            "qo_es",
+            "qdo_es",
+            "drep",
+            "pseo_bqp",
         }
         invalid_selection = sorted(
             set(sweep.ensemble.selection_strategies) & classification_only_selection
@@ -794,6 +1092,7 @@ def _validate_sweep_configuration(sweep: Any) -> None:
                 f"Classification-only ensemble selection strategy(s) cannot be used for regression: {invalid_selection}."
             )
         classification_only_aggregation = {
+            "cawpe",
             "trimmed_mean",
             "logit_mean",
             "logistic_stacking",
@@ -828,8 +1127,18 @@ def _validate_sweep_configuration(sweep: Any) -> None:
 def validate_sweep_class_count(sweep: Any, n_classes: int) -> None:
     if int(n_classes) < 2:
         raise ValueError("Classification requires at least two outcome classes.")
-    if int(n_classes) != 2 and (sweep.base_selection.auroc_tolerance is not None or sweep.ensemble.auroc_tolerance is not None):
+    if int(n_classes) != 2 and (
+        sweep.base_selection.auroc_tolerance is not None
+        or sweep.ensemble.auroc_tolerance is not None
+    ):
         raise ValueError("AUROC/log-loss selection requires binary classification.")
+    if (
+        int(n_classes) != 2
+        and sweep.ensemble.final_selection_strategy == "pareto_auroc_logloss_ideal"
+    ):
+        raise ValueError(
+            "Pareto AUROC/log-loss final ensemble selection requires binary classification."
+        )
     protocol = str(sweep.evaluation.protocol)
     sweep.evaluation.optimize_metric = _validate_metric(
         str(sweep.evaluation.optimize_metric),
@@ -839,7 +1148,9 @@ def validate_sweep_class_count(sweep: Any, n_classes: int) -> None:
         "Evaluation.optimize_metric",
     )
     for name in sweep.base_selection.metrics:
-        _validate_metric(name, "classification", protocol, int(n_classes), "BaseSelection.metrics")
+        _validate_metric(
+            name, "classification", protocol, int(n_classes), "BaseSelection.metrics"
+        )
     if sweep.gate.enabled:
         sweep.gate.metric = _validate_metric(
             str(sweep.gate.metric),
@@ -878,6 +1189,13 @@ class Explore:
     ancombc2_structural_zeros: bool = True
     ancombc2_neg_lb: bool | None = None
     ancombc2_workers: int = 1
+
+    unifrac_tree_path: str | Path | None = None
+    unifrac_feature_to_tip: Mapping[str, str] | str | Path | None = None
+    unifrac_rank: str = "species"
+    unifrac_alpha: float = 0.5
+    unifrac_unmatched: str = "error"
+    unifrac_min_sample_coverage: float = 0.95
     random_state: int = 42
 
     def __post_init__(self) -> None:
@@ -943,6 +1261,20 @@ class Explore:
             raise ValueError("Unsupported Explore.ancombc2_p_adjust_method.")
         if int(self.ancombc2_workers) < 1:
             raise ValueError("Explore.ancombc2_workers must be at least 1.")
+        if self.unifrac_rank not in TAXONOMIC_LEVELS:
+            raise ValueError("Explore.unifrac_rank must be a taxonomic rank.")
+        if (
+            not math.isfinite(float(self.unifrac_alpha))
+            or not 0 <= float(self.unifrac_alpha) <= 1
+        ):
+            raise ValueError("Explore.unifrac_alpha must lie in [0, 1].")
+        if self.unifrac_unmatched not in {"error", "drop"}:
+            raise ValueError("Explore.unifrac_unmatched must be 'error' or 'drop'.")
+        if (
+            not math.isfinite(float(self.unifrac_min_sample_coverage))
+            or not 0 < float(self.unifrac_min_sample_coverage) <= 1
+        ):
+            raise ValueError("Explore.unifrac_min_sample_coverage must lie in (0, 1].")
         object.__setattr__(self, "ranks", ranks)
         object.__setattr__(self, "top_taxa", int(self.top_taxa))
         object.__setattr__(self, "heatmap_top", int(self.heatmap_top))
@@ -1089,11 +1421,19 @@ class Inference:
         if not isinstance(self.save_weights, bool):
             raise TypeError("Inference.save_weights must be a boolean.")
         if self.conformal_alpha is not None and not self.save_weights:
-            raise ValueError("Conformal prediction requires save_weights=True to verify frozen model artifacts.")
-        conformal_fields = (self.conformal_alpha, self.conformal_calibration_predictions, self.conformal_calibration_labels)
+            raise ValueError(
+                "Conformal prediction requires save_weights=True to verify frozen model artifacts."
+            )
+        conformal_fields = (
+            self.conformal_alpha,
+            self.conformal_calibration_predictions,
+            self.conformal_calibration_labels,
+        )
         if any(value is not None for value in conformal_fields):
             if not all(value is not None for value in conformal_fields):
-                raise ValueError("Conformal inference requires alpha, calibration predictions and calibration labels.")
+                raise ValueError(
+                    "Conformal inference requires alpha, calibration predictions and calibration labels."
+                )
             if not 0 < float(self.conformal_alpha) < 1:
                 raise ValueError("Inference.conformal_alpha must lie in (0, 1).")
         for field_name in ("training_abundance_scale", "inference_abundance_scale"):
@@ -1102,7 +1442,9 @@ class Inference:
             if scale in {"", "auto"}:
                 scale = None
             if scale is not None and scale not in {
-                "counts", "percentage", "proportion"
+                "counts",
+                "percentage",
+                "proportion",
             }:
                 raise ValueError(
                     f"Inference.{field_name} must be 'counts', 'percentage', 'proportion', or None."
@@ -1165,39 +1507,7 @@ class Sweep:
 
             attach_brain_representations(self)
         validate_model_specs(self.learners, context="Sweep.learners / MODELS")
-        from .resolutions import _parse_resolution
-        from .siamcat import SIAMCATClassifier
-        from .transformations import ScopedTransformation
 
-        siamcat_names = tuple(
-            str(name)
-            for name, estimator in self.learners
-            if isinstance(estimator, SIAMCATClassifier)
-        )
-        if siamcat_names and not self.uses_modalities:
-            original_resolutions = tuple(self.resolutions)
-            existing_names = tuple(
-                dict.fromkeys(
-                    _parse_resolution(item)[0] for item in original_resolutions
-                )
-            )
-            if "species" not in existing_names:
-                self.resolutions = (
-                    *original_resolutions,
-                    ("species", ("species",)),
-                )
-            self.count_transformations = (
-                *tuple(self.count_transformations),
-                ScopedTransformation("relative_abundance", resolutions=("species",)),
-            )
-            restricted = dict(self.learner_resolutions)
-            if "species" not in existing_names:
-                for name, _ in self.learners:
-                    if str(name) not in siamcat_names and str(name) not in restricted:
-                        restricted[str(name)] = existing_names
-            for name in siamcat_names:
-                restricted[name] = ("species",)
-            self.learner_resolutions = restricted
         late_integrations = tuple(
             item
             for item in self.integrations
@@ -1282,7 +1592,9 @@ def build_sweep_from_module(mod: Any) -> Sweep:
         return Sweep(
             data=None,
             title=getattr(mod, "TITLE", Path(mod.EXPERIMENT_DIR).name),
-            include_representation_impact=getattr(mod, "INCLUDE_REPRESENTATION_IMPACT", True),
+            include_representation_impact=getattr(
+                mod, "INCLUDE_REPRESENTATION_IMPACT", True
+            ),
             experiment_dir=mod.EXPERIMENT_DIR,
             learners=learners,
             learner_resolutions=getattr(mod, "LEARNER_RESOLUTIONS", {}),
@@ -1344,7 +1656,9 @@ def build_sweep_from_module(mod: Any) -> Sweep:
 
     return Sweep(
         title=getattr(mod, "TITLE", Path(mod.EXPERIMENT_DIR).name),
-        include_representation_impact=getattr(mod, "INCLUDE_REPRESENTATION_IMPACT", True),
+        include_representation_impact=getattr(
+            mod, "INCLUDE_REPRESENTATION_IMPACT", True
+        ),
         experiment_dir=mod.EXPERIMENT_DIR,
         data=data,
         resolutions=resolutions,

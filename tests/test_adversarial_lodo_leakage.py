@@ -278,9 +278,17 @@ def test_heldout_only_feature_cannot_change_inner_hyperparameter_candidate_selec
     adv_inner, adv_inner_predictions, adv_outer_predictions, _ = _candidate_frames(
         adversarial
     )
+    # Wall-clock resource timings cannot be identical between two fits.
+    # Compare all deterministic columns, including inner scores and labels.
+    timing_columns = {
+        "preprocess_seconds", "model_setup_seconds", "fit_seconds",
+        "predict_seconds", "score_seconds", "fold_wall_seconds",
+    }
     pd.testing.assert_frame_equal(
-        clean_inner.sort_values(["config_id", "inner_key"]).reset_index(drop=True),
-        adv_inner.sort_values(["config_id", "inner_key"]).reset_index(drop=True),
+        clean_inner.drop(columns=list(timing_columns), errors="ignore")
+        .sort_values(["config_id", "inner_key"]).reset_index(drop=True),
+        adv_inner.drop(columns=list(timing_columns), errors="ignore")
+        .sort_values(["config_id", "inner_key"]).reset_index(drop=True),
         check_dtype=False,
     )
     pd.testing.assert_frame_equal(
@@ -374,6 +382,7 @@ def test_heldout_only_feature_cannot_enter_oof_xai_coordinates(transformation):
         base,
         y,
         None,
+        tuple(f"s{i}" for i in range(len(y))),
         2,
         "lodo",
         FEATURE_NAMES,
@@ -389,6 +398,7 @@ def test_heldout_only_feature_cannot_enter_oof_xai_coordinates(transformation):
         adversarial,
         y,
         None,
+        tuple(f"s{i}" for i in range(len(y))),
         2,
         "lodo",
         [*FEATURE_NAMES, "g__heldout_only"],

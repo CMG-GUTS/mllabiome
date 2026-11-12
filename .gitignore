@@ -120,3 +120,17 @@ examples/benchmark
 examples/base
 examples/joint-optimization/data
 examples/multi-target-joint-optimization/data
+/.venv/
+/dist/
+/build/
+/*.egg-info/
+/data/
+/assets/
+/results/
+/sandbox/
+/manuscript/
+/interactive/
+__pycache__/
+*.pyc
+manuscript_biorxiv
+manuscript_figures

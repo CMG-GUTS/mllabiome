@@ -53,6 +53,7 @@ def test_single_fold_refit_uses_lodo_training_feature_mask(protocol):
         X,
         y,
         None,
+        tuple(f"s{i}" for i in range(len(y))),
         2,
         protocol,
         ["a", "b", "test_only"],

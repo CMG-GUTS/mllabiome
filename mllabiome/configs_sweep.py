@@ -41,6 +41,7 @@ from .learners import (
     _learner_factory,
     _learner_name,
     fit_classifier,
+    siamcat_internal_fit_groups,
     learner_display_label,
 )
 from .metrics import _estimator_call
@@ -236,11 +237,14 @@ def _learner_payload(item: Any) -> dict[str, Any]:
     ):
         raise TypeError("Learners must be explicit (name, estimator) pairs.")
     name, estimator = item
-    return {
+    payload = {
         "name": str(name),
         "class": f"{type(estimator).__module__}.{type(estimator).__qualname__}",
         "params": _scientific_value(estimator.get_params(deep=True)),
     }
+    if type(estimator).__name__ == "SIAMCATClassifier":
+        payload["native_backend_revision"] = "native-holdout-proba-v1"
+    return payload
 
 
 def _learner_fingerprint(item: Any) -> str:
@@ -515,7 +519,10 @@ def _scientifically_compatible_config(
             else {"identity", "presence_absence"}
         )
     if learner_class == "SIAMCATClassifier":
-        return transformation == "relative_abundance" and resolution == "species"
+        return (
+            str(count_transformation).lower() == "relative_abundance@rank-wise"
+            and resolution in TAXONOMIC_LEVELS
+        )
     if learner_class == "BernoulliNB":
         return transformation == "presence_absence"
     if learner_class in {"MultinomialNB", "ComplementNB"}:
@@ -819,7 +826,13 @@ def _fit_classification_split_fold(
         estimator,
         X_fit_transformed,
         y[fit_idx],
-        None if groups is None else groups[fit_idx],
+        siamcat_internal_fit_groups(
+            estimator,
+            y[fit_idx],
+            None if groups is None else groups[fit_idx],
+            np.asarray(subject_ids, dtype=object)[fit_idx],
+            protocol,
+        ),
     )
     synchronize_accelerators()
     fit_end = time.perf_counter_ns()
@@ -2700,6 +2713,85 @@ def _prepare_regression_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
     )
 
 
+def _configure_siamcat_for_dataset(sweep: Sweep, dataset: Dataset) -> None:
+
+    from .siamcat import SIAMCATClassifier
+    from .transformations import ScopedTransformation
+
+    if sweep.uses_modalities:
+        return
+    names = tuple(
+        str(name)
+        for name, estimator in sweep.learners
+        if isinstance(estimator, SIAMCATClassifier)
+    )
+    if not names:
+        return
+    rank = None
+    for candidate in reversed(TAXONOMIC_LEVELS):
+        matrix = dataset.X_by_level.get(candidate)
+        if (
+            matrix is not None
+            and matrix.ndim == 2
+            and matrix.shape[1] > 0
+            and np.any(np.isfinite(matrix) & (matrix != 0))
+        ):
+            rank = candidate
+            break
+    if rank is None:
+        raise ValueError(
+            "SIAMCAT requires a recognized taxonomic rank containing nonzero "
+            "abundance features; none was found in this dataset."
+        )
+    originally_configured = tuple(
+        dict.fromkeys(_parse_resolution(item)[0] for item in sweep.resolutions)
+    )
+    siamcat_only = len(names) == len(sweep.learners)
+    if siamcat_only:
+        sweep.resolutions = ((rank, (rank,)),)
+    elif rank not in originally_configured:
+        sweep.resolutions = (*tuple(sweep.resolutions), (rank, (rank,)))
+
+    sweep.count_transformations = (
+        *tuple(sweep.count_transformations),
+        ScopedTransformation("relative_abundance", resolutions=(rank,)),
+    )
+    restricted = dict(sweep.learner_resolutions)
+    if rank not in originally_configured:
+        for name, _ in sweep.learners:
+            if str(name) not in names and str(name) not in restricted:
+                restricted[str(name)] = originally_configured
+    for name in names:
+        restricted[name] = (rank,)
+    sweep.learner_resolutions = restricted
+    info(
+        f"SIAMCAT taxonomic resolution: {rank} ({dataset.X_by_level[rank].shape[1]} features)"
+    )
+
+
+def _preflight_siamcat(sweep: Sweep) -> None:
+
+    from .siamcat import SIAMCATClassifier
+    from .siamcat_runtime import ensure_siamcat_runtime
+
+    for name, estimator in sweep.learners:
+        if not isinstance(estimator, SIAMCATClassifier):
+            continue
+        runner = estimator._r_runner_resource()
+        if not runner.is_file():
+            raise FileNotFoundError(
+                "SIAMCAT needs mllabiome/_r/siamcat.R, which is missing "
+                "from this installation."
+            )
+        info(f"Checking SIAMCAT R runtime before scheduling folds ({name})")
+        ready = ensure_siamcat_runtime(
+            runtime=estimator.runtime, rscript=estimator.rscript
+        )
+        info(
+            f"SIAMCAT runtime ready · R {ready.r_version} · SIAMCAT {ready.siamcat_version}"
+        )
+
+
 def _prepare_classification_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
     root = sweep.root()
     _prepare_dirs(root)
@@ -2715,6 +2807,11 @@ def _prepare_classification_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
         )
     )
     dataset = load_dataset(sweep.data, levels or ("all",))
+    _configure_siamcat_for_dataset(sweep, dataset)
+    _preflight_siamcat(sweep)
+    resolutions = list(
+        dict.fromkeys(_parse_resolution(item) for item in sweep.resolutions)
+    )
     validate_sweep_class_count(sweep, len(dataset.class_labels))
     _validate_dataset_identity(root, dataset)
     learners = [_learner_factory(item) for item in sweep.learners]
@@ -3407,7 +3504,9 @@ def _existing_outputs(root: Path) -> dict[str, Path]:
         "mpma_b_outer_results": root / "results" / "mpma_b_outer_results.parquet",
         "mpma_b_summary": root / "tables" / "mpma_b_strategy_summary.json",
         "mpma_b_final_candidate": root / "tables" / "mpma_b_final_candidate.json",
-        "mpma_b_base_selection_rankings": root / "tables" / "mpma_b_base_selection_rankings.parquet",
+        "mpma_b_base_selection_rankings": root
+        / "tables"
+        / "mpma_b_base_selection_rankings.parquet",
         "job_resources": root / "tables" / "job_resources.parquet",
         "cv_splits": root / "tables" / "cv_splits.parquet",
         "mpma_b_selection_resources": root

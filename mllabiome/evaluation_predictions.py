@@ -314,9 +314,15 @@ def _comparator_configs(configs: pd.DataFrame, strategy: str) -> pd.DataFrame:
             & transform.str.fullmatch(
                 r"relative_abundance@rank-wise", case=False
             ).fillna(False)
-            & resolution.str.fullmatch("species", case=False).fillna(False)
         ].copy()
-        return eligible
+        if eligible.empty:
+            return eligible
+        eligible["_single_rank"] = _single_rank(eligible)
+        for rank in _RANK_PRIORITY:
+            ranked = eligible[eligible["_single_rank"].eq(rank)].copy()
+            if not ranked.empty:
+                return ranked.drop(columns=["_single_rank"])
+        return eligible.iloc[0:0].drop(columns=["_single_rank"])
     raise ValueError(f"Unsupported comparator strategy {strategy!r}.")
 
 

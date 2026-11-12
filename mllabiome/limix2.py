@@ -12,7 +12,11 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.preprocessing import LabelEncoder
 from sklearn.utils.validation import check_is_fitted
 
-from ._limix2_compat import ensure_limix_torch_norm_interface, optional_limix_triton
+from ._limix2_compat import (
+    ensure_limix_torch_norm_interface,
+    optional_limix_triton,
+    _mps_float32_context,
+)
 
 
 class LimiX2DependencyError(ImportError):
@@ -199,17 +203,19 @@ class LimiX2Classifier(ClassifierMixin, BaseEstimator):
                 factory, torch = self._dependencies()
                 ensure_limix_torch_norm_interface()
                 factory = self._portable_factory(factory)
-                predictor = factory(
-                    device=self._resolve_device(torch, self.device),
-                    model_path=self._checkpoint_path(),
-                    inference_config=self._config_path(),
-                    mix_precision=self.mix_precision,
-                    outlier_remove_std=self.outlier_remove_std,
-                    softmax_temperature=self.softmax_temperature,
-                    average_before_softmax=self.average_before_softmax,
-                    use_data_cache=self.use_data_cache,
-                    seed=int(self.random_state),
-                )
+                device = self._resolve_device(torch, self.device)
+                with _mps_float32_context(torch, device):
+                    predictor = factory(
+                        device=device,
+                        model_path=self._checkpoint_path(),
+                        inference_config=self._config_path(),
+                        mix_precision=self.mix_precision,
+                        outlier_remove_std=self.outlier_remove_std,
+                        softmax_temperature=self.softmax_temperature,
+                        average_before_softmax=self.average_before_softmax,
+                        use_data_cache=self.use_data_cache,
+                        seed=int(self.random_state),
+                    )
                 ensure_limix_torch_norm_interface()
             self._predictor = predictor
         return predictor
@@ -229,9 +235,17 @@ class LimiX2Classifier(ClassifierMixin, BaseEstimator):
         with optional_limix_triton():
             predictor = self._get_predictor()
             ensure_limix_torch_norm_interface()
-            result = predictor.predict(
-                self.X_train_, self.y_train_, array, task_type="Classification"
-            )
+            if (
+                self.device == "mps"
+                and hasattr(predictor, "model")
+                and predictor.model is not None
+            ):
+                predictor.model.float()
+            _, torch = self._dependencies()
+            with _mps_float32_context(torch, self._resolve_device(torch, self.device)):
+                result = predictor.predict(
+                    self.X_train_, self.y_train_, array, task_type="Classification"
+                )
         proba = np.asarray(result, dtype=np.float64)
         shape = (array.shape[0], self.classes_.size)
         if proba.shape != shape:

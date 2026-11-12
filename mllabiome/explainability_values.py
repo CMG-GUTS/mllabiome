@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable, Sequence
 from typing import Any
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -13,6 +14,10 @@ from .explainability_config import (
     ExplainabilityDependencyError,
 )
 from .explainability_methods import LIME, SHAP
+from .explainability_shap_checkpoints import (
+    load_member_shap_checkpoint,
+    save_member_shap_checkpoint,
+)
 from .explainability_model import _explain_predict_proba, _project_input, _sample_rows
 from .utils import _as_float_matrix
 
@@ -30,6 +35,8 @@ def _shap_values_for_data(
     show_progress: bool = True,
     progress_callback: Callable[[int, int, str], None] | None = None,
     input_projector: Any | None = None,
+    checkpoint_path: Path | None = None,
+    checkpoint_signature: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray, str]:
     try:
         import shap
@@ -57,8 +64,27 @@ def _shap_values_for_data(
     background = X_background[rows_bg]
     X_selected = X_explain[rows_ex]
     total_samples = max(1, len(X_selected))
+    previous = (
+        load_member_shap_checkpoint(
+            checkpoint_path,
+            checkpoint_signature,
+            rows_ex,
+            rows_bg,
+            len(feature_names),
+            len(class_labels),
+        )
+        if checkpoint_path is not None and checkpoint_signature is not None
+        else None
+    )
+    if previous is not None and bool(previous[1].all()):
+        if progress_callback is not None:
+            progress_callback(total_samples, total_samples, "checkpoint reused")
+        return previous[0], rows_ex, previous[2]
     if progress_callback is not None:
-        progress_callback(0, total_samples, f"0/{len(X_selected)} samples")
+        reused = int(previous[1].sum()) if previous is not None else 0
+        progress_callback(
+            reused, total_samples, f"checkpoint reused {reused}/{len(X_selected)}"
+        )
 
     def normalize_values(values: Any) -> np.ndarray:
         raw = getattr(values, "values", values)
@@ -86,19 +112,80 @@ def _shap_values_for_data(
     def evaluate_in_batches(
         call: Callable[[np.ndarray], Any], backend: str
     ) -> np.ndarray:
-        if progress_callback is None or len(X_selected) <= 1:
-            return normalize_values(call(X_selected))
-        batch_size = max(1, min(25, len(X_selected)))
+        saved = previous if previous is not None and previous[2] == backend else None
+        values = saved[0].copy() if saved is not None else None
+        completed = (
+            saved[1].copy()
+            if saved is not None
+            else np.zeros(len(X_selected), dtype=bool)
+        )
+        chunk_size = (
+            1
+            if checkpoint_path is not None
+            else len(X_selected)
+            if progress_callback is None
+            else min(25, len(X_selected))
+        )
         chunks: list[np.ndarray] = []
-        for start in range(0, len(X_selected), batch_size):
-            stop = min(len(X_selected), start + batch_size)
-            chunks.append(normalize_values(call(X_selected[start:stop])))
-            progress_callback(
-                stop,
-                total_samples,
-                f"sample {stop}/{len(X_selected)} · backend={backend}",
+        for start in range(0, len(X_selected), max(1, chunk_size)):
+            stop = min(len(X_selected), start + max(1, chunk_size))
+            missing = np.flatnonzero(~completed[start:stop]) + start
+            if len(missing):
+                if checkpoint_path is not None:
+                    chunks = []
+                    for row_index in missing:
+                        previous_rng = np.random.get_state()
+                        np.random.seed(
+                            (int(random_state) + 1299709 * int(rows_ex[row_index]))
+                            % (2**32)
+                        )
+                        try:
+                            chunks.append(
+                                normalize_values(
+                                    call(
+                                        X_selected[int(row_index) : int(row_index) + 1]
+                                    )
+                                )
+                            )
+                        finally:
+                            np.random.set_state(previous_rng)
+                    fresh = np.concatenate(chunks, axis=0)
+                else:
+                    fresh = normalize_values(call(X_selected[missing]))
+                if values is None:
+                    values = np.full(
+                        (len(X_selected), len(feature_names), fresh.shape[2]),
+                        np.nan,
+                        dtype=np.float64,
+                    )
+                if fresh.shape[1:] != values.shape[1:]:
+                    raise ExplainabilityConfigurationError(
+                        "SHAP checkpoint dimensionality changed during computation."
+                    )
+                values[missing] = fresh
+                completed[missing] = True
+                if checkpoint_path is not None and checkpoint_signature is not None:
+                    save_member_shap_checkpoint(
+                        checkpoint_path,
+                        checkpoint_signature,
+                        rows_ex,
+                        rows_bg,
+                        values,
+                        completed,
+                        backend,
+                    )
+            if progress_callback is not None:
+                count = int(completed.sum())
+                progress_callback(
+                    count,
+                    total_samples,
+                    f"sample {count}/{len(X_selected)} · backend={backend}",
+                )
+        if values is None or not bool(completed.all()):
+            raise ExplainabilityConfigurationError(
+                "SHAP did not produce all requested explanations."
             )
-        return np.concatenate(chunks, axis=0)
+        return values
 
     requested_algorithm = str(spec.algorithm).strip().lower()
     if requested_algorithm in {"auto", "tree"} and input_projector is None:

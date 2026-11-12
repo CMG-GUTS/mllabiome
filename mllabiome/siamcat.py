@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import shutil
 import subprocess
 import tempfile
@@ -12,7 +13,8 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, ClassifierMixin
 
-from .siamcat_runtime import ensure_siamcat_runtime
+from .siamcat_runtime import ensure_siamcat_runtime, _run_with_progress, R_STARTUP_ARGS
+from .siamcat_splits import make_siamcat_splits
 
 
 def _feature_names_from_X(X: Any) -> list[str]:
@@ -131,23 +133,27 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
         frame.to_csv(path, sep="\t")
 
     def _run_r(self, args: list[str]) -> None:
+        phase = args[0]
+        print(
+            f"[SIAMCAT] Preparing R {phase} (Python pid={os.getpid()})",
+            file=sys.stderr,
+            flush=True,
+        )
         rscript, env = self._runtime_env()
-        with as_file(self._r_runner_resource()) as runner:
-            cmd = [str(rscript), "--vanilla", str(runner), *args]
-            try:
-                result = subprocess.run(
-                    cmd,
-                    check=True,
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    env=env,
-                )
-            except subprocess.CalledProcessError as exc:
-                details = (exc.stderr or exc.stdout or "").strip()
-                raise RuntimeError(f"SIAMCAT backend failed.\n{details}") from exc
-            if self.verbose >= 2 and result.stdout.strip():
-                print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+        runner_resource = self._r_runner_resource()
+        if not runner_resource.is_file():
+            raise FileNotFoundError(
+                "SIAMCAT R backend missing: mllabiome/_r/siamcat.R. "
+                "Install the complete mllabiome package with its _r directory."
+            )
+        log_path = Path(args[3]).with_suffix(f".{phase}.log")
+        with as_file(runner_resource) as runner:
+            _run_with_progress(
+                [str(rscript), *R_STARTUP_ARGS, str(runner), *args],
+                env=env,
+                log_path=log_path,
+                phase=f"R SIAMCAT {phase}",
+            )
 
     def _fit_binary_model(
         self,
@@ -159,25 +165,28 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
     ) -> None:
         labels_path = model_path.with_suffix(".labels.tsv")
         self._write_binary_labels(labels_path, y_binary)
-        min_class = int(np.bincount(y_binary, minlength=2).min())
-        folds = min(int(self.num_folds), min_class)
-        if group_codes is not None:
-            class_group_counts = [
-                int(np.unique(group_codes[y_binary == klass]).size) for klass in (0, 1)
-            ]
-            folds = min(
-                folds,
-                int(np.unique(group_codes).size),
-                min(class_group_counts),
-            )
-        if folds < 2:
-            if group_codes is None:
-                raise ValueError(
-                    "SIAMCAT requires at least two training samples in each binary class."
-                )
+        class_counts = np.bincount(y_binary, minlength=2)
+        if np.any(class_counts < 6):
             raise ValueError(
-                "Group-aware SIAMCAT requires each binary class to occur in at least two distinct training groups."
+                f"SIAMCAT requires at least six observations per binary class before internal resampling; received {class_counts.tolist()}."
             )
+        folds = min(int(self.num_folds), int(class_counts.min()))
+        if group_codes is not None:
+            folds = min(folds, len(np.unique(group_codes)))
+        split_plan = make_siamcat_splits(
+            y_binary,
+            group_codes,
+            n_folds=folds,
+            repeats=max(1, int(self.num_resample)),
+            random_state=int(self.random_state),
+        )
+        split_path = model_path.with_suffix(".splits.tsv")
+        sample_ids = [f"sample_{i:08d}" for i in range(len(y_binary))]
+        pd.DataFrame(
+            split_plan.T,
+            index=sample_ids,
+            columns=[f"repeat_{i + 1}" for i in range(split_plan.shape[0])],
+        ).rename_axis("sample_id").to_csv(split_path, sep="\t")
         self._run_r(
             [
                 "fit",
@@ -200,6 +209,7 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
                 str(int(self.random_state)),
                 str(int(self.verbose)),
                 str(groups_path) if groups_path is not None else "__NONE__",
+                str(split_path),
             ]
         )
         labels_path.unlink(missing_ok=True)
@@ -253,7 +263,7 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
         return self
 
     def _predict_binary_score(
-        self, model_path: Path, X_path: Path, index: int
+        self, model_path: Path, X_path: Path, index: int, n_samples: int
     ) -> np.ndarray:
         output_path = self._workdir_ / f"prediction_{index:03d}.tsv"
         self._run_r(
@@ -270,10 +280,25 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
             raise RuntimeError(
                 "SIAMCAT prediction output did not contain a 'score' column."
             )
-        score = pd.to_numeric(out["score"], errors="coerce").to_numpy(dtype=float)
+
+        expected_ids = [f"sample_{i:08d}" for i in range(n_samples)]
+        if "sample_id" not in out.columns:
+            raise RuntimeError("SIAMCAT output did not contain sample_id.")
+        if out["sample_id"].duplicated().any() or set(out["sample_id"]) != set(
+            expected_ids
+        ):
+            raise RuntimeError(
+                "SIAMCAT predictions have missing, extra, or repeated sample IDs."
+            )
+        aligned = out.set_index("sample_id").loc[expected_ids, "score"]
+        score = pd.to_numeric(aligned, errors="coerce").to_numpy(dtype=float)
         if not np.all(np.isfinite(score)):
             raise RuntimeError("SIAMCAT returned non-finite prediction scores.")
-        return score
+        if np.any(score < -1e-8) or np.any(score > 1.0 + 1e-8):
+            raise RuntimeError(
+                "SIAMCAT returned scores outside the [0, 1] probability interval."
+            )
+        return np.clip(score, 0.0, 1.0)
 
     def decision_function(self, X: Any) -> np.ndarray:
         if not hasattr(self, "_model_paths_"):
@@ -286,22 +311,33 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
         X_path = self._workdir_ / "holdout.tsv"
         self._write_features(X_path, X, fitted=True)
         scores = [
-            self._predict_binary_score(path, X_path, i)
+            self._predict_binary_score(path, X_path, i, arr.shape[0])
             for i, path in enumerate(self._model_paths_)
         ]
         if len(self.classes_) == 2:
             return np.asarray(scores[0], dtype=float)
         return np.column_stack(scores).astype(float)
 
-    def predict(self, X: Any) -> np.ndarray:
+    def predict_proba(self, X: Any) -> np.ndarray:
         score = np.asarray(self.decision_function(X), dtype=float)
         if len(self.classes_) == 2:
-            if np.all((score >= 0.0) & (score <= 1.0)):
-                positive = score >= 0.5
-            else:
-                positive = score >= 0.0
-            return np.where(positive, self.classes_[-1], self.classes_[0])
-        return np.asarray(self.classes_)[np.argmax(score, axis=1)]
+            if score.ndim != 1:
+                raise RuntimeError(
+                    "Expected a 1D vector of SIAMCAT binary probabilities."
+                )
+            return np.column_stack((1.0 - score, score))
+        if score.ndim != 2 or score.shape[1] != len(self.classes_):
+            raise RuntimeError("Unexpected SIAMCAT one-vs-rest probability shape.")
+        sums = score.sum(axis=1)
+        if np.any(sums <= 0):
+            raise RuntimeError(
+                "SIAMCAT returned all-zero class scores for one or more samples."
+            )
+        return score / sums[:, None]
+
+    def predict(self, X: Any) -> np.ndarray:
+        proba = self.predict_proba(X)
+        return np.asarray(self.classes_)[np.argmax(proba, axis=1)]
 
     def cleanup(self) -> None:
         workdir = getattr(self, "_workdir_", None)

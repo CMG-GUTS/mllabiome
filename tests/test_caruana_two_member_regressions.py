@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from scipy.stats import rankdata
+
 import numpy as np
 import pandas as pd
 
@@ -64,6 +66,7 @@ def assert_invariant(
 
 def run() -> None:
     names = [
+        "_caruana_batch_scores",
         "_caruana_controls",
         "_caruana_select",
         "_caruana_select_from_start",
@@ -91,6 +94,8 @@ def run() -> None:
 
     ns = dict(
         np=np,
+        rankdata=rankdata,
+        canonical_metric_name=lambda metric: metric,
         pd=pd,
         json=json,
         hashlib=hashlib,
@@ -98,6 +103,13 @@ def run() -> None:
         _CARUANA_IMPROVEMENT_TOL=1e-10,
         _BAGGED_CARUANA_MIN_BAGS=8,
         _BAGGED_CARUANA_MAX_BAGS=24,
+        _PARETO_SELECTORS=frozenset({
+            "pareto_optimal_auroc_logloss",
+            "pareto_optimal_ml_dl_auroc_logloss",
+            "pareto_optimal_ml_dl_auroc_logloss_capped",
+            "pareto_optimal_taxonomic_rank_auroc_logloss",
+            "pareto_optimal_taxonomic_rank_auroc_logloss_capped",
+        }),
         _SUPER_LEARNER_WEIGHT_TOL=1e-8,
         _metric_is_loss=lambda metric: True,
         _metric_better=better,

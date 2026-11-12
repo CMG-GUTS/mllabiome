@@ -24,6 +24,10 @@ from scipy.stats import (
 from .ancombc2_runtime import ANCOMBC_VERSION, run_ancombc2
 from .console import info, phase_progress
 from .data import Dataset, dataset_fingerprint, load_dataset
+from .phylogenetic_unifrac import (
+    GeneralizedUniFracPCoA,
+    generalized_unifrac_distance_matrix,
+)
 from .explainability_visuals import _plain_taxon_label
 from .storage import write_table
 from .style import (
@@ -2912,12 +2916,31 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
     if sweep.data is None:
         raise ValueError("Explore requires Sweep.data.")
     explore = sweep.explore
+    phylogenetic_reference = None
+    phylogenetic_identity = None
+    if explore.unifrac_tree_path is not None:
+        phylogenetic_reference = GeneralizedUniFracPCoA(
+            explore.unifrac_tree_path,
+            feature_to_tip=explore.unifrac_feature_to_tip,
+            alpha=explore.unifrac_alpha,
+            unmatched=explore.unifrac_unmatched,
+            min_sample_coverage=explore.unifrac_min_sample_coverage,
+            resolutions=(explore.unifrac_rank,),
+        )
+        phylogenetic_identity = (
+            f"{phylogenetic_reference.identity}|rank={explore.unifrac_rank}"
+        )
     requested = tuple(explore.ranks)
     levels = tuple(dict.fromkeys((*requested, *TAXONOMIC_LEVELS)))
     with phase_progress("Explore data", 1) as phase:
         phase.phase("loading and validating microbiome data")
         dataset = load_dataset(sweep.data, levels_needed=levels)
     ranks = _available_ranks(dataset, requested)
+    if phylogenetic_reference is not None and explore.unifrac_rank not in ranks:
+        raise ValueError(
+            f"Explore.unifrac_rank={explore.unifrac_rank!r} is not among "
+            f"available requested Explore.ranks={ranks!r}."
+        )
     root = Path(sweep.root()) / "explore"
     root.mkdir(parents=True, exist_ok=True)
     manifest_path = root / "manifest.json"
@@ -2953,6 +2976,8 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
             str(stored_dataset_fingerprint) == str(current_dataset_fingerprint)
             and set(ranks).issubset(cached_rank_names)
             and rank_manifests_exist
+            and cached_manifest.get("unifrac_reference_identity")
+            == phylogenetic_identity
         ):
             info("Explore · cached outputs reused")
             return {
@@ -3035,6 +3060,20 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
 
             phase.phase(f"{rank_prefix} · beta-diversity distance matrices")
             distances = _distance_matrices(relative, clr, explore.detection_limit)
+            phylogenetic_name = None
+            if phylogenetic_reference is not None and rank == explore.unifrac_rank:
+                phylogenetic_name = "generalized_unifrac_alpha_" + str(
+                    explore.unifrac_alpha
+                ).replace(".", "_")
+                distances[phylogenetic_name] = generalized_unifrac_distance_matrix(
+                    X,
+                    feature_names=names,
+                    tree_path=phylogenetic_reference.tree_path,
+                    feature_to_tip=phylogenetic_reference.feature_to_tip,
+                    alpha=phylogenetic_reference.alpha,
+                    unmatched=phylogenetic_reference.unmatched,
+                    min_sample_coverage=phylogenetic_reference.min_sample_coverage,
+                )
 
             phase.phase(
                 f"{rank_prefix} · beta-diversity inference · "
@@ -3079,6 +3118,11 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
 
             phase.phase(f"{rank_prefix} · Aitchison PCoA")
             coordinates, explained = _pcoa(distances["aitchison"])
+            phylogenetic_ordination = (
+                _pcoa_with_correction(distances[phylogenetic_name])
+                if phylogenetic_name is not None
+                else None
+            )
 
             phase.phase(f"{rank_prefix} · {_explore_da_label(scale, explore)}")
             da = _differential_abundance(
@@ -3136,6 +3180,15 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
                 rank_dataset,
                 figure_dir / "aitchison_pcoa.svg",
             )
+            unifrac_figure = None
+            if phylogenetic_ordination is not None:
+                unifrac_coordinates, unifrac_explained, _ = phylogenetic_ordination
+                unifrac_figure = _plot_pcoa(
+                    unifrac_coordinates,
+                    unifrac_explained,
+                    rank_dataset,
+                    figure_dir / "generalized_unifrac_pcoa.svg",
+                )
             heatmap_figure = _plot_heatmap(
                 clr,
                 relative,
@@ -3154,6 +3207,11 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
             figures: dict[str, Path | None] = {
                 "Alpha diversity": alpha_figure,
                 "Aitchison PCoA": pcoa_figure,
+                **(
+                    {"Generalized UniFrac PCoA": unifrac_figure}
+                    if unifrac_figure is not None
+                    else {}
+                ),
                 "CLR abundance structure": heatmap_figure,
                 "Differential abundance and taxon associations": da_figure,
             }
@@ -3162,6 +3220,17 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
             payload = {
                 "rank": rank,
                 "scale": scale,
+                "phylogenetic_distance": (
+                    {
+                        "name": phylogenetic_name,
+                        "alpha": float(explore.unifrac_alpha),
+                        "tree_sha256": phylogenetic_reference.tree_sha256,
+                        "reference_identity": phylogenetic_identity,
+                        "pcoa_correction": phylogenetic_ordination[2],
+                    }
+                    if phylogenetic_name is not None
+                    else None
+                ),
                 "zero_replacement_relative": zero_replacement,
                 "n_features": len(names),
                 "n_samples": len(dataset.sample_ids),
@@ -3200,7 +3269,19 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
         "confidence_level": float(explore.confidence_level),
         "zero_handling": "zero_total_samples_retained_in_dataset_and_excluded_from_compositional_explore",
         "primary_beta_distance": "aitchison",
-        "sensitivity_beta_distances": ["bray_curtis", "jaccard"],
+        "sensitivity_beta_distances": [
+            "bray_curtis",
+            "jaccard",
+            *(
+                [
+                    "generalized_unifrac_alpha_"
+                    + str(explore.unifrac_alpha).replace(".", "_")
+                ]
+                if phylogenetic_reference is not None and explore.unifrac_rank in ranks
+                else []
+            ),
+        ],
+        "unifrac_reference_identity": phylogenetic_identity,
         "differential_abundance": str(explore.differential_abundance),
         "da_covariates": list(explore.da_covariates),
         "multiple_testing": "method-specific; recorded for each rank",

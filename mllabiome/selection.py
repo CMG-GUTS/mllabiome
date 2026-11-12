@@ -18,6 +18,7 @@ from .storage import read_table, table_exists, write_table
 from .transformations import _count_transformation_name
 from .utils import CLASSIFICATION_METRIC_COLUMNS, dump_json_standard
 from .mpma_vnext import consensus_medoid, choose_softening, soften_probabilities
+from .pareto_selection import rank_pareto_auroc_logloss, rank_pareto_auroc_mcc
 
 
 def _eligible_config_ids(configs: pd.DataFrame, plan: Any | None = None) -> set[str]:
@@ -177,16 +178,26 @@ def _base_selection_scores(
     by_outer: bool,
 ) -> pd.DataFrame:
     metrics = tuple(base_selection.metrics)
-    constrained = base_selection.auroc_tolerance is not None
-    required = {"config_id", "inner_key", *metrics}
-    if constrained:
-        required.add("log_loss")
+    pareto_strategy = str(base_selection.strategy)
+    extra_metrics = set()
+    if base_selection.auroc_tolerance is not None or pareto_strategy in {
+        "pareto_auroc_logloss_ideal",
+        "pareto_best_inner_ideal",
+    }:
+        extra_metrics.add("log_loss")
+    if pareto_strategy in {"pareto_auroc_mcc_ideal", "pareto_best_inner_ideal"}:
+        extra_metrics.add("MCC")
+    required = {"config_id", "inner_key", *metrics, *extra_metrics}
     if by_outer:
         required.add("split_key")
     missing = required - set(inner.columns)
     if missing:
-        raise ValueError(f"Inner results lack base-selection columns: {sorted(missing)}")
-    eligible = set(configs["config_id"].astype(str)) if "config_id" in configs else set()
+        raise ValueError(
+            f"Inner results lack base-selection columns: {sorted(missing)}"
+        )
+    eligible = (
+        set(configs["config_id"].astype(str)) if "config_id" in configs else set()
+    )
     if not eligible:
         return pd.DataFrame()
     frame = inner.copy()
@@ -197,11 +208,15 @@ def _base_selection_scores(
     frame = frame.loc[frame["config_id"].isin(eligible)]
     keys = ["split_key", "inner_key"] if "split_key" in inner else ["inner_key"]
     frame = frame.drop_duplicates(["config_id", *keys], keep="last")
-    for metric in set(metrics) | ({"log_loss"} if constrained else set()):
+    for metric in set(metrics) | extra_metrics:
         frame[metric] = pd.to_numeric(frame[metric], errors="coerce")
     if "ok" in frame:
         frame = frame.loc[pd.to_numeric(frame["ok"], errors="coerce").fillna(0).eq(1)]
-    frame = frame.loc[np.isfinite(frame[list(set(metrics) | ({"log_loss"} if constrained else set()))].to_numpy(dtype=float)).all(axis=1)]
+    frame = frame.loc[
+        np.isfinite(
+            frame[list(set(metrics) | extra_metrics)].to_numpy(dtype=float)
+        ).all(axis=1)
+    ]
     scope = ["split_key"] if by_outer else []
     if by_outer:
         full = inner.copy()
@@ -220,11 +235,17 @@ def _base_selection_scores(
     rows = []
     grouped = frame.groupby([*scope, "config_id"], sort=True)
     for group_key, group in grouped:
-        split_key, config_id = group_key if by_outer else (None, group_key[0] if isinstance(group_key, tuple) else group_key)
+        split_key, config_id = (
+            group_key
+            if by_outer
+            else (None, group_key[0] if isinstance(group_key, tuple) else group_key)
+        )
         if by_outer:
             observed = set(group["inner_key"].astype(str))
         elif "split_key" in group:
-            observed = set(zip(group["split_key"].astype(str), group["inner_key"].astype(str)))
+            observed = set(
+                zip(group["split_key"].astype(str), group["inner_key"].astype(str))
+            )
         else:
             observed = set(group["inner_key"].astype(str))
         if observed != expected.get(split_key, set()) or not observed:
@@ -232,7 +253,9 @@ def _base_selection_scores(
         transformed = np.zeros(len(group), dtype=float)
         row = {
             "config_id": str(config_id),
-            "selection_metric": "+".join(f"{k}:{v:g}" for k, v in base_selection.metrics.items()),
+            "selection_metric": "+".join(
+                f"{k}:{v:g}" for k, v in base_selection.metrics.items()
+            ),
             "n_inner_folds": int(len(group)),
         }
         if by_outer:
@@ -245,21 +268,74 @@ def _base_selection_scores(
                 values = -values
             transformed += float(weight) * values
             row[f"inner_{metric}_mean"] = float(group[metric].mean())
-            row[f"inner_{metric}_std"] = float(group[metric].std(ddof=1)) if len(group) > 1 else 0.0
+            row[f"inner_{metric}_std"] = (
+                float(group[metric].std(ddof=1)) if len(group) > 1 else 0.0
+            )
         row["inner_score"] = float(transformed.mean())
-        row["inner_score_std"] = float(transformed.std(ddof=1)) if len(transformed) > 1 else 0.0
-        if constrained:
-            row["inner_log_loss_mean"] = float(group["log_loss"].mean())
-            row["inner_log_loss_std"] = float(group["log_loss"].std(ddof=1)) if len(group) > 1 else 0.0
+        row["inner_score_std"] = (
+            float(transformed.std(ddof=1)) if len(transformed) > 1 else 0.0
+        )
+        for metric in extra_metrics:
+            row[f"inner_{metric}_mean"] = float(group[metric].mean())
+            row[f"inner_{metric}_std"] = (
+                float(group[metric].std(ddof=1)) if len(group) > 1 else 0.0
+            )
         rows.append(row)
     return pd.DataFrame(rows)
 
 
 def _rank_base_selection(scores: pd.DataFrame, base_selection: Any) -> pd.DataFrame:
+    if base_selection.strategy == "pareto_auroc_logloss_ideal":
+        return rank_pareto_auroc_logloss(
+            scores, "inner_AUROC_mean", "inner_log_loss_mean", "config_id"
+        )
+    if base_selection.strategy == "pareto_auroc_mcc_ideal":
+        return rank_pareto_auroc_mcc(
+            scores, "inner_AUROC_mean", "inner_MCC_mean", "config_id"
+        )
+    if base_selection.strategy == "pareto_best_inner_ideal":
+        alternatives = (
+            (
+                "auroc_logloss",
+                rank_pareto_auroc_logloss(
+                    scores, "inner_AUROC_mean", "inner_log_loss_mean", "config_id"
+                ),
+            ),
+            (
+                "auroc_mcc",
+                rank_pareto_auroc_mcc(
+                    scores, "inner_AUROC_mean", "inner_MCC_mean", "config_id"
+                ),
+            ),
+        )
+        metric = base_selection.pareto_compare_metric
+        key = f"inner_{metric}_mean"
+        contenders = []
+        for label, ranked in alternatives:
+            if ranked.empty:
+                continue
+            candidate = ranked.iloc[0].to_dict()
+            candidate["pareto_selected_objective"] = label
+            candidate["pareto_comparison_metric"] = metric
+            contenders.append(candidate)
+        if not contenders:
+            return pd.DataFrame()
+        contenders.sort(
+            key=lambda row: (
+                float(row[key]) if metric == "log_loss" else -float(row[key]),
+                float(row["inner_log_loss_mean"]),
+                -float(row["inner_AUROC_mean"]),
+                str(row["config_id"]),
+            )
+        )
+        return pd.DataFrame(contenders)
     if base_selection.auroc_tolerance is not None:
         return rank_auroc_log_loss(
-            scores, "inner_AUROC_mean", "inner_log_loss_mean",
-            base_selection.auroc_tolerance, ("config_id",),
+            scores,
+            "inner_AUROC_mean",
+            "inner_log_loss_mean",
+            base_selection.auroc_tolerance,
+            ("config_id",),
         )
     return scores.sort_values(
         ["inner_score", "config_id"], ascending=[False, True], kind="mergesort"
@@ -276,17 +352,33 @@ def _selected_base_row(
     row = dict(best)
     row["selection_basis"] = (
         "all_inner_validation_for_final_refit"
-        if final else "outer_fold_inner_validation"
+        if final
+        else "outer_fold_inner_validation"
     )
-    row["selection_strategy"] = "auroc_constrained_log_loss" if base_selection.auroc_tolerance is not None else "weighted_inner_metrics"
+    row["selection_strategy"] = (
+        base_selection.strategy
+        if base_selection.strategy.startswith("pareto_")
+        else "auroc_constrained_log_loss"
+        if base_selection.auroc_tolerance is not None
+        else "weighted_inner_metrics"
+    )
     if base_selection.auroc_tolerance is not None:
         row["auroc_tolerance"] = float(base_selection.auroc_tolerance)
+    if base_selection.strategy == "pareto_best_inner_ideal":
+        row["pareto_compare_metric"] = base_selection.pareto_compare_metric
     row["selection_normalization"] = base_selection.normalization
     row["selection_weights"] = dict(base_selection.metrics)
     row["include_inactive"] = True
     for key in (
-        "mpdr_id", "count_transformation", "resolution", "levels", "learner",
-        "candidate_family", "modalities", "integration", "integration_n_components",
+        "mpdr_id",
+        "count_transformation",
+        "resolution",
+        "levels",
+        "learner",
+        "candidate_family",
+        "modalities",
+        "integration",
+        "integration_n_components",
     ):
         if key in metadata:
             row[key] = metadata[key]
@@ -310,10 +402,14 @@ def select_mpma_b_by_outer_fold(
         selections = []
         for outer_split_key, group in scores.groupby("outer_split_key", sort=True):
             winner = _rank_base_selection(group, base_selection).iloc[0].to_dict()
-            selections.append(_selected_base_row(
-                winner, metadata.get(str(winner["config_id"]), {}),
-                final=False, base_selection=base_selection,
-            ))
+            selections.append(
+                _selected_base_row(
+                    winner,
+                    metadata.get(str(winner["config_id"]), {}),
+                    final=False,
+                    base_selection=base_selection,
+                )
+            )
         return pd.DataFrame(selections)
     metric = canonical_metric_name(metric)
     eligible_ids = _eligible_config_ids(configs, plan)
@@ -412,8 +508,10 @@ def select_final_mpma_candidate(
             return {}
         winner = _rank_base_selection(scores, base_selection).iloc[0].to_dict()
         return _selected_base_row(
-            winner, _config_metadata(configs).get(str(winner["config_id"]), {}),
-            final=True, base_selection=base_selection,
+            winner,
+            _config_metadata(configs).get(str(winner["config_id"]), {}),
+            final=True,
+            base_selection=base_selection,
         )
     metric = canonical_metric_name(metric)
     eligible_ids = _eligible_config_ids(configs, plan)
@@ -685,7 +783,22 @@ def write_mpma_b_selection_outputs(
     ):
         return {}
     inner = read_table(inner_path)
-    required_columns = {"split_key", "inner_key", "config_id", *(base_selection.metrics if base_selection is not None else (metric,))}
+    required_columns = {
+        "split_key",
+        "inner_key",
+        "config_id",
+        *(base_selection.metrics if base_selection is not None else (metric,)),
+    }
+    if base_selection is not None and base_selection.strategy in {
+        "pareto_auroc_logloss_ideal",
+        "pareto_best_inner_ideal",
+    }:
+        required_columns.add("log_loss")
+    if base_selection is not None and base_selection.strategy in {
+        "pareto_auroc_mcc_ideal",
+        "pareto_best_inner_ideal",
+    }:
+        required_columns.add("MCC")
 
     if inner.empty or not required_columns.issubset(inner.columns):
         return {}
@@ -749,7 +862,9 @@ def write_mpma_b_selection_outputs(
             inner, configs, base_selection, by_outer=False
         )
         if not rankings.empty:
-            rankings = _rank_base_selection(rankings, base_selection).reset_index(drop=True)
+            rankings = _rank_base_selection(rankings, base_selection).reset_index(
+                drop=True
+            )
             rankings.insert(0, "rank", np.arange(1, len(rankings) + 1))
             write_table(ranking_path, rankings)
     return {
@@ -758,5 +873,9 @@ def write_mpma_b_selection_outputs(
         "mpma_b_outer_results": fold_metrics_path,
         "mpma_b_summary": summary_path,
         "mpma_b_final_candidate": final_path,
-        **({"mpma_b_base_selection_rankings": ranking_path} if base_selection is not None and table_exists(ranking_path) else {}),
+        **(
+            {"mpma_b_base_selection_rankings": ranking_path}
+            if base_selection is not None and table_exists(ranking_path)
+            else {}
+        ),
     }

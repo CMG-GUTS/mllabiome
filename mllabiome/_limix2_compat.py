@@ -171,3 +171,81 @@ def optional_limix_triton() -> Iterator[None]:
         if v1_finder is not None:
             sys.meta_path.remove(v1_finder)
         sys.meta_path.remove(finder)
+
+
+_MPS_COMPAT_LOCK = None
+
+
+def _mps_float32_context(torch, device):
+    from contextlib import contextmanager
+    from threading import RLock
+
+    @contextmanager
+    def adapted():
+        global _MPS_COMPAT_LOCK
+        if getattr(device, "type", str(device)) != "mps":
+            yield
+            return
+        if _MPS_COMPAT_LOCK is None:
+            _MPS_COMPAT_LOCK = RLock()
+        with _MPS_COMPAT_LOCK:
+            original_to = torch.Tensor.to
+            original_tensor = torch.tensor
+            original_as_tensor = torch.as_tensor
+
+            def is_mps(value):
+                return getattr(value, "type", str(value)).split(":")[0] == "mps"
+
+            def corrected_to(self, *args, **kwargs):
+                arguments = list(args)
+                requested_device = kwargs.get("device", self.device)
+                if arguments:
+                    first = arguments[0]
+                    if isinstance(first, torch.Tensor):
+                        requested_device = first.device
+                    elif isinstance(first, (str, torch.device)):
+                        requested_device = first
+                if not is_mps(requested_device):
+                    return original_to(self, *args, **kwargs)
+                source = self.float() if self.dtype == torch.float64 else self
+                arguments = [
+                    torch.float32 if arg == torch.float64 else arg for arg in arguments
+                ]
+                if kwargs.get("dtype") == torch.float64:
+                    kwargs = dict(kwargs, dtype=torch.float32)
+                return original_to(source, *arguments, **kwargs)
+
+            def corrected_factory(original, data, *args, **kwargs):
+                requested_device = kwargs.get("device")
+                if not is_mps(requested_device):
+                    return original(data, *args, **kwargs)
+                if kwargs.get("dtype") == torch.float64:
+                    kwargs = dict(kwargs, dtype=torch.float32)
+                elif "dtype" not in kwargs:
+                    import numpy as np
+
+                    if isinstance(data, np.ndarray) and data.dtype == np.float64:
+                        data = data.astype(np.float32)
+                    elif isinstance(data, np.floating) and data.dtype == np.float64:
+                        data = np.float32(data)
+                    elif isinstance(data, torch.Tensor) and data.dtype == torch.float64:
+                        data = data.float()
+                return original(data, *args, **kwargs)
+
+            def tensor(data, *args, **kwargs):
+                return corrected_factory(original_tensor, data, *args, **kwargs)
+
+            def as_tensor(data, *args, **kwargs):
+                return corrected_factory(original_as_tensor, data, *args, **kwargs)
+
+            torch.Tensor.to = corrected_to
+            torch.tensor = tensor
+            torch.as_tensor = as_tensor
+            try:
+                yield
+            finally:
+                torch.Tensor.to = original_to
+                torch.tensor = original_tensor
+                torch.as_tensor = original_as_tensor
+
+    return adapted()

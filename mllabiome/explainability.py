@@ -39,7 +39,7 @@ from .explainability_methods import (
     method_to_dict,
 )
 from .explainability_visuals import plot_local_attributions
-from .learners import fit_classifier
+from .learners import fit_classifier, siamcat_internal_fit_groups
 from .metrics import _predict_proba_aligned, metric_is_loss
 from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
 from .runtime import ExecutionPlan, configure_estimator_threads
@@ -132,6 +132,10 @@ from .explainability_model import _project_input as _project_input
 from .explainability_model import _projection_required
 from .explainability_model import _sample_rows as _sample_rows
 from .explainability_proxy import fit_taxon_probability_proxy
+from .explainability_shap_checkpoints import (
+    member_shap_checkpoint_path,
+    member_shap_signature,
+)
 from .explainability_reporting import _class_slug
 from .explainability_reporting import (
     _collapse_duplicate_feature_importance as _collapse_duplicate_feature_importance,
@@ -197,6 +201,13 @@ from .utils import _as_float_matrix as _as_float_matrix
 from .utils import feature_tail_ellipsis as feature_tail_ellipsis
 
 
+def _skip_mpma_member(explainability: Any, learner: Any) -> bool:
+    name = str(learner).casefold()
+    return any(
+        pattern in name for pattern in getattr(explainability, "skip_member", ())
+    )
+
+
 def _ensure_mpma_member_explanations(
     sweep: Sweep, rankings: pd.DataFrame, members: Sequence[str]
 ) -> None:
@@ -214,6 +225,13 @@ def _ensure_mpma_member_explanations(
                 .map(lambda x: x.startswith(str(member)) or str(member).startswith(x))
             ]
         cid = str(matches.iloc[0]["config_id"]) if not matches.empty else str(member)
+        if not matches.empty and _skip_mpma_member(
+            sweep.explainability, matches.iloc[0].get("learner", "")
+        ):
+            info(
+                f"MPMA-E member {i}/{total} · config={cid} · skipped individual explanation"
+            )
+            continue
         cache_dir = sweep.root() / "explainability" / "cache" / _safe_cache_name(cid)
         if _explainability_cache_complete(cache_dir, sweep.explainability, str(member)):
             info(f"MPMA-E member {i}/{total} · config={cid} · cached")
@@ -308,6 +326,7 @@ def _fit_oof_single_fold_task(
     X_base: np.ndarray,
     y: np.ndarray,
     groups: np.ndarray | None,
+    subject_ids: Sequence[str],
     class_count: int,
     protocol: str,
     feature_names: Sequence[str],
@@ -351,7 +370,13 @@ def _fit_oof_single_fold_task(
         clf,
         X_train_representation,
         y[train_idx],
-        None if groups is None else groups[train_idx],
+        siamcat_internal_fit_groups(
+            clf,
+            y[train_idx],
+            None if groups is None else groups[train_idx],
+            np.asarray(subject_ids, dtype=object)[train_idx],
+            protocol,
+        ),
     )
     classes = np.arange(int(class_count), dtype=int)
     teacher_train_proba = _predict_proba_aligned(clf, X_train_representation, classes)
@@ -621,7 +646,9 @@ def _fit_oof_single_for_explainability(
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
     transformation_key = str(row["count_transformation"])
     learner_key = str(row["learner"])
-    learner_factory = _configured_learner_factory(sweep, learner_key)
+    learner_factory = _configured_learner_factory(
+        sweep, learner_key, config_id=str(row["config_id"])
+    )
     execution = _xai_execution_plan(sweep, len(splits))
     tasks = []
     for split_no, split in enumerate(splits, start=1):
@@ -645,6 +672,7 @@ def _fit_oof_single_for_explainability(
             fold_blocks,
             resolution_feature_blocks=feature_blocks,
             feature_names=fold_names,
+            config_id=str(row["config_id"]),
         )
         tasks.append(
             (
@@ -655,6 +683,7 @@ def _fit_oof_single_for_explainability(
                     X_base,
                     dataset.y,
                     groups,
+                    tuple(dataset.subject_ids),
                     len(dataset.class_labels),
                     str(sweep.evaluation.protocol),
                     feature_names,
@@ -785,6 +814,7 @@ def _mpma_e_reference_and_folds(
             transformation_key,
             blocks_member,
             feature_names=list(names_member),
+            config_id=str(r["config_id"]),
         )()
         X_ref_member, _ = ct_ref.apply_pair(X_base_member, X_base_member)
         transformed_names = ct_ref.get_feature_names_out(list(names_member))
@@ -812,6 +842,7 @@ def _mpma_e_reference_and_folds(
                 "n_features": X_base_member.shape[1],
                 "transformation_key": transformation_key,
                 "learner_key": learner_key,
+                "config_id": str(r["config_id"]),
                 "foundation_embedding": any(
                     str(item.coordinate_type) == "foundation_embedding"
                     for item in transformed_metadata
@@ -862,16 +893,25 @@ def _mpma_e_reference_and_folds(
                 spec["feature_blocks"],
                 resolution_feature_blocks=spec["feature_blocks"],
                 feature_names=spec["feature_names"],
+                config_id=str(r["config_id"]),
             )()
             X_train_member, X_test_member = ct.apply_pair(
                 spec["X_base"][train_idx], spec["X_base"][test_idx]
             )
-            clf_member = _configured_learner_factory(sweep, spec["learner_key"])()
+            clf_member = _configured_learner_factory(
+                sweep, spec["learner_key"], config_id=str(r["config_id"])
+            )()
             fit_classifier(
                 clf_member,
                 X_train_member,
                 dataset.y[train_idx],
-                None if groups is None else groups[train_idx],
+                siamcat_internal_fit_groups(
+                    clf_member,
+                    dataset.y[train_idx],
+                    None if groups is None else groups[train_idx],
+                    np.asarray(dataset.subject_ids, dtype=object)[train_idx],
+                    str(sweep.evaluation.protocol),
+                ),
             )
             stop = start + X_train_member.shape[1]
             X_train_blocks.append(X_train_member)
@@ -1400,6 +1440,8 @@ def _shap_fold_parallel_task(
     spec: SHAP,
     threads_per_worker: int,
     progress_queue: Any | None = None,
+    checkpoint_path: Path | None = None,
+    checkpoint_signature: str | None = None,
 ) -> tuple[int, pd.DataFrame, list[dict[str, Any]], int, str]:
     estimator = configure_estimator_threads(fold["estimator"], threads_per_worker)
     feature_names = _fold_feature_names(fold, feature_names)
@@ -1422,6 +1464,8 @@ def _shap_fold_parallel_task(
         show_progress=False,
         progress_callback=callback,
         input_projector=fold.get("input_projector"),
+        checkpoint_path=checkpoint_path,
+        checkpoint_signature=checkpoint_signature,
     )
     fold_frame = _value_frame_for_fold(
         "shap",
@@ -2407,6 +2451,20 @@ def _run_shap_explainability(
                     f"{len(units.class_indices)} classes"
                 )
                 task = prog.add_task(f"{prefix} · preparing", total=expected_rows)
+                checkpoint_path = member_shap_checkpoint_path(
+                    target.target_dir,
+                    fold_no,
+                    str(fold.get("split_key", "")),
+                )
+                checkpoint_signature = member_shap_signature(
+                    fold,
+                    fold_feature_names,
+                    units.dataset.class_labels,
+                    spec,
+                    sweep.explainability.random_state + fold_no * 997,
+                    str(target.row.get("config_id", target.slug)),
+                    units.dataset.y,
+                )
                 values, explained_rows, backend = _shap_values_for_data(
                     configure_estimator_threads(
                         fold["estimator"], int(units.execution.threads_per_worker)
@@ -2423,6 +2481,8 @@ def _run_shap_explainability(
                     show_progress=False,
                     progress_callback=_progress_callback(prog, task, prefix),
                     input_projector=fold.get("input_projector"),
+                    checkpoint_path=checkpoint_path,
+                    checkpoint_signature=checkpoint_signature,
                 )
                 fold_frame = _value_frame_for_fold(
                     "shap",
@@ -2491,6 +2551,20 @@ def _run_shap_explainability(
                         spec,
                         int(units.execution.threads_per_worker),
                         progress_queue,
+                        member_shap_checkpoint_path(
+                            target.target_dir,
+                            fold_no,
+                            str(fold.get("split_key", "")),
+                        ),
+                        member_shap_signature(
+                            fold,
+                            _fold_feature_names(fold, units.feature_names),
+                            units.dataset.class_labels,
+                            spec,
+                            sweep.explainability.random_state + fold_no * 997,
+                            str(target.row.get("config_id", target.slug)),
+                            units.dataset.y,
+                        ),
                     ),
                     {},
                 )

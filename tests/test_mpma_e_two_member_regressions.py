@@ -62,6 +62,13 @@ def test_classification():
     ns = dict(
         np=np,
         minimize=minimize,
+        _PARETO_SELECTORS=frozenset({
+            "pareto_optimal_auroc_logloss",
+            "pareto_optimal_ml_dl_auroc_logloss",
+            "pareto_optimal_ml_dl_auroc_logloss_capped",
+            "pareto_optimal_taxonomic_rank_auroc_logloss",
+            "pareto_optimal_taxonomic_rank_auroc_logloss_capped",
+        }),
         _SUPER_LEARNER_WEIGHT_TOL=1e-8,
         _SUPER_LEARNER_MIN_WEIGHT=0.01,
         _SUPER_LEARNER_OPT_MAXITER=1000,

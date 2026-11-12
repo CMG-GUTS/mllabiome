@@ -8,6 +8,12 @@ from sklearn.base import BaseEstimator
 
 from .explainability_methods import ALE, ALEInteractions, coerce_method, method_name
 from .learners import _learner_factory
+from ._historical_configs import (
+    HistoricalConfigurationError,
+    recorded_configuration,
+    recorded_learner_factory,
+    recorded_transformation_spec,
+)
 from .sweep_types import Sweep
 from .transformations import (
     CountTransformationAdapter,
@@ -166,6 +172,7 @@ def _configured_count_transformation_factory(
     *,
     resolution_feature_blocks: Any = None,
     feature_names: Any = None,
+    config_id: str | None = None,
 ) -> Callable[[], CountTransformationAdapter]:
     reference_blocks = (
         feature_blocks
@@ -176,12 +183,27 @@ def _configured_count_transformation_factory(
         sweep.count_transformations, reference_blocks
     )
     matches = [(name, spec) for name, spec in specifications if str(name) == str(key)]
+    if config_id is not None:
+        from .configs_sweep import _transformation_fingerprint
+
+        try:
+            saved = recorded_configuration(sweep.root(), config_id)
+            expected = str(saved.get("transformation_fingerprint"))
+            matches = [
+                (name, spec)
+                for name, spec in matches
+                if _transformation_fingerprint(name, spec) == expected
+            ]
+            if not matches:
+                spec = recorded_transformation_spec(sweep.root(), config_id, key)
+                matches = [(key, spec)]
+        except HistoricalConfigurationError as exc:
+            raise ExplainabilityConfigurationError(str(exc)) from exc
     if len(matches) != 1:
         available = [str(name) for name, _ in specifications]
         raise ExplainabilityConfigurationError(
-            f"The selected MPMA uses count transformation {key!r}, but its exact "
-            "resolution-specific transformation specification cannot be reconstructed "
-            f"from sweep.count_transformations. Available effective transformations: {available!r}."
+            f"Cannot recover exactly the stored count transformation {key!r}; "
+            f"available effective transformations: {available!r}."
         )
     name, spec = matches[0]
     item = (name, spec) if spec is not None else name
@@ -199,11 +221,35 @@ def _configured_count_transformation_factory(
     return factory
 
 
-def _configured_learner_factory(sweep: Sweep, key: str) -> Callable[[], BaseEstimator]:
-    factories = dict(_learner_factory(x) for x in sweep.learners)
+def _configured_learner_factory(
+    sweep: Sweep,
+    key: str,
+    *,
+    config_id: str | None = None,
+    task: str = "classification",
+) -> Callable[[], BaseEstimator]:
+    from .configs_sweep import _learner_fingerprint
+
+    if config_id is not None:
+        try:
+            row = recorded_configuration(sweep.root(), config_id)
+        except HistoricalConfigurationError as exc:
+            raise ExplainabilityConfigurationError(str(exc)) from exc
+        if str(row.get("learner")) != str(key):
+            raise ExplainabilityConfigurationError(
+                f"Configuration {config_id!r} does not record learner {key!r}."
+            )
+        expected = str(row.get("learner_fingerprint"))
+        for item in sweep.learners:
+            if str(item[0]) == key and _learner_fingerprint(item) == expected:
+                return _learner_factory(item, task=task)[1]
+        try:
+            return recorded_learner_factory(sweep.root(), config_id, key, task=task)
+        except HistoricalConfigurationError as exc:
+            raise ExplainabilityConfigurationError(str(exc)) from exc
+    factories = dict(_learner_factory(x, task=task) for x in sweep.learners)
     if key not in factories:
         raise ExplainabilityConfigurationError(
-            f"The selected MPMA uses learner {key!r}, but that exact learner is not present in "
-            "sweep.learners. Explainability is strict and will not reconstruct or substitute learners by name."
+            f"Learner {key!r} is not in sweep.learners and no historical config_id was provided."
         )
     return factories[key]

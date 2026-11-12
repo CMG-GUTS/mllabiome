@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -13,12 +13,19 @@ from . import explainability as _core
 from .configs_sweep import _lodo_feature_pair
 from .console import info, progress, success, summary_table
 from .data import load_dataset
+from .learners import siamcat_internal_fit_groups
 from .ensemble_aggregation import (
-    LINEAR_PROBABILITY_AGGREGATIONS,
+    normalise_weights,
     aggregate_member_predictions,
     effective_aggregation_weights,
 )
 from .final_models import build_final_models
+from .mpma_e_shap_checkpoints import (
+    checkpoint_path,
+    checkpoint_signature,
+    load_checkpoint,
+    save_checkpoint,
+)
 from .resolutions import mask_feature_blocks, materialize_mpdr_with_blocks
 from .storage import read_table, table_exists, write_table
 from .utils import dump_json_standard
@@ -41,7 +48,7 @@ def _member_rows_for_final_model(
 
 
 def _materialize_member_native_explanations(
-    root: Path, bundle: dict[str, Any], out_dir: Path
+    root: Path, bundle: dict[str, Any], out_dir: Path, explainability: Any
 ) -> Path | None:
     specs = list(bundle.get("specs", []))
     if not specs:
@@ -53,6 +60,10 @@ def _materialize_member_native_explanations(
     manifest = []
     for member_no, spec in enumerate(specs, start=1):
         config_id = str(spec.get("config_id", ""))
+        row = spec.get("row", pd.Series(dtype=object))
+        learner = spec.get("learner_key", row.get("learner", ""))
+        if _core._skip_mpma_member(explainability, learner):
+            continue
         source = root / "explainability" / "cache" / _core._safe_cache_name(config_id)
         if not source.exists():
             continue
@@ -88,15 +99,127 @@ def _materialize_member_native_explanations(
     return manifest_path
 
 
-def _linear_weights(mpma_e: dict[str, Any]) -> np.ndarray | None:
+def _linear_weights(
+    mpma_e: dict[str, Any], n_classes: int | None = None
+) -> np.ndarray | None:
     aggregation = str(mpma_e["aggregation_strategy"])
+    members = mpma_e["members"]
+    if aggregation == "bayesian_model_averaging":
+        parameters = mpma_e.get("aggregation_parameters")
+        if not isinstance(parameters, Mapping) or parameters.get("kind") != aggregation:
+            raise _core.ExplainabilityConfigurationError(
+                "BMA explanation requires its saved fitted aggregation parameters."
+            )
+        if int(parameters.get("n_members", -1)) != len(members):
+            raise _core.ExplainabilityConfigurationError(
+                "BMA member count differs from the saved aggregation parameters."
+            )
+        if n_classes is not None and int(parameters.get("n_classes", -1)) != int(
+            n_classes
+        ):
+            raise _core.ExplainabilityConfigurationError(
+                "BMA class count differs from the saved aggregation parameters."
+            )
+        try:
+            return normalise_weights(parameters["member_weights"], len(members))
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise _core.ExplainabilityConfigurationError(
+                "BMA explanation requires finite, nonnegative saved posterior-mean weights matching every member."
+            ) from exc
     raw = None
-    if aggregation == "weighted_mean_proba":
+    if aggregation in {"weighted_mean_proba", "cawpe"}:
         raw = [
             float(member.get("aggregation_weight", member.get("weight", np.nan)))
-            for member in mpma_e["members"]
+            for member in members
         ]
-    return effective_aggregation_weights(aggregation, len(mpma_e["members"]), raw)
+    return effective_aggregation_weights(aggregation, len(members), raw)
+
+
+def _bma_counterfactuals(
+    stack: np.ndarray,
+    weights: np.ndarray,
+    member_index: int,
+    parameters: Mapping[str, Any],
+) -> tuple[np.ndarray | None, np.ndarray]:
+    values = np.asarray(stack, dtype=float)
+    w = normalise_weights(weights, values.shape[0])
+    if values.ndim != 3 or values.shape[2] < 2 or not 0 <= member_index < len(w):
+        raise ValueError("Invalid BMA member prediction stack or member index.")
+    neutralized_stack = values.copy()
+    neutralized_stack[member_index, :, :] = 1.0 / float(values.shape[2])
+    neutralized = aggregate_member_predictions(
+        neutralized_stack, "bayesian_model_averaging", None, parameters
+    )
+    retained_weights = np.delete(w, member_index)
+    if retained_weights.sum() <= 1e-12:
+        return None, neutralized
+    retained_stack = np.delete(values, member_index, axis=0)
+    conditional = np.tensordot(
+        retained_weights / retained_weights.sum(), retained_stack, axes=(0, 0)
+    )
+    return np.asarray(conditional, dtype=float), neutralized
+
+
+def _write_bma_weight_table(mpma_e: dict[str, Any], out_dir: Path) -> dict[str, Path]:
+    if str(mpma_e["aggregation_strategy"]) != "bayesian_model_averaging":
+        return {}
+    weights = _linear_weights(mpma_e)
+    assert weights is not None
+    parameters = mpma_e["aggregation_parameters"]
+    n_members = len(weights)
+
+    def optional_vector(key: str) -> np.ndarray:
+        source = parameters.get(key)
+        if source is None:
+            return np.full(n_members, np.nan, dtype=float)
+        values = np.asarray(source, dtype=float)
+        if values.shape != (n_members,) or not np.isfinite(values).all():
+            raise _core.ExplainabilityConfigurationError(
+                f"Saved BMA uncertainty field {key!r} is invalid."
+            )
+        return values
+
+    deviations = optional_vector("member_weight_std")
+    intervals_raw = parameters.get("member_weight_interval_95")
+    if intervals_raw is None:
+        intervals = np.full((n_members, 2), np.nan, dtype=float)
+    else:
+        intervals = np.asarray(intervals_raw, dtype=float)
+        if (
+            intervals.shape != (n_members, 2)
+            or not np.isfinite(intervals).all()
+            or np.any(intervals[:, 0] > intervals[:, 1])
+            or np.any(intervals < 0.0)
+            or np.any(intervals > 1.0)
+        ):
+            raise _core.ExplainabilityConfigurationError(
+                "Saved BMA weight intervals do not match the selected members."
+            )
+    if np.any(np.isfinite(deviations) & (deviations < 0.0)):
+        raise _core.ExplainabilityConfigurationError(
+            "Saved BMA weight standard deviations must be nonnegative."
+        )
+    frame = pd.DataFrame(
+        [
+            {
+                "config_id": str(member["config_id"]),
+                "member_no": int(index + 1),
+                "posterior_mean_weight": float(weights[index]),
+                "posterior_weight_sd": float(deviations[index]),
+                "posterior_weight_q025": float(intervals[index, 0]),
+                "posterior_weight_q975": float(intervals[index, 1]),
+                "weight_method": str(parameters.get("weight_method", "unknown")),
+                "weighting_objective": str(
+                    parameters.get("weighting_objective", "unknown")
+                ),
+                "bootstrap_replicates": parameters.get("bootstrap_replicates"),
+            }
+            for index, member in enumerate(mpma_e["members"])
+        ]
+    )
+    path = out_dir / "bma_member_weights.parquet"
+    write_table(path, frame)
+    return {"bma_member_weights": path}
 
 
 def _prepare_member_specs(
@@ -208,6 +331,7 @@ def _fit_oof_members_fold_task(
             feature_blocks,
             resolution_feature_blocks=spec["feature_blocks"],
             feature_names=names,
+            config_id=str(spec["config_id"]),
         )()
         X_train, X_test = ct.apply_pair(X_train_raw, X_test_raw)
         coordinate_metadata = ct.coordinate_metadata(names)
@@ -226,14 +350,22 @@ def _fit_oof_members_fold_task(
                 f"Transformation {spec['transformation_key']!r} produced feature metadata inconsistent with its transformed matrix."
             )
         clf = _core.configure_estimator_threads(
-            _core._configured_learner_factory(sweep, spec["learner_key"])(),
+            _core._configured_learner_factory(
+                sweep, spec["learner_key"], config_id=str(spec["config_id"])
+            )(),
             threads_per_worker,
         )
         _core.fit_classifier(
             clf,
             X_train,
             dataset.y[train_idx],
-            None if groups is None else groups[train_idx],
+            siamcat_internal_fit_groups(
+                clf,
+                dataset.y[train_idx],
+                None if groups is None else groups[train_idx],
+                np.asarray(dataset.subject_ids, dtype=object)[train_idx],
+                str(sweep.evaluation.protocol),
+            ),
         )
         proba = _core._predict_proba_aligned(
             clf, X_test, np.arange(len(dataset.class_labels), dtype=int)
@@ -303,9 +435,11 @@ def _fit_oof_members(
     splits = _core._explainability_outer_splits(sweep, dataset)
     stored = _stored_member_outer_predictions(root)
     aggregation = str(mpma_e["aggregation_strategy"])
-    linear_weights = _linear_weights(mpma_e)
+    linear_weights = _linear_weights(mpma_e, len(dataset.class_labels))
     weighted_input = (
-        linear_weights.tolist() if aggregation == "weighted_mean_proba" else None
+        linear_weights.tolist()
+        if aggregation in {"weighted_mean_proba", "cawpe"}
+        else None
     )
     aggregation_parameters = mpma_e.get("aggregation_parameters", {})
     execution = _core._xai_execution_plan(sweep, len(splits))
@@ -548,8 +682,15 @@ def _write_prediction_tables(
 
         if stack.shape[0] > 1:
             for member_index, member in enumerate(fold["members"]):
-                reduced_weights = None
-                if aggregation in {
+                neutralized = None
+                influence_method = "remove_and_reaggregate"
+                if aggregation == "bayesian_model_averaging":
+                    assert linear_weights is not None
+                    reduced, neutralized = _bma_counterfactuals(
+                        stack, linear_weights, member_index, aggregation_parameters
+                    )
+                    influence_method = "renormalized_saved_posterior_mean_weights"
+                elif aggregation in {
                     "logistic_stacking",
                     "elastic_net_stacking",
                     "cohort_robust_stacking",
@@ -566,17 +707,28 @@ def _write_prediction_tables(
                     reduced = aggregate_member_predictions(
                         reduced_stack, aggregation, None, aggregation_parameters
                     )
+                    influence_method = "fixed_aggregator_neutralization"
                 else:
                     reduced_stack = np.delete(stack, member_index, axis=0)
-                    if aggregation == "weighted_mean_proba":
-                        assert linear_weights is not None
-                        reduced_weights = np.delete(linear_weights, member_index)
+                    reduced_weights = (
+                        np.delete(linear_weights, member_index)
+                        if aggregation in {"weighted_mean_proba", "cawpe"}
+                        else None
+                    )
                     reduced = aggregate_member_predictions(
                         reduced_stack, aggregation, reduced_weights
                     )
-                delta = ensemble - reduced
+                delta = ensemble - reduced if reduced is not None else None
+                neutral_delta = (
+                    ensemble - neutralized if neutralized is not None else None
+                )
                 for local_i, global_i in enumerate(test_idx):
                     for class_index, label in enumerate(dataset.class_labels):
+                        value = (
+                            float(delta[local_i, class_index])
+                            if delta is not None
+                            else np.nan
+                        )
                         influence_rows.append(
                             {
                                 "split_key": str(fold["split_key"]),
@@ -586,11 +738,13 @@ def _write_prediction_tables(
                                 "member_no": int(member_index + 1),
                                 "class_index": int(class_index),
                                 "class_label": str(label),
-                                "leave_one_member_out_delta": float(
-                                    delta[local_i, class_index]
-                                ),
-                                "abs_leave_one_member_out_delta": float(
-                                    abs(delta[local_i, class_index])
+                                "influence_method": influence_method,
+                                "leave_one_member_out_delta": value,
+                                "abs_leave_one_member_out_delta": abs(value),
+                                "fixed_aggregator_neutralization_delta": (
+                                    float(neutral_delta[local_i, class_index])
+                                    if neutral_delta is not None
+                                    else np.nan
                                 ),
                             }
                         )
@@ -619,6 +773,14 @@ def _write_prediction_tables(
                 mean_abs_influence=("abs_leave_one_member_out_delta", "mean"),
                 sd_abs_influence=("abs_leave_one_member_out_delta", "std"),
                 mean_signed_influence=("leave_one_member_out_delta", "mean"),
+                mean_abs_fixed_aggregator_neutralization=(
+                    "fixed_aggregator_neutralization_delta",
+                    lambda values: values.abs().mean(),
+                ),
+                mean_signed_fixed_aggregator_neutralization=(
+                    "fixed_aggregator_neutralization_delta",
+                    "mean",
+                ),
                 n_oof_rows=("leave_one_member_out_delta", "size"),
             )
             .sort_values("mean_abs_influence", ascending=False)
@@ -693,14 +855,42 @@ def _run_hierarchical_shap(
                 f"MPMA-E SHAP · fold {fold_no}/{len(bundle['folds'])} · member {member_index + 1}/{len(fold['members'])} · "
                 f"{member['config_id']} · {len(rows_ex)} samples · {len(member['feature_names_fold'])} features"
             )
-            values, base = _shap_member_values(
-                member,
-                class_labels,
-                rows_ex=rows_ex,
-                rows_bg=rows_bg,
-                spec=spec,
-                random_state=seed + member_index * 101,
+            member_seed = seed + member_index * 101
+            path = checkpoint_path(
+                out_dir,
+                fold_no,
+                member_index + 1,
+                str(fold["split_key"]),
+                str(member["config_id"]),
             )
+            signature = checkpoint_signature(
+                member, dataset, fold, rows_ex, rows_bg, spec, member_seed
+            )
+            cached = load_checkpoint(
+                path,
+                signature,
+                len(rows_ex),
+                len(member["feature_names_fold"]),
+                len(class_labels),
+            )
+            if cached is None:
+                values, base = _shap_member_values(
+                    member,
+                    class_labels,
+                    rows_ex=rows_ex,
+                    rows_bg=rows_bg,
+                    spec=spec,
+                    random_state=member_seed,
+                )
+                save_checkpoint(path, signature, values, base)
+                info(
+                    f"MPMA-E SHAP checkpoint saved · fold {fold_no}/{len(bundle['folds'])} · member {member_index + 1}/{len(fold['members'])}"
+                )
+            else:
+                values, base = cached
+                info(
+                    f"MPMA-E SHAP checkpoint reused · fold {fold_no}/{len(bundle['folds'])} · member {member_index + 1}/{len(fold['members'])}"
+                )
             success(
                 f"MPMA-E SHAP fold {fold_no}/{len(bundle['folds'])} · member {member_index + 1}/{len(fold['members'])} completed"
             )
@@ -1310,7 +1500,9 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
     )
     info("Preparing final MPMA-E member refits for OOF explanation")
     bundle = _fit_oof_members(sweep, rankings, mpma_e)
-    member_manifest = _materialize_member_native_explanations(root, bundle, out_dir)
+    member_manifest = _materialize_member_native_explanations(
+        root, bundle, out_dir, sweep.explainability
+    )
     dataset = bundle["dataset"]
     class_indices = _core._resolve_explainability_classes(
         dataset, sweep.explainability.classes
@@ -1326,6 +1518,7 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
     )
 
     outputs = _write_prediction_tables(bundle, mpma_e, out_dir)
+    outputs.update(_write_bma_weight_table(mpma_e, out_dir))
     if member_manifest is not None:
         outputs["member_native_manifest"] = member_manifest
     reproduction_path = out_dir / "prediction_reproduction_diagnostics.parquet"
@@ -1336,9 +1529,8 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
         outputs.update(_run_hierarchical_shap(sweep, bundle, mpma_e, out_dir))
         outputs.update(_write_mpma_e_report_tables(sweep, bundle, out_dir))
 
-    linear_exact = (
-        str(mpma_e["aggregation_strategy"]) in LINEAR_PROBABILITY_AGGREGATIONS
-    )
+    linear_exact = bundle["linear_weights"] is not None
+    bma_exact = str(mpma_e["aggregation_strategy"]) == "bayesian_model_averaging"
     perturbation_geometries = sorted(
         {
             str(value)
@@ -1369,7 +1561,7 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
     dump_json_standard(perturbation_policy, perturbation_path)
     outputs["perturbation_policy"] = perturbation_path
     metadata = {
-        "schema_version": 4,
+        "schema_version": 5,
         "unit": "MPMA-E",
         "ensemble_config_id": mpma_e.get("ensemble_config_id", ""),
         "selection_strategy": mpma_e.get("selection_strategy", ""),
@@ -1382,19 +1574,51 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
             linear_exact and "shap" in global_methods
         ),
         "exact_feature_attribution_condition": (
-            "Exact at model-coordinate level because MPMA-E is a fixed linear mean/weighted mean of member probabilities and member SHAP decompositions are propagated using the exact aggregation weights. Taxon-level signed aggregation is restricted to coordinates with exact one-to-one feature identity."
-            if linear_exact
-            else "Unavailable at ensemble level because the selected aggregation is non-linear. Member-native coordinate SHAP and leave-one-member-out aggregation influence are reported instead."
+            "Exact linear propagation at the model-coordinate level conditional on the saved BMA posterior-mean weights. Member SHAP explanations use the same fixed weights as the BMA probability mixture. This does not propagate uncertainty in the fitted weights or make constituent SHAP estimators exact. Signed taxon aggregation requires exact one-to-one feature identities."
+            if bma_exact
+            else (
+                "Exact linear propagation at the model-coordinate level using the fixed mean or weighted-mean aggregation weights. Signed taxon aggregation requires exact one-to-one feature identities."
+                if linear_exact
+                else "No ensemble-level linear SHAP propagation is available. Only constituent explanations and member influence are reported."
+            )
         ),
         "taxon_level_attribution_policy": "Signed taxon SHAP is emitted only for one-to-one feature coordinates. CLR, standardized CLR, ALR, and ILR remain model-coordinate log-ratio or balance explanations and are not back-projected as signed taxon SHAP.",
         "taxon_participation_policy": "Unsigned non-additive taxon participation is derived from absolute coordinate SHAP weighted by normalized absolute log-contrast coefficients and is reported separately from SHAP attribution.",
         "pseudo_concatenated_mpdr_feature_space_used": False,
+        "bma_weight_method": (
+            str(
+                mpma_e.get("aggregation_parameters", {}).get("weight_method", "unknown")
+            )
+            if bma_exact
+            else None
+        ),
+        "bma_weight_uncertainty_policy": (
+            "Attributions condition on the stored posterior-mean BMA weights; saved bootstrap weight intervals are reported separately and are not propagated into SHAP uncertainty."
+            if bma_exact
+            else None
+        ),
+        "member_influence_policy": (
+            "BMA member removal renormalizes the stored posterior-mean weights of retained members without refitting; fixed-aggregator neutralization additionally substitutes a uniform prediction while preserving the original fitted weights. Neither is a newly fitted BMA posterior."
+            if bma_exact
+            else "Method-specific removal or fixed-aggregator neutralization."
+        ),
         "perturbation_geometry": perturbation_geometries,
         "geometry_projection_applied": bool(projection_applied),
         "perturbation_interpretation": perturbation_policy["interpretation"],
         "methods": ["shap"] if "shap" in global_methods else [],
         "requested_methods": list(methods),
         "member_native_methods": list(methods),
+        "skip_member": list(getattr(sweep.explainability, "skip_member", ())),
+        "skipped_member_explanations": [
+            {
+                "config_id": str(spec.get("config_id", "")),
+                "learner": str(spec.get("learner_key", "")),
+            }
+            for spec in bundle.get("specs", [])
+            if _core._skip_mpma_member(
+                sweep.explainability, spec.get("learner_key", "")
+            )
+        ],
         "method_parameters": [_core.method_to_dict(x) for x in method_specs],
         "top_k": int(sweep.explainability.top_k),
         "explainability_config": _core._explainability_config_payload(
@@ -1418,13 +1642,23 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
             "sign_consistency",
         ],
         "ensemble_level_method_scope": {
-            "shap": "exact_for_linear_probability_aggregation",
+            "shap": (
+                "exact_for_fixed_posterior_mean_bma_probability_mixture"
+                if bma_exact
+                else (
+                    "exact_for_linear_probability_aggregation"
+                    if linear_exact
+                    else "constituent_member_shap_only"
+                )
+            ),
             "lime": "member_native; local-surrogate coefficients are not averaged across heterogeneous member coordinate systems",
             "ale": "member_native; effect curves remain in each member's fitted coordinate system",
             "permutation": "member_native; perturbations remain valid within each member's transformation geometry",
             "interactions": "member_native; interaction surfaces are not pooled across heterogeneous coordinate systems",
         },
         "cross_validation_explanations": "outer_test_folds_of_final_selected_specification",
+        "shap_checkpoint_granularity": "outer_fold_member",
+        "shap_checkpoint_directory": "checkpoints/hierarchical_shap",
         "selection_independence_note": (
             "The final MPMA-E specification is selected from all inner-OOF evidence and then cross-fitted over outer folds for descriptive final-model explanation; this is not strict fold-local nested strategy attribution."
         ),

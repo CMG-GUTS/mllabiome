@@ -264,7 +264,13 @@ def _ensemble_rows(sweep: Sweep) -> list[tuple[str, object]]:
         rows.extend(
             [
                 (
-                    f"{target} · nested performance",
+                    f"{target} · "
+                    + (
+                        "retrospective fixed performance"
+                        if summary.get("selection_basis")
+                        == "pooled_inner_validation_fixed_members"
+                        else "nested performance"
+                    ),
                     f"MPMA-E · {_metric_text(summary, metric)}",
                 ),
                 (f"{target} · selected ensemble", _ensemble_spec(candidate)),
@@ -510,7 +516,12 @@ def print_stage_results(sweep: Sweep, stage_name: str) -> None:
             if summary:
                 name = str(summary.get("optimize_metric", ""))
                 score = summary.get("mean_repeat_metrics", {}).get(name)
-                rows = [("Task", summary.get("task", "")), ("Targets", ", ".join(summary.get("targets", ()))), ("Samples", summary.get("n_samples", 0)), ("Configurations", summary.get("n_candidates", 0))]
+                rows = [
+                    ("Task", summary.get("task", "")),
+                    ("Targets", ", ".join(summary.get("targets", ()))),
+                    ("Samples", summary.get("n_samples", 0)),
+                    ("Configurations", summary.get("n_candidates", 0)),
+                ]
                 if _finite(score) is not None:
                     rows.append((f"Held-out {name}", f"{float(score):.4f}"))
                 summary_table("Evaluation results ready", rows)
@@ -518,7 +529,11 @@ def print_stage_results(sweep: Sweep, stage_name: str) -> None:
 
                 candidates = configuration_scores(root, summary)
                 if candidates:
-                    table = Table(title="All evaluated configurations · inner validation ranking", box=box.SIMPLE_HEAD, pad_edge=False)
+                    table = Table(
+                        title="All evaluated configurations · inner validation ranking",
+                        box=box.SIMPLE_HEAD,
+                        pad_edge=False,
+                    )
                     table.add_column("Rank", justify="right")
                     table.add_column("Learner", style="bold")
                     table.add_column("Resolution")
@@ -535,11 +550,16 @@ def print_stage_results(sweep: Sweep, stage_name: str) -> None:
                             f"{int(candidate['selected_outer_splits'])}/{summary['n_outer_splits']}",
                         )
                     console.print(table)
-                    console.print("[dim]Inner scores are for model selection; held-out scores are for the selected model on each outer split.[/dim]")
+                    console.print(
+                        "[dim]Inner scores are for model selection; held-out scores are for the selected model on each outer split.[/dim]"
+                    )
         elif stage_name == "explore":
             manifest = _read_json(root / "explore_manifest.json")
             if manifest:
-                summary_table("Exploration results ready", [("Targets", len(manifest.get("targets", ())))])
+                summary_table(
+                    "Exploration results ready",
+                    [("Targets", len(manifest.get("targets", ())))],
+                )
         elif stage_name == "report":
             report_rows = _report_rows(sweep)
             if report_rows:
@@ -548,12 +568,24 @@ def print_stage_results(sweep: Sweep, stage_name: str) -> None:
             result = root / "tables" / "joint_ensemble_outer_metrics.tsv"
             if result.exists():
                 frame = pd.read_csv(result, sep="\t")
-                summary_table("Ensemble results ready", [("Strategies", frame["strategy"].nunique()), ("Outer fold evaluations", len(frame))])
+                summary_table(
+                    "Ensemble results ready",
+                    [
+                        ("Strategies", frame["strategy"].nunique()),
+                        ("Outer fold evaluations", len(frame)),
+                    ],
+                )
         elif stage_name == "explain":
             manifest = root / "explainability" / "explainability_manifest.json"
             if manifest.exists():
                 data = _read_json(manifest)
-                summary_table("Explainability results ready", [("Targets", ", ".join(data.get("targets", ()))), ("Methods", ", ".join(data.get("methods", ())))])
+                summary_table(
+                    "Explainability results ready",
+                    [
+                        ("Targets", ", ".join(data.get("targets", ()))),
+                        ("Methods", ", ".join(data.get("methods", ()))),
+                    ],
+                )
         return
     try:
         if stage_name == "explore":

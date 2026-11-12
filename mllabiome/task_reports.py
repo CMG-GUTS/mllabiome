@@ -1342,31 +1342,39 @@ def write_regression_report(sweep: Sweep, emit_html: bool = True) -> dict[str, P
         selected_metric = canonical_metric_name(metric)
         generalisation_results = write_generalisation_figures(root, selected_metric)
         auroc_path, _ = generalisation_results["AUROC"]
-        generalisation_fig = _report._fig(
-            auroc_path.with_suffix(""), report_dir,
-            "AUROC: inner-validation and outer-held-out performance across configurations",
-        ) if auroc_path else ""
+        generalisation_fig = (
+            _report._fig(
+                auroc_path.with_suffix(""),
+                report_dir,
+                "AUROC: inner-validation and outer-held-out performance across configurations",
+            )
+            if auroc_path
+            else ""
+        )
         optimisation_generalisation_fig = ""
         if selected_metric != "AUROC":
             selected_path, _ = generalisation_results[selected_metric]
             if selected_path:
                 optimisation_generalisation_fig = _report._fig(
-                    selected_path.with_suffix(""), report_dir,
+                    selected_path.with_suffix(""),
+                    report_dir,
                     f"{selected_metric}: inner-validation and outer-held-out performance across configurations",
                 )
         generalisation_html = ""
         if generalisation_fig or optimisation_generalisation_fig:
             generalisation_html = (
-                '<h3>Inner validation versus outer held-out performance</h3>'
-                '<p>Each point is a configuration, averaged over matching outer splits after '
-                'averaging inner folds within each split. The difference describes a '
-                'generalisation shift rather than independent deployment performance.</p>'
+                "<h3>Inner validation versus outer held-out performance</h3>"
+                "<p>Each point is a configuration, averaged over matching outer splits after "
+                "averaging inner folds within each split. The difference describes a "
+                "generalisation shift rather than independent deployment performance.</p>"
             )
             if generalisation_fig:
-                generalisation_html += '<h4>AUROC</h4>' + generalisation_fig
+                generalisation_html += "<h4>AUROC</h4>" + generalisation_fig
             if optimisation_generalisation_fig:
                 generalisation_html += (
-                    '<h4>Optimisation metric: ' + html.escape(selected_metric) + '</h4>'
+                    "<h4>Optimisation metric: "
+                    + html.escape(selected_metric)
+                    + "</h4>"
                     + optimisation_generalisation_fig
                 )
 
@@ -1396,10 +1404,17 @@ def write_regression_report(sweep: Sweep, emit_html: bool = True) -> dict[str, P
 
     representation_section = (
         '<h2 id="representation-impact">Data representations and learner impact on performance</h2>'
-        + _report._representation_impact_note(metric, bool(getattr(sweep, "uses_modalities", False)))
-        + (representation_fig if representation_fig else "<p>No representation-impact figure is available yet.</p>")
+        + _report._representation_impact_note(
+            metric, bool(getattr(sweep, "uses_modalities", False))
+        )
+        + (
+            representation_fig
+            if representation_fig
+            else "<p>No representation-impact figure is available yet.</p>"
+        )
         + generalisation_html
-        if sweep.include_representation_impact else ""
+        if sweep.include_representation_impact
+        else ""
     )
     html_text = f'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1441,7 +1456,18 @@ def write_regression_report(sweep: Sweep, emit_html: bool = True) -> dict[str, P
                 if getattr(sweep, "uses_modalities", False)
                 else sweep.data.target_col
             ),
-            "figures_embedded": len([f for f in [representation_fig, generalisation_fig, optimisation_generalisation_fig, mpma_e_fig] if f]),
+            "figures_embedded": len(
+                [
+                    f
+                    for f in [
+                        representation_fig,
+                        generalisation_fig,
+                        optimisation_generalisation_fig,
+                        mpma_e_fig,
+                    ]
+                    if f
+                ]
+            ),
             "explainability_targets": explainability_count,
         },
         manifest_path,
@@ -1641,31 +1667,39 @@ def _target_report_section(
         selected_metric = canonical_metric_name(str(child.evaluation.optimize_metric))
         generalisation_results = write_generalisation_figures(root, selected_metric)
         auroc_path, _ = generalisation_results["AUROC"]
-        generalisation_fig = _report._fig(
-            auroc_path.with_suffix(""), parent_report_dir,
-            f"{target}: AUROC inner-validation versus outer-held-out performance",
-        ) if auroc_path else ""
+        generalisation_fig = (
+            _report._fig(
+                auroc_path.with_suffix(""),
+                parent_report_dir,
+                f"{target}: AUROC inner-validation versus outer-held-out performance",
+            )
+            if auroc_path
+            else ""
+        )
         optimisation_generalisation_fig = ""
         if selected_metric != "AUROC":
             selected_path, _ = generalisation_results[selected_metric]
             if selected_path:
                 optimisation_generalisation_fig = _report._fig(
-                    selected_path.with_suffix(""), parent_report_dir,
+                    selected_path.with_suffix(""),
+                    parent_report_dir,
                     f"{target}: {selected_metric} inner-validation versus outer-held-out performance",
                 )
         generalisation_html = ""
         if generalisation_fig or optimisation_generalisation_fig:
             generalisation_html = (
-                '<h4>Inner validation versus outer held-out performance</h4>'
-                '<p>Each point is a configuration, averaged over matching outer splits '
-                'after averaging the inner folds. The difference is descriptive of '
-                'generalisation shift and does not estimate deployment performance.</p>'
+                "<h4>Inner validation versus outer held-out performance</h4>"
+                "<p>Each point is a configuration, averaged over matching outer splits "
+                "after averaging the inner folds. The difference is descriptive of "
+                "generalisation shift and does not estimate deployment performance.</p>"
             )
             if generalisation_fig:
-                generalisation_html += '<h5>AUROC</h5>' + generalisation_fig
+                generalisation_html += "<h5>AUROC</h5>" + generalisation_fig
             if optimisation_generalisation_fig:
                 generalisation_html += (
-                    '<h5>Optimisation metric: ' + html.escape(selected_metric) + '</h5>'
+                    "<h5>Optimisation metric: "
+                    + html.escape(selected_metric)
+                    + "</h5>"
                     + optimisation_generalisation_fig
                 )
 
@@ -1717,13 +1751,19 @@ def _target_report_section(
         )
 
     representation_section = (
-        '<h3>Data representations and learner impact on performance</h3>'
+        "<h3>Data representations and learner impact on performance</h3>"
         + _report._representation_impact_note(
-            str(child.evaluation.optimize_metric), bool(getattr(child, "uses_modalities", False))
+            str(child.evaluation.optimize_metric),
+            bool(getattr(child, "uses_modalities", False)),
         )
-        + (representation_fig if representation_fig else "<p>No representation-impact figure is available yet.</p>")
+        + (
+            representation_fig
+            if representation_fig
+            else "<p>No representation-impact figure is available yet.</p>"
+        )
         + generalisation_html
-        if child.include_representation_impact else ""
+        if child.include_representation_impact
+        else ""
     )
     return f'''<section id="{section_id}" class="xai-target"><h2>{html.escape(target)}</h2>
 <h3>Task definition and evaluation procedure</h3>{_report._procedure_grid_html(procedure)}

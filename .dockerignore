@@ -1,0 +1,35 @@
+# Exclude everything by default
+**
+
+# Required build files
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+
+# Only the mllabiome Python package
+!mllabiome/
+!mllabiome/**
+
+# Exclude generated files even inside the package
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.DS_Store
+**/.venv/
+**/.cache/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.env
+**/.env.*
+**/runs/
+**/outputs/
+**/logs/
+**/sandbox/
+**/results/
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.sqlite
+**/*.sqlite3

@@ -200,7 +200,7 @@ def run_compute_accounting(
                 continue
             overhead = {"cpu_core_hours": 0.0, "wall_time_s": 0.0, "peak_rss_gib": 0.0}
             scope = (
-                "SIAMCAT species relative-abundance comparator"
+                "SIAMCAT deepest-available-rank relative-abundance comparator"
                 if strategy == "SIAMCAT"
                 else "prespecified comparator family + outer-fold inner-validation selection"
             )

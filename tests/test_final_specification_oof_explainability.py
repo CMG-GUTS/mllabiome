@@ -58,6 +58,7 @@ def _dataset(n=6):
         y=np.asarray([0, 1, 0, 1, 0, 1][:n], dtype=int),
         class_labels=("A", "B"),
         sample_ids=np.asarray([f"s{i}" for i in range(n)], dtype=object),
+        subject_ids=np.asarray([f"s{i}" for i in range(n)], dtype=object),
         metadata=pd.DataFrame(index=np.arange(n)),
     )
 
@@ -85,7 +86,8 @@ def _splits():
 def _sweep(root: Path, targets=("mpma_b", "mpma_e")):
     return SimpleNamespace(
         root=lambda: root,
-        data=SimpleNamespace(group_col=None, stratify_col=None),
+        uses_modalities=False,
+        data=SimpleNamespace(group_col=None, stratify_col=None, task="classification"),
         evaluation=SimpleNamespace(protocol="repeated_nested_cv"),
         explainability=Explainability(
             targets=targets,
@@ -148,14 +150,14 @@ def test_mpma_b_oof_refits_exclude_every_test_sample(tmp_path, monkeypatch):
     monkeypatch.setattr(
         core,
         "_configured_count_transformation_factory",
-        lambda sweep, key, feature_blocks=None, resolution_feature_blocks=None, feature_names=None: (
+        lambda sweep, key, feature_blocks=None, resolution_feature_blocks=None, feature_names=None, config_id=None: (
             IdentityTransformation
         ),
     )
     monkeypatch.setattr(
         core,
         "_configured_learner_factory",
-        lambda sweep, key: RecordingEstimator,
+        lambda sweep, key, config_id=None: RecordingEstimator,
     )
 
     row = pd.Series(
@@ -301,14 +303,14 @@ def test_mpma_e_oof_refits_use_final_members_and_exclude_test_samples(
     monkeypatch.setattr(
         mpmae_xai._core,
         "_configured_count_transformation_factory",
-        lambda sweep, key, feature_blocks=None, resolution_feature_blocks=None, feature_names=None: (
+        lambda sweep, key, feature_blocks=None, resolution_feature_blocks=None, feature_names=None, config_id=None: (
             IdentityTransformation
         ),
     )
     monkeypatch.setattr(
         mpmae_xai._core,
         "_configured_learner_factory",
-        lambda sweep, key: RecordingEstimator,
+        lambda sweep, key, config_id=None: RecordingEstimator,
     )
     monkeypatch.setattr(
         mpmae_xai, "_stored_member_outer_predictions", lambda root: None

@@ -153,6 +153,8 @@ class PrevalenceFilter:
 
 TRANSFORMATION_LABELS: tuple[TransformationLabel, ...] = (
     TransformationLabel("identity", ("raw", "unchanged", "identity")),
+    TransformationLabel("weighted_unifrac", ("unifrac",), "phylogenetic_embedding"),
+    TransformationLabel("unweighted_unifrac", (), "phylogenetic_embedding"),
     TransformationLabel(
         "qwen3_ollama_embedding", ("qwen_embedding",), "foundation_embedding"
     ),
@@ -358,7 +360,9 @@ def _split_transformation_parameters(value: str) -> tuple[str, dict[str, float]]
         try:
             pairs[key] = float(raw_value.strip())
         except ValueError as exc:
-            raise ValueError(f"Invalid prevalence_rank_fusion identity {value!r}.") from exc
+            raise ValueError(
+                f"Invalid prevalence_rank_fusion identity {value!r}."
+            ) from exc
     return raw_name, _prevalence_rank_fusion_parameters(pairs)
 
 
@@ -838,9 +842,8 @@ class _BuiltinTransformer:
             )
             c = self.parameters["c"]
             alpha = self.parameters["alpha"]
-            out = (
-                alpha * ranks
-                + (1.0 - alpha) * np.log1p(c * weighted_rel) / np.log1p(c)
+            out = alpha * ranks + (1.0 - alpha) * np.log1p(c * weighted_rel) / np.log1p(
+                c
             )
             return _finite_output(
                 out,
@@ -1296,6 +1299,16 @@ class Transform:
             implementation = QwenOllamaEmbedding(**self._options)
             self.identity = implementation.identity
             self.resolutions = implementation.resolutions
+        elif self.name in {"weighted_unifrac", "unweighted_unifrac"}:
+            if feature_filter is not None:
+                raise ValueError(
+                    "Use UniFrac without a built-in prevalence filter; SGB coverage must remain auditable."
+                )
+            from .metaphlan_unifrac import MetaPhlAnUniFracPCoA
+
+            implementation = MetaPhlAnUniFracPCoA(metric=self.name, **self._options)
+            self.identity = implementation.identity
+            self.resolutions = implementation.resolutions
         elif self._options and self.name != "prevalence_rank_fusion":
             raise TypeError(
                 f"Transformation {self.name!r} does not accept parameters {sorted(self._options)!r}."
@@ -1612,7 +1625,12 @@ class CountTransformationAdapter:
                 raise ValueError(
                     "The filtered transformation identity does not match its PrevalenceFilter specification."
                 )
-        self.name = base
+        self.name = (
+            spec.name
+            if isinstance(spec, Transform)
+            and spec.name in {"weighted_unifrac", "unweighted_unifrac"}
+            else base
+        )
         self.composition_scope = _normalise_composition_scope(base, requested_scope)
         self.feature_filter = spec_filter
         _, identity_parameters = _split_transformation_parameters(raw_identity)
@@ -1644,6 +1662,11 @@ class CountTransformationAdapter:
         self.n_features_out_: int | None = None
 
     def _make(self) -> Any:
+        if self.name in {"weighted_unifrac", "unweighted_unifrac"}:
+            from .metaphlan_unifrac import MetaPhlAnUniFracPCoA
+
+            options = self.spec._options if isinstance(self.spec, Transform) else {}
+            return MetaPhlAnUniFracPCoA(metric=self.name, **options)
         if self.spec is None:
             return CountTransformation(
                 self.name,

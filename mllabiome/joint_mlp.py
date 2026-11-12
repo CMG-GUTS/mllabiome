@@ -35,12 +35,23 @@ class _JointMLP(BaseEstimator):
         X = np.asarray(X, dtype=np.float32)
         y = np.asarray(y, dtype=np.float32)
         if X.ndim != 2 or y.ndim != 2 or X.shape[0] != y.shape[0]:
-            raise ValueError("JointMLP requires X and y to be aligned two-dimensional arrays.")
-        if X.shape[1] == 0 or y.shape[1] == 0 or not np.isfinite(X).all() or not np.isfinite(y).all():
+            raise ValueError(
+                "JointMLP requires X and y to be aligned two-dimensional arrays."
+            )
+        if (
+            X.shape[1] == 0
+            or y.shape[1] == 0
+            or not np.isfinite(X).all()
+            or not np.isfinite(y).all()
+        ):
             raise ValueError("JointMLP requires nonempty finite features and targets.")
         if classification and not np.isin(y, [0, 1]).all():
             raise ValueError("Multilabel targets must contain only 0 and 1.")
-        if not 0 <= float(self.dropout) < 1 or int(self.epochs) < 1 or int(self.batch_size) < 1:
+        if (
+            not 0 <= float(self.dropout) < 1
+            or int(self.epochs) < 1
+            or int(self.batch_size) < 1
+        ):
             raise ValueError("Invalid dropout, epochs or batch size.")
         if float(self.learning_rate) <= 0 or float(self.weight_decay) < 0:
             raise ValueError("Invalid optimizer parameters.")
@@ -56,8 +67,12 @@ class _JointMLP(BaseEstimator):
         self.x_scale_ = X.std(axis=0, dtype=np.float64).astype(np.float32)
         self.x_scale_[self.x_scale_ < 1e-8] = 1.0
         X = (X - self.x_mean_) / self.x_scale_
-        self.y_mean_ = np.zeros(y.shape[1], dtype=np.float32) if classification else y.mean(axis=0)
-        self.y_scale_ = np.ones(y.shape[1], dtype=np.float32) if classification else y.std(axis=0)
+        self.y_mean_ = (
+            np.zeros(y.shape[1], dtype=np.float32) if classification else y.mean(axis=0)
+        )
+        self.y_scale_ = (
+            np.ones(y.shape[1], dtype=np.float32) if classification else y.std(axis=0)
+        )
         self.y_scale_[self.y_scale_ < 1e-8] = 1.0
         if not classification:
             y = (y - self.y_mean_) / self.y_scale_
@@ -70,8 +85,14 @@ class _JointMLP(BaseEstimator):
             width = size
         layers.append(torch.nn.Linear(width, y.shape[1]))
         self.model_ = torch.nn.Sequential(*layers).to(self._device)
-        optimizer = torch.optim.AdamW(self.model_.parameters(), lr=float(self.learning_rate), weight_decay=float(self.weight_decay))
-        criterion = torch.nn.BCEWithLogitsLoss() if classification else torch.nn.MSELoss()
+        optimizer = torch.optim.AdamW(
+            self.model_.parameters(),
+            lr=float(self.learning_rate),
+            weight_decay=float(self.weight_decay),
+        )
+        criterion = (
+            torch.nn.BCEWithLogitsLoss() if classification else torch.nn.MSELoss()
+        )
         X_tensor = torch.from_numpy(np.ascontiguousarray(X)).to(self._device)
         y_tensor = torch.from_numpy(np.ascontiguousarray(y)).to(self._device)
         generator = torch.Generator().manual_seed(int(self.random_state))
@@ -80,7 +101,10 @@ class _JointMLP(BaseEstimator):
             order = torch.randperm(len(X_tensor), generator=generator)
             for batch in order.split(int(self.batch_size)):
                 optimizer.zero_grad(set_to_none=True)
-                loss = criterion(self.model_(X_tensor[batch.to(self._device)]), y_tensor[batch.to(self._device)])
+                loss = criterion(
+                    self.model_(X_tensor[batch.to(self._device)]),
+                    y_tensor[batch.to(self._device)],
+                )
                 loss.backward()
                 optimizer.step()
         self.model_.eval()
@@ -89,6 +113,7 @@ class _JointMLP(BaseEstimator):
     def _forward(self, X):
         check_is_fitted(self, "model_")
         import torch
+
         X = np.asarray(X, dtype=np.float32)
         if X.ndim != 2 or X.shape[1] != self.n_features_in_:
             raise ValueError("Prediction feature dimensions differ from training.")
@@ -96,7 +121,11 @@ class _JointMLP(BaseEstimator):
             raise ValueError("Prediction features must be finite.")
         X = (X - self.x_mean_) / self.x_scale_
         with torch.no_grad():
-            return self.model_(torch.from_numpy(np.ascontiguousarray(X)).to(self._device)).cpu().numpy()
+            return (
+                self.model_(torch.from_numpy(np.ascontiguousarray(X)).to(self._device))
+                .cpu()
+                .numpy()
+            )
 
 
 class JointMLPClassifier(_JointMLP, ClassifierMixin):

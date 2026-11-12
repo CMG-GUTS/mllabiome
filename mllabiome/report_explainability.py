@@ -129,6 +129,10 @@ def _compact_table(frame: pd.DataFrame) -> str:
 
 def _mpma_e_member_influence_block(target_dir: Path) -> str:
     summary = _read_table(target_dir / "member_aggregation_influence_summary.parquet")
+    bma = (
+        _read_json(target_dir / "explained_unit.json").get("aggregation_strategy")
+        == "bayesian_model_averaging"
+    )
     manifest = _read_json(target_dir / "member_native" / "manifest.json")
     members = manifest.get("members", []) if isinstance(manifest, dict) else []
     if summary.empty or not isinstance(members, list):
@@ -156,30 +160,95 @@ def _mpma_e_member_influence_block(target_dir: Path) -> str:
         n_rows = pd.to_numeric(
             pd.Series([row.get("n_oof_rows")]), errors="coerce"
         ).iloc[0]
-        rows.append(
-            {
-                "Member": f"Member {member_no}",
-                "Representation": str(meta.get("representation", "")).replace("_", " "),
-                "Transformation": str(meta.get("transformation", "")).replace("_", " "),
-                "Learner": str(meta.get("learner", "")).replace("_", " "),
-                "Class": str(row.get("class_label", "")),
-                "Mean |Δ probability| when omitted": f"{float(mean_abs):.4f}"
-                if pd.notna(mean_abs)
-                else "",
-                "Mean signed Δ probability": f"{float(mean_signed):.4f}"
-                if pd.notna(mean_signed)
-                else "",
-                "Held-out rows": str(int(n_rows)) if pd.notna(n_rows) else "",
-            }
-        )
+        record = {
+            "Member": f"Member {member_no}",
+            "Representation": str(meta.get("representation", "")).replace("_", " "),
+            "Transformation": str(meta.get("transformation", "")).replace("_", " "),
+            "Learner": str(meta.get("learner", "")).replace("_", " "),
+            "Class": str(row.get("class_label", "")),
+            "Mean |Δ probability| when omitted": f"{float(mean_abs):.4f}"
+            if pd.notna(mean_abs)
+            else "",
+            "Mean signed Δ probability": f"{float(mean_signed):.4f}"
+            if pd.notna(mean_signed)
+            else "",
+            "Held-out rows": str(int(n_rows)) if pd.notna(n_rows) else "",
+        }
+        if bma:
+            neutral_abs = pd.to_numeric(
+                pd.Series([row.get("mean_abs_fixed_aggregator_neutralization")]),
+                errors="coerce",
+            ).iloc[0]
+            record["Mean |Δ probability| with fixed-weight neutralization"] = (
+                f"{float(neutral_abs):.4f}" if pd.notna(neutral_abs) else ""
+            )
+        rows.append(record)
     if not rows:
         return ""
     table = pd.DataFrame(rows)
     return "".join(
         [
             "<h4>Ensemble-member influence</h4>",
-            "<p>Leave-one-member-out influence measures how much the final MPMA-E predicted probability changes when one constituent is omitted and the remaining ensemble is recomputed. Larger mean absolute changes indicate greater predictive influence within the fitted ensemble; this is a predictive decomposition, not a causal effect.</p>",
+            (
+                "<p>For BMA, member removal renormalizes the saved posterior-mean weights of the retained models, without re-estimating model evidence or refitting the posterior. Fixed-weight neutralization instead replaces the omitted model's probabilities with a uniform class distribution while preserving the original BMA weights. These are two distinct predictive counterfactuals, not causal effects or posterior-refit estimates.</p>"
+                if bma
+                else "<p>Leave-one-member-out influence measures how much the final MPMA-E predicted probability changes when one constituent is omitted and the remaining ensemble is recomputed. Larger mean absolute changes indicate greater predictive influence within the fitted ensemble; this is a predictive decomposition, not a causal effect.</p>"
+            ),
             _compact_table(table),
+        ]
+    )
+
+
+def _mpma_e_bma_weights_block(target_dir: Path) -> str:
+    metadata = _read_json(target_dir / "explained_unit.json")
+    if metadata.get("aggregation_strategy") != "bayesian_model_averaging":
+        return ""
+    frame = _read_table(target_dir / "bma_member_weights.parquet")
+    if frame.empty:
+        return ""
+    manifest = _read_json(target_dir / "member_native" / "manifest.json")
+    members = {
+        int(member["member_no"]): member
+        for member in manifest.get("members", [])
+        if isinstance(member, dict) and str(member.get("member_no", "")).isdigit()
+    }
+    rows = []
+    for _, record in frame.sort_values("member_no").iterrows():
+        number = int(record["member_no"])
+        meta = members.get(number, {})
+        weight = float(record["posterior_mean_weight"])
+        sd = pd.to_numeric(
+            pd.Series([record.get("posterior_weight_sd")]), errors="coerce"
+        ).iloc[0]
+        lower = pd.to_numeric(
+            pd.Series([record.get("posterior_weight_q025")]), errors="coerce"
+        ).iloc[0]
+        upper = pd.to_numeric(
+            pd.Series([record.get("posterior_weight_q975")]), errors="coerce"
+        ).iloc[0]
+        rows.append(
+            {
+                "Member": f"Member {number}",
+                "Learner": str(meta.get("learner", "")).replace("_", " "),
+                "Posterior mean weight": f"{weight:.4f}",
+                "Bootstrap SD": f"{float(sd):.4f}" if pd.notna(sd) else "",
+                "Bootstrap 95% interval": (
+                    f"[{float(lower):.4f}, {float(upper):.4f}]"
+                    if pd.notna(lower) and pd.notna(upper)
+                    else ""
+                ),
+            }
+        )
+    if not rows:
+        return ""
+    method = (
+        str(frame["weight_method"].iloc[0]) if "weight_method" in frame else "unknown"
+    )
+    return "".join(
+        [
+            "<h4>Bayesian-bootstrap ensemble weights</h4>",
+            f"<p>Stored aggregation uses {html.escape(method)}. Explanations propagate member SHAP contributions using the saved posterior-mean probabilities. Weight intervals describe bootstrap variation but are not propagated into SHAP uncertainty; pseudo-BMA is not evidence-based marginal-likelihood Bayesian model averaging.</p>",
+            _compact_table(pd.DataFrame(rows)),
         ]
     )
 
@@ -794,6 +863,9 @@ def _explainability_report_blocks(
             )
 
         if label == "MPMA-E":
+            weight_block = _mpma_e_bma_weights_block(target_dir)
+            if weight_block:
+                parts.append(weight_block)
             influence_block = _mpma_e_member_influence_block(target_dir)
             if influence_block:
                 parts.append(influence_block)

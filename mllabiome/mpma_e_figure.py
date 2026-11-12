@@ -1483,6 +1483,7 @@ def aggregation_endpoint_label(agg: Any) -> str:
     mapping = {
         "mean_proba": "mean\nprobability",
         "weighted_mean_proba": "weighted\nprobability\naverage",
+        "cawpe": "CV accuracy\nweighted\nprobabilities",
         "median_proba": "median\nprobability",
         "trimmed_mean": "trimmed\nmean",
         "geometric_mean": "geometric\nmean",

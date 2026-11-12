@@ -200,7 +200,9 @@ class UnlabeledDataset:
     subject_ids: list[str]
 
 
-def load_inference_dataset(spec: Any, training: Dataset, training_spec: Data) -> UnlabeledDataset:
+def load_inference_dataset(
+    spec: Any, training: Dataset, training_spec: Data
+) -> UnlabeledDataset:
     sample_id_col = spec.sample_id_col or training_spec.sample_id_col
     train_format = str(training_spec.format).strip().casefold().replace("-", "_")
     if train_format == "auto":
@@ -212,14 +214,22 @@ def load_inference_dataset(spec: Any, training: Dataset, training_spec: Data) ->
         )
     specified_format = str(spec.format).strip().casefold().replace("-", "_")
     inference_format = train_format if specified_format == "same" else specified_format
-    matrix_formats = {"mllab", "matrix_tsv", "metaphlan", "metaphlan_tsv", "profile_tsv"}
+    matrix_formats = {
+        "mllab",
+        "matrix_tsv",
+        "metaphlan",
+        "metaphlan_tsv",
+        "profile_tsv",
+    }
     wide_formats = {"csv", "wide_csv"}
     if train_format not in matrix_formats | wide_formats:
         raise ValueError(f"Unsupported training format {train_format!r}.")
     if inference_format not in matrix_formats | wide_formats:
         raise ValueError(f"Unsupported inference format {inference_format!r}.")
     if (train_format in matrix_formats) != (inference_format in matrix_formats):
-        raise ValueError("Training and inference formats must belong to the same format family.")
+        raise ValueError(
+            "Training and inference formats must belong to the same format family."
+        )
 
     metadata = None
     if spec.metadata_path is not None:
@@ -238,8 +248,14 @@ def load_inference_dataset(spec: Any, training: Dataset, training_spec: Data) ->
             alternatives = [
                 name
                 for name in candidate.columns
-                if "".join(character for character in name.casefold() if character.isalnum())
-                == "".join(character for character in sample_id_col.casefold() if character.isalnum())
+                if "".join(
+                    character for character in name.casefold() if character.isalnum()
+                )
+                == "".join(
+                    character
+                    for character in sample_id_col.casefold()
+                    if character.isalnum()
+                )
             ]
             if len(alternatives) == 1:
                 metadata = candidate.rename(columns={alternatives[0]: sample_id_col})
@@ -262,13 +278,17 @@ def load_inference_dataset(spec: Any, training: Dataset, training_spec: Data) ->
     if inference_format in matrix_formats:
         path = Path(spec.abundance_path)
         if metadata is not None:
-            abundance, sample_ids = _read_feature_by_sample_tsv(path, metadata[sample_id_col].tolist())
+            abundance, sample_ids = _read_feature_by_sample_tsv(
+                path, metadata[sample_id_col].tolist()
+            )
         else:
             header = _first_nonempty_tsv_row(path)
             if _taxonomic_rank(header[0].lstrip("#").strip()) is not None:
                 numeric_header = pd.to_numeric(pd.Series(header[1:]), errors="coerce")
                 if len(numeric_header) and numeric_header.notna().all():
-                    raise ValueError("Headerless inference matrices require sample metadata.")
+                    raise ValueError(
+                        "Headerless inference matrices require sample metadata."
+                    )
             abundance = pd.read_csv(path, sep="\t", index_col=0, low_memory=False)
             abundance.index = abundance.index.astype(str).str.strip()
             abundance.columns = abundance.columns.astype(str).str.strip()
@@ -285,16 +305,22 @@ def load_inference_dataset(spec: Any, training: Dataset, training_spec: Data) ->
 
     if not sample_ids or not feature_names:
         raise ValueError("Inference data contains no samples or no features.")
-    if any(not sample_id for sample_id in sample_ids) or len(sample_ids) != len(set(sample_ids)):
+    if any(not sample_id for sample_id in sample_ids) or len(sample_ids) != len(
+        set(sample_ids)
+    ):
         raise ValueError("Inference sample IDs must be nonempty and unique.")
     if len(feature_names) != len(set(feature_names)):
         raise ValueError("Inference feature names must be unique.")
     if values.isna().any().any():
-        raise ValueError("Inference abundance matrix contains missing or non-numeric values.")
+        raise ValueError(
+            "Inference abundance matrix contains missing or non-numeric values."
+        )
     X = values.to_numpy(dtype=np.float32)
     if not np.isfinite(X).all() or np.any(X < 0):
         raise ValueError("Inference abundance values must be finite and nonnegative.")
-    if not spec.allow_training_sample_overlap and set(sample_ids).intersection(training.sample_ids):
+    if not spec.allow_training_sample_overlap and set(sample_ids).intersection(
+        training.sample_ids
+    ):
         raise ValueError("Inference sample IDs overlap the training cohort.")
 
     expected = list(training.feature_names_by_level["all"])
@@ -312,7 +338,9 @@ def load_inference_dataset(spec: Any, training: Dataset, training_spec: Data) ->
         if name in provided:
             aligned[:, index] = X[:, provided[name]]
 
-    names_by_level = {level: list(names) for level, names in training.feature_names_by_level.items()}
+    names_by_level = {
+        level: list(names) for level, names in training.feature_names_by_level.items()
+    }
     expected_positions = {name: index for index, name in enumerate(expected)}
     X_by_level = {
         level: aligned[:, [expected_positions[name] for name in names]]
@@ -322,11 +350,15 @@ def load_inference_dataset(spec: Any, training: Dataset, training_spec: Data) ->
         indexed_metadata = metadata.set_index(sample_id_col)
         unknown = [name for name in sample_ids if name not in indexed_metadata.index]
         if unknown:
-            raise ValueError(f"Inference metadata is missing {len(unknown)} sample IDs.")
+            raise ValueError(
+                f"Inference metadata is missing {len(unknown)} sample IDs."
+            )
     subject_id_col = training_spec.subject_id_col
     subject_ids = (
         indexed_metadata.loc[sample_ids, subject_id_col].astype(str).tolist()
-        if metadata is not None and subject_id_col is not None and subject_id_col in metadata.columns
+        if metadata is not None
+        and subject_id_col is not None
+        and subject_id_col in metadata.columns
         else list(sample_ids)
     )
     return UnlabeledDataset(X_by_level, names_by_level, list(sample_ids), subject_ids)
@@ -672,7 +704,9 @@ def _encode_y(
 def _reserved_wide_csv_columns(spec: Data, target_col: str) -> set[str]:
     reserved = {spec.sample_id_col, target_col, *metadata_columns(spec)}
     if spec.joint or spec.task == "multilabel":
-        reserved.update((spec.target_col,) if isinstance(spec.target_col, str) else spec.target_col)
+        reserved.update(
+            (spec.target_col,) if isinstance(spec.target_col, str) else spec.target_col
+        )
     if spec.subject_id_col:
         reserved.add(spec.subject_id_col)
     if spec.group_col:
@@ -1046,20 +1080,6 @@ def _dataset_from_feature_matrix(
 
 
 def _taxonomic_rank(name: str) -> str | None:
-    text = str(name)
-    order = [
-        ("strain", ["___t__", "|t__", ";t__", " t__"]),
-        ("species", ["___s__", "|s__", ";s__", " s__"]),
-        ("genus", ["___g__", "|g__", ";g__", " g__"]),
-        ("family", ["___f__", "|f__", ";f__", " f__"]),
-        ("order", ["___o__", "|o__", ";o__", " o__"]),
-        ("class", ["___c__", "|c__", ";c__", " c__"]),
-        ("phylum", ["___p__", "|p__", ";p__", " p__"]),
-        ("domain", ["d__", "k__", "|k__", ";k__"]),
-    ]
-    for level, markers in order:
-        if any(
-            marker in text or text.startswith(marker.strip("|; ")) for marker in markers
-        ):
-            return level
-    return None
+    from .taxonomy_features import taxonomic_rank
+
+    return taxonomic_rank(name)

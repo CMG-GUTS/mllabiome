@@ -20,9 +20,11 @@ TARGETS = (
 )
 
 DATA = mll.Data(
-    abundance_path=Path("examples/multi-target-joint-optimization/data") / "simulated_biome_rdoc_signal.tsv",
+    abundance_path=Path("examples/multi-target-joint-optimization/data")
+    / "simulated_biome_rdoc_signal.tsv",
     metadata=mll.Metadata(
-        metadata_path=Path("examples/multi-target-joint-optimization/data") / "simulated_metadata_rdoc_regression_with_rdoc_targets.tsv",
+        metadata_path=Path("examples/multi-target-joint-optimization/data")
+        / "simulated_metadata_rdoc_regression_with_rdoc_targets.tsv",
     ),
     format="mllab",
     sample_id_col="Deelnemerscode",
@@ -96,10 +98,12 @@ MODELS = (
     ),
     (
         "JointPLS_4",
-        Pipeline((
-            ("scaler", StandardScaler()),
-            ("model", PLSRegression(n_components=4)),
-        )),
+        Pipeline(
+            (
+                ("scaler", StandardScaler()),
+                ("model", PLSRegression(n_components=4)),
+            )
+        ),
     ),
 )
 
@@ -144,4 +148,3 @@ SWEEP = mll.Sweep(
     ensemble=ENSEMBLE,
     explainability=EXPLAINABILITY,
 )
-

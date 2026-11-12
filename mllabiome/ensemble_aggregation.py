@@ -12,6 +12,7 @@ from .advanced_ensemble import ADVANCED_AGGREGATIONS, apply_advanced_aggregation
 SUPPORTED_AGGREGATIONS: tuple[str, ...] = (
     "mean_proba",
     "weighted_mean_proba",
+    "cawpe",
     "median_proba",
     "trimmed_mean_proba",
     "geometric_mean_proba",
@@ -42,11 +43,14 @@ LEARNED_AGGREGATIONS = frozenset(
     }
 )
 
-LINEAR_PROBABILITY_AGGREGATIONS = frozenset({"mean_proba", "weighted_mean_proba"})
+LINEAR_PROBABILITY_AGGREGATIONS = frozenset(
+    {"mean_proba", "weighted_mean_proba", "cawpe"}
+)
 PROBABILITY_PRESERVING_AGGREGATIONS = frozenset(
     {
         "mean_proba",
         "weighted_mean_proba",
+        "cawpe",
         "median_proba",
         "trimmed_mean_proba",
         "geometric_mean_proba",
@@ -86,11 +90,9 @@ def effective_aggregation_weights(
         if int(n_members) < 1:
             raise ValueError("Cannot aggregate an empty ensemble.")
         return np.full(int(n_members), 1.0 / float(n_members), dtype=float)
-    if method == "weighted_mean_proba":
+    if method in {"weighted_mean_proba", "cawpe"}:
         if weights is None:
-            raise ValueError(
-                "weighted_mean_proba requires learned/stored member weights."
-            )
+            raise ValueError(f"{method} requires stored member weights.")
         return normalise_weights(weights, int(n_members))
     return None
 
@@ -248,7 +250,7 @@ def aggregate_member_predictions(
 
     if method == "mean_proba":
         proba = np.mean(stack, axis=0)
-    elif method == "weighted_mean_proba":
+    elif method in {"weighted_mean_proba", "cawpe"}:
         w = effective_aggregation_weights(method, stack.shape[0], weights)
         assert w is not None
         proba = np.tensordot(w, stack, axes=(0, 0))
@@ -297,6 +299,18 @@ def aggregate_member_predictions(
         proba = softmax(log_pool, axis=1)
     elif method in {"ecdf_weighted_quantile", "ecdf_learned_quantile"}:
         proba = ecdf_weighted_quantile(stack, parameters)
+    elif method == "bayesian_model_averaging" and stack.shape[0] == 1:
+        if (
+            not isinstance(parameters, Mapping)
+            or parameters.get("kind") != "bayesian_model_averaging"
+            or int(parameters.get("n_members", -1)) != 1
+            or int(parameters.get("n_classes", -1)) != stack.shape[2]
+            or list(parameters.get("member_weights", [])) != [1.0]
+        ):
+            raise ValueError(
+                "Singleton Bayesian averaging requires matching identity aggregation parameters."
+            )
+        proba = stack[0].copy()
     elif method in ADVANCED_AGGREGATIONS:
         proba = apply_advanced_aggregation(stack, parameters)
     else:

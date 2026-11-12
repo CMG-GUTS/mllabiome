@@ -74,10 +74,22 @@ from .modalities import (
     Samples,
     load_modalities,
 )
+from .metaphlan_unifrac import MetaPhlAnUniFracPCoA
+from .phylogenetic_unifrac import (
+    GeneralizedUniFracPCoA,
+    generalized_unifrac_distance_matrix,
+)
 from .pipeline import run_all, run_explore, run_inference, run_robustness
 from .report import write_report
 from .resolutions import materialize_mpdr
 from .siamcat import SIAMCATClassifier
+from .seldon import (
+    SeldonClassifier,
+    SeldonRegressor,
+    SeldonMiniClassifier,
+    SeldonMiniRegressor,
+    SeldonDependencyError,
+)
 from .tabdpt import TabDPTClassifier, TabDPTDependencyError
 from .tabicl import TabICLClassifier, TabICLDependencyError
 from .tabfm import TabFMClassifier, TabFMDependencyError
@@ -124,6 +136,9 @@ __all__ = [
     "LimiXClassifier",
     "LimiX2Classifier",
     "LimiX2DependencyError",
+    "MetaPhlAnUniFracPCoA",
+    "GeneralizedUniFracPCoA",
+    "generalized_unifrac_distance_matrix",
     "METRIC_COLUMNS",
     "MPDR",
     "MPMA",
@@ -172,6 +187,11 @@ __all__ = [
     "RidgeSoftmaxClassifier",
     "GroupedRankCalibratedClassifier",
     "SIAMCATClassifier",
+    "SeldonClassifier",
+    "SeldonRegressor",
+    "SeldonMiniClassifier",
+    "SeldonMiniRegressor",
+    "SeldonDependencyError",
     "TabFMClassifier",
     "TabFMDependencyError",
     "TabMClassifier",
@@ -228,6 +248,10 @@ mll = sys.modules[__name__]
 
 from .brain.representations import Brain, BrainRepresentation
 
-from .learner_families import learner_family, learner_family_from_spec, register_learner_family
+from .learner_families import (
+    learner_family,
+    learner_family_from_spec,
+    register_learner_family,
+)
 
 from .joint_mlp import JointMLPClassifier, JointMLPRegressor

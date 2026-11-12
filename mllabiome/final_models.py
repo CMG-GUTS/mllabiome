@@ -192,7 +192,14 @@ def hydrate_final_models(root: Path | str, models: dict[str, Any]) -> dict[str, 
 
 def _member_scores(root: Path, member_ids: list[str], metric: str) -> dict[str, float]:
     metric = canonical_metric_name(metric)
-    inner = _read_table(root / "inner_results" / "inner_results.parquet")
+    inner_path = root / "inner_results" / "inner_results.parquet"
+    if inner_path.is_file() and inner_path.stat().st_size > 0:
+        inner = _read_table(inner_path)
+        inner = inner.loc[inner["config_id"].astype(str).isin(member_ids)].copy()
+    else:
+        from ._config_store import read_configurations
+
+        inner = read_configurations(root, "inner_metrics", member_ids)
     if "config_id" not in inner.columns or metric not in inner.columns:
         raise ValueError(f"inner_results.parquet must contain config_id and {metric!r}")
     inner = inner.copy()
@@ -272,8 +279,8 @@ def _stored_weights(unit: dict[str, Any], member_ids: list[str]) -> list[float] 
             "Stored MPMA-E weights must be finite, non-negative, and have positive total weight"
         )
     arr = arr / float(arr.sum())
-    if int(np.count_nonzero(arr > 1e-8)) < 2:
-        raise ValueError("Weighted MPMA-E requires at least two effective members")
+    if int(np.count_nonzero(arr > 1e-8)) < 1:
+        raise ValueError("Weighted MPMA-E requires positive member weight")
     return [float(value) for value in arr]
 
 
@@ -286,11 +293,27 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
         raise ValueError("Final MPMA-E specification contains no members")
     available = configs["config_id"].astype(str).tolist()
     member_ids = [_resolve_config_id(config_id, available) for config_id in raw_members]
-    if len(member_ids) < 2 or len(set(member_ids)) != len(member_ids):
-        raise ValueError(
-            "Final MPMA-E specification must contain at least two distinct members"
-        )
+    selection_strategy = str(unit.get("selection_strategy", "")).strip()
     aggregation = str(unit.get("aggregation_strategy", "")).strip()
+    allow_singleton = selection_strategy in {
+        "pareto_optimal_auroc_logloss",
+        "pareto_optimal_ml_dl_auroc_logloss",
+        "pareto_optimal_ml_dl_auroc_logloss_capped",
+        "pareto_optimal_taxonomic_rank_auroc_logloss",
+        "pareto_optimal_taxonomic_rank_auroc_logloss_capped",
+    } and aggregation in {
+        "mean_proba",
+        "weighted_mean_proba",
+        "bayesian_model_averaging",
+        "cawpe",
+    }
+    if len(member_ids) < (1 if allow_singleton else 2) or len(set(member_ids)) != len(
+        member_ids
+    ):
+        raise ValueError(
+            "Final MPMA-E specification requires distinct members "
+            "(singleton allowed for Pareto aggregations)."
+        )
     if aggregation not in _SUPPORTED_ENSEMBLES:
         raise ValueError(
             f"Unsupported final MPMA-E aggregation_strategy {aggregation!r}"
@@ -313,7 +336,7 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
     score_map = _member_scores(root, member_ids, member_score_metric)
 
     stored_weights: list[float] | None = None
-    if aggregation in {"weighted_mean_proba", "weighted_mean_prediction"}:
+    if aggregation in {"weighted_mean_proba", "weighted_mean_prediction", "cawpe"}:
         stored_weights = _stored_weights(unit, member_ids)
         if stored_weights is None:
             raise ValueError(
@@ -342,8 +365,46 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
         aggregation_parameters = json.loads(text) if text else {}
     if not isinstance(aggregation_parameters, dict):
         raise ValueError("Final MPMA-E aggregation_parameters must be a JSON object")
+    if aggregation == "cawpe":
+        if (
+            aggregation_parameters.get("kind") != "cawpe"
+            or float(aggregation_parameters.get("alpha", float("nan"))) != 4.0
+        ):
+            raise ValueError(
+                "CAWPE requires stored inner-OOF accuracy provenance and alpha=4."
+            )
+        accuracies = np.asarray(
+            aggregation_parameters.get("cv_accuracy", ()), dtype=float
+        )
+        if (
+            accuracies.shape != (len(member_ids),)
+            or not np.isfinite(accuracies).all()
+            or np.any((accuracies < 0) | (accuracies > 1))
+        ):
+            raise ValueError(
+                "CAWPE saved CV accuracies must match all members and lie within [0, 1]."
+            )
+        reference = np.power(accuracies, 4.0)
+        if (
+            reference.sum() <= 0
+            or stored_weights is None
+            or not np.allclose(
+                np.asarray(stored_weights, dtype=float),
+                reference / reference.sum(),
+                atol=1e-10,
+                rtol=1e-10,
+            )
+        ):
+            raise ValueError(
+                "CAWPE stored weights must equal normalized inner-CV accuracies to the fourth power."
+            )
 
-    if aggregation in {"ecdf_learned_quantile", "sparse_nonnegative_stacking", "bayesian_model_averaging", "cross_study_dro"}:
+    if aggregation in {
+        "ecdf_learned_quantile",
+        "sparse_nonnegative_stacking",
+        "bayesian_model_averaging",
+        "cross_study_dro",
+    }:
         learned_weights = np.asarray(
             aggregation_parameters.get("member_weights", ()), dtype=float
         )
@@ -365,7 +426,14 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
             if stored_weights is not None
             else len(member_ids)
         )
-    if effective_count < (1 if aggregation in {"ecdf_learned_quantile", "sparse_nonnegative_stacking", "cross_study_dro"} else 2):
+    singleton_allowed = allow_singleton
+    if effective_count < (
+        1
+        if singleton_allowed
+        or aggregation
+        in {"ecdf_learned_quantile", "sparse_nonnegative_stacking", "cross_study_dro"}
+        else 2
+    ):
         raise ValueError("Final MPMA-E must have sufficient effective members")
     declared_effective = int(unit.get("effective_member_count", effective_count))
     if declared_effective != effective_count:
@@ -423,16 +491,26 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
 
 
 def _validate_outer_predictions(root: Path, models: dict[str, Any]) -> None:
-    outer = _read_table(root / "predictions" / "outer_predictions.parquet")
+    mpma_b = models["MPMA-B"]
+    mpma_e = models.get("MPMA-E")
+    required = [str(mpma_b["config_id"])]
+    if isinstance(mpma_e, dict):
+        required.extend(str(member["config_id"]) for member in mpma_e["members"])
+    required = list(dict.fromkeys(required))
+    outer_path = root / "predictions" / "outer_predictions.parquet"
+    if outer_path.is_file() and outer_path.stat().st_size > 0:
+        outer = _read_table(outer_path)
+    else:
+        from ._config_store import read_configurations
+
+        outer = read_configurations(root, "outer_predictions", required)
     if "config_id" not in outer.columns:
         raise ValueError("outer_predictions.parquet has no config_id")
     available = set(outer["config_id"].astype(str))
-    mpma_b = models["MPMA-B"]
     if str(mpma_b["config_id"]) not in available:
         raise ValueError(
             f"Final MPMA-B config_id {mpma_b['config_id']!r} has no outer predictions"
         )
-    mpma_e = models.get("MPMA-E")
     if isinstance(mpma_e, dict):
         missing = [
             member["config_id"]
@@ -567,7 +645,7 @@ def fixed_strategy_predictions(root: Path | str, strategy: str) -> pd.DataFrame:
             float(member.get("aggregation_weight", member["weight"]))
             for member in unit["members"]
         ]
-        if aggregation == "weighted_mean_proba"
+        if aggregation in {"weighted_mean_proba", "cawpe"}
         else None
     )
     aggregation_parameters = unit.get("aggregation_parameters", {})

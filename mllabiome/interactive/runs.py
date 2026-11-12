@@ -250,7 +250,7 @@ def predict_values(
     else:
         aggregation = str(model["aggregation_strategy"])
         weights = None
-        if aggregation in {"weighted_mean_proba", "weighted_mean_prediction"}:
+        if aggregation in {"weighted_mean_proba", "weighted_mean_prediction", "cawpe"}:
             weights = [
                 float(item.get("aggregation_weight", item.get("weight")))
                 for item in members

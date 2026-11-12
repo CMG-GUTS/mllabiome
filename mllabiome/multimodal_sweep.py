@@ -72,7 +72,7 @@ from .figures import _write_representation_impact_figure
 from .integrations import Integration
 from .integrations import IntegrationModel as IntegrationModel
 from .integrations import integration_modality_sets as integration_modality_sets
-from .learners import fit_classifier
+from .learners import fit_classifier, siamcat_internal_fit_groups
 from .metrics import (
     metric_is_loss,
     _estimator_call,
@@ -286,7 +286,13 @@ def _fit_classification_candidate_fold(
         estimator,
         X_train,
         y[train_idx],
-        None if groups is None else groups[train_idx],
+        siamcat_internal_fit_groups(
+            estimator,
+            y[train_idx],
+            None if groups is None else groups[train_idx],
+            np.asarray(subject_ids, dtype=object)[train_idx],
+            protocol,
+        ),
     )
     synchronize_accelerators()
     fit_end = time.perf_counter_ns()
@@ -1901,7 +1907,13 @@ def fit_modality_candidate_oof_for_explainability(sweep, row):
             clf,
             details["X_train"],
             dataset.y[train_idx],
-            None if groups is None else groups[train_idx],
+            siamcat_internal_fit_groups(
+                clf,
+                dataset.y[train_idx],
+                None if groups is None else groups[train_idx],
+                np.asarray(dataset.subject_ids, dtype=object)[train_idx],
+                str(sweep.evaluation.protocol),
+            ),
         )
         direct_proba = _predict_proba_aligned(clf, details["X_test"], dataset.classes)
         if spec.integration.stage == "intermediate":

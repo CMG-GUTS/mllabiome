@@ -19,7 +19,8 @@ TARGETS = (
 DATA = mll.Data(
     abundance_path=Path("examples/multi-target-joint-optimization/data"),
     metadata=mll.Metadata(
-        metadata_path=Path("examples/multi-target-joint-optimization/data") / "simulated_metadata_rdoc_regression_with_rdoc_targets.tsv",
+        metadata_path=Path("examples/multi-target-joint-optimization/data")
+        / "simulated_metadata_rdoc_regression_with_rdoc_targets.tsv",
     ),
     format="mllab",
     sample_id_col="Deelnemerscode",
@@ -50,9 +51,7 @@ EXPLORE = mll.Explore(
 
 RESOLUTIONS = (
     ("class", ("class",)),
-
     ("family", ("family",)),
-
     ("genus", ("genus",)),
 )
 
@@ -113,7 +112,7 @@ ENSEMBLE = mll.Ensemble(
 )
 
 EXPLAINABILITY = mll.Explainability(
-    targets=("mpma_b", ),
+    targets=("mpma_b",),
     profile="screening",
     methods=(mll.Permutation(n_repeats=5, scoring="log_loss"),),
     top_k=20,
@@ -133,4 +132,3 @@ SWEEP = mll.Sweep(
     ensemble=ENSEMBLE,
     explainability=EXPLAINABILITY,
 )
-

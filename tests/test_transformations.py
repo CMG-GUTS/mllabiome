@@ -30,6 +30,9 @@ EXPECTED_TRANSFORMATIONS = {
     "relative_abundance",
     "presence_absence",
     "hellinger",
+    "sqrt_raw",
+    "rclr",
+    "prevalence_rank_fusion",
     "arcsine_sqrt",
     "log10_relative_abundance_half_min_pseudocount",
     "centered_log_ratio_multiplicative_replacement",
@@ -129,7 +132,8 @@ def _resolution_dataset():
 
 def test_every_builtin_transformation_has_an_explicit_correctness_contract():
     assert {label.key for label in TRANSFORMATION_LABELS} == (
-        EXPECTED_TRANSFORMATIONS | {"qwen3_ollama_embedding"}
+        EXPECTED_TRANSFORMATIONS
+        | {"qwen3_ollama_embedding", "weighted_unifrac", "unweighted_unifrac"}
     )
     qwen_labels = [
         label
@@ -138,6 +142,51 @@ def test_every_builtin_transformation_has_an_explicit_correctness_contract():
     ]
     assert len(qwen_labels) == 1
     assert qwen_labels[0].category == "foundation_embedding"
+    unifrac_labels = [
+        label for label in TRANSFORMATION_LABELS
+        if label.key in {"weighted_unifrac", "unweighted_unifrac"}
+    ]
+    assert len(unifrac_labels) == 2
+    assert all(label.category == "phylogenetic_embedding" for label in unifrac_labels)
+
+
+def test_sqrt_raw_is_elementwise_square_root_of_counts():
+    matrix = np.asarray([[0.0, 1.0, 9.0], [4.0, 16.0, 25.0]])
+    np.testing.assert_allclose(
+        CountTransformation("sqrt_raw").fit_apply(matrix), np.sqrt(matrix)
+    )
+
+
+def test_rclr_centers_logs_over_observed_support_only():
+    matrix = np.asarray([[1.0, 0.0, 9.0], [0.0, 2.0, 8.0]])
+    expected = np.asarray(
+        [[-np.log(3.0), 0.0, np.log(3.0)],
+         [0.0, -np.log(2.0), np.log(2.0)]]
+    )
+    np.testing.assert_allclose(
+        CountTransformation("rclr").fit_apply(matrix), expected
+    )
+
+
+def test_prevalence_rank_fusion_uses_training_prevalence_only():
+    train = np.asarray(
+        [[8.0, 0.0, 2.0], [2.0, 2.0, 0.0],
+         [0.0, 4.0, 1.0], [4.0, 1.0, 0.0]]
+    )
+    test = np.asarray([[3.0, 1.0, 0.0], [1.0, 0.0, 3.0]])
+    prevalence = ((train > 0.0).sum(axis=0) + 0.5) / (len(train) + 1.0)
+    ranks = np.zeros_like(test)
+    for i, row in enumerate(test):
+        observed = row > 0.0
+        ranks[i, observed] = rankdata(row[observed]) / (observed.sum() + 1.0)
+    rel = _relative(test)
+    weighted = _relative(rel * prevalence)
+    expected = 0.25 * ranks + 0.75 * np.log1p(100.0 * weighted) / np.log1p(100.0)
+    fitted = CountTransformation("prevalence_rank_fusion").fit(train)
+    np.testing.assert_allclose(fitted.apply(test), expected)
+    np.testing.assert_allclose(
+        fitted.apply(test[:1]), fitted.apply(test)[0:1]
+    )
 
 
 def test_qwen3_embedding_contract_uses_local_mock_and_training_only_schema(monkeypatch):

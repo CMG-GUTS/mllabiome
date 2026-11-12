@@ -38,6 +38,7 @@ from sklearn.svm import SVC, LinearSVC
 from sklearn.tree import DecisionTreeClassifier
 
 from .estimator_protocol import EstimatorLike, clone_estimator, is_estimator_instance
+from ._evaluation_protocols import is_lodo_protocol
 
 _COMPUTE_ONLY_DISPLAY_PARAMS = {
     "n_jobs",
@@ -118,6 +119,10 @@ _LEARNER_DISPLAY_NAMES = {
     "LimiXClassifier": "LimiX",
     "LimiX2Classifier": "LimiX-2",
     "TabDPTClassifier": "TabDPT",
+    "SeldonClassifier": "Seldon",
+    "SeldonRegressor": "Seldon",
+    "SeldonMiniClassifier": "Seldon Mini",
+    "SeldonMiniRegressor": "Seldon Mini",
     "TabPFNClassifier": "TabPFN",
     "TabICLClassifier": "TabICLv2",
     "TabFMClassifier": "TabFM",
@@ -717,6 +722,47 @@ def _pipeline_group_fit_params(
     return params
 
 
+def siamcat_internal_fit_groups(
+    estimator: EstimatorLike,
+    y: Any,
+    groups: Any,
+    subject_ids: Any,
+    protocol: str,
+) -> np.ndarray | None:
+    if groups is None or not is_lodo_protocol(protocol):
+        return groups
+    from .siamcat import SIAMCATClassifier
+    from .siamcat_splits import make_siamcat_splits
+
+    if not isinstance(estimator, SIAMCATClassifier):
+        return groups
+    labels = np.asarray(y)
+    group_values = np.asarray(groups, dtype=object)
+    if labels.ndim != 1 or group_values.ndim != 1 or len(labels) != len(group_values):
+        raise ValueError("SIAMCAT training groups must align with training labels.")
+    binary = (labels == np.unique(labels)[-1]).astype(int)
+    n_folds = int(estimator.num_folds)
+    try:
+        make_siamcat_splits(
+            binary, group_values, n_folds=n_folds, random_state=estimator.random_state
+        )
+        return group_values
+    except ValueError:
+        pass
+    subjects = np.asarray(subject_ids, dtype=object)
+    if subjects.ndim != 1 or len(subjects) != len(labels):
+        raise ValueError("SIAMCAT subject identifiers must align with training labels.")
+    if len({str(value) for value in subjects}) == len(subjects):
+        make_siamcat_splits(
+            binary, None, n_folds=n_folds, random_state=estimator.random_state
+        )
+        return None
+    make_siamcat_splits(
+        binary, subjects, n_folds=n_folds, random_state=estimator.random_state
+    )
+    return subjects
+
+
 def fit_classifier(estimator: EstimatorLike, X, y, groups=None) -> EstimatorLike:
     _restore_class_weight_keys(estimator, y)
     groups_array = None if groups is None else np.asarray(groups)
@@ -926,6 +972,14 @@ class FLAMLClassifier(BaseEstimator):
 def build_learner(name: str, task: str = "classification") -> BaseEstimator:
     base = str(name).lower()
     if str(task).strip().casefold() == "regression":
+        if base in {"seldon", "seldon_large"}:
+            from .seldon import SeldonRegressor
+
+            return SeldonRegressor()
+        if base in {"seldon_mini", "seldon-mini"}:
+            from .seldon import SeldonMiniRegressor
+
+            return SeldonMiniRegressor()
         if base in {"rf", "rf_500_msl5"}:
             return RandomForestRegressor(
                 n_estimators=500, min_samples_leaf=5, n_jobs=1, random_state=42
@@ -953,6 +1007,14 @@ def build_learner(name: str, task: str = "classification") -> BaseEstimator:
         raise ValueError(
             f"Unknown regression learner {name!r}. Provide (name, estimator) in the sweep config to add it."
         )
+    if base in {"seldon", "seldon_large"}:
+        from .seldon import SeldonClassifier
+
+        return SeldonClassifier()
+    if base in {"seldon_mini", "seldon-mini"}:
+        from .seldon import SeldonMiniClassifier
+
+        return SeldonMiniClassifier()
     if base in {"lr", "lr_l2", "lr_l2_bal", "logistic"}:
         return _logistic_regression(
             kind="l2", max_iter=2000, class_weight="balanced", random_state=42
@@ -1029,7 +1091,7 @@ def build_learner(name: str, task: str = "classification") -> BaseEstimator:
     if base == "siamcat":
         from .siamcat import SIAMCATClassifier
 
-        return _calibrated(SIAMCATClassifier())
+        return SIAMCATClassifier()
     if base.startswith("xgb"):
         mod = importlib.import_module("xgboost")
         return mod.XGBClassifier(

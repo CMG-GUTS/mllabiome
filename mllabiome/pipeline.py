@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from .configs_sweep import Sweep, _target_task, evaluate, sweep_task, target_sweeps
-from .console import info
+from .console import info, success
 from .ensemble_sweep import sweep_ensemble
 from .explore import run_explore as execute_explore
 from .final_explainability import explain
@@ -64,7 +64,14 @@ def run_explore(sweep: Sweep) -> dict[str, Any]:
                 task=target_task,
                 target_col=target,
                 joint=False,
-                metadata_cols=tuple(dict.fromkeys((*sweep.data.metadata_cols, *(name for name in targets if name != target)))),
+                metadata_cols=tuple(
+                    dict.fromkeys(
+                        (
+                            *sweep.data.metadata_cols,
+                            *(name for name in targets if name != target),
+                        )
+                    )
+                ),
             )
             child = replace(
                 sweep,
@@ -125,7 +132,9 @@ def run_ensemble(sweep: Sweep) -> dict[str, Any]:
         return outputs
     if getattr(sweep, "uses_modalities", False):
         outputs = sweep_ensemble(sweep)
+        info("Validating and writing final MPMA model specifications")
         build_final_models(sweep.root())
+        success("Final MPMA model specifications saved")
         result = {
             "ensemble": outputs,
             "final_models": sweep.root() / "final_models.json",
@@ -139,7 +148,9 @@ def run_ensemble(sweep: Sweep) -> dict[str, Any]:
         if _is_multi_target(sweep, children):
             info(f"Ensemble · target {index}/{len(children)} · {child.data.target_col}")
         child_outputs = sweep_ensemble(child)
+        info("Validating and writing final MPMA model specifications")
         build_final_models(child.root())
+        success("Final MPMA model specifications saved")
         target = str(child.data.target_col)
         payload = {
             "ensemble": child_outputs,
@@ -178,9 +189,7 @@ def run_inference(sweep: Sweep) -> dict[str, Any]:
                 info(f"Inference · target {index}/{len(children)} · {target}")
             include_mpma_e = "mpma_e" in child.inference.targets
             with inference_phase(f"Target {target} · rebuild final model selection"):
-                models = build_final_models(
-                    child.root(), include_mpma_e=include_mpma_e
-                )
+                models = build_final_models(child.root(), include_mpma_e=include_mpma_e)
             if tracker is not None:
                 tracker.workflow_step("final model selection resolved")
             with inference_phase(f"Target {target} · deploy selected models"):
@@ -289,8 +298,12 @@ def run_report(sweep: Sweep) -> dict[str, Any]:
 def run_all(sweep: Sweep) -> dict[str, Any]:
     from .joint_sweep import is_joint_sweep
 
-    if is_joint_sweep(sweep) and (sweep.inference is not None or sweep.robustness is not None):
-        raise NotImplementedError("Joint-model inference and robustness require task-aware implementations before running all stages.")
+    if is_joint_sweep(sweep) and (
+        sweep.inference is not None or sweep.robustness is not None
+    ):
+        raise NotImplementedError(
+            "Joint-model inference and robustness require task-aware implementations before running all stages."
+        )
     explore_output: dict[str, Any] = {}
     if not getattr(sweep, "uses_modalities", False):
         info("Pipeline · explore")
@@ -329,8 +342,17 @@ def run_all(sweep: Sweep) -> dict[str, Any]:
 def run_stage(sweep: Sweep, stage_name: str) -> dict[str, Any]:
     from .joint_sweep import is_joint_sweep
 
-    if is_joint_sweep(sweep) and stage_name not in {"all", "explore", "evaluate", "ensemble", "explain", "report"}:
-        raise NotImplementedError(f"Stage {stage_name!r} does not yet support joint multi-target models.")
+    if is_joint_sweep(sweep) and stage_name not in {
+        "all",
+        "explore",
+        "evaluate",
+        "ensemble",
+        "explain",
+        "report",
+    }:
+        raise NotImplementedError(
+            f"Stage {stage_name!r} does not yet support joint multi-target models."
+        )
     if stage_name == "all":
         return run_all(sweep)
     if stage_name == "explore":

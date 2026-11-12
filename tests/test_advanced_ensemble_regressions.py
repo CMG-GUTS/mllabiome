@@ -34,6 +34,7 @@ def test_advanced_aggregation_crossfit_serialization(classes, method):
         stack[member, np.arange(n), labels] += 0.15 + 0.03 * member
         stack[member] /= stack[member].sum(axis=1, keepdims=True)
     folds = np.asarray([f"fold{index % 3}" for index in range(n)])
+    studies = np.asarray([f"study{index % 4}" for index in range(n)])
     crossfit, parameters, diagnostics = ADVANCED.fit_crossfitted_advanced(
         stack,
         labels,
@@ -42,6 +43,7 @@ def test_advanced_aggregation_crossfit_serialization(classes, method):
         "log_loss",
         _log_loss,
         lambda metric: metric == "log_loss",
+        study_keys=studies if method == "cross_study_dro" else None,
     )
     reconstructed = ADVANCED.apply_advanced_aggregation(
         stack, json.loads(json.dumps(parameters))
@@ -66,3 +68,14 @@ def test_advanced_aggregation_rejects_singleton():
     singleton = np.asarray([[[0.8, 0.2], [0.3, 0.7]]], dtype=float)
     with pytest.raises(ValueError, match="at least two members"):
         ADVANCED._probability_matrix(singleton)
+
+
+def test_cross_study_dro_requires_real_study_labels():
+    stack = np.full((2, 6, 2), 0.5)
+    labels = np.asarray([0, 1, 0, 1, 0, 1])
+    folds = np.asarray(["fold0", "fold1", "fold2"] * 2)
+    with pytest.raises(ValueError, match="true study labels"):
+        ADVANCED.fit_crossfitted_advanced(
+            stack, labels, folds, "cross_study_dro", "log_loss",
+            _log_loss, lambda metric: True,
+        )

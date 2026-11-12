@@ -28,26 +28,9 @@ _RANK_PREFIXES = {
 
 
 def _feature_rank_from_name(name: Any) -> str | None:
+    from .taxonomy_features import taxonomic_rank
 
-    parts = [
-        part.strip().lower()
-        for part in re.split(r"[|;,\t]+", str(name))
-        if part.strip()
-    ]
-
-    found: list[str] = []
-
-    for part in parts:
-        for level in TAXONOMIC_LEVELS:
-            if any(part.startswith(prefix) for prefix in _RANK_PREFIXES[level]):
-                found.append(level)
-
-                break
-
-    if not found:
-        return None
-
-    return max(found, key=TAXONOMIC_LEVELS.index)
+    return taxonomic_rank(name)
 
 
 def _canonical_level(level: str) -> str:
