@@ -147,3 +147,4 @@ scripts/audit_mllabiome_completeness.py
 scripts/plot_audit_pool_pareto.py
 scripts/plot_audit_pool_pareto_readable_v3.py
 scripts
+examples/campp-standalone-universal/campp_submission.zip
