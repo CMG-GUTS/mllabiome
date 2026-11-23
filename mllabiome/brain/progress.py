@@ -1,9 +1,7 @@
 from __future__ import annotations
-
 from contextvars import ContextVar, Token
 from time import perf_counter
 from typing import Self
-
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -16,9 +14,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 from rich.text import Text
-
 from ..console import console, info, success
-
 
 _ACTIVE: ContextVar[BrainProgress | None] = ContextVar(
     "mllabiome_brain_progress", default=None

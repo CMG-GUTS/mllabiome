@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import os
 import platform
 import subprocess
@@ -13,7 +12,6 @@ try:
     import psutil
 except Exception:
     psutil = None
-
 try:
     import resource
 except Exception:

@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import bz2
 import csv
 import hashlib
@@ -10,9 +9,7 @@ import urllib.request
 import warnings
 from pathlib import Path
 from typing import Any
-
 import numpy as np
-
 from .taxonomy_features import (
     RANKS,
     lineage_matches,
@@ -20,7 +17,6 @@ from .taxonomy_features import (
     taxonomic_rank,
     taxonomic_tokens,
 )
-
 
 _REFERENCE_ROOT = "https://cmprod1.cibio.unitn.it/biobakery4/metaphlan_databases"
 _SUPPORTED_REFERENCES = (
@@ -185,7 +181,6 @@ def _resolve_named_taxa(
             by_feature[index] = found
         else:
             unusable.append(name)
-
     visited: dict[str, str] = {}
     for index, members in by_feature.items():
         for sgb in members:

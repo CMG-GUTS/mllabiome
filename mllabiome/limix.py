@@ -1,11 +1,9 @@
 from __future__ import annotations
-
 import importlib
 import os
 from importlib import resources
 from pathlib import Path
 from typing import Any
-
 from .limix2 import LimiX2Classifier, LimiX2DependencyError
 
 

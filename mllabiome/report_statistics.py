@@ -1,15 +1,12 @@
 from __future__ import annotations
-
 import hashlib
 import itertools
 import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
-
 from .diagnostic_statistics import (
     _confusion_rows,
     _decision_curve_grid,

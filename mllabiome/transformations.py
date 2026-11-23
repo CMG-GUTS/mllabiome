@@ -1,12 +1,10 @@
 from __future__ import annotations
-
 import copy
 import hashlib
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
-
 import numpy as np
 import pandas as pd
 from scipy.stats import rankdata
@@ -22,7 +20,6 @@ from sklearn.preprocessing import (
     RobustScaler,
     StandardScaler,
 )
-
 from .utils import _as_float_matrix
 
 
@@ -604,14 +601,12 @@ class _BuiltinTransformer:
             self.n_features_out_ = int(raw.shape[1])
         if name == "log10_relative_abundance_half_min_pseudocount":
             rel = _relative_abundance(X)
-
             positive = rel[rel > 0]
             if positive.size == 0:
                 raise ValueError(
                     "Cannot estimate a log-relative-abundance pseudocount "
                     "without positive abundances."
                 )
-
             self.pseudocount_ = float(positive.min()) / 2.0
         elif name == "standardize":
             self.scaler_ = StandardScaler().fit(raw)
@@ -747,7 +742,6 @@ class _BuiltinTransformer:
         if name == "log10_relative_abundance_half_min_pseudocount":
             if self.pseudocount_ is None:
                 raise RuntimeError("Transformation has not been fitted.")
-
             return _finite_output(
                 np.log10(_relative_abundance(X) + self.pseudocount_),
                 expected_shape=expected_shape,

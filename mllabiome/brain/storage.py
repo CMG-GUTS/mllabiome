@@ -1,18 +1,14 @@
 from __future__ import annotations
-
 import hashlib
 import json
 import shutil
 from contextlib import contextmanager
 from collections.abc import Iterator
-
 from filelock import FileLock
 from pathlib import Path
 from typing import Iterable
-
 import numpy as np
 import pandas as pd
-
 from .cache import atomic_path
 
 

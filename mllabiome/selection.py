@@ -1,11 +1,8 @@
 from __future__ import annotations
-
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
-
 from .selection_policy import rank_auroc_log_loss
 from .metrics import (
     aggregate_validation_metric,
@@ -15,6 +12,7 @@ from .metrics import (
     metric_is_loss,
 )
 from .storage import read_table, table_exists, write_table
+from . import cooperative_store
 from .transformations import _count_transformation_name
 from .utils import CLASSIFICATION_METRIC_COLUMNS, dump_json_standard
 from .mpma_vnext import consensus_medoid, choose_softening, soften_probabilities
@@ -782,6 +780,7 @@ def write_mpma_b_selection_outputs(
         or not table_exists(configs_path)
     ):
         return {}
+    cooperative_store.report_phase("Loading inner-fold evaluation metrics")
     inner = read_table(inner_path)
     required_columns = {
         "split_key",
@@ -799,7 +798,6 @@ def write_mpma_b_selection_outputs(
         "pareto_best_inner_ideal",
     }:
         required_columns.add("MCC")
-
     if inner.empty or not required_columns.issubset(inner.columns):
         return {}
     use_oof = (
@@ -811,12 +809,15 @@ def write_mpma_b_selection_outputs(
         if use_oof
         else None
     )
+    cooperative_store.report_phase("Loading outer-fold predictions")
     outer_predictions = read_table(outer_pred_path)
+    cooperative_store.report_phase("Loading configuration metadata")
     configs = read_table(configs_path)
     qualification_path = root / "tables" / "qualification_gate.parquet"
     qualification = (
         read_table(qualification_path) if table_exists(qualification_path) else None
     )
+    cooperative_store.report_phase("Selecting MPMA-B across outer CV folds")
     selection = select_mpma_b_by_outer_fold(
         inner,
         configs,
@@ -831,6 +832,7 @@ def write_mpma_b_selection_outputs(
     )
     fold_metrics = mpma_b_fold_metrics(selected_predictions)
     summary = summarize_mpma_b_strategy(fold_metrics)
+    cooperative_store.report_phase("Selecting the final MPMA-B candidate")
     final_candidate = select_final_mpma_candidate(
         inner,
         configs,
@@ -851,6 +853,7 @@ def write_mpma_b_selection_outputs(
     fold_metrics_path = results_dir / "mpma_b_outer_results.parquet"
     summary_path = tables_dir / "mpma_b_strategy_summary.json"
     final_path = tables_dir / "mpma_b_final_candidate.json"
+    cooperative_store.report_phase("Publishing MPMA-B selection artifacts")
     write_table(selection_path, selection)
     write_table(prediction_path, selected_predictions)
     write_table(fold_metrics_path, fold_metrics)

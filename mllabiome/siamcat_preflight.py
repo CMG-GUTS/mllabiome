@@ -1,10 +1,7 @@
 from __future__ import annotations
-
 import argparse
 import sys
-
 import numpy as np
-
 from .siamcat import SIAMCATClassifier
 from .siamcat_runtime import ensure_siamcat_runtime, diagnose_siamcat_compiled_packages
 
@@ -33,7 +30,6 @@ def main(argv: list[str] | None = None) -> int:
         "--rscript", default=None, help="Path to a compatible Rscript 4.6.x"
     )
     args = parser.parse_args(argv)
-
     estimator = SIAMCATClassifier(runtime=args.runtime, rscript=args.rscript, verbose=1)
     script = estimator._r_runner_resource()
     if not script.is_file():
@@ -57,7 +53,6 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
         return 0
-
     runtime = ensure_siamcat_runtime(runtime=args.runtime, rscript=args.rscript)
     print(
         f"OK: R {runtime.r_version}, SIAMCAT {runtime.siamcat_version}, Rscript={runtime.rscript}",

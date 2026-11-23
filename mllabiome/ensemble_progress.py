@@ -1,9 +1,7 @@
 from __future__ import annotations
-
 from typing import Any
 from threading import Event, RLock, Thread
 from time import monotonic
-
 from .console import progress
 
 

@@ -1,14 +1,11 @@
 from __future__ import annotations
-
 import logging
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from queue import Empty
 from threading import Event, Thread
 from typing import Any
-
 from threadpoolctl import threadpool_limits
-
 from .console import progress
 from .runtime import iter_parallel_tasks, resolve_execution_plan, thread_environment
 from .sweep_types import Sweep

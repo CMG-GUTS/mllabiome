@@ -1,18 +1,14 @@
 from __future__ import annotations
-
 import json
 import re
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
-
 from .brainharmonix import BrainHarmonixFEncoder
 from .fmriprep import discover_fmriprep_runs
 from .representations import _resolved_brain
 from .timeseries import extract_schaefer400
 from .traceability import Schaefer400Provenance
-
 
 _PATTERN = re.compile(r"(?:^|__)bhf_(\d{3})$")
 

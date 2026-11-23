@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import numpy as np
 from scipy.special import expit
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin

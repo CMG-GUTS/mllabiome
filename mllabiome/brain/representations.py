@@ -1,15 +1,12 @@
 from __future__ import annotations
-
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
-
 import numpy as np
 import pandas as pd
-
 from .atlas import load_schaefer_atlas, schaefer_atlas
 from .cache import (
     BrainCache,
@@ -40,7 +37,6 @@ from .labus_2019 import (
 from .source import BrainSource
 from .structural import discover_tissue_maps, tissue_volumes
 from .timeseries import BOLDPreprocessing, extract_schaefer_timeseries
-
 
 FUNCTIONAL_METHODS = frozenset(
     {

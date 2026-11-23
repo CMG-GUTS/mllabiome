@@ -1,8 +1,6 @@
 from __future__ import annotations
-
 from dataclasses import replace
 from typing import Any
-
 from .data import Data
 from .explainability_methods import Permutation
 from .sweep_types import Explainability, Sweep, _normalise_sweep_task

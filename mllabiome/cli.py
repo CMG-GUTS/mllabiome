@@ -1,13 +1,10 @@
 from __future__ import annotations
-
 import argparse
 import importlib.util
 import sys
 import webbrowser
 from pathlib import Path
-
 from rich.traceback import install as install_rich_traceback
-
 from .configs_sweep import Sweep, build_sweep_from_module
 from .console import error, info, progress, stage, success, warn
 from .figure_export import export_svg_tree
@@ -54,6 +51,7 @@ def main(argv: list[str] | None = None) -> None:
             "all",
             "explore",
             "evaluate",
+            "base-selection",
             "federated-evaluate",
             "ensemble",
             "inference",

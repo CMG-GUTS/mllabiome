@@ -134,3 +134,16 @@ __pycache__/
 *.pyc
 manuscript_biorxiv
 manuscript_figures
+
+mllabiome 2.zip
+mllabiome/_hara_v028_runtime/
+mllabiome/balanced_kumo.py
+mllabiome/cooperative_store.py
+mllabiome/hara_v028.py
+mllabiome/hara_v028_preflight.py
+mllabiome_completeness.html
+pareto_figures/
+scripts/audit_mllabiome_completeness.py
+scripts/plot_audit_pool_pareto.py
+scripts/plot_audit_pool_pareto_readable_v3.py
+scripts

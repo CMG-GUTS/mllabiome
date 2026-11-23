@@ -1,13 +1,10 @@
 from __future__ import annotations
-
 import json
 from itertools import combinations
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
-
 from .console import path_table, stage, success
 from .data import load_dataset, metadata_spec
 from .metrics import compute_metrics, compute_regression_metrics
@@ -29,7 +26,6 @@ _CALIBRATION_METRICS = (
     "CalibrationIntercept_macro_OvR",
     "CalibrationSlope_macro_OvR",
 )
-
 _CLASSIFICATION_ROBUSTNESS_METRICS = (
     tuple(
         metric
@@ -38,7 +34,6 @@ _CLASSIFICATION_ROBUSTNESS_METRICS = (
     )
     + _CALIBRATION_METRICS
 )
-
 _BINARY_CONTRAST_METRICS = ("AUROC", "AP", "log_loss", "brier", "MCC", "BalAcc")
 _MULTICLASS_CONTRAST_METRICS = (
     "AUROC_macro",

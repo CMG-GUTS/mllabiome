@@ -1,14 +1,11 @@
 from __future__ import annotations
-
 import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
-
 from .data import (
     Dataset,
     _dataset_from_feature_matrix,

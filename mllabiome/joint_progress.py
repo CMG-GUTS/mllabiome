@@ -1,13 +1,10 @@
 from __future__ import annotations
-
 import math
 from collections import defaultdict
-
 import numpy as np
 from rich import box
 from rich.live import Live
 from rich.table import Table
-
 from .console import console, info, summary_table
 
 

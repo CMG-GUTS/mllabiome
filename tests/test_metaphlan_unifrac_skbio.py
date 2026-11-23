@@ -63,7 +63,9 @@ def test_rank_selection_and_reference_mismatch(reference_tree):
     assert model.selected_rank_ == "species"
     model.bind_schema(["t__SGB1", "t__SGB4"])
     assert model.selected_rank_ == "strain"
-    with pytest.raises(ValueError, match="at least two distinct reference-matched phylogenetic tips"):
+    with pytest.raises(
+        ValueError, match="at least two distinct reference-matched phylogenetic tips"
+    ):
         model.fit(np.array([[1, 19], [10, 10]], dtype=float))
 
 

@@ -1,14 +1,11 @@
 from __future__ import annotations
-
 import itertools
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
-
 import numpy as np
 import pandas as pd
-
 from .integrations import Integration, IntegrationModel, integration_modality_sets
 from .metrics import _estimator_call
 from .modalities import ModalityDataset

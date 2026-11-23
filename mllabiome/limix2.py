@@ -1,22 +1,23 @@
 from __future__ import annotations
-
 import importlib
 import os
 from importlib import resources
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 from scipy import sparse
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.preprocessing import LabelEncoder
 from sklearn.utils.validation import check_is_fitted
-
 from ._limix2_compat import (
     ensure_limix_torch_norm_interface,
     optional_limix_triton,
     _mps_float32_context,
 )
+
+LIMIX2_REPO_ID = "stable-ai/LimiX-2-1016"
+LIMIX2_FILENAME = "LimiX-2-1016.ckpt"
+LIMIX2_REVISION = "bbbf26c5316c6f2f7a994063447ab3deaedc8ec5"
 
 
 class LimiX2DependencyError(ImportError):
@@ -111,7 +112,11 @@ class LimiX2Classifier(ClassifierMixin, BaseEstimator):
                 "Install the limix2 optional dependency or pass model_path."
             ) from exc
         return str(
-            hub.hf_hub_download(repo_id="stable-ai/LimiX-2", filename="LimiX-2.ckpt")
+            hub.hf_hub_download(
+                repo_id=LIMIX2_REPO_ID,
+                filename=LIMIX2_FILENAME,
+                revision=LIMIX2_REVISION,
+            )
         )
 
     def _config_path(self) -> str:
@@ -133,6 +138,11 @@ class LimiX2Classifier(ClassifierMixin, BaseEstimator):
             ) from exc
 
     def fit(self, X: Any, y: Any, groups: Any = None):
+        if self.use_data_cache:
+            raise ValueError(
+                "LimiX-2-1016 does not support use_data_cache=True: "
+                "cached preprocessing is not keyed by training data."
+            )
         if (
             isinstance(self.random_state, (bool, np.bool_))
             or not isinstance(self.random_state, (int, np.integer))

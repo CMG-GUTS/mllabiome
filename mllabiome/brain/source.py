@@ -1,14 +1,11 @@
 from __future__ import annotations
-
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 import hashlib
 import json
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Callable, Mapping
-
 import pandas as pd
-
 from .timeseries import BOLDPreprocessing
 from .progress import active_progress
 

@@ -1,11 +1,8 @@
 from __future__ import annotations
-
 from pathlib import Path
 from typing import Mapping
-
 import numpy as np
 import pandas as pd
-
 from .traceability import Schaefer400Provenance
 
 

@@ -1,8 +1,6 @@
 from __future__ import annotations
-
 from itertools import combinations
 from typing import Any
-
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold

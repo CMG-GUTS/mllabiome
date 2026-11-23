@@ -1,11 +1,9 @@
 from __future__ import annotations
-
 import importlib
 import inspect
 import warnings
 from collections.abc import Callable
 from typing import Any
-
 import numpy as np
 from sklearn import config_context, get_config
 from sklearn.base import BaseEstimator
@@ -36,7 +34,6 @@ from sklearn.neighbors import KNeighborsClassifier, NearestCentroid
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC, LinearSVC
 from sklearn.tree import DecisionTreeClassifier
-
 from .estimator_protocol import EstimatorLike, clone_estimator, is_estimator_instance
 from ._evaluation_protocols import is_lodo_protocol
 
@@ -54,7 +51,6 @@ _COMPUTE_ONLY_DISPLAY_PARAMS = {
     "time_budget",
     "n_preprocessing_jobs",
 }
-
 _DISPLAY_PARAM_PRIORITY = (
     "n_estimators",
     "max_depth",
@@ -85,7 +81,6 @@ _DISPLAY_PARAM_PRIORITY = (
     "p",
     "var_smoothing",
 )
-
 _LEARNER_DISPLAY_NAMES = {
     "RandomForestClassifier": "Random forest",
     "RandomForestRegressor": "Random forest",
@@ -117,7 +112,7 @@ _LEARNER_DISPLAY_NAMES = {
     "KumoTabularClassifier": "Kumo Tabular",
     "KumoTabularRegressor": "Kumo Tabular",
     "LimiXClassifier": "LimiX",
-    "LimiX2Classifier": "LimiX-2",
+    "LimiX2Classifier": "LimiX-2-1016",
     "TabDPTClassifier": "TabDPT",
     "SeldonClassifier": "Seldon",
     "SeldonRegressor": "Seldon",
@@ -803,7 +798,6 @@ def _require_probability_estimator(estimator: EstimatorLike) -> EstimatorLike:
 
 
 def validate_model_specs(models: Any, *, context: str = "MODELS") -> None:
-
     if isinstance(models, dict):
         if not models:
             raise TypeError(f"{context} must not be empty.")
@@ -1084,6 +1078,10 @@ def build_learner(name: str, task: str = "classification") -> BaseEstimator:
         return FLAMLClassifier(
             time_budget=600, metric="roc_auc", n_jobs=1, random_state=42
         )
+    if base in {"limix2", "limix-2", "limix-2-1016"}:
+        from .limix2 import LimiX2Classifier
+
+        return LimiX2Classifier(random_state=42)
     if base in {"tabpfn", "tabpfn_latest", "tabpfn3"}:
         from .tabpfn import TabPFNClassifier
 

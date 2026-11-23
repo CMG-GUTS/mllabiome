@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import base64
 import html
 import inspect
@@ -9,10 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
-
 from ._evaluation_protocols import is_lodo_protocol
 from .baseline_rf import resolve_baseline_rf_configs
 from .configs_sweep import Sweep
@@ -37,8 +34,6 @@ _METRICS = [
     ("Precision", "Precision"),
     ("Recall", "Recall"),
 ]
-
-
 _SINGLE_RANK_PRIORITY = (
     "strain",
     "species",
@@ -107,66 +102,43 @@ def _humanize_level(value: Any) -> str:
 
 
 def _classification_display_metrics(selection_metric: Any) -> list[tuple[str, str]]:
-
     primary = _canonical_metric_name(selection_metric)
-
     ordered = [primary] + [metric for metric, _ in _METRICS if metric != primary]
-
     seen: set[str] = set()
-
     out: list[tuple[str, str]] = []
-
     for metric in ordered:
         if metric in seen:
             continue
-
         seen.add(metric)
-
         out.append((metric, _metric_display_label(metric)))
-
     return out
 
 
 def _display_resolution(value: Any) -> str:
-
     text = str(value).strip()
-
     if not text or text.casefold() == "nan":
         return ""
-
     normalized = text.casefold().replace("→", "->")
-
     ranks = set(TAXONOMIC_LEVELS)
-
     for sep in ("->", "-"):
         if sep not in normalized:
             continue
-
         parts = [part.strip() for part in normalized.split(sep) if part.strip()]
-
         if len(parts) == 2 and all(part in ranks for part in parts):
             return f"{parts[0]}→{parts[1]}"
-
     return text
 
 
 def _display_token(value: Any) -> str:
-
     text = str(value).strip()
-
     if not text or text.casefold() == "nan":
         return ""
-
     resolution = _display_resolution(text)
-
     if resolution != text:
         return resolution
-
     base, sep, scope = text.rpartition("@")
-
     if not sep or scope not in {"rank-wise", "joint"}:
         base, scope = text, ""
-
     replacements = {
         "identity": "identity",
         "relative_abundance": "RA",
@@ -196,9 +168,7 @@ def _display_token(value: Any) -> str:
         r"$\log_{10}(1+x)$": "log10(1+x)",
         r"$\log_2(1+x)$": "log2(1+x)",
     }
-
     label = replacements.get(base, base.replace("_", " "))
-
     return f"{label} ({scope})" if scope else label
 
 
@@ -215,8 +185,6 @@ _COMPUTE_ONLY_PARAMS = {
     "tol",
     "time_budget",
 }
-
-
 _HYPERPARAM_PRIORITY = (
     "n_estimators",
     "max_depth",
@@ -247,8 +215,6 @@ _HYPERPARAM_PRIORITY = (
     "p",
     "var_smoothing",
 )
-
-
 _LEARNER_CLASS_LABELS = {
     "RandomForestClassifier": "Random forest",
     "RandomForestRegressor": "Random forest",
@@ -285,33 +251,24 @@ _LEARNER_CLASS_LABELS = {
 
 
 def _param_equal(left: Any, right: Any) -> bool:
-
     try:
         if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
             return bool(np.array_equal(np.asarray(left), np.asarray(right)))
-
         value = left == right
-
         if isinstance(value, np.ndarray):
             return bool(np.all(value))
-
         return bool(value)
-
     except Exception:
         return False
 
 
 def _format_param_value(value: Any) -> str:
-
     if isinstance(value, str):
         return repr(value)
-
     if isinstance(value, np.generic):
         value = value.item()
-
     if isinstance(value, float):
         return f"{value:g}"
-
     if isinstance(value, tuple):
         return (
             "("
@@ -319,32 +276,24 @@ def _format_param_value(value: Any) -> str:
             + ("," if len(value) == 1 else "")
             + ")"
         )
-
     if isinstance(value, list):
         return "[" + ", ".join(_format_param_value(x) for x in value) + "]"
-
     return str(value)
 
 
 def _changed_estimator_params(estimator: Any) -> list[tuple[str, Any]]:
-
     if not callable(getattr(estimator, "get_params", None)):
         return []
-
     try:
         current = estimator.get_params(deep=False)
-
         signature = inspect.signature(type(estimator).__init__)
-
     except Exception:
         return []
-
     defaults = {
         name: param.default
         for name, param in signature.parameters.items()
         if name != "self" and param.default is not inspect.Parameter.empty
     }
-
     changed = {
         name: value
         for name, value in current.items()
@@ -354,21 +303,15 @@ def _changed_estimator_params(estimator: Any) -> list[tuple[str, Any]]:
         and not callable(getattr(value, "get_params", None))
         and not _param_equal(value, defaults[name])
     }
-
     ordered = [name for name in _HYPERPARAM_PRIORITY if name in changed]
-
     ordered.extend(sorted(name for name in changed if name not in ordered))
-
     return [(name, changed[name]) for name in ordered[:2]]
 
 
 def _human_learner_name(value: Any) -> str:
-
     text = str(value).strip()
-
     if not text or text.casefold() == "nan":
         return ""
-
     aliases = {
         "rf": "Random forest",
         "random_forest": "Random forest",
@@ -377,170 +320,116 @@ def _human_learner_name(value: Any) -> str:
         "multilayer_perceptron": "Multilayer perceptron",
         "multilayer perceptron": "Multilayer perceptron",
     }
-
     return aliases.get(text.casefold(), text.replace("_", " "))
 
 
 def _learner_display_map(sweep: Sweep) -> dict[str, str]:
-
     configured = getattr(sweep, "learners", ())
-
     if isinstance(configured, dict):
         groups = list(configured.values())
-
         items = []
-
         for group in groups:
             try:
                 items.extend(list(group))
-
             except TypeError:
                 continue
-
     else:
         try:
             items = list(configured)
-
         except TypeError:
             items = []
-
     labels: dict[str, str] = {}
-
     for item in items:
         if not isinstance(item, tuple) or len(item) != 2:
             continue
-
         name, specification = item
-
         estimator = specification
-
         if not callable(getattr(estimator, "get_params", None)) and callable(
             specification
         ):
             try:
                 estimator = specification()
-
             except Exception:
                 estimator = None
-
         if estimator is None:
             labels[str(name)] = _human_learner_name(name)
-
             continue
-
         class_name = type(estimator).__name__
-
         label = _LEARNER_CLASS_LABELS.get(class_name, _human_learner_name(name))
-
         params = _changed_estimator_params(estimator)
-
         if params:
             body = ", ".join(
                 f"{key}={_format_param_value(value)}" for key, value in params
             )
-
             label = f"{label} ({body})"
-
         labels[str(name)] = label
-
     return labels
 
 
 def _display_learner(value: Any, learner_labels: dict[str, str] | None = None) -> str:
-
     text = str(value).strip()
-
     if learner_labels and text in learner_labels:
         return learner_labels[text]
-
     return _human_learner_name(text)
 
 
 def _display_data_format(value: Any) -> str:
-
     text = str(value).strip()
-
     key = text.casefold().replace("-", "_")
-
     if key in {"mllab", "metaphlan", "metaphlan_tsv", "profile_tsv"}:
         return "mllab"
-
     return text
 
 
 def _sanitize_report_html(value: str) -> str:
-
     parts = re.split(r"(<[^>]+>)", str(value))
-
     raw_tag = ""
-
     out: list[str] = []
-
     entity_pattern = re.compile(r"(&#(?:x[0-9a-fA-F]+|[0-9]+);|&[A-Za-z][A-Za-z0-9]+;)")
-
     for part in parts:
         if not part:
             continue
-
         if part.startswith("<"):
             tag = part.strip().lower()
-
             if tag.startswith("<style"):
                 raw_tag = "style"
-
             elif tag.startswith("<script"):
                 raw_tag = "script"
-
             elif tag.startswith("</style") or tag.startswith("</script"):
                 raw_tag = ""
-
             out.append(part)
-
             continue
-
         if raw_tag:
             out.append(part)
-
             continue
-
         cleaned = (
             part.replace("&mdash;", "-")
             .replace("&#8212;", "-")
             .replace("&#x2014;", "-")
         )
-
         cleaned = cleaned.replace("—", "-")
-
         cleaned = re.sub(
             r"\brat(?:her)(?:\s|&nbsp;|&#160;|&#x0*a0;)+than\b",
             "instead of",
             cleaned,
             flags=re.IGNORECASE,
         )
-
         cleaned = re.sub(r"\brat(?:her)\b", "instead", cleaned, flags=re.IGNORECASE)
-
         fragments = entity_pattern.split(cleaned)
-
         for index in range(0, len(fragments), 2):
             fragments[index] = fragments[index].replace(";", ".")
-
         out.append("".join(fragments))
-
     return "".join(out)
 
 
 def _report_footer_html() -> str:
-
     stamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
-
     return f'<p class="report-footer">mllabiome · {html.escape(stamp)}</p>'
 
 
 def _report_nav_html(
     has_robustness: bool = False, has_exploration: bool = False
 ) -> str:
-
     exploration_link = (
         '<a href="#data-exploration">Data exploration</a>' if has_exploration else ""
     )
@@ -562,27 +451,22 @@ def _report_nav_html(
 
 
 def _performance_methodology_html(protocol: Any, n_bootstrap: int = 2000) -> str:
-
     key = str(protocol).strip().lower()
-
     if is_lodo_protocol(key):
         uncertainty = (
             f"Held-out strategy performance is summarized across held-out datasets as mean ± SD. "
             f"The 95% confidence intervals are percentile intervals from {int(n_bootstrap):,} bootstrap replicates that resample held-out datasets with replacement."
         )
-
     else:
         uncertainty = (
             f"Held-out strategy performance is summarized across outer test folds as mean ± SD. "
             f"The 95% confidence intervals are percentile intervals from {int(n_bootstrap):,} hierarchical bootstrap replicates that resample repeats and then outer folds within sampled repeats."
         )
-
     metrics = (
         " AUROC measures ranking discrimination across thresholds. AUCPR is the trapezoidal area under the empirical precision-recall curve. Average precision summarizes precision weighted by recall increments and is reported separately. "
         "MCC is reported on its conventional [-1, 1] scale. F1w is support-weighted F1. "
         "Precision and recall are macro-averaged across classes."
     )
-
     qualification = (
         " MPMA-B and MPMA-E use a single final specification selected from all development inner-validation evidence, "
         "evaluated retrospectively using the saved held-out predictions of its constituent pipeline or members. "
@@ -592,11 +476,8 @@ def _performance_methodology_html(protocol: Any, n_bootstrap: int = 2000) -> str
 
 
 def _inferential_layer_html(protocol: Any, metric: Any) -> str:
-
     key = str(protocol).strip().lower()
-
     metric_text = html.escape(_metric_display_label(metric))
-
     if is_lodo_protocol(key):
         body = (
             f"For each strategy pair, {metric_text} values are matched by held-out dataset. "
@@ -605,7 +486,6 @@ def _inferential_layer_html(protocol: Any, metric: Any) -> str:
             "Holm adjustment is applied across all displayed strategy-pair and metric hypotheses. "
             "For higher-is-better metrics, a positive difference favors Strategy A. For loss metrics, a negative difference favors Strategy A."
         )
-
     else:
         body = (
             f"For each strategy pair, {metric_text} values are matched by outer test fold. "
@@ -614,7 +494,6 @@ def _inferential_layer_html(protocol: Any, metric: Any) -> str:
             "Holm adjustment is applied across all displayed strategy-pair and metric hypotheses. "
             "For higher-is-better metrics, a positive difference favors Strategy A. For loss metrics, a negative difference favors Strategy A."
         )
-
     qualification = (
         " Comparisons involving retrospectively selected fixed MPMA-B or MPMA-E specifications are exploratory, "
         "because selection reused evidence from the development cohort; p-values and intervals do not correct for this selection."
@@ -623,14 +502,11 @@ def _inferential_layer_html(protocol: Any, metric: Any) -> str:
 
 
 def _top_mpma_heading(table: pd.DataFrame) -> str:
-
     n = len(table)
-
     return f"Top {n} MPMA-B configurations" if n > 0 else "Top MPMA-B configurations"
 
 
 REPORT_TEMPLATE_VERSION = "standard-v3"
-
 REPORT_LAYERS = (
     "evaluation_procedure",
     "data_exploration",
@@ -643,58 +519,41 @@ REPORT_LAYERS = (
     "robustness",
     "compute_hardware",
 )
-
-
 _FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect x="1" y="1" width="62" height="62" rx="14" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/><text x="32" y="39" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="22" font-weight="700" fill="#0f172a">mll</text></svg>"""
 
 
 def _favicon_href() -> str:
-
     payload = base64.b64encode(_FAVICON_SVG.encode("utf-8")).decode("ascii")
-
     return f"data:image/svg+xml;base64,{payload}"
 
 
 def _single_rank_label(row: pd.Series | dict[str, Any]) -> str | None:
-
     res = str(row.get("resolution", "")).strip().lower()
-
     levels = str(row.get("levels", "")).strip().lower().replace(" ", "")
-
     for rank in _SINGLE_RANK_PRIORITY:
         if res == rank or levels == rank:
             return rank
-
     return None
 
 
 def _pick_deepest_single_rank(
     sub: pd.DataFrame, *, sort_col: str, ascending: bool = False
 ) -> dict[str, Any]:
-
     if sub.empty:
         return {}
-
     candidates = []
-
     for rank in _SINGLE_RANK_PRIORITY:
         rr = sub[
             sub.apply(lambda r, rank=rank: _single_rank_label(r) == rank, axis=1)
         ].copy()
-
         if rr.empty:
             continue
-
         if sort_col in rr.columns:
             rr = rr.sort_values(sort_col, ascending=ascending)
-
         candidates.append(rr.iloc[0].to_dict())
-
         break
-
     if candidates:
         return candidates[0]
-
     return {}
 
 
@@ -707,11 +566,8 @@ from .report_explainability import (
 
 
 def _representation_impact_note(metric: str, modality: bool = False) -> str:
-
     metric_text = html.escape(str(metric).replace("_", "-"))
-
     heatmap_text = "panel c provides" if modality else "panels c–d provide"
-
     return (
         f"<p>Panel a shows the distribution of outer-unit mean {metric_text} values across transformation–learner configurations for each representation; boxes show the median and interquartile range, whiskers extend to 1.5×IQR, and points are individual outer evaluation units. "
         "Panel b reports split-adjusted hierarchical partial η² from a least-squares model containing representation, transformation, learner, representation×learner, and transformation×learner terms. Main-factor effects remove the factor together with interactions containing it; interaction effects remove only that interaction. Effects are conditional, need not sum to one, and non-estimable terms are shown as n/a. "
@@ -720,43 +576,30 @@ def _representation_impact_note(metric: str, modality: bool = False) -> str:
 
 
 def _safe_float(x: Any) -> float:
-
     try:
         v = float(x)
-
         return v if np.isfinite(v) else float("nan")
-
     except Exception:
         return float("nan")
 
 
 def _format_p_value(value: Any) -> str:
-
     v = _safe_float(value)
-
     if not np.isfinite(v):
         return ""
-
     if 0 <= v < 0.001:
         return "<0.001"
-
     return f"{v:.3f}"
 
 
 def _primary_pairwise_display(pairwise: pd.DataFrame, metric: str) -> pd.DataFrame:
-
     if pairwise.empty or "metric" not in pairwise.columns:
         return pd.DataFrame()
-
     key = str(metric).strip().casefold().replace("-", "_").replace(" ", "_")
-
     key = {"logloss": "log_loss", "brier_loss": "brier"}.get(key, key)
-
     out = pairwise[pairwise["metric"].astype(str).str.casefold().eq(key)].copy()
-
     if out.empty:
         return out
-
     columns = [
         c
         for c in [
@@ -774,9 +617,7 @@ def _primary_pairwise_display(pairwise: pd.DataFrame, metric: str) -> pd.DataFra
         ]
         if c in out.columns
     ]
-
     out = out[columns].copy()
-
     out = out.rename(
         columns={
             "strategy_a": "Strategy A",
@@ -792,19 +633,16 @@ def _primary_pairwise_display(pairwise: pd.DataFrame, metric: str) -> pd.DataFra
             "significant_holm_0_05": "Holm p<0.05",
         }
     )
-
     for column in ("Difference A-B", "95% CI low", "95% CI high"):
         if column in out.columns:
             out[column] = pd.to_numeric(out[column], errors="coerce").map(
                 lambda x: f"{x:.3f}" if np.isfinite(x) else ""
             )
-
     for column in ("p", "Holm p"):
         if column in out.columns:
             out[column] = pd.to_numeric(out[column], errors="coerce").map(
                 _format_p_value
             )
-
     if "Test" in out.columns:
         labels = {
             "nadeau_bengio_corrected_t": "Nadeau–Bengio corrected t",
@@ -812,54 +650,38 @@ def _primary_pairwise_display(pairwise: pd.DataFrame, metric: str) -> pd.DataFra
             "monte_carlo_paired_sign_flip": "Monte Carlo paired sign-flip",
             "paired_sign_flip": "Paired sign-flip",
         }
-
         out["Test"] = (
             out["Test"].astype(str).map(lambda value: labels.get(value, value))
         )
-
     return out
 
 
 def _html_number(value: Any) -> str | None:
-
     if isinstance(value, (bool, np.bool_)):
         return None
-
     if isinstance(value, (int, np.integer)):
         return str(int(value))
-
     if isinstance(value, (float, np.floating)):
         if not np.isfinite(float(value)):
             return ""
-
         return f"{float(value):.3f}"
-
     return None
 
 
 def _pct_cell(
     mean: Any, std: Any, *, bold: bool = False, html_mode: bool = False
 ) -> str:
-
     m = _safe_float(mean)
-
     s = _safe_float(std)
-
     if not np.isfinite(m):
         body = "NA" if html_mode else r"NA"
-
         return body
-
     body = f"{100 * m:.3f}"
-
     if np.isfinite(s):
         sd = f"{100 * s:.3f}" if html_mode else f"{100 * s:06.3f}"
-
         body += (" ± " if html_mode else r"$\pm$") + sd
-
     if bold:
         return f"<strong>{body}</strong>" if html_mode else rf"\textbf{ {body} } "
-
     return body
 
 
@@ -872,36 +694,24 @@ def _pct_ci_cell(
     bold: bool = False,
     html_mode: bool = False,
 ) -> str:
-
     e = _safe_float(estimate)
-
     sd = _safe_float(std)
-
     lo = _safe_float(low)
-
     hi = _safe_float(high)
-
     if not np.isfinite(e):
         return "NA" if html_mode else r"NA"
-
     body = f"{100 * e:.3f}"
-
     if np.isfinite(sd):
         sd_text = f"{100 * sd:.3f}" if html_mode else f"{100 * sd:06.3f}"
-
         body += (" ± " if html_mode else r"$\pm$") + sd_text
-
     if np.isfinite(lo) and np.isfinite(hi):
         body += f" [{100 * lo:.3f}, {100 * hi:.3f}]"
-
     if bold:
         return f"<strong>{body}</strong>" if html_mode else rf"\textbf{ {body} } "
-
     return body
 
 
 def _strategy_statistics_summary(root: Path) -> pd.DataFrame:
-
     return _read_table(
         root / "report" / "tables" / "strategy_metrics_bootstrap.parquet"
     )
@@ -910,40 +720,28 @@ def _strategy_statistics_summary(root: Path) -> pd.DataFrame:
 def _mean_std_from_cols(
     row: pd.Series | dict[str, Any], prefix: str, metric: str
 ) -> tuple[float, float]:
-
     if isinstance(row, dict):
         get = row.get
-
     else:
         get = row.get
-
     mean = get(f"{prefix}_{metric}_mean", np.nan)
-
     std = get(f"{prefix}_{metric}_std", np.nan)
-
     if not np.isfinite(_safe_float(mean)):
         mean = get(f"{metric}_mean", np.nan)
-
         std = get(f"{metric}_std", std)
-
     return _safe_float(mean), _safe_float(std)
 
 
 def _agg_metrics(
     path: Path, prefix: str, extra_metrics: tuple[str, ...] = ()
 ) -> pd.DataFrame:
-
     df = _read_table(path)
-
     if df.empty or "config_id" not in df.columns:
         return pd.DataFrame()
-
     if "ok" in df.columns:
         df = df[pd.to_numeric(df["ok"], errors="coerce").fillna(0).eq(1)]
-
     if df.empty:
         return pd.DataFrame()
-
     id_cols = [
         c
         for c in [
@@ -955,51 +753,35 @@ def _agg_metrics(
         ]
         if c in df.columns
     ]
-
     metric_names = [c for c, _ in _METRICS]
-
     metric_names.extend(_canonical_metric_name(c) for c in extra_metrics)
-
     metric_cols = [c for c in dict.fromkeys(metric_names) if c in df.columns]
-
     if not metric_cols:
         return df[id_cols].drop_duplicates("config_id") if id_cols else pd.DataFrame()
-
     g = df.groupby(id_cols, dropna=False)[metric_cols].agg(["mean", "std", "count"])
-
     g.columns = [f"{prefix}_{m}_{stat}" for m, stat in g.columns]
-
     return g.reset_index()
 
 
 def _top_mpma_raw(
     root: Path, n: int = 5, selection_metric: str = "log_loss"
 ) -> pd.DataFrame:
-
     metric = _canonical_metric_name(selection_metric)
-
     inner = _agg_metrics(
         root / "inner_results" / "inner_results.parquet", "inner", (metric,)
     )
-
     outer = _agg_metrics(root / "results" / "outer_results.parquet", "outer", (metric,))
-
     if inner.empty and outer.empty:
         return pd.DataFrame()
-
     if not inner.empty:
         base = inner
-
         if not outer.empty:
             outer_metrics = outer[
                 [c for c in outer.columns if c == "config_id" or c.startswith("outer_")]
             ].copy()
-
             base = base.merge(outer_metrics, on="config_id", how="left")
-
     else:
         base = outer
-
     sort_col = (
         f"inner_{metric}_mean"
         if f"inner_{metric}_mean" in base.columns
@@ -1017,16 +799,11 @@ def _top_mpma_raw(
             )
         )
     )
-
     if sort_col:
         sort_metric = metric if metric in sort_col else "log_loss"
-
         base = base.sort_values(sort_col, ascending=metric_is_loss(sort_metric))
-
     base = base.head(int(n)).copy()
-
     base.insert(0, "rank", np.arange(1, len(base) + 1))
-
     return base
 
 
@@ -1038,7 +815,6 @@ def _metric_mean_std_cell(
     bold: bool = False,
     html_mode: bool = False,
 ) -> str:
-
     if _canonical_metric_name(metric) in {
         "log_loss",
         "subject_macro_log_loss",
@@ -1046,22 +822,15 @@ def _metric_mean_std_cell(
         "brier",
     }:
         m = _safe_float(mean)
-
         sd = _safe_float(std)
-
         if not np.isfinite(m):
             return "NA" if html_mode else r"NA"
-
         body = f"{m:.3f}"
-
         if np.isfinite(sd):
             body += (" ± " if html_mode else r"$\pm$") + f"{sd:.3f}"
-
         if bold:
             return f"<strong>{body}</strong>" if html_mode else rf"\textbf{ {body} } "
-
         return body
-
     return _pct_cell(mean, std, bold=bold, html_mode=html_mode)
 
 
@@ -1075,7 +844,6 @@ def _metric_ci_cell(
     bold: bool = False,
     html_mode: bool = False,
 ) -> str:
-
     if _canonical_metric_name(metric) in {
         "log_loss",
         "subject_macro_log_loss",
@@ -1083,29 +851,19 @@ def _metric_ci_cell(
         "brier",
     }:
         e = _safe_float(estimate)
-
         sd = _safe_float(std)
-
         lo = _safe_float(low)
-
         hi = _safe_float(high)
-
         if not np.isfinite(e):
             return "NA" if html_mode else r"NA"
-
         body = f"{e:.3f}"
-
         if np.isfinite(sd):
             body += (" ± " if html_mode else r"$\pm$") + f"{sd:.3f}"
-
         if np.isfinite(lo) and np.isfinite(hi):
             body += f" [{lo:.3f}, {hi:.3f}]"
-
         if bold:
             return f"<strong>{body}</strong>" if html_mode else rf"\textbf{ {body} } "
-
         return body
-
     return _pct_ci_cell(estimate, std, low, high, bold=bold, html_mode=html_mode)
 
 
@@ -1116,18 +874,13 @@ def _top_mpma_display(
     html_mode: bool = False,
     learner_labels: dict[str, str] | None = None,
 ) -> pd.DataFrame:
-
     if df.empty:
         return pd.DataFrame()
-
     primary = _canonical_metric_name(selection_metric)
-
     metric_order = [primary] + [
         metric for metric in ("AUROC", "F1w") if metric != primary
     ]
-
     rows: list[dict[str, Any]] = []
-
     for _, r in df.iterrows():
         row = {
             "Rank": int(r.get("rank", len(rows) + 1)),
@@ -1137,25 +890,19 @@ def _top_mpma_display(
             ),
             "Learner": _display_learner(r.get("learner", ""), learner_labels),
         }
-
         for metric in metric_order:
             label = _metric_display_label(metric)
-
             row[f"Inner {label}"] = _metric_mean_std_cell(
                 *_mean_std_from_cols(r, "inner", metric), metric, html_mode=html_mode
             )
-
             row[f"Outer {label}"] = _metric_mean_std_cell(
                 *_mean_std_from_cols(r, "outer", metric), metric, html_mode=html_mode
             )
-
         rows.append(row)
-
     return pd.DataFrame(rows)
 
 
 def _selected_json(root: Path) -> dict[str, Any]:
-
     return _read_json(root / "ensembling" / "selected_unit.json")
 
 
@@ -1174,64 +921,45 @@ def _ensemble_row(root: Path) -> dict[str, Any]:
 
 
 def _ensemble_final_candidate(root: Path) -> dict[str, Any]:
-
     final = _read_json(root / "ensembling" / "mpma_e_final_candidate.json")
-
     if isinstance(final, dict) and final:
         return final
-
     selected = _selected_json(root)
-
     ens = (
         selected.get("inner_val_best_mpmas_ensemble")
         or selected.get("inner_val_best_ensemble")
         or {}
     )
-
     return ens if isinstance(ens, dict) else {}
 
 
 def _strategy_rows(
     root: Path, selection_metric: str = "log_loss"
 ) -> list[dict[str, Any]]:
-
     by_strategy: dict[str, dict[str, Any]] = {}
-
     ens = _ensemble_row(root)
-
     if ens:
         by_strategy["MPMA-E"] = {"Strategy": "MPMA-E", "source": "ensemble", **ens}
-
     best = _best_mpma_row(root)
-
     if best:
         by_strategy["MPMA-B"] = {"Strategy": "MPMA-B", "source": "mpma", **best}
-
     metric = _canonical_metric_name(selection_metric)
-
     outer = _agg_metrics(root / "results" / "outer_results.parquet", "outer", (metric,))
-
     inner = _agg_metrics(
         root / "inner_results" / "inner_results.parquet", "inner", (metric,)
     )
-
     if not outer.empty:
         base = outer.copy()
-
         if not inner.empty:
             inner_cols = [
                 c for c in inner.columns if c == "config_id" or c.startswith("inner_")
             ]
-
             base = base.merge(inner[inner_cols], on="config_id", how="left")
 
         def _pick(mask: pd.Series) -> dict[str, Any]:
-
             sub = base[mask.fillna(False)].copy()
-
             if sub.empty:
                 return {}
-
             sort_col = (
                 f"inner_{metric}_mean"
                 if f"inner_{metric}_mean" in sub.columns
@@ -1245,12 +973,9 @@ def _strategy_rows(
                     )
                 )
             )
-
             if sort_col in sub.columns:
                 sort_metric = metric if metric in sort_col else "log_loss"
-
                 sub = sub.sort_values(sort_col, ascending=metric_is_loss(sort_metric))
-
             return sub.iloc[0].to_dict()
 
         sort_col = (
@@ -1266,11 +991,8 @@ def _strategy_rows(
                 )
             )
         )
-
         sort_metric = metric if metric in sort_col else "log_loss"
-
         sort_ascending = metric_is_loss(sort_metric)
-
         configs = _read_table(root / "configs.parquet")
         if {"config_id", "learner_class"}.issubset(configs.columns):
             class_metadata = configs[["config_id", "learner_class"]].copy()
@@ -1280,37 +1002,29 @@ def _strategy_rows(
             base = base.merge(
                 class_metadata, on="config_id", how="left", validate="many_to_one"
             )
-
         learner = base.get(
             "learner", pd.Series("", index=base.index, dtype=str)
         ).astype(str)
-
         learner_class = base.get(
             "learner_class", pd.Series("", index=base.index, dtype=str)
         ).astype(str)
-
         transform = base.get(
             "count_transformation", pd.Series("", index=base.index, dtype=str)
         ).astype(str)
-
         resolution = base.get(
             "resolution", pd.Series("", index=base.index, dtype=str)
         ).astype(str)
-
         automl_pool = base[
             learner.str.contains("FLAML|AutoML", case=False, regex=True).fillna(False)
             & transform.str.fullmatch(
                 r"relative_abundance(?:@(rank-wise|joint))?", case=False
             ).fillna(False)
         ].copy()
-
         automl = _pick_deepest_single_rank(
             automl_pool, sort_col=sort_col, ascending=sort_ascending
         )
-
         if automl:
             by_strategy["AutoML"] = {"Strategy": "AutoML", "source": "mpma", **automl}
-
         baseline_configs = resolve_baseline_rf_configs(configs, active_only=False)
         baseline = {}
         if not baseline_configs.empty and "config_id" in baseline_configs.columns:
@@ -1322,14 +1036,12 @@ def _strategy_rows(
                         sort_col, ascending=sort_ascending
                     )
                 baseline = baseline_rows.iloc[0].to_dict()
-
         if baseline:
             by_strategy["Baseline RF"] = {
                 "Strategy": "Baseline RF",
                 "source": "mpma",
                 **baseline,
             }
-
         from .evaluation_predictions import (
             comparator_config_ids,
             load_evaluation_predictions,
@@ -1348,7 +1060,6 @@ def _strategy_rows(
             & resolution.str.fullmatch("species", case=False).fillna(False)
             & base["config_id"].astype(str).isin(siamcat_ids)
         )
-
         if siamcat:
             try:
                 load_evaluation_predictions(root, "SIAMCAT", selection_metric)
@@ -1371,7 +1082,6 @@ def _strategy_rows(
                 "source": "mpma",
                 **siamcat,
             }
-
     return [
         by_strategy[k]
         for k in ("MPMA-E", "MPMA-B", "AutoML", "Baseline RF", "SIAMCAT")
@@ -1393,16 +1103,11 @@ def _baseline_rf_report_note(rows: list[dict[str, Any]]) -> str:
 def _strategy_performance_display(
     root: Path, *, selection_metric: str = "log_loss", html_mode: bool = False
 ) -> pd.DataFrame:
-
     rows = _strategy_rows(root, selection_metric)
-
     if not rows:
         return pd.DataFrame()
-
     display_metrics = _classification_display_metrics(selection_metric)
-
     stats = _strategy_statistics_summary(root)
-
     if not stats.empty and {
         "Strategy",
         "metric",
@@ -1411,39 +1116,26 @@ def _strategy_performance_display(
         "ci_high",
     }.issubset(stats.columns):
         best_by_metric: dict[str, str] = {}
-
         for metric, _ in display_metrics:
             sub = stats[stats["metric"].astype(str).eq(metric)].copy()
-
             sub["estimate"] = pd.to_numeric(sub["estimate"], errors="coerce")
-
             sub = sub[np.isfinite(sub["estimate"].to_numpy(dtype=float))]
-
             if not sub.empty:
                 sub = sub.sort_values("estimate", ascending=metric_is_loss(metric))
-
                 best_by_metric[metric] = str(sub.iloc[0]["Strategy"])
-
         out = []
-
         for row in rows:
             strategy = str(row.get("Strategy", ""))
-
             rr = {"Strategy": strategy}
-
             for metric, label in display_metrics:
                 sub = stats[
                     stats["Strategy"].astype(str).eq(strategy)
                     & stats["metric"].astype(str).eq(metric)
                 ]
-
                 if sub.empty:
                     rr[label] = "NA" if html_mode else r"NA"
-
                     continue
-
                 r = sub.iloc[0]
-
                 rr[label] = _metric_ci_cell(
                     r.get("estimate"),
                     r.get("std"),
@@ -1453,34 +1145,22 @@ def _strategy_performance_display(
                     bold=(best_by_metric.get(metric) == strategy),
                     html_mode=html_mode,
                 )
-
             out.append(rr)
-
         return pd.DataFrame(out)
-
     best_by_metric: dict[str, str] = {}
-
     for metric, _ in display_metrics:
         vals = []
-
         for row in rows:
             m, _ = _mean_std_from_cols(row, "outer", metric)
-
             if np.isfinite(m):
                 vals.append((m, str(row.get("Strategy", ""))))
-
         if vals:
             chooser = min if metric_is_loss(metric) else max
-
             best_by_metric[metric] = chooser(vals, key=lambda x: x[0])[1]
-
     out = []
-
     for row in rows:
         strategy = str(row.get("Strategy", ""))
-
         rr = {"Strategy": strategy}
-
         for metric, label in display_metrics:
             rr[label] = _metric_mean_std_cell(
                 *_mean_std_from_cols(row, "outer", metric),
@@ -1488,48 +1168,33 @@ def _strategy_performance_display(
                 bold=(best_by_metric.get(metric) == strategy),
                 html_mode=html_mode,
             )
-
         out.append(rr)
-
     return pd.DataFrame(out)
 
 
 def _ensemble_summary_table(root: Path) -> pd.DataFrame:
-
     ens = _ensemble_final_candidate(root)
-
     if not ens:
         ens = _ensemble_row(root)
-
     if not ens:
         return pd.DataFrame()
-
     members = ens.get("effective_member_count")
-
     if members is None:
         members = ens.get("member_count")
-
     if members is None:
         raw_members = ens.get("members")
-
         if isinstance(raw_members, str):
             try:
                 raw_members = json.loads(raw_members)
-
             except Exception:
                 raw_members = None
-
         if isinstance(raw_members, list):
             members = len(raw_members)
-
         else:
             members = ens.get("ensemble_size", "")
-
     max_size = ens.get("max_size")
-
     if max_size is None:
         max_size = ens.get("ensemble_size", members)
-
     row = {
         "Strategy": "MPMA-E",
         "Selection": ens.get("selection_strategy", ""),
@@ -1541,46 +1206,32 @@ def _ensemble_summary_table(root: Path) -> pd.DataFrame:
             ens.get("optimize_metric", ""),
         ),
     }
-
     return pd.DataFrame([row])
 
 
 def _ensemble_members_table(
     root: Path, learner_labels: dict[str, str] | None = None
 ) -> pd.DataFrame:
-
     ens = _ensemble_final_candidate(root)
-
     members = ens.get("members", []) if isinstance(ens, dict) else []
-
     if isinstance(members, str):
         try:
             members = json.loads(members)
-
         except Exception:
             members = []
-
     members = [str(x) for x in members] if isinstance(members, list) else []
-
     weights = ens.get("weights", []) if isinstance(ens, dict) else []
-
     if isinstance(weights, str):
         try:
             weights = json.loads(weights)
-
         except Exception:
             weights = []
-
     weights = list(weights) if isinstance(weights, list) else []
-
     p = root / "tables" / "mpma_e_members.parquet"
-
     if not table_exists(p):
         p = root / "figures" / "mpma_e_members.parquet"
-
     if table_exists(p):
         existing = read_table(p)
-
         if not existing.empty:
             rename = {
                 "member_order": "Member",
@@ -1593,11 +1244,9 @@ def _ensemble_members_table(
                 "integration": "Integration",
                 "weight": "Weight",
             }
-
             existing = existing.rename(
                 columns={k: v for k, v in rename.items() if k in existing.columns}
             )
-
             columns = [
                 "Member",
                 "Config ID",
@@ -1610,26 +1259,18 @@ def _ensemble_members_table(
                 "Features",
                 "Weight",
             ]
-
             selected = [column for column in columns if column in existing.columns]
-
             if selected:
                 out = existing[selected].copy()
-
                 for column in ("Representation", "Transformation", "Integration"):
                     if column in out.columns:
                         out[column] = out[column].map(_display_token)
-
                 if "Learner" in out.columns:
                     learner_source: dict[str, str] = {}
-
                     learner_display_source: dict[str, str] = {}
-
                     configs_path = root / "configs.parquet"
-
                     if "Config ID" in out.columns and table_exists(configs_path):
                         configs = read_table(configs_path, dtype=str)
-
                         if not configs.empty and {"config_id", "learner"}.issubset(
                             configs.columns
                         ):
@@ -1639,7 +1280,6 @@ def _ensemble_members_table(
                                     configs["learner"].astype(str),
                                 )
                             )
-
                         if not configs.empty and {
                             "config_id",
                             "learner_display",
@@ -1650,7 +1290,6 @@ def _ensemble_members_table(
                                     configs["learner_display"].astype(str),
                                 )
                             )
-
                     out["Learner"] = [
                         learner_display_source.get(str(config_id), "").strip()
                         or _display_learner(
@@ -1662,20 +1301,15 @@ def _ensemble_members_table(
                             out["Learner"],
                         )
                     ]
-
                 return out
-
     configs_path = root / "configs.parquet"
-
     configs = (
         read_table(configs_path, dtype=str)
         if table_exists(configs_path)
         else pd.DataFrame()
     )
-
     if not members:
         return pd.DataFrame()
-
     if configs.empty or "config_id" not in configs.columns:
         return pd.DataFrame(
             {
@@ -1687,20 +1321,14 @@ def _ensemble_members_table(
                 ],
             }
         )
-
     lookup = configs.drop_duplicates("config_id", keep="first").set_index("config_id")
-
     rows: list[dict[str, Any]] = []
-
     for index, config_id in enumerate(members, start=1):
         row: dict[str, Any] = {"Member": index, "Config ID": config_id}
-
         if config_id in lookup.index:
             source = lookup.loc[config_id]
-
             if isinstance(source, pd.DataFrame):
                 source = source.iloc[0]
-
             mapping = (
                 ("candidate_family", "Family"),
                 ("modalities", "Modalities"),
@@ -1710,27 +1338,19 @@ def _ensemble_members_table(
                 ("count_transformation", "Transformation"),
                 ("learner", "Learner"),
             )
-
             for source_name, display_name in mapping:
                 value = source.get(source_name, "")
-
                 if pd.notna(value) and str(value).strip():
                     row[display_name] = str(value)
-
         if index - 1 < len(weights):
             try:
                 value = float(weights[index - 1])
-
             except Exception:
                 value = float("nan")
-
             if np.isfinite(value):
                 row["Weight"] = value
-
         rows.append(row)
-
     out = pd.DataFrame(rows)
-
     columns = [
         "Member",
         "Config ID",
@@ -1743,64 +1363,48 @@ def _ensemble_members_table(
         "Learner",
         "Weight",
     ]
-
     out = out[[column for column in columns if column in out.columns]]
-
     for column in ("Representation", "Transformation", "Integration"):
         if column in out.columns:
             out[column] = out[column].map(_display_token)
-
     if "Learner" in out.columns:
         out["Learner"] = out["Learner"].map(
             lambda value: _display_learner(value, learner_labels)
         )
-
     return out
 
 
 def _manifest(root: Path) -> dict[str, Any]:
-
     return _read_json(root / "manifest.json")
 
 
 def _sweep_data_source(sweep: Sweep):
-
     return sweep.samples if getattr(sweep, "uses_modalities", False) else sweep.data
 
 
 def _procedure_table(sweep: Sweep, root: Path) -> pd.DataFrame:
-
     manifest = _manifest(root)
-
     ev = sweep.evaluation
-
     gate = sweep.gate
-
     data = (
         manifest.get("sweep", {}).get("data", {})
         if isinstance(manifest.get("sweep"), dict)
         else {}
     )
-
     source = _sweep_data_source(sweep)
-
     classes = manifest.get("class_labels", getattr(source, "class_labels", ()))
-
     inclusion = (
         manifest.get("multimodal_inclusion", {})
         if getattr(sweep, "uses_modalities", False)
         else {}
     )
-
     sample_value = str(manifest.get("n_samples", ""))
-
     if isinstance(inclusion, dict) and inclusion:
         complete = inclusion.get("n_complete_samples", manifest.get("n_samples", ""))
         primary = inclusion.get("n_primary_samples", "")
         sample_value = (
             f"{complete} complete case(s) from {primary} primary-modality sample(s)"
         )
-
     rows = [
         ["Task", sweep.title],
         ["Experiment directory", str(root)],
@@ -1852,7 +1456,6 @@ def _procedure_table(sweep: Sweep, root: Path) -> pd.DataFrame:
             "MPMA-B and MPMA-E show retrospective outer-fold scores for one final selected specification each; selection may make these scores optimistic. Independent external performance must be evaluated separately.",
         ],
     ]
-
     if isinstance(inclusion, dict) and inclusion:
         rows.insert(
             4,
@@ -1862,38 +1465,30 @@ def _procedure_table(sweep: Sweep, root: Path) -> pd.DataFrame:
             ],
         )
         rows.insert(5, ["Multimodal estimand", str(inclusion.get("estimand", ""))])
-
     return pd.DataFrame(rows, columns=["Field", "Value"])
 
 
 def _format_count_fraction(count: Any, total: Any) -> str:
-
     try:
         count_i = int(count)
         total_i = int(total)
     except (TypeError, ValueError):
         return ""
-
     if total_i <= 0:
         return str(count_i)
-
     return f"{count_i} ({100.0 * count_i / total_i:.1f}%)"
 
 
 def _distribution_frame(
     payload: dict[str, Any], totals: dict[str, int], label: str
 ) -> pd.DataFrame:
-
     categories: set[str] = set()
-
     for subset in ("primary", "complete", "excluded"):
         section = payload.get(subset, {}) if isinstance(payload, dict) else {}
         counts = section.get("counts", {}) if isinstance(section, dict) else {}
         if isinstance(counts, dict):
             categories.update(str(key) for key in counts)
-
     rows: list[dict[str, Any]] = []
-
     for category in sorted(categories):
         row: dict[str, Any] = {label: category}
         for subset, heading in (
@@ -1906,23 +1501,18 @@ def _distribution_frame(
             count = counts.get(category, 0) if isinstance(counts, dict) else 0
             row[heading] = _format_count_fraction(count, totals.get(subset, 0))
         rows.append(row)
-
     return pd.DataFrame(rows)
 
 
 def _categorical_distribution_frame(
     payload: dict[str, Any], totals: dict[str, int], label: str
 ) -> pd.DataFrame:
-
     categories: set[str] = set()
-
     for subset in ("primary", "complete", "excluded"):
         values = payload.get(subset, {}) if isinstance(payload, dict) else {}
         if isinstance(values, dict):
             categories.update(str(key) for key in values)
-
     rows: list[dict[str, Any]] = []
-
     for category in sorted(categories):
         row: dict[str, Any] = {label: category}
         for subset, heading in (
@@ -1934,12 +1524,10 @@ def _categorical_distribution_frame(
             count = values.get(category, 0) if isinstance(values, dict) else 0
             row[heading] = _format_count_fraction(count, totals.get(subset, 0))
         rows.append(row)
-
     return pd.DataFrame(rows)
 
 
 def _regression_target_frame(payload: dict[str, Any]) -> pd.DataFrame:
-
     labels = {
         "n": "N",
         "mean": "Mean",
@@ -1950,9 +1538,7 @@ def _regression_target_frame(payload: dict[str, Any]) -> pd.DataFrame:
         "min": "Minimum",
         "max": "Maximum",
     }
-
     rows: list[dict[str, Any]] = []
-
     for key, display in labels.items():
         row: dict[str, Any] = {"Statistic": display}
         for subset, heading in (
@@ -1969,31 +1555,25 @@ def _regression_target_frame(payload: dict[str, Any]) -> pd.DataFrame:
             else:
                 row[heading] = f"{float(value):.4g}"
         rows.append(row)
-
     return pd.DataFrame(rows)
 
 
 def _multimodal_inclusion_html(manifest: dict[str, Any]) -> str:
-
     inclusion = manifest.get("multimodal_inclusion", {})
-
     if not isinstance(inclusion, dict) or not inclusion:
         return ""
-
     primary_n = int(inclusion.get("n_primary_samples", 0) or 0)
     complete_n = int(inclusion.get("n_complete_samples", 0) or 0)
     excluded_n = int(inclusion.get("n_excluded_samples", 0) or 0)
     primary_subjects = int(inclusion.get("n_primary_subjects", 0) or 0)
     complete_subjects = int(inclusion.get("n_complete_subjects", 0) or 0)
     fully_excluded_subjects = int(inclusion.get("n_fully_excluded_subjects", 0) or 0)
-
     incomplete_subjects = int(
         inclusion.get("n_subjects_with_incomplete_samples", 0) or 0
     )
     partially_retained_subjects = int(
         inclusion.get("n_partially_retained_subjects", 0) or 0
     )
-
     attrition = pd.DataFrame(
         [
             ["Primary-modality samples", str(primary_n)],
@@ -2019,10 +1599,8 @@ def _multimodal_inclusion_html(manifest: dict[str, Any]) -> str:
         ],
         columns=["Measure", "Value"],
     )
-
     availability_rows: list[dict[str, Any]] = []
     availability = inclusion.get("modality_availability", {})
-
     if isinstance(availability, dict):
         for modality, values in availability.items():
             if not isinstance(values, dict):
@@ -2036,12 +1614,9 @@ def _multimodal_inclusion_html(manifest: dict[str, Any]) -> str:
                     "Missing": _format_count_fraction(missing, primary_n),
                 }
             )
-
     availability_frame = pd.DataFrame(availability_rows)
-
     pattern_rows: list[dict[str, Any]] = []
     patterns = inclusion.get("missingness_patterns", [])
-
     if isinstance(patterns, list):
         for row in patterns:
             if not isinstance(row, dict):
@@ -2057,18 +1632,14 @@ def _multimodal_inclusion_html(manifest: dict[str, Any]) -> str:
                     "Samples": _format_count_fraction(count, primary_n),
                 }
             )
-
     pattern_frame = pd.DataFrame(pattern_rows)
-
     totals = {
         "primary": primary_n,
         "complete": complete_n,
         "excluded": excluded_n,
     }
-
     target = inclusion.get("target_distribution", {})
     target_frame = pd.DataFrame()
-
     if isinstance(target, dict):
         primary_target = target.get("primary", {})
         if (
@@ -2081,11 +1652,9 @@ def _multimodal_inclusion_html(manifest: dict[str, Any]) -> str:
             and primary_target.get("kind") == "regression"
         ):
             target_frame = _regression_target_frame(target)
-
     group = inclusion.get("group_distribution")
     group_frame = pd.DataFrame()
     group_heading = "Grouping distribution"
-
     if isinstance(group, dict):
         group_frame = _categorical_distribution_frame(
             group, totals, str(group.get("column", "Group"))
@@ -2093,10 +1662,8 @@ def _multimodal_inclusion_html(manifest: dict[str, Any]) -> str:
         group_heading = (
             f"Grouping distribution: {html.escape(str(group.get('column', 'group')))}"
         )
-
     characteristic_rows: list[dict[str, Any]] = []
     characteristics = inclusion.get("characteristic_balance", [])
-
     if isinstance(characteristics, list):
         for row in characteristics:
             if not isinstance(row, dict):
@@ -2119,9 +1686,7 @@ def _multimodal_inclusion_html(manifest: dict[str, Any]) -> str:
                     metric_label: formatted,
                 }
             )
-
     characteristic_frame = pd.DataFrame(characteristic_rows)
-
     estimand = html.escape(
         str(
             inclusion.get(
@@ -2143,15 +1708,12 @@ def _multimodal_inclusion_html(manifest: dict[str, Any]) -> str:
         "<h3>Inclusion and attrition</h3>",
         _html_table(attrition),
     ]
-
     if not availability_frame.empty:
         parts.extend(
             ["<h3>Modality availability</h3>", _html_table(availability_frame)]
         )
-
     if not pattern_frame.empty:
         parts.extend(["<h3>Missingness patterns</h3>", _html_table(pattern_frame)])
-
     if not target_frame.empty:
         parts.extend(
             [
@@ -2159,10 +1721,8 @@ def _multimodal_inclusion_html(manifest: dict[str, Any]) -> str:
                 _html_table(target_frame),
             ]
         )
-
     if not group_frame.empty:
         parts.extend([f"<h3>{group_heading}</h3>", _html_table(group_frame)])
-
     if not characteristic_frame.empty:
         parts.extend(
             [
@@ -2176,16 +1736,13 @@ def _multimodal_inclusion_html(manifest: dict[str, Any]) -> str:
                 _html_table(characteristic_frame),
             ]
         )
-
     if excluded_n:
         parts.append(
             "<p>Observed differences between complete and excluded observations should be "
             "considered when interpreting multimodal generalizability because modality "
             "availability can change the analyzed population.</p>"
         )
-
     parts.append("</section>")
-
     return "".join(parts)
 
 
@@ -2235,12 +1792,9 @@ def _html_taxon_prefixes(value: Any) -> str:
 
 
 def _html_table(df: pd.DataFrame, *, raw_html_cols: set[str] | None = None) -> str:
-
     if df.empty:
         return "<p>No rows available.</p>"
-
     raw_html_cols = raw_html_cols or set()
-
     hidden_cols = {
         "Config ID",
         "config_id",
@@ -2255,99 +1809,61 @@ def _html_table(df: pd.DataFrame, *, raw_html_cols: set[str] | None = None) -> s
         "Candidate ID",
         "candidate_id",
     }
-
     cols = [c for c in df.columns if str(c) not in hidden_cols]
-
     parts = ['<div class="table-wrap"><table><thead><tr>']
-
     parts.extend(f'<th scope="col">{html.escape(str(c))}</th>' for c in cols)
-
     parts.append("</tr></thead><tbody>")
-
     for _, r in df.iterrows():
         parts.append("<tr>")
-
         for c in cols:
             val = r[c]
-
             if pd.isna(val):
                 txt = ""
-
             elif c in raw_html_cols:
                 txt = str(val)
-
             else:
                 number = _html_number(val)
-
                 if number is not None:
                     txt = html.escape(number)
-
                 else:
                     rendered = _html_inline(val)
-
                     column_name = str(c).casefold()
-
                     if "feature" in column_name or "taxon" in column_name:
                         rendered = _short_feature_label(val, 72)
-
                     txt = _html_taxon_prefixes(rendered)
-
             parts.append(f"<td>{txt}</td>")
-
         parts.append("</tr>")
-
     parts.append("</tbody></table></div>")
-
     return "".join(parts)
 
 
 def _procedure_grid_html(procedure: pd.DataFrame) -> str:
-
     if procedure.empty or not {"Field", "Value"}.issubset(procedure.columns):
         return _html_table(procedure)
-
     rows = [(str(row["Field"]), str(row["Value"])) for _, row in procedure.iterrows()]
-
     wide = [row for row in rows if row[0] == "Selection rule"]
-
     compact = [row for row in rows if row[0] != "Selection rule"]
-
     midpoint = (len(compact) + 1) // 2
-
     columns = (compact[:midpoint], compact[midpoint:])
-
     parts = ['<div class="procedure-grid">']
-
     for column in columns:
         parts.append('<div class="procedure-column">')
-
         for field, value in column:
             parts.append('<div class="procedure-row">')
-
             parts.append(f'<div class="procedure-field">{html.escape(field)}</div>')
-
             parts.append(f'<div class="procedure-value">{html.escape(value)}</div>')
-
             parts.append("</div>")
-
         parts.append("</div>")
-
     for field, value in wide:
         parts.append('<div class="procedure-row procedure-wide">')
-
         parts.append(f'<div class="procedure-field">{html.escape(field)}</div>')
-
         parts.append(f'<div class="procedure-value">{html.escape(value)}</div>')
-
         parts.append("</div>")
-
     parts.append("</div>")
-
     return "".join(parts)
 
 
 def _publication_layout_css() -> str:
-
     return """
 .procedure-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); column-gap:34px; margin:10px 0 24px; }
 .procedure-column { min-width:0; }
@@ -2373,7 +1889,6 @@ def _publication_layout_css() -> str:
 
 
 def _report_css() -> str:
-
     return """
 
 .xai-svg-figure { margin:18px 0 10px; width:100%; }
@@ -3162,7 +2677,6 @@ def _exploration_report_html(root: Path, report_dir: Path) -> str:
         parts.append(
             f'<section class="explore-rank"><h3>{html.escape(rank.title())}</h3>'
         )
-
         alpha_context = (
             _alpha_inference_context(alpha, confidence_level) if not alpha.empty else ""
         )
@@ -3177,7 +2691,6 @@ def _exploration_report_html(root: Path, report_dir: Path) -> str:
         if not alpha.empty:
             parts.append("<h4>Alpha-diversity inference</h4>")
             parts.append(_html_table(_alpha_display_table(alpha, confidence_level)))
-
         pcoa_figure = _fig(
             figure_dir / "aitchison_pcoa",
             report_dir,
@@ -3188,7 +2701,6 @@ def _exploration_report_html(root: Path, report_dir: Path) -> str:
         if not beta.empty:
             parts.append("<h4>Beta-diversity inference</h4>")
             parts.append(_html_table(_beta_display_table(beta)))
-
         heatmap_figure = _fig(
             figure_dir / "clr_heatmap",
             report_dir,
@@ -3199,7 +2711,6 @@ def _exploration_report_html(root: Path, report_dir: Path) -> str:
             parts.append(
                 f'<div class="explore-figure explore-figure-wide">{heatmap_figure}</div>'
             )
-
         volcano_figure = _fig(
             figure_dir / "differential_abundance",
             report_dir,

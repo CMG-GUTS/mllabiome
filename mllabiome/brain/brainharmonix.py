@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import argparse
 import csv
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -8,9 +7,7 @@ from dataclasses import asdict, dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
-
 import numpy as np
-
 from .atlas import load_schaefer_atlas, schaefer_atlas
 from .cache import (
     BrainCache,
@@ -35,7 +32,6 @@ class BrainHarmonixFResult:
     n_features: int = 768
 
     def as_modality(self, *, name: str = "brain", primary: bool = False):
-
         from ..modalities import Modality
 
         parquet = self.feature_table.suffix.lower() == ".parquet"
@@ -146,7 +142,6 @@ class BrainHarmonixFEncoder:
         return target
 
     def load_normalization(self, path: str | Path) -> "BrainHarmonixFEncoder":
-
         with np.load(path, allow_pickle=False) as stats:
             if (
                 int(stats["schema_version"]) != 1
@@ -337,7 +332,6 @@ def embed_fmriprep(
     output_format: str = "tsv",
     reused_embeddings: Mapping[str, tuple[str, np.ndarray]] | None = None,
 ) -> BrainHarmonixFResult:
-
     tracker = active_progress()
     if normalization == "auto":
         normalization = (

@@ -1,14 +1,11 @@
 from __future__ import annotations
-
 import hashlib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
-
 from .utils import TAXONOMIC_LEVELS
 
 
@@ -230,7 +227,6 @@ def load_inference_dataset(
         raise ValueError(
             "Training and inference formats must belong to the same format family."
         )
-
     metadata = None
     if spec.metadata_path is not None:
         parsed_headers = {}
@@ -274,7 +270,6 @@ def load_inference_dataset(
             raise ValueError("Inference metadata contains empty sample IDs.")
         if metadata[sample_id_col].duplicated().any():
             raise ValueError("Inference metadata contains duplicate sample IDs.")
-
     if inference_format in matrix_formats:
         path = Path(spec.abundance_path)
         if metadata is not None:
@@ -302,7 +297,6 @@ def load_inference_dataset(
         sample_ids = frame[sample_id_col].astype(str).str.strip().tolist()
         feature_names = [str(name) for name in frame.columns if name != sample_id_col]
         values = frame[feature_names].apply(pd.to_numeric, errors="coerce")
-
     if not sample_ids or not feature_names:
         raise ValueError("Inference data contains no samples or no features.")
     if any(not sample_id for sample_id in sample_ids) or len(sample_ids) != len(
@@ -322,7 +316,6 @@ def load_inference_dataset(
         training.sample_ids
     ):
         raise ValueError("Inference sample IDs overlap the training cohort.")
-
     expected = list(training.feature_names_by_level["all"])
     provided = {name: index for index, name in enumerate(feature_names)}
     missing = [name for name in expected if name not in provided]
@@ -337,7 +330,6 @@ def load_inference_dataset(
     for index, name in enumerate(expected):
         if name in provided:
             aligned[:, index] = X[:, provided[name]]
-
     names_by_level = {
         level: list(names) for level, names in training.feature_names_by_level.items()
     }
@@ -547,7 +539,6 @@ def _encode_y(
         raise ValueError(
             f"Target column contains missing values at {len(missing)} row(s); first positions: {missing[:5]!r}."
         )
-
     if label_map is not None:
         normalised_map: dict[str, tuple[Any, int]] = {}
         for key, code in label_map.items():
@@ -565,7 +556,6 @@ def _encode_y(
                     f"label_map value for {key!r} must be an integer class code."
                 ) from exc
             normalised_map[token] = (key, mapped_code)
-
         unknown = sorted(
             {
                 _normalise_text(value)
@@ -577,19 +567,16 @@ def _encode_y(
             raise ValueError(
                 f"Target column contains labels not present in label_map: {unknown!r}."
             )
-
         external_codes = np.asarray(
             [normalised_map[_normalise_lookup(value)][1] for value in raw], dtype=int
         )
         unique_codes = sorted(set(external_codes.tolist()))
         if len(unique_codes) < 2:
             raise ValueError("Classification requires at least two observed classes.")
-
         keys_by_code: dict[int, list[str]] = {code: [] for code in unique_codes}
         for original_key, code in normalised_map.values():
             if code in keys_by_code:
                 keys_by_code[code].append(_normalise_text(original_key))
-
         if labels is not None:
             labels_out = [_normalise_text(value) for value in labels]
             if len(labels_out) != len(unique_codes):
@@ -606,7 +593,6 @@ def _encode_y(
                     "class_labels is required when label_map maps multiple raw labels to one class code."
                 )
             code_labels = {code: keys_by_code[code][0] for code in unique_codes}
-
         if len(unique_codes) == 2:
             raw_key_to_code = {
                 token: code
@@ -623,12 +609,10 @@ def _encode_y(
         else:
             ordered_codes = unique_codes
             positive_index = None
-
         internal = {code: index for index, code in enumerate(ordered_codes)}
         y = np.asarray([internal[int(code)] for code in external_codes], dtype=int)
         labels_final = [code_labels[code] for code in ordered_codes]
         return y, labels_final, positive_index
-
     if labels is not None:
         labels_out = [_normalise_text(value) for value in labels]
         if len(labels_out) < 2:
@@ -656,7 +640,6 @@ def _encode_y(
         mapping = {label: index for index, label in enumerate(ordered_labels)}
         y = np.asarray([mapping[value] for value in raw_text], dtype=int)
         return y, ordered_labels, positive_index
-
     numeric = pd.to_numeric(pd.Series(raw), errors="coerce")
     if numeric.notna().all():
         raw_values = numeric.tolist()
@@ -679,7 +662,6 @@ def _encode_y(
         value_to_index = {value: index for index, value in enumerate(ordered_values)}
         y = np.asarray([value_to_index[value] for value in raw_values], dtype=int)
         return y, [_normalise_text(value) for value in ordered_values], positive_index
-
     raw_text = [_normalise_text(value) for value in raw]
     unique_labels = sorted(set(raw_text))
     if len(unique_labels) < 2:

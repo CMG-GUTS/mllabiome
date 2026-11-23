@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import hashlib
 import json
 import os
@@ -7,7 +6,6 @@ import platform
 import time
 from dataclasses import replace
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
 from sklearn.metrics import (
@@ -23,7 +21,6 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.model_selection import GroupKFold, KFold
-
 from .data import dataset_fingerprint, load_dataset
 from .evaluation_splits import (
     _regression_inner_splits,
@@ -39,7 +36,6 @@ from .transformations import (
     _count_transformation_specs_for_blocks,
 )
 from .utils import dump_json_standard
-
 
 _CLASSIFICATION_METRICS = frozenset(
     {

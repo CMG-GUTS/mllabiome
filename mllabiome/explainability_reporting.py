@@ -1,12 +1,9 @@
 from __future__ import annotations
-
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
-
 from .explainability_context import build_feature_relative_abundance_summary
 from .explainability_support import top_k_rank_support
 from .explainability_visuals import plot_feature_support as _plot_feature_support_visual

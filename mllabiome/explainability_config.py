@@ -1,11 +1,8 @@
 from __future__ import annotations
-
 from collections.abc import Callable, Sequence
 from typing import Any
-
 import numpy as np
 from sklearn.base import BaseEstimator
-
 from .explainability_methods import ALE, ALEInteractions, coerce_method, method_name
 from .learners import _learner_factory
 from ._historical_configs import (

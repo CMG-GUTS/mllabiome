@@ -1,14 +1,10 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
-
 from .atlas import schaefer_atlas
 from .fmriprep import FMRIPrepRun
-
 
 _MOTION = ("trans_x", "trans_y", "trans_z", "rot_x", "rot_y", "rot_z")
 CONFOUNDS_26 = (
@@ -29,7 +25,6 @@ class BOLDPreprocessing:
     yeo_networks: int = 7
     atlas_resolution_mm: int = 2
     confounds: tuple[str, ...] = CONFOUNDS_26
-
     maximum_mean_fd: float | None = None
     maximum_high_motion_fraction: float | None = None
     high_motion_fd: float = 0.5
@@ -79,7 +74,6 @@ def extract_schaefer400(
     atlas_img=None,
     n_parcels: int = 400,
 ) -> tuple[np.ndarray, dict[str, float | int | str]]:
-
     try:
         from nilearn.maskers import NiftiLabelsMasker
         from nilearn import image
@@ -108,7 +102,6 @@ def extract_schaefer400(
     reg = metadata.loc[:, list(preprocessing.confounds)].apply(
         pd.to_numeric, errors="coerce"
     )
-
     for col in reg:
         if col.endswith("_derivative1") or col.endswith("_derivative1_power2"):
             if pd.isna(reg[col].iloc[0]):
@@ -153,10 +146,8 @@ def extract_schaefer400(
             raise ValueError(
                 f"{run.subject_id}: fraction of high-motion frames exceeds QC threshold."
             )
-
     if atlas_img is None:
         atlas_img = schaefer_atlas(n_parcels)
-
     bold_img = image.load_img(str(run.bold))
     if len(bold_img.shape) != 4:
         raise ValueError(f"{run.subject_id}: expected a 4D BOLD NIfTI image.")

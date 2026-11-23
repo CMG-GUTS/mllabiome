@@ -1,10 +1,7 @@
 from __future__ import annotations
-
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
-
 from .storage import read_table
 from .utils import METRIC_COLUMNS
 

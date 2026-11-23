@@ -97,6 +97,9 @@ benchmark = [
 
 
 [project.optional-dependencies]
+seldon = [
+  "neuralk-oss==0.3.0; python_version >= '3.11'",
+]
 brain = [
   "nilearn>=0.12",
   "nibabel>=5.0",
@@ -193,7 +196,7 @@ causilo = [
     "causilo>=1.0.3,<2",
 ]
 kumo = [
-    "structured-data-models ; python_full_version >= '3.11'",
+    "structured-data-models==0.2.1 ; python_full_version >= '3.11'",
 ]
 limix2 = [
     "huggingface-hub>=0.24 ; python_full_version >= '3.12'",
@@ -237,7 +240,7 @@ override-dependencies = [
 brainharmonix = { git = "https://github.com/MedARC-AI/Brain-Harmony.git", rev = "5398f8f5540222973cf82d13ac1eb4c4b38af636" }
 curated-microbiota = { git = "https://github.com/CMG-GUTS/curated-microbiota", tag = "v0.2.0" }
 curated-microbiota-gut-brain-axis = { git = "https://github.com/CMG-GUTS/curated-microbiota-gut-brain-axis", tag = "v0.1.0" }
-structured-data-models = { git = "https://github.com/NVIDIA/structured-data-models.git" }
+structured-data-models = { git = "https://github.com/NVIDIA/structured-data-models.git", tag = "v0.2.1" }
 limix = { git = "https://github.com/limix-ldm-ai/LimiX.git" }
 exaonetabular = { git = "https://github.com/LGAI-Research/EXAONE-Tabular.git" }
 

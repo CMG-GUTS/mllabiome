@@ -1,12 +1,9 @@
 from __future__ import annotations
-
 import json
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
-
 from ._config_store import read_configuration
 from .ensemble_aggregation import aggregate_member_predictions
 from .metrics import compute_metrics

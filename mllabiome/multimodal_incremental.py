@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import hashlib
 import json
 import re
@@ -7,9 +6,7 @@ import sqlite3
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
-
 import numpy as np
-
 from .data import dataset_fingerprint
 from .modalities import modality_dataset_fingerprint
 

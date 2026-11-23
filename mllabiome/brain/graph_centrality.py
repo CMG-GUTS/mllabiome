@@ -1,10 +1,7 @@
 from __future__ import annotations
-
 from math import ceil
-
 import networkx as nx
 import numpy as np
-
 from .handcrafted import _check_ts
 
 

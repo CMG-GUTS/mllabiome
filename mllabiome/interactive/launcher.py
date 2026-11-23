@@ -1,14 +1,11 @@
 from __future__ import annotations
-
 import shutil
 import subprocess
 import threading
 import webbrowser
 from pathlib import Path
-
 from .api import create_server
 from .runs import RunStore
-
 
 FRONTEND = Path("interactive/frontend")
 

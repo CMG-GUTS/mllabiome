@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import hashlib
 import json
 import os
@@ -10,7 +9,6 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import urlsplit
-
 import numpy as np
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import check_is_fitted
@@ -21,7 +19,6 @@ SCZ_QUESTION = (
     "with a healthy control (label 0)? Treat this as an exploratory "
     "microbiome phenotype comparison, not a clinical diagnosis."
 )
-
 PRESENCE_QUESTION = (
     "Based ONLY on the detected (present) versus undetected (absent) gut "
     "microbiome taxa, is this sample more consistent with schizophrenia "
@@ -367,7 +364,6 @@ class OllamaDecisionClassifier(ClassifierMixin, BaseEstimator):
         )
 
     def _score(self, state: dict[str, Any] | str) -> float:
-
         payload = {
             "model": self.model,
             "state": state,

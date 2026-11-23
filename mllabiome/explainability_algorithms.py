@@ -1,14 +1,11 @@
 from __future__ import annotations
-
 import math
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator
-
 from .explainability_config import (
     ExplainabilityConfigurationError,
     ExplainabilityDependencyError,
@@ -115,7 +112,6 @@ def _permutation_feature_importance(
                     total,
                     f"feature {feature_index + 1}/{n_features} · repeat {repeat_index + 1}/{n_repeats} · {feature}",
                 )
-
     rows: list[pd.DataFrame] = []
     for pos, class_index in enumerate(class_indices):
         c = int(class_index)
@@ -423,7 +419,6 @@ def _candidate_pairs_from_scores(
         ),
         reverse=True,
     )
-
     frontier = order[
         : min(len(order), max(4, int(math.ceil(math.sqrt(max_pairs * 2))) + 6))
     ]
@@ -818,10 +813,8 @@ def _plot_ale_curves(
 ) -> None:
     apply_style()
     import math as _math
-
     import matplotlib.patheffects as mpe
     import matplotlib.pyplot as plt
-
     from .style import MM
 
     if (

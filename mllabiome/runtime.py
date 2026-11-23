@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import os
 import platform
 import subprocess
@@ -7,7 +6,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import count
 from typing import Any
-
 from joblib import Parallel, cpu_count, parallel_backend
 
 

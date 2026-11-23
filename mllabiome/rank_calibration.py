@@ -1,9 +1,7 @@
 from __future__ import annotations
-
 import numpy as np
 from sklearn.base import BaseEstimator
 from sklearn.linear_model import LogisticRegression
-
 from .estimator_protocol import clone_estimator
 from .ensemble_aggregation import ecdf_stacking_features
 from .learners import GroupAwareCalibratedClassifier

@@ -1,9 +1,7 @@
 from __future__ import annotations
-
 import json
 import shutil
 from pathlib import Path
-
 from . import explainability as _core
 from .configs_sweep import Sweep
 from .console import info
@@ -122,7 +120,6 @@ def _invalidate_stale(root: Path, models: dict, explainability) -> None:
         current_b_id != final_b_id or current_b_signature != expected_signature
     ):
         shutil.rmtree(mpma_b_dir)
-
     mpma_e = models.get("MPMA-E")
     if not isinstance(mpma_e, dict):
         return
@@ -169,7 +166,6 @@ def explain(sweep: Sweep) -> dict[str, Path]:
     rankings = read_table(rankings_path)
     targets = _core._automatic_explainability_targets(sweep, rankings)
     mpma_e = models.get("MPMA-E")
-
     outputs: dict[str, Path] = {}
     for target_no, target in enumerate(targets, start=1):
         info(f"Explainability · target {target_no}/{len(targets)} · {target}")
@@ -191,7 +187,6 @@ def explain(sweep: Sweep) -> dict[str, Path]:
                 raise _core.ExplainabilityConfigurationError(
                     "MPMA-E explainability was requested, but no final MPMA-E specification is available."
                 )
-
             member_ids = [str(member["config_id"]) for member in mpma_e["members"]]
             _core._ensure_mpma_member_explanations(sweep, rankings, member_ids)
             out = explain_mpma_e(sweep, rankings)

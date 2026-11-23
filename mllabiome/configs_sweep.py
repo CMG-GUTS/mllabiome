@@ -1,6 +1,6 @@
 from __future__ import annotations
-
 import hashlib
+import contextlib
 import importlib.metadata
 import json
 import marshal
@@ -10,18 +10,17 @@ import sqlite3
 import subprocess
 import sys
 import time
+import uuid
 import zlib
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, TypeAlias
-
 import numpy as np
 import pandas as pd
 from joblib import delayed
 from sklearn.base import BaseEstimator
 from threadpoolctl import threadpool_limits
-
 from ._evaluation_protocols import is_hierarchical_lodo_protocol, is_lodo_protocol
 from ._version import __version__
 from .compute import ResourceTracker, machine_profile, synchronize_accelerators
@@ -33,6 +32,7 @@ from .console import (
     summary_table,
     evaluation_leaders,
     EvaluationMonitor,
+    console,
 )
 from .data import Dataset, dataset_fingerprint, load_dataset
 from .estimator_protocol import EstimatorLike, is_estimator_instance
@@ -69,6 +69,7 @@ from .runtime import (
 )
 from .selection import write_mpma_b_selection_outputs
 from .storage import read_table, remove_table, table_exists, write_table
+from . import cooperative_store
 from ._config_store import (
     refresh_catalog,
     indexed_config_ids,
@@ -1273,6 +1274,9 @@ def _checkpoint_inner(
         "inner_metrics": [metric_row],
         "inner_predictions": predictions,
     }
+    if cooperative_store.enabled(root):
+        cooperative_store.save_checkpoint(root, config_id, "inner", inner_key, payload)
+        return
     compressed = zlib.compress(
         json.dumps(payload, allow_nan=True, separators=(",", ":")).encode("utf-8"),
         level=3,
@@ -1306,6 +1310,11 @@ def _checkpoint_result(
         "qualification": result.get("qualification", []),
         "job_resources": result.get("job_resources", []),
     }
+    if cooperative_store.enabled(root):
+        cooperative_store.save_checkpoint(
+            root, str(result["config_id"]), "outer", str(result["split_key"]), payload
+        )
+        return
     blob = zlib.compress(
         json.dumps(payload, allow_nan=True, separators=(",", ":")).encode("utf-8"),
         level=3,
@@ -1375,6 +1384,14 @@ def _load_checkpoint_frames(
         "qualification": pd.DataFrame(),
         "job_resources": pd.DataFrame(),
     }
+    if cooperative_store.enabled(root):
+        contents = cooperative_store.load_checkpoints(
+            root, current_config_ids, outer_keys
+        )
+        return {
+            section: pd.DataFrame(rows) if rows else pd.DataFrame()
+            for section, rows in contents.items()
+        }
     db_path = root / "configs.db"
     if not db_path.exists():
         return empty
@@ -1434,6 +1451,10 @@ def _load_checkpoint_frames(
 
 
 def _clear_evaluation_checkpoints(root: Path, compact: bool = False) -> None:
+    if cooperative_store.enabled(root):
+        raise ValueError(
+            "Cooperative experiment cannot be globally reset while other jobs may run. Use a new experiment directory."
+        )
     db_path = root / "configs.db"
     if not db_path.exists():
         return
@@ -2132,8 +2153,6 @@ _DelayedEvaluationTask: TypeAlias = tuple[
     _EvaluationCallable, tuple[Any, ...], dict[str, Any]
 ]
 _ScheduledEvaluationTask: TypeAlias = tuple[str, str, _DelayedEvaluationTask]
-
-
 _ResolutionSpec: TypeAlias = tuple[str, tuple[str, ...]]
 _LearnerFactory: TypeAlias = Callable[[], EstimatorLike]
 _LearnerFactories: TypeAlias = list[tuple[str, _LearnerFactory]]
@@ -2224,7 +2243,16 @@ def _publish_completed_config(
     inner_keys: set[str],
     metric: str,
     gate_enabled: bool,
+    *,
+    configuration: Mapping[str, Any] | None = None,
 ) -> bool:
+    artifact = root / "configs" / f"{config_id}.parquet"
+    if cooperative_store.enabled(root) and artifact.exists():
+        from ._config_store import _file_metadata, _validate_artifact_context
+
+        _validate_artifact_context(root, _file_metadata(artifact))
+        cooperative_store.cleanup(root, config_id)
+        return True
     frames = _load_checkpoint_frames(root, {config_id}, outer_keys)
     if not outer_keys:
         return False
@@ -2266,12 +2294,18 @@ def _publish_completed_config(
                 keep="last",
             ).reset_index(drop=True)
         frames[section] = frame
-    with sqlite3.connect(root / "configs.db") as conn:
-        config = pd.read_sql_query(
-            "SELECT * FROM configs WHERE config_id=?", conn, params=[config_id]
-        )
-    if config.empty:
-        raise ValueError(f"Missing configuration metadata for {config_id}")
+    if configuration is not None:
+        config_record = dict(configuration)
+    else:
+        with sqlite3.connect(root / "configs.db") as conn:
+            config = pd.read_sql_query(
+                "SELECT * FROM configs WHERE config_id=?", conn, params=[config_id]
+            )
+        if config.empty:
+            raise ValueError(f"Missing configuration metadata for {config_id}")
+        config_record = config.iloc[0].where(pd.notna(config.iloc[0]), None).to_dict()
+    if str(config_record.get("config_id", "")) != config_id:
+        raise ValueError("Configuration metadata does not match the claimed MPMA")
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     score = None
     if metric in outer.columns:
@@ -2279,6 +2313,13 @@ def _publish_completed_config(
         scores = scores[np.isfinite(scores)]
         if scores.size:
             score = float(np.mean(scores))
+    from ._config_store import _complete_inner_ranking_score
+
+    inner_ranking_score = _complete_inner_ranking_score(
+        frames["inner_metrics"], metric, len(observed_inner)
+    )
+    from .utils import _json_clean
+
     meta = {
         "benchmark": str(manifest.get("evaluation_cache_fingerprint") or ""),
         "dataset": str(manifest.get("dataset_fingerprint") or ""),
@@ -2297,11 +2338,15 @@ def _publish_completed_config(
             else "partial_inner"
         ),
         "score": score,
-        "configuration": config.iloc[0].where(pd.notna(config.iloc[0]), None).to_dict(),
+        "inner_ranking_score": inner_ranking_score,
+        "configuration": _json_clean(config_record),
         "hardware": machine_profile(),
         "software": manifest.get("software_provenance", {}),
     }
     write_configuration(root, config_id, frames, meta)
+    if cooperative_store.enabled(root):
+        cooperative_store.cleanup(root, config_id)
+        return True
     register_configuration(root, config_id)
     with sqlite3.connect(root / "configs.db", timeout=60) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
@@ -2328,6 +2373,8 @@ def _recover_committed_configs(
     *,
     require_inner: bool = True,
 ) -> None:
+    if cooperative_store.enabled(root):
+        return
     if not config_ids or not (root / "configs.db").exists():
         return
     with sqlite3.connect(root / "configs.db") as conn:
@@ -2403,7 +2450,9 @@ def _run_evaluation_tasks(
     )
     for task in tasks:
         remaining[task.config_id] = remaining.get(task.config_id, 0) + 1
-    leaders = top_configs(root, metric, k=2147483647, loss=metric_is_loss(metric))
+    config_records = {
+        str(row["config_id"]): row for row in context.configs.to_dict(orient="records")
+    }
     with EvaluationMonitor(
         root,
         metric,
@@ -2425,6 +2474,14 @@ def _run_evaluation_tasks(
             )
         },
         classification=str(context.dataset.task) != "regression",
+        display_names={
+            cid: " · ".join(
+                str(config_records[cid].get(field, ""))
+                for field in ("learner", "resolution", "count_transformation")
+            )
+            for cid in remaining
+            if cid in config_records
+        },
     ) as monitor:
         payloads = [
             (task.fn, task.args, {**task.kwargs, "checkpoint_root": str(root)})
@@ -2444,16 +2501,159 @@ def _run_evaluation_tasks(
                     expected_inner,
                     metric,
                     gate_enabled,
+                    configuration=config_records.get(config_id),
                 )
                 if published:
                     rows.latest_config_id = config_id
-                    leaders = top_configs(
-                        root, metric, k=2147483647, loss=metric_is_loss(metric)
-                    )
-                    monitor.finalized(config_id, leaders)
+                    monitor.finalized(config_id, None)
                 else:
                     monitor.unfinished(config_id)
     return rows
+
+
+def _run_cooperative_evaluation_tasks(
+    sweep: Sweep,
+    context: _SweepEvaluationContext,
+    execution: ExecutionPlan,
+    *,
+    task: str,
+    metric: str,
+) -> tuple[_EvaluationRows, int, dict[str, int]]:
+    root = context.root
+    rows = _EvaluationRows.empty()
+    total_tasks = 0
+    counts = {
+        "requested": len(context.current_config_ids),
+        "reused": 0,
+        "busy": 0,
+        "completed": 0,
+        "incomplete": 0,
+    }
+    expected_outer = {str(split["split_key"]) for split in context.outer_splits}
+    expected_inner = (
+        {
+            f"{str(split['split_key'])}__i{i}"
+            for split in context.outer_splits
+            for i in range(len(context.inner_splits_by_outer[str(split["split_key"])]))
+        }
+        if not sweep.evaluation.outer_only
+        else set()
+    )
+    config_records = {
+        str(row["config_id"]): row for row in context.configs.to_dict(orient="records")
+    }
+    for cid in sorted(context.current_config_ids):
+        with cooperative_store.lock(root, f"config/{cid}", blocking=False) as claimed:
+            if not claimed:
+                counts["busy"] += 1
+                info(f"MPMA {cid} · already running in another process; skipping")
+                continue
+            artifact = root / "configs" / f"{cid}.parquet"
+            if artifact.is_file():
+                from ._config_store import _file_metadata, _validate_artifact_context
+
+                _validate_artifact_context(root, _file_metadata(artifact))
+                counts["reused"] += 1
+                info(f"MPMA {cid} · completed artifact reused")
+                continue
+
+            existing = _load_existing_evaluation(root, {cid}, expected_outer)
+            if task == "regression":
+                existing["inner_metrics"] = (
+                    _backfill_regression_metrics_from_predictions(
+                        existing["inner_metrics"],
+                        existing["inner_predictions"],
+                        "inner_key",
+                    )
+                )
+                existing["outer_metrics"] = (
+                    _backfill_regression_metrics_from_predictions(
+                        existing["outer_metrics"],
+                        existing["outer_predictions"],
+                        "split_key",
+                    )
+                )
+            else:
+                requested = [str(sweep.evaluation.optimize_metric)]
+                if sweep.gate.enabled:
+                    requested.append(str(sweep.gate.metric))
+                for section, prediction, key in (
+                    ("inner_metrics", "inner_predictions", "inner_key"),
+                    ("outer_metrics", "outer_predictions", "split_key"),
+                ):
+                    existing[section] = _backfill_metrics_from_predictions(
+                        existing[section],
+                        existing[prediction],
+                        context.dataset.classes,
+                        context.dataset.class_labels,
+                        key,
+                        requested,
+                    )
+            if not sweep.gate.enabled:
+                existing["qualification"] = pd.DataFrame()
+            local_context = replace(
+                context,
+                current_config_ids={cid},
+                existing=existing,
+                inner_done=_done_pairs(existing["inner_metrics"], "inner_key"),
+                outer_done=_done_pairs(existing["outer_metrics"], "split_key"),
+                qualification_map=(
+                    _qualification_map(existing["qualification"])
+                    if sweep.gate.enabled
+                    else {}
+                ),
+            )
+            scheduled, _ = (
+                _build_regression_tasks(sweep, local_context)
+                if task == "regression"
+                else _build_classification_tasks(sweep, local_context)
+            )
+            prepared = _prepare_evaluation_tasks(
+                scheduled, execution.threads_per_worker
+            )
+            total_tasks += len(prepared)
+            if not prepared:
+                if _publish_completed_config(
+                    root,
+                    cid,
+                    expected_outer,
+                    expected_inner,
+                    metric,
+                    bool(sweep.gate.enabled),
+                    configuration=config_records[cid],
+                ):
+                    counts["completed"] += 1
+                    info(f"MPMA {cid} · recovered completed checkpoints")
+                else:
+                    counts["incomplete"] += 1
+                    info(f"MPMA {cid} · no pending successful folds")
+                continue
+            info(f"MPMA {cid} · claimed · {len(prepared)} outer-split tasks")
+            added = _run_evaluation_tasks(
+                root,
+                prepared,
+                execution,
+                context=local_context,
+                metric=metric,
+                gate_enabled=bool(sweep.gate.enabled),
+                require_inner=not sweep.evaluation.outer_only,
+            )
+            rows.extend(
+                {
+                    "inner_metrics": added.inner_metrics,
+                    "inner_predictions": added.inner_predictions,
+                    "outer_metrics": added.outer_metrics,
+                    "outer_predictions": added.outer_predictions,
+                    "qualification": added.qualification,
+                    "job_resources": added.job_resources,
+                }
+            )
+            if added.latest_config_id:
+                rows.latest_config_id = added.latest_config_id
+                counts["completed"] += 1
+            else:
+                counts["incomplete"] += 1
+    return rows, total_tasks, counts
 
 
 def _write_selection_artifacts(
@@ -2462,19 +2662,30 @@ def _write_selection_artifacts(
     class_labels: Sequence[str],
 ) -> None:
     metric = str(sweep.evaluation.optimize_metric)
+    cooperative_store.report_phase("Preparing MPMA-B selection")
     tracker = ResourceTracker(
         sample_interval_s=sweep.evaluation.resource_sample_interval_s
     ).start()
-    write_mpma_b_selection_outputs(
+    outputs = write_mpma_b_selection_outputs(
         root,
         metric,
         plan=sweep.ensemble,
         base_selection=sweep.base_selection if class_labels else None,
     )
+    if cooperative_store.enabled(root) and not outputs:
+        tracker.stop()
+        raise ValueError(
+            "MPMA-B selection cannot proceed: the completed configurations "
+            "lack sufficient compatible inner metrics or outer predictions."
+        )
     dump_json_standard(
         tracker.stop(), root / "tables" / "mpma_b_selection_resources.json"
     )
+    cooperative_store.report_phase(
+        "Aggregating global inner and outer performance rankings"
+    )
     _write_rankings_and_figures(root, list(class_labels), metric)
+    cooperative_store.report_phase("Generating representation-impact figures")
     _write_representation_impact_figure(root, metric_col=metric)
 
 
@@ -2519,6 +2730,8 @@ def _evaluation_run_summary(
 
 
 def _remove_qualification_cache(root: Path) -> None:
+    if cooperative_store.enabled(root):
+        return
     path = root / "tables" / "qualification_gate.parquet"
     if table_exists(path):
         remove_table(path)
@@ -2647,20 +2860,27 @@ def _prepare_regression_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
     _prewarm_foundation_representations(sweep, resolutions, mpdr_cache)
     _write_config_table(root, configs)
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
-    outer_splits, inner_splits_by_outer = _resolved_evaluation_splits(
-        root,
-        sweep.evaluation,
-        dataset,
-        groups,
-        group_col=sweep.data.group_col,
+    init_lock = (
+        cooperative_store.lock(root, "initialize")
+        if cooperative_store.enabled(root)
+        else contextlib.nullcontext()
     )
-    _write_manifest(
-        root,
-        sweep,
-        dataset,
-        evaluation_fingerprint=evaluation_fingerprint,
-        evaluation_cache_fingerprint=cache_fingerprint,
-    )
+    with init_lock:
+        _validate_incremental_experiment_identity(root, sweep, dataset, redo=False)
+        outer_splits, inner_splits_by_outer = _resolved_evaluation_splits(
+            root,
+            sweep.evaluation,
+            dataset,
+            groups,
+            group_col=sweep.data.group_col,
+        )
+        _write_manifest(
+            root,
+            sweep,
+            dataset,
+            evaluation_fingerprint=evaluation_fingerprint,
+            evaluation_cache_fingerprint=cache_fingerprint,
+        )
     imported, rejected = refresh_catalog(root)
     if imported or rejected:
         info(f"Configuration catalog · {imported} indexed · {rejected} incompatible")
@@ -2714,7 +2934,6 @@ def _prepare_regression_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
 
 
 def _configure_siamcat_for_dataset(sweep: Sweep, dataset: Dataset) -> None:
-
     from .siamcat import SIAMCATClassifier
     from .transformations import ScopedTransformation
 
@@ -2751,7 +2970,6 @@ def _configure_siamcat_for_dataset(sweep: Sweep, dataset: Dataset) -> None:
         sweep.resolutions = ((rank, (rank,)),)
     elif rank not in originally_configured:
         sweep.resolutions = (*tuple(sweep.resolutions), (rank, (rank,)))
-
     sweep.count_transformations = (
         *tuple(sweep.count_transformations),
         ScopedTransformation("relative_abundance", resolutions=(rank,)),
@@ -2770,7 +2988,6 @@ def _configure_siamcat_for_dataset(sweep: Sweep, dataset: Dataset) -> None:
 
 
 def _preflight_siamcat(sweep: Sweep) -> None:
-
     from .siamcat import SIAMCATClassifier
     from .siamcat_runtime import ensure_siamcat_runtime
 
@@ -2855,22 +3072,29 @@ def _prepare_classification_evaluation(sweep: Sweep) -> _SweepEvaluationContext:
     _write_config_table(root, configs)
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
     strata = _strata_from_metadata(dataset.metadata, dataset.y, sweep.data.stratify_col)
-    outer_splits, inner_splits_by_outer = _resolved_evaluation_splits(
-        root,
-        sweep.evaluation,
-        dataset,
-        groups,
-        strata,
-        sweep.data.stratify_col,
-        sweep.data.group_col,
+    init_lock = (
+        cooperative_store.lock(root, "initialize")
+        if cooperative_store.enabled(root)
+        else contextlib.nullcontext()
     )
-    _write_manifest(
-        root,
-        sweep,
-        dataset,
-        evaluation_fingerprint=evaluation_fingerprint,
-        evaluation_cache_fingerprint=cache_fingerprint,
-    )
+    with init_lock:
+        _validate_incremental_experiment_identity(root, sweep, dataset, redo=False)
+        outer_splits, inner_splits_by_outer = _resolved_evaluation_splits(
+            root,
+            sweep.evaluation,
+            dataset,
+            groups,
+            strata,
+            sweep.data.stratify_col,
+            sweep.data.group_col,
+        )
+        _write_manifest(
+            root,
+            sweep,
+            dataset,
+            evaluation_fingerprint=evaluation_fingerprint,
+            evaluation_cache_fingerprint=cache_fingerprint,
+        )
     imported, rejected = refresh_catalog(root)
     if imported or rejected:
         info(f"Configuration catalog · {imported} indexed · {rejected} incompatible")
@@ -3251,7 +3475,8 @@ def _reuse_completed_evaluation(
     output_label: str,
 ) -> dict[str, Path]:
     success(message)
-    _write_selection_artifacts(context.root, sweep, class_labels)
+    if not cooperative_store.enabled(context.root):
+        _write_selection_artifacts(context.root, sweep, class_labels)
     metric = canonical_metric_name(str(sweep.evaluation.optimize_metric))
     ranked = top_configs(
         context.root, metric, k=2147483647, loss=metric_is_loss(metric)
@@ -3280,33 +3505,59 @@ def _finish_evaluation(
     task: str,
 ) -> dict[str, Path]:
     started = time.perf_counter()
-    rows = _run_evaluation_tasks(
-        context.root,
-        prepared_tasks,
-        execution,
-        context=context,
-        metric=canonical_metric_name(str(sweep.evaluation.optimize_metric)),
-        gate_enabled=bool(sweep.gate.enabled),
-        require_inner=not sweep.evaluation.outer_only,
-    )
-    _write_selection_artifacts(context.root, sweep, class_labels)
-    elapsed = time.perf_counter() - started
-    dump_json_standard(
-        _evaluation_run_summary(
+    cooperative = cooperative_store.enabled(context.root)
+    counts = None
+    if cooperative:
+        rows, completed_jobs, counts = _run_cooperative_evaluation_tasks(
             sweep,
+            context,
             execution,
-            rows,
-            len(prepared_tasks),
-            elapsed,
             task=task,
-            target=context.dataset.target_name if task == "regression" else None,
-        ),
-        context.root / "run_summary.json",
+            metric=canonical_metric_name(str(sweep.evaluation.optimize_metric)),
+        )
+    else:
+        rows = _run_evaluation_tasks(
+            context.root,
+            prepared_tasks,
+            execution,
+            context=context,
+            metric=canonical_metric_name(str(sweep.evaluation.optimize_metric)),
+            gate_enabled=bool(sweep.gate.enabled),
+            require_inner=not sweep.evaluation.outer_only,
+        )
+        completed_jobs = len(prepared_tasks)
+        _write_selection_artifacts(context.root, sweep, class_labels)
+    elapsed = time.perf_counter() - started
+    job_summary = _evaluation_run_summary(
+        sweep,
+        execution,
+        rows,
+        completed_jobs,
+        elapsed,
+        task=task,
+        target=context.dataset.target_name if task == "regression" else None,
+    )
+    if counts is not None:
+        job_summary["mpma_counts"] = counts
+    dump_json_standard(
+        job_summary,
+        (
+            context.root
+            / "runs"
+            / f"{os.environ.get('SLURM_JOB_ID', 'local')}-{os.getpid()}-{uuid.uuid4().hex[:10]}.json"
+        )
+        if cooperative
+        else context.root / "run_summary.json",
     )
     success(
         f"{completion_label} completed in {elapsed:.1f}s · workers={execution.workers} · "
         f"added {len(rows.outer_metrics):,} outer rows and {len(rows.inner_metrics):,} inner rows"
     )
+    if cooperative:
+        info(
+            "Evaluation job summary · "
+            + " · ".join(f"{key}={value}" for key, value in counts.items())
+        )
     metric = canonical_metric_name(str(sweep.evaluation.optimize_metric))
     ranked = top_configs(
         context.root, metric, k=2147483647, loss=metric_is_loss(metric)
@@ -3325,6 +3576,12 @@ def _finish_evaluation(
 
 
 def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
+    with cooperative_store.lock(sweep.root(), "initialize"):
+        if sweep.evaluation.redo:
+            raise ValueError(
+                "--redo cannot be used with cooperative evaluation output; create a new experiment directory"
+            )
+        cooperative_store.initialize(sweep.root())
     context = _prepare_regression_evaluation(sweep)
     tasks, _ = _build_regression_tasks(sweep, context)
     execution = _evaluation_execution_plan(sweep, len(tasks))
@@ -3342,7 +3599,7 @@ def _evaluate_regression(sweep: Sweep) -> dict[str, Path]:
         info(
             "Resuming regression sweep: completed MPMA/split pairs are kept; only new or missing pairs will be evaluated."
         )
-    if not prepared_tasks:
+    if not prepared_tasks and not cooperative_store.enabled(context.root):
         return _reuse_completed_evaluation(
             sweep,
             context,
@@ -3425,6 +3682,12 @@ def evaluate(sweep: Sweep) -> dict[str, Path]:
 
 
 def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
+    with cooperative_store.lock(sweep.root(), "initialize"):
+        if sweep.evaluation.redo:
+            raise ValueError(
+                "--redo cannot be used with cooperative evaluation output; create a new experiment directory"
+            )
+        cooperative_store.initialize(sweep.root())
     context = _prepare_classification_evaluation(sweep)
     tasks, _ = _build_classification_tasks(sweep, context)
     execution = _evaluation_execution_plan(sweep, len(tasks))
@@ -3442,7 +3705,7 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
         info(
             "Resuming sweep: completed MPMA/split pairs are kept; only new or missing pairs will be evaluated."
         )
-    if not prepared_tasks:
+    if not prepared_tasks and not cooperative_store.enabled(context.root):
         return _reuse_completed_evaluation(
             sweep,
             context,
@@ -3463,6 +3726,13 @@ def _evaluate_classification(sweep: Sweep) -> dict[str, Path]:
 
 
 def _prepare_dirs(root: Path) -> None:
+    if cooperative_store.enabled(root) and not (root / "manifest.json").exists():
+        artifacts = root / "configs"
+        if artifacts.is_dir() and next(artifacts.glob("*.parquet"), None) is not None:
+            raise ValueError(
+                "Completed configuration artifacts exist without an experiment manifest; "
+                "cannot establish scientific identity safely. Restore manifest.json."
+            )
     legacy_paths = (
         root / "configs.parquet",
         root / "results" / "outer_results.parquet",
@@ -3470,11 +3740,21 @@ def _prepare_dirs(root: Path) -> None:
         root / "predictions" / "outer_predictions.parquet",
         root / "inner_predictions" / "inner_predictions.parquet",
     )
-    if any(path.exists() for path in legacy_paths):
+    if any(path.exists() for path in legacy_paths) and not cooperative_store.enabled(
+        root
+    ):
         raise ValueError(
             "This experiment uses the previous combined-results layout. "
             "Use a new experiment directory; existing results require a separate migration."
         )
+
+    if cooperative_store.enabled(root) and any(path.exists() for path in legacy_paths):
+        artifacts = root / "configs"
+        if not artifacts.is_dir() or next(artifacts.glob("*.parquet"), None) is None:
+            raise ValueError(
+                "Found legacy aggregate tables but no completed per-MPMA artifacts. "
+                "Cannot safely recover the evaluation from these tables alone."
+            )
     for d in [
         "results",
         "predictions",
@@ -3908,10 +4188,14 @@ def _write_manifest(
         ),
         "mpdr_semantics": _MPDR_SEMANTICS,
     }
+    if cooperative_store.enabled(root) and (root / "manifest.json").exists():
+        return
     dump_json_standard(manifest, root / "manifest.json")
 
 
 def _write_config_table(root: Path, configs: pd.DataFrame) -> None:
+    if cooperative_store.enabled(root):
+        return
     db_path = root / "configs.db"
     conn = sqlite3.connect(db_path)
     extra_columns = {

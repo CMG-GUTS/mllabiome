@@ -1,21 +1,17 @@
 from __future__ import annotations
-
 import hashlib
 import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
-
 from dataclasses import dataclass, replace
 from multiprocessing import Manager
 from pathlib import Path
 from queue import Empty
 from threading import Event, Thread
 from typing import Any
-
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator
-
 from .baseline_rf import resolve_baseline_rf_config_id
 from .configs_sweep import (
     Sweep,
@@ -49,8 +45,6 @@ from .utils import dump_json_standard
 for _logger_name in ("PyALE", "PyALE._ALE_generic"):
     logging.getLogger(_logger_name).setLevel(logging.WARNING)
     logging.getLogger(_logger_name).propagate = False
-
-
 from .configs_sweep import _source_tree_sha256 as _source_tree_sha256
 from .explainability_algorithms import _ale_1d_effect_summary as _ale_1d_effect_summary
 from .explainability_algorithms import _ale_feature_importance, _ale_interactions
@@ -791,7 +785,6 @@ def _mpma_e_reference_and_folds(
     dataset = load_dataset(sweep.data, tuple(all_levels))
     splits = _explainability_outer_splits(sweep, dataset)
     groups = _groups_from_metadata(dataset.metadata, sweep.data.group_col)
-
     feature_names: list[str] = []
     reference_blocks: list[np.ndarray] = []
     reference_coordinate_metadata: list[Any] = []
@@ -849,7 +842,6 @@ def _mpma_e_reference_and_folds(
                 ),
             }
         )
-
     proxy_enabled = any(
         bool(item.get("foundation_embedding")) for item in member_materialized
     )
@@ -861,7 +853,6 @@ def _mpma_e_reference_and_folds(
         )
         proxy_X_base = np.asarray(proxy_X_base)
         proxy_feature_names = [str(x) for x in proxy_feature_names]
-
     X_reference = (
         np.concatenate(reference_blocks, axis=1)
         if len(reference_blocks) > 1
@@ -3755,7 +3746,6 @@ def _automatic_explainability_targets(
             targets.append(target)
     if not targets:
         targets.extend(_standard_explainability_targets(sweep, rankings))
-
     return list(dict.fromkeys(targets))
 
 

@@ -1,11 +1,9 @@
 from __future__ import annotations
-
 import json
 import re
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 
 TAXONOMIC_LEVELS: tuple[str, ...] = (
@@ -18,7 +16,6 @@ TAXONOMIC_LEVELS: tuple[str, ...] = (
     "species",
     "strain",
 )
-
 CLASSIFICATION_METRIC_COLUMNS = [
     "AUROC",
     "AUROC_macro",
@@ -45,7 +42,6 @@ CLASSIFICATION_METRIC_COLUMNS = [
     "cohort_macro_log_loss",
     "brier",
 ]
-
 REGRESSION_METRIC_COLUMNS = [
     "R2",
     "MAE",
@@ -56,7 +52,6 @@ REGRESSION_METRIC_COLUMNS = [
     "PearsonR",
     "SpearmanR",
 ]
-
 METRIC_COLUMNS = CLASSIFICATION_METRIC_COLUMNS + REGRESSION_METRIC_COLUMNS
 
 

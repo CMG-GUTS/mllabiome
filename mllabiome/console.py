@@ -1,14 +1,15 @@
 from __future__ import annotations
-
 import os
 import json
 import math
+import time
+from threading import Lock
 import sqlite3
 import zlib
 from threading import Event, RLock, Thread
+from datetime import datetime
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-
 from rich import box
 from rich.console import Console, Group
 from rich.live import Live
@@ -26,9 +27,19 @@ from rich.progress import (
 from rich.table import Table
 
 console = Console(highlight=False)
+_batch_lock = RLock()
+
+
+def _batch_log(level: str, message: str) -> None:
+    stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    with _batch_lock:
+        print(f"[{stamp}] [{level}] {message}", flush=True)
 
 
 def stage(title: str, subtitle: str | None = None) -> None:
+    if not console.is_terminal:
+        _batch_log("STAGE", title if not subtitle else f"{title} · {subtitle}")
+        return
     text = f"[bold]{title}[/bold]"
     if subtitle:
         text += f"\n[dim]{subtitle}[/dim]"
@@ -36,19 +47,31 @@ def stage(title: str, subtitle: str | None = None) -> None:
 
 
 def info(message: str) -> None:
-    console.print(f"[cyan]•[/cyan] {message}")
+    if console.is_terminal:
+        console.print(f"[cyan]•[/cyan] {message}")
+    else:
+        _batch_log("INFO", message)
 
 
 def success(message: str) -> None:
-    console.print(f"[green]✓[/green] {message}")
+    if console.is_terminal:
+        console.print(f"[green]✓[/green] {message}")
+    else:
+        _batch_log("DONE", message)
 
 
 def warn(message: str) -> None:
-    console.print(f"[yellow]![/yellow] {message}")
+    if console.is_terminal:
+        console.print(f"[yellow]![/yellow] {message}")
+    else:
+        _batch_log("WARN", message)
 
 
 def error(message: str) -> None:
-    console.print(f"[red]✗[/red] {message}")
+    if console.is_terminal:
+        console.print(f"[red]✗[/red] {message}")
+    else:
+        _batch_log("ERROR", message)
 
 
 def summary_table(
@@ -58,6 +81,11 @@ def summary_table(
     table.add_column("Field", style="bold", no_wrap=True)
     table.add_column("Value")
     items = rows.items() if isinstance(rows, Mapping) else rows
+    if not console.is_terminal:
+        info(title)
+        for key, value in items:
+            info(f"  {key}: {_format_value(value)}")
+        return
     for key, value in items:
         table.add_row(str(key), _format_value(value))
     console.print(table)
@@ -79,7 +107,10 @@ def path_table(
         main = Path(os.path.commonpath([str(path) for path in directories]))
     except ValueError:
         main = directories[0]
-    console.print(f"[bold]{title}[/bold] · {main}")
+    if console.is_terminal:
+        console.print(f"[bold]{title}[/bold] · {main}")
+    else:
+        info(f"{title} · {main}")
 
 
 def progress(*, auto_refresh: bool = True, transient: bool = False) -> Progress:
@@ -95,6 +126,75 @@ def progress(*, auto_refresh: bool = True, transient: bool = False) -> Progress:
         auto_refresh=auto_refresh,
         transient=transient,
     )
+
+
+class SelectionStatus:
+    def __init__(self, title: str = "MPMA-B", heartbeat_seconds: int = 60):
+        self.title = title
+        self.heartbeat_seconds = heartbeat_seconds
+        self._lock = Lock()
+        self._stop = Event()
+        self._start = 0.0
+        self._phase = "Starting"
+        self._detail = ""
+        self._reported: dict[str, tuple[int, float]] = {}
+        self._thread: Thread | None = None
+
+    def __enter__(self):
+        self._start = time.monotonic()
+        self._stop.clear()
+        info(f"{self.title} · started")
+        self._thread = Thread(target=self._heartbeat, daemon=True)
+        self._thread.start()
+        return self
+
+    def phase(self, label: str) -> None:
+        with self._lock:
+            self._phase = str(label)
+            self._detail = ""
+        info(f"{self.title} · {label}")
+
+    def progress(self, label: str, completed: int, total: int) -> None:
+        if total <= 0:
+            return
+        completed = min(int(total), max(0, int(completed)))
+        now = time.monotonic()
+        with self._lock:
+            self._detail = f"{label}: {completed}/{total}"
+            old_step, old_time = self._reported.get(label, (-1, 0.0))
+            step = completed * 10 // total
+            log = (
+                completed == total
+                or old_step < 0
+                or step > old_step
+                or now - old_time >= 20
+            )
+            if log:
+                self._reported[label] = (step, now)
+        if log:
+            info(
+                f"{self.title} · {label}: {completed}/{total} ({completed / total:.0%})"
+            )
+
+    def _heartbeat(self) -> None:
+        while not self._stop.wait(self.heartbeat_seconds):
+            with self._lock:
+                detail = self._detail or self._phase
+            elapsed = int(time.monotonic() - self._start)
+            info(f"{self.title} · heartbeat · {detail} · elapsed {elapsed}s")
+
+    def __exit__(self, exc_type, exc, traceback):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+        elapsed = int(time.monotonic() - self._start)
+        if exc_type is None:
+            success(f"{self.title} · finished · elapsed {elapsed}s")
+        else:
+            error(
+                f"{self.title} · failed after {elapsed}s · {exc_type.__name__}: {exc}"
+            )
+        return False
 
 
 class PhaseProgress:
@@ -188,6 +288,21 @@ def _format_value(value: object) -> str:
 
 
 def _evaluation_names(root: Path, identifiers: Sequence[str]) -> dict[str, str]:
+    from . import cooperative_store
+
+    if cooperative_store.enabled(Path(root)):
+        from ._config_store import _artifact_path, _file_metadata
+
+        names = {}
+        for cid in identifiers:
+            path = _artifact_path(root, cid)
+            if path.is_file():
+                meta = _file_metadata(path).get("configuration", {})
+                names[str(cid)] = " · ".join(
+                    str(meta.get(field, ""))
+                    for field in ("learner", "resolution", "count_transformation")
+                )
+        return names
     path = Path(root) / "configs.db"
     if not path.exists() or not identifiers:
         return {}
@@ -243,7 +358,6 @@ def _evaluation_summary(
     metrics: Sequence[str],
 ) -> dict[str, tuple[dict[str, float], int]]:
     import pandas as pd
-
     from ._config_store import read_configuration
     from .metrics import aggregate_validation_metric
 
@@ -272,23 +386,28 @@ def _evaluation_score(value: float) -> str:
 def evaluation_completion(
     root: Path,
     metric: str,
-    ranked: Sequence[tuple[str, float, int]],
+    ranked: Sequence[tuple[str, float, int]] | None,
     config_id: str,
     *,
     classification: bool = True,
+    display_name: str | None = None,
 ) -> None:
     import pandas as pd
-
     from ._config_store import read_configuration
     from .metrics import aggregate_validation_metric
 
-    position = next(
-        (index for index, item in enumerate(ranked, 1) if item[0] == config_id),
-        None,
+    position = (
+        next(
+            (index for index, item in enumerate(ranked, 1) if item[0] == config_id),
+            None,
+        )
+        if ranked is not None
+        else None
     )
-    names = _evaluation_names(root, [config_id])
-    name = names.get(config_id, config_id)
-    if position is None:
+    name = display_name or _evaluation_names(root, [config_id]).get(
+        config_id, config_id
+    )
+    if ranked is not None and position is None:
         warn(f"Configuration finished without a complete inner ranking · {name}")
         return
     metrics = [metric]
@@ -299,6 +418,7 @@ def evaluation_completion(
     table.add_column("Folds", justify="right", style="dim")
     for item in metrics:
         table.add_column(item, justify="right", no_wrap=True)
+    batch_lines = []
     for section, label, key in (
         ("inner_metrics", "Inner", "inner_key"),
         ("outer_metrics", "Outer", "split_key"),
@@ -320,10 +440,25 @@ def evaluation_completion(
         table.add_row(
             label, str(len(frame)), *values, style="bold" if label == "Inner" else None
         )
+        batch_lines.append(
+            f"{label} · folds={len(frame)} · "
+            + " · ".join(f"{item}={value}" for item, value in zip(metrics, values))
+        )
+    if not console.is_terminal:
+        rank_text = f" · rank {position}/{len(ranked)}" if position is not None else ""
+        success(f"MPMA finalized{rank_text} · {name}")
+        for line in batch_lines:
+            info(f"  {line}")
+        return
+    title = (
+        f"[green]✓ Configuration finalized[/green] · rank {position}/{len(ranked)}"
+        if ranked is not None
+        else "[green]✓ Configuration finalized[/green]"
+    )
     console.print(
         Panel(
             table,
-            title=f"[green]✓ Configuration finalized[/green] · rank {position}/{len(ranked)}",
+            title=title,
             subtitle=name,
             border_style="green",
             expand=False,
@@ -345,6 +480,7 @@ class EvaluationMonitor:
         all_config_ids: Sequence[str],
         completed_pairs: set[tuple[str, str]],
         classification: bool = True,
+        display_names: Mapping[str, str] | None = None,
     ):
         self.root = Path(root)
         self.metric = str(metric)
@@ -355,6 +491,17 @@ class EvaluationMonitor:
         )
         self.metrics.extend(item for item in extras if item != self.metric)
         self.names = _evaluation_names(self.root, pending_config_ids)
+        if display_names:
+            self.names.update(
+                {str(key): str(value) for key, value in display_names.items()}
+            )
+        self._heartbeat_interval = max(
+            10, int(os.environ.get("MLLABIOME_HEARTBEAT_SECONDS", "60"))
+        )
+        self._last_heartbeat = time.monotonic()
+        self._last_poll = self._last_heartbeat
+        self._last_progress = self._last_heartbeat
+        self._poll_interval = 15.0
         self.config_ids = sorted(
             set(map(str, pending_config_ids)),
             key=lambda item: (self.names.get(item, item), item),
@@ -365,6 +512,7 @@ class EvaluationMonitor:
         self.completed_pairs = set(completed_pairs)
         self.total_pairs = len(self.all_config_ids) * len(self.expected_outer)
         self._reported_completed = len(self.completed_pairs)
+        self.total_inner = len(self.config_ids) * len(self.expected_inner)
         self.inner = {cid: {} for cid in self.config_ids}
         self.outer = {cid: {} for cid in self.config_ids}
         self.finished = set()
@@ -375,6 +523,18 @@ class EvaluationMonitor:
         for section, rows in (("inner", existing_inner), ("outer", existing_outer)):
             for row in rows:
                 self._store(section, row, announce=False)
+        self._reported_inner = self._inner_count()
+
+    def _inner_count(self) -> int:
+        return sum(len(rows) for rows in self.inner.values())
+
+    def _progress_label(self) -> str:
+        inner = (
+            f"inner folds {self._inner_count()}/{self.total_inner} · "
+            if self.total_inner
+            else ""
+        )
+        return f"{inner}outer pairs {len(self.completed_pairs)}/{self.total_pairs}"
 
     def _store(
         self, section: str, row: Mapping[str, object], *, announce: bool
@@ -407,7 +567,6 @@ class EvaluationMonitor:
 
     def _score(self, rows: Sequence[Mapping[str, object]], metric: str) -> str:
         import pandas as pd
-
         from .metrics import aggregate_validation_metric
 
         score, _ = aggregate_validation_metric(pd.DataFrame(rows), metric)
@@ -501,15 +660,49 @@ class EvaluationMonitor:
         with self._lock:
             if self._live is not None:
                 self._live.update(self._render(), refresh=True)
-            elif len(self.completed_pairs) != self._reported_completed:
-                self._reported_completed = len(self.completed_pairs)
-                console.print(
-                    f"[cyan]Evaluation progress[/cyan] · "
-                    f"{len(self.completed_pairs):,}/{self.total_pairs:,} resolved MPMA/outer-split pairs"
-                )
+            else:
+                current_inner = self._inner_count()
+                current_outer = len(self.completed_pairs)
+                if (
+                    current_outer != self._reported_completed
+                    or current_inner != self._reported_inner
+                ):
+                    self._reported_completed = current_outer
+                    self._reported_inner = current_inner
+                    self._last_progress = time.monotonic()
+                    info(f"Evaluation progress · {self._progress_label()}")
 
     def _poll(self) -> None:
         if not self.config_ids:
+            return
+        from . import cooperative_store
+
+        if cooperative_store.enabled(self.root):
+            events = []
+
+            with self._lock:
+                known = {cid: set(self.inner.get(cid, {})) for cid in self.config_ids}
+            for cid in self.config_ids:
+                directory = self.root / "checkpoints" / cid / "inner"
+                for file in directory.glob("*.json.zlib"):
+                    try:
+                        payload = cooperative_store._read_checkpoint(file, cid, "inner")
+                    except (OSError, ValueError):
+                        continue
+                    for item in payload.get("inner_metrics", []):
+                        if str(item.get("inner_key", "")) in known[cid]:
+                            continue
+                        with self._lock:
+                            if self._store("inner", item, announce=True):
+                                events.append(
+                                    (
+                                        "inner",
+                                        cid,
+                                        item,
+                                        len(self._valid(self.inner[cid])),
+                                    )
+                                )
+            self._update(events)
             return
         path = self.root / "configs.db"
         if not path.exists():
@@ -559,13 +752,31 @@ class EvaluationMonitor:
             return
 
     def _watch(self) -> None:
-        while not self._stop.wait(0.4):
-            self._poll()
+        from . import cooperative_store
+
+        cooperative = cooperative_store.enabled(self.root)
+        while not self._stop.wait(2.0):
+            now = time.monotonic()
+            if console.is_terminal:
+                self._poll()
+            elif cooperative and now - self._last_poll >= self._poll_interval:
+                self._last_poll = now
+                self._poll()
+            if (
+                not console.is_terminal
+                and now - self._last_heartbeat >= self._heartbeat_interval
+            ):
+                self._last_heartbeat = now
+                with self._lock:
+                    label = self._progress_label()
+                    elapsed = int(now - self._last_progress)
+                info(f"Evaluation heartbeat · {label} · no new fold for {elapsed}s")
 
     def __enter__(self):
-        console.print(
-            "[dim]Fold metrics are checkpointed as completed; outer results remain held out.[/dim]"
-        )
+        if console.is_terminal:
+            console.print(
+                "[dim]Fold metrics are checkpointed as completed; outer results remain held out.[/dim]"
+            )
         if console.is_terminal:
             self._live = Live(
                 self._render(),
@@ -577,13 +788,16 @@ class EvaluationMonitor:
             )
             self._live.__enter__()
         else:
-            console.print(self._render())
+            info(
+                f"Evaluation batch mode · {len(self.config_ids)} configurations · {self._progress_label()}"
+            )
         self._thread = Thread(target=self._watch, daemon=True)
         self._thread.start()
         return self
 
     def result(self, result: Mapping[str, object]) -> None:
-        self._poll()
+        if console.is_terminal:
+            self._poll()
         events = []
         with self._lock:
             previous = len(self.completed_pairs)
@@ -613,20 +827,16 @@ class EvaluationMonitor:
             self.completed_pairs.add(pair)
 
     def finalized(
-        self, config_id: str, ranked: Sequence[tuple[str, float, int]]
+        self,
+        config_id: str,
+        ranked: Sequence[tuple[str, float, int]] | None = None,
     ) -> None:
-        self._poll()
+        if console.is_terminal:
+            self._poll()
         with self._lock:
             self.finished.add(config_id)
             if self._live is not None:
                 self._live.update(self._render(), refresh=True)
-        evaluation_completion(
-            self.root,
-            self.metric,
-            ranked,
-            config_id,
-            classification=self.classification,
-        )
 
     def unfinished(self, config_id: str) -> None:
         warn(
@@ -637,7 +847,8 @@ class EvaluationMonitor:
         self._stop.set()
         if self._thread is not None:
             self._thread.join()
-        self._poll()
+        if console.is_terminal:
+            self._poll()
         if self._live is not None:
             self._live.__exit__(exc_type, exc, tb)
         return False
@@ -670,6 +881,28 @@ def evaluation_leaders(
     direction = (
         "lower is better" if _evaluation_metric_is_loss(metric) else "higher is better"
     )
+    if not console.is_terminal:
+        info(
+            f"Configuration ranking · top {min(limit, len(ranked))} of {len(ranked)} · inner {metric} ({direction})"
+        )
+        for cid, score, _ in displayed:
+            summary = _evaluation_summary(root, cid, metric_names)
+            outer_score = summary["outer_metrics"][0].get(metric, float("nan"))
+            info(
+                f"rank {ranks[cid]}/{len(ranked)} · {names.get(cid, cid)} · "
+                f"inner {metric}={_evaluation_score(score)} · "
+                f"outer {metric}={_evaluation_score(outer_score)}"
+            )
+        info(
+            "Ranks use inner cross-validation only; outer scores are held-out evaluation"
+        )
+        if position is not None:
+            cid, score, _ = ranked[position - 1]
+            info(
+                f"Latest completed · rank {position}/{len(ranked)} · "
+                f"{names.get(cid, cid)} · inner {metric}={score:.5f}"
+            )
+        return
     table = Table(
         title=f"Configuration ranking · top {min(limit, len(ranked))} of {len(ranked)} · inner {metric} ({direction})",
         box=box.SIMPLE_HEAD,

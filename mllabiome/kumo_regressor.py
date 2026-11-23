@@ -1,11 +1,8 @@
 from __future__ import annotations
-
 from typing import Any
-
 import numpy as np
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.utils.validation import check_is_fitted
-
 from .kumo import KumoTabularClassifier
 
 

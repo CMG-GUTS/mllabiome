@@ -19,6 +19,7 @@ from sklearn.svm import NuSVC
 from xgboost import XGBClassifier
 
 from mllabiome import mll
+from mllabiome.balanced_kumo import BalancedICLKumoClassifier
 from mllabiome.causilo import CausiloClassifier
 
 HERE = Path(__file__).resolve().parent
@@ -53,80 +54,80 @@ RESOLUTIONS = (
     # ("order", ("order",)),
     # ("family", ("family",)),
     # ("genus", ("genus",)),
-    ("species", ("species",)),
+    # ("species", ("species",)),
     # ("strain", ("strain",)),
-    # ("raw", ("all",)),
+    ("raw", ("all",)),
 )
 
 
 COUNT_TRANSFORMATIONS = (
     # mll.Transformation("identity"),
-    # # mll.Transformation("presence_absence"),
-    # # mll.Transformation(
-    # #     "relative_abundance",
-    # #     composition_scope="rank-wise",
-    # # ),
+    # mll.Transformation("presence_absence"),
+    # mll.Transformation(
+    #     "relative_abundance",
+    #     composition_scope="rank-wise",
+    # ),
     # mll.Transformation(
     #     "arcsine_sqrt",
     #     composition_scope="rank-wise",
     # ),
-    # # mll.Transformation(
-    # #     "hellinger",
-    # #     composition_scope="rank-wise",
-    # # ),
     # mll.Transformation(
-    #     "log10_relative_abundance_half_min_pseudocount",
+    #     "hellinger",
     #     composition_scope="rank-wise",
     # ),
-    # # mll.Transformation(
-    # #     "centered_log_ratio_multiplicative_replacement",
-    # #     composition_scope="rank-wise",
-    # # ),
-    # # mll.Transformation(
-    # #     "rclr",
-    # #     composition_scope="rank-wise",
-    # # ),
-    # # mll.Transformation(
-    # #     "additive_log_ratio_training_reference_multiplicative_replacement",
-    # #     composition_scope="rank-wise",
-    # # ),
-    # # mll.Transformation(
-    # #     "isometric_log_ratio_egozcue_multiplicative_replacement",
-    # #     composition_scope="rank-wise",
-    # # ),
     mll.Transformation(
-        "prevalence_weighted_relative_abundance",
+        "log10_relative_abundance_half_min_pseudocount",
         composition_scope="rank-wise",
     ),
     # mll.Transformation(
-    #     "prevalence_rank_fusion",
+    #     "centered_log_ratio_multiplicative_replacement",
     #     composition_scope="rank-wise",
-    #     alpha=0.25,
-    #     c=100.0,
-    #     gamma=1.0,
-    #     pseudo=0.5,
     # ),
-    # # mll.Transformation(
-    # #     "within_sample_fractional_rank",
-    # #     composition_scope="rank-wise",
-    # # ),
+    mll.Transformation(
+        "rclr",
+        composition_scope="rank-wise",
+    ),
     # mll.Transformation(
-    #     "training_ecdf_rank",
+    #     "additive_log_ratio_training_reference_multiplicative_replacement",
+    #     composition_scope="rank-wise",
     # ),
-    # # mll.Transformation(
-    # #     "quantile_normal_relative_abundance",
-    # #     composition_scope="rank-wise",
-    # # ),
-    # # mll.Transformation(
-    # #     "yeo_johnson_relative_abundance",
-    # #     composition_scope="rank-wise",
-    # # ),
-    # # mll.Transformation(
-    # #     "standardize",
-    # # ),
-    # # mll.Transformation(
-    # #     "quantile_normal_numeric",
-    # #),
+    # mll.Transformation(
+    #     "isometric_log_ratio_egozcue_multiplicative_replacement",
+    #     composition_scope="rank-wise",
+    # ),
+    # mll.Transformation(
+    #     "prevalence_weighted_relative_abundance",
+    #     composition_scope="rank-wise",
+    # ),
+    mll.Transformation(
+        "prevalence_rank_fusion",
+        composition_scope="rank-wise",
+        alpha=0.25,
+        c=100.0,
+        gamma=1.0,
+        pseudo=0.5,
+    ),
+    mll.Transformation(
+        "within_sample_fractional_rank",
+        composition_scope="rank-wise",
+    ),
+    mll.Transformation(
+        "training_ecdf_rank",
+    ),
+    # mll.Transformation(
+    #     "quantile_normal_relative_abundance",
+    #     composition_scope="rank-wise",
+    # ),
+    # mll.Transformation(
+    #     "yeo_johnson_relative_abundance",
+    #     composition_scope="rank-wise",
+    # ),
+    # mll.Transformation(
+    #     "standardize",
+    # ),
+    # mll.Transformation(
+    #     "quantile_normal_numeric",
+    # ),
 )
 
 # COUNT_TRANSFORMATIONS += (
@@ -151,26 +152,16 @@ COUNT_TRANSFORMATIONS = (
 # )
 
 
+
 MODELS = (
-
-
+    # (
+    #     'SIAMCAT',
+    #     mll.SIAMCATClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
     (
-        "Seldon",
-        mll.SeldonClassifier(
-            device="mps",
-            random_state=42,
-        ),
-    ),
-    (
-        "Seldon_mini",
-        mll.SeldonMiniClassifier(
-            device="mps",
-            random_state=42,
-        ),
-    ),
-#     # baselines
-    (
-        "Baseline_RF",
+        'Baseline_RF',
         RandomForestClassifier(
             n_estimators=1000,
             min_samples_leaf=5,
@@ -178,13 +169,421 @@ MODELS = (
             n_jobs=1,
         ),
     ),
-# #     # (
-# #     #     "SIAMCAT",
-# #     #     mll.SIAMCATClassifier(
-# #     #         random_state=42,
-# #     #     ),
-# #     # ),
-# #     # # default standard models
+    # (
+    #     'LR_default',
+    #     LogisticRegression(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     'LR_lasso',
+    #     Pipeline(
+    #         [
+    #             ('scaler', StandardScaler(with_mean=False)),
+    #             (
+    #                 'lr',
+    #                 LogisticRegression(
+    #                     solver='saga',
+    #                     l1_ratio=1.0,
+    #                     C=1.0,
+    #                     max_iter=10000,
+    #                     tol=0.0001,
+    #                     random_state=42,
+    #                 ),
+    #             ),
+    #         ],
+    #     ),
+    # ),
+    # (
+    #     'LR_elasticnet',
+    #     Pipeline(
+    #         [
+    #             ('scaler', StandardScaler(with_mean=False)),
+    #             (
+    #                 'lr',
+    #                 LogisticRegression(
+    #                     solver='saga',
+    #                     C=0.1,
+    #                     l1_ratio=0.5,
+    #                     max_iter=10000,
+    #                     tol=0.0001,
+    #                     random_state=42,
+    #                 ),
+    #             ),
+    #         ],
+    #     ),
+    # ),
+    # (
+    #     'LR_ElasticNet_Balanced',
+    #     Pipeline(
+    #         [
+    #             ('scaler', StandardScaler(with_mean=False)),
+    #             (
+    #                 'lr',
+    #                 LogisticRegression(
+    #                     solver='saga',
+    #                     C=0.1,
+    #                     l1_ratio=0.5,
+    #                     class_weight='balanced',
+    #                     max_iter=10000,
+    #                     tol=0.0001,
+    #                     random_state=42,
+    #                 ),
+    #             ),
+    #         ],
+    #     ),
+    # ),
+    # (
+    #     'EN_default',
+    #     make_pipeline(
+    #         StandardScaler(),
+    #         LogisticRegression(
+    #             solver='saga',
+    #             l1_ratio=0.5,
+    #             max_iter=5000,
+    #             random_state=42,
+    #         ),
+    #     ),
+    # ),
+    # (
+    #     'LDA_shrinkage',
+    #     make_pipeline(
+    #         StandardScaler(),
+    #         LinearDiscriminantAnalysis(
+    #             solver='lsqr',
+    #             shrinkage='auto',
+    #         ),
+    #     ),
+    # ),
+    # (
+    #     'KNN_default',
+    #     make_pipeline(
+    #         StandardScaler(),
+    #         KNeighborsClassifier(),
+    #     ),
+    # ),
+    # (
+    #     'MLP_default',
+    #     make_pipeline(
+    #         StandardScaler(),
+    #         MLPClassifier(random_state=42),
+    #     ),
+    # ),
+    # (
+    #     'RF_default',
+    #     RandomForestClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     'RF_200',
+    #     RandomForestClassifier(
+    #         n_estimators=200,
+    #         random_state=42,
+    #         n_jobs=1,
+    #     ),
+    # ),
+    # (
+    #     'RF_100_balanced',
+    #     RandomForestClassifier(
+    #         n_estimators=100,
+    #         class_weight='balanced',
+    #         random_state=42,
+    #         n_jobs=1,
+    #     ),
+    # ),
+    # (
+    #     'RF_500_balanced',
+    #     RandomForestClassifier(
+    #         n_estimators=500,
+    #         class_weight='balanced',
+    #         random_state=42,
+    #         n_jobs=1,
+    #     ),
+    # ),
+    # (
+    #     'RF_1000_balanced',
+    #     RandomForestClassifier(
+    #         n_estimators=1000,
+    #         class_weight='balanced',
+    #         random_state=42,
+    #         n_jobs=1,
+    #     ),
+    # ),
+    # (
+    #     'RF_1000_entropy',
+    #     RandomForestClassifier(
+    #         n_estimators=1000,
+    #         criterion='entropy',
+    #         min_samples_leaf=5,
+    #         max_features=0.3,
+    #         random_state=42,
+    #         n_jobs=1,
+    #     ),
+    # ),
+    (
+        'ExtraTrees_default',
+        ExtraTreesClassifier(
+            random_state=42,
+        ),
+    ),
+    # (
+    #     'GB_default',
+    #     GradientBoostingClassifier(
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     'CB_default',
+    #     CatBoostClassifier(
+    #         random_seed=42,
+    #         thread_count=1,
+    #         verbose=False,
+    #         allow_writing_files=False,
+    #     ),
+    # ),
+    # (
+    #     'CatBoost_SqrtBalanced',
+    #     CatBoostClassifier(
+    #         iterations=600,
+    #         depth=4,
+    #         learning_rate=0.03,
+    #         l2_leaf_reg=10,
+    #         auto_class_weights='SqrtBalanced',
+    #         random_seed=42,
+    #         thread_count=1,
+    #         verbose=False,
+    #         allow_writing_files=False,
+    #     ),
+    # ),
+    # (
+    #     'LightGBM_default',
+    #     LGBMClassifier(
+    #         random_state=42,
+    #         n_jobs=1,
+    #         verbosity=-1,
+    #     ),
+    # ),
+    # (
+    #     'XGB_default',
+    #     XGBClassifier(
+    #         random_state=42,
+    #         n_jobs=1,
+    #         verbosity=0,
+    #         eval_metric='logloss',
+    #     ),
+    # ),
+    # (
+    #     'XGB_500',
+    #     XGBClassifier(
+    #         n_estimators=500,
+    #         random_state=42,
+    #         n_jobs=1,
+    #         verbosity=0,
+    #         eval_metric='logloss',
+    #     ),
+    # ),
+    # (
+    #     'ComplementNB_default',
+    #     ComplementNB(),
+    # ),
+    # (
+    #     'Causilo_default',
+    #     CausiloClassifier(
+    #         n_estimators=8,
+    #         random_state=42,
+    #         device='mps',
+    #     ),
+    # ),
+    (
+        'TabPFN',
+        mll.TabPFNClassifier(
+            n_estimators='auto',
+            auto_scale_n_estimators=True,
+            model_path='auto',
+            device='mps',
+            inference_precision='auto',
+            fit_mode='fit_preprocessors',
+            memory_saving_mode='auto',
+            keep_cache_on_device=True,
+            random_state=42,
+            n_preprocessing_jobs=1,
+        ),
+    ),
+    (
+        'TabPFN_n8',
+        mll.TabPFNClassifier(
+            n_estimators=8,
+            model_path='auto',
+            device='mps',
+            inference_precision='auto',
+            fit_mode='fit_preprocessors',
+            memory_saving_mode='auto',
+            keep_cache_on_device=True,
+            ignore_pretraining_limits=True,
+            balance_probabilities=False,
+            random_state=17,
+            n_preprocessing_jobs=1,
+        ),
+    ),
+    # (
+    #     'KumoTabular_small',
+    #     mll.KumoTabularClassifier(
+    #         size='small',
+    #         n_estimators=8,
+    #         pretrained=True,
+    #         device='mps',
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     'KumoTabular_medium',
+    #     mll.KumoTabularClassifier(
+    #         size='medium',
+    #         n_estimators=8,
+    #         pretrained=True,
+    #         device='mps',
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     'KumoTabular_large',
+    #     mll.KumoTabularClassifier(
+    #         size='large',
+    #         n_estimators=8,
+    #         pretrained=True,
+    #         device='mps',
+    #         random_state=42,
+    #     ),
+    # ),
+    (
+        'KumoTabular_small_e4',
+        mll.KumoTabularClassifier(
+            size='small',
+            n_estimators=4,
+            pretrained=True,
+            device='mps',
+            random_state=42,
+        ),
+    ),
+# (
+#     "Kumo_small_balanced_ICL",
+#     BalancedICLKumoClassifier(
+#         size="small",
+#         pretrained=True,
+#         context_size=256,
+#         context_ensembles=8,
+#         n_estimators=4,
+#         query_rows=32,
+#         device="mps",
+#         random_state=42,
+#     ),
+# ),
+#     (
+#         "KumoTabular_large_e10",
+#         mll.KumoTabularClassifier(
+#             size="large",
+#             n_estimators=10,
+#             pretrained=True,
+#             device="auto",
+#             random_state=42,
+#         ),
+#     ),
+    # (
+    #     'KumoTabular_medium_e4',
+    #     mll.KumoTabularClassifier(
+    #         size='medium',
+    #         n_estimators=4,
+    #         pretrained=True,
+    #         device='mps',
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     'KumoTabular_large_e4',
+    #     mll.KumoTabularClassifier(
+    #         size='large',
+    #         n_estimators=4,
+    #         pretrained=True,
+    #         device='mps',
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     'KumoTabular_large_e10',
+    #     mll.KumoTabularClassifier(
+    #         size='large',
+    #         n_estimators=10,
+    #         pretrained=True,
+    #         device='mps',
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     'Seldon',
+    #     mll.SeldonClassifier(
+    #         device='mps',
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     'Seldon_mini',
+    #     mll.SeldonMiniClassifier(
+    #         device='mps',
+    #         random_state=42,
+    #     ),
+    # ),
+    # (
+    #     'LimiX-2-1016',
+    #     mll.LimiX2Classifier(
+    #         device='mps',
+    #         random_state=42,
+    #         use_data_cache=False,
+    #     ),
+    # ),
+)
+
+
+# MODELS = (
+# #     (
+# #     "LimiX-2-1016",
+# #     mll.LimiX2Classifier(
+# #         device="mps",
+# #         random_state=42,
+# #         use_data_cache=False,
+# #     ),
+# # ),
+#     (
+#         "Seldon",
+#         mll.SeldonClassifier(
+#             device="mps",
+#             random_state=42,
+#         ),
+#     ),
+#     (
+#         "Seldon_mini",
+#         mll.SeldonMiniClassifier(
+#             device="mps",
+#             random_state=42,
+#         ),
+#     ),
+# # #     # baselines
+#     (
+#         "Baseline_RF",
+#         RandomForestClassifier(
+#             n_estimators=1000,
+#             min_samples_leaf=5,
+#             random_state=42,
+#             n_jobs=1,
+#         ),
+#     ),
+# # #     # (
+# # #     #     "SIAMCAT",
+# # #     #     mll.SIAMCATClassifier(
+# # #     #         random_state=42,
+# # #     #     ),
+# # #     # ),
+# # #     # # default standard models
 #     (
 #         "CB_default",
 #         CatBoostClassifier(
@@ -229,52 +628,52 @@ MODELS = (
 #         ComplementNB(),
 #     ),
 
-#     (
-#         "HGB_default",
-#         HistGradientBoostingClassifier(
-#             random_state=42,
-#         ),
-#     ),
-    # (
-    #     "GaussianProcess_default",
-    #     GaussianProcessClassifier(
-    #         random_state=42,
-    #     ),
-    # ),
-    # (
-    #     "Bagging_default",
-    #     BaggingClassifier(
-    #         random_state=42,
-    #         n_jobs=1,
-    #     ),
-    # ),
-#     (
-#         "BernoulliNB_default",
-#         BernoulliNB(),
-#     ),
-#     (
-#         "LDA_shrinkage",
-#         make_pipeline(
-#             StandardScaler(),
-#             LinearDiscriminantAnalysis(
-#                 solver="lsqr",
-#                 shrinkage="auto",
-#             ),
-#         ),
-#     ),
-#     (
-#         "AdaBoost_default",
-#         AdaBoostClassifier(
-#             random_state=42,
-#         ),
-#     ),
-#     (
-#         "KNN_default",
-#         make_pipeline(
-#             StandardScaler(),
-#             KNeighborsClassifier(),
-#         ),
-#     ),
+# #     (
+# #         "HGB_default",
+# #         HistGradientBoostingClassifier(
+# #             random_state=42,
+# #         ),
+# #     ),
+#     # (
+#     #     "GaussianProcess_default",
+#     #     GaussianProcessClassifier(
+#     #         random_state=42,
+#     #     ),
+#     # ),
+#     # (
+#     #     "Bagging_default",
+#     #     BaggingClassifier(
+#     #         random_state=42,
+#     #         n_jobs=1,
+#     #     ),
+#     # ),
+# #     (
+# #         "BernoulliNB_default",
+# #         BernoulliNB(),
+# #     ),
+# #     (
+# #         "LDA_shrinkage",
+# #         make_pipeline(
+# #             StandardScaler(),
+# #             LinearDiscriminantAnalysis(
+# #                 solver="lsqr",
+# #                 shrinkage="auto",
+# #             ),
+# #         ),
+# #     ),
+# #     (
+# #         "AdaBoost_default",
+# #         AdaBoostClassifier(
+# #             random_state=42,
+# #         ),
+# #     ),
+# #     (
+# #         "KNN_default",
+# #         make_pipeline(
+# #             StandardScaler(),
+# #             KNeighborsClassifier(),
+# #         ),
+# #     ),
 #     (
 #         "MLP_default",
 #         make_pipeline(
@@ -284,271 +683,271 @@ MODELS = (
 #             ),
 #         ),
 #     ),
-#     # (
-#     #     "SGD_log_loss",
-#     #     make_pipeline(
-#     #         StandardScaler(),
-#     #         SGDClassifier(
-#     #             loss="log_loss",
-#     #             random_state=42,
-#     #         ),
-#     #     ),
-#     # ),
-#     (
-#         "NuSVC_default",
-#         make_pipeline(
-#             StandardScaler(),
-#             NuSVC(
-#                 probability=True,
-#                 random_state=42,
-#             ),
-#         ),
-#     ),
+# #     # (
+# #     #     "SGD_log_loss",
+# #     #     make_pipeline(
+# #     #         StandardScaler(),
+# #     #         SGDClassifier(
+# #     #             loss="log_loss",
+# #     #             random_state=42,
+# #     #         ),
+# #     #     ),
+# #     # ),
+# #     (
+# #         "NuSVC_default",
+# #         make_pipeline(
+# #             StandardScaler(),
+# #             NuSVC(
+# #                 probability=True,
+# #                 random_state=42,
+# #             ),
+# #         ),
+# #     ),
 #     (
 #         "ExtraTrees_default",
 #         ExtraTreesClassifier(
 #             random_state=42,
 #         ),
 #     ),
+# #     (
+# #         "GB_default",
+# #         GradientBoostingClassifier(
+# #             random_state=42,
+# #         ),
+# #     ),
+# #     (
+# #         "RF_200",
+# #         RandomForestClassifier(
+# #             n_estimators=200,
+# #             random_state=42,
+# #             n_jobs=1,
+# #         ),
+# #     ),
+# #     (
+# #         "RF_500_balanced",
+# #         RandomForestClassifier(
+# #             n_estimators=500,
+# #             class_weight="balanced",
+# #             random_state=42,
+# #             n_jobs=1,
+# #         ),
+# #     ),
+# #     (
+# #         "RF_1000_entropy",
+# #         RandomForestClassifier(
+# #             n_estimators=1000,
+# #             criterion="entropy",
+# #             min_samples_leaf=5,
+# #             max_features=0.30,
+# #             random_state=42,
+# #             n_jobs=1,
+# #         ),
+# #     ),
+# #     (
+# #         "XGB_500",
+# #         XGBClassifier(
+# #             n_estimators=500,
+# #             random_state=42,
+# #             n_jobs=1,
+# #             verbosity=0,
+# #             eval_metric="logloss",
+# #         ),
+# #     ),
+# #     (
+# #         "CatBoost_SqrtBalanced",
+# #         CatBoostClassifier(
+# #             iterations=600,
+# #             depth=4,
+# #             learning_rate=0.03,
+# #             l2_leaf_reg=10,
+# #             auto_class_weights="SqrtBalanced",
+# #             random_seed=42,
+# #             thread_count=1,
+# #             verbose=False,
+# #             allow_writing_files=False,
+# #         ),
+# #     ),
+# #     (
+# #         "LR_lasso",
+# #         Pipeline([
+# #             ("scaler", StandardScaler(with_mean=False)),
+# #             ("lr", LogisticRegression(
+# #                 solver="saga",
+# #                 l1_ratio=1.0,
+# #                 C=1.0,
+# #                 max_iter=10000,
+# #                 tol=1e-4,
+# #                 random_state=42,
+# #             )),
+# #         ]),
+# #     ),
+# #     (
+# #         "LR_elasticnet",
+# #         Pipeline([
+# #             ("scaler", StandardScaler(with_mean=False)),
+# #             ("lr", LogisticRegression(
+# #                 solver="saga",
+# #                 C=0.1,
+# #                 l1_ratio=0.5,
+# #                 max_iter=10000,
+# #                 tol=1e-4,
+# #                 random_state=42,
+# #             )),
+# #         ]),
+# #     ),
+# #     (
+# #         "LR_ElasticNet_Balanced",
+# #         Pipeline([
+# #             ("scaler", StandardScaler(with_mean=False)),
+# #             ("lr", LogisticRegression(
+# #                 solver="saga",
+# #                 C=0.1,
+# #                 l1_ratio=0.5,
+# #                 class_weight="balanced",
+# #                 max_iter=10000,
+# #                 tol=1e-4,
+# #                 random_state=42,
+# #             )),
+# #         ]),
+# #     ),
+# #     (
+# #         "EN_default",
+# #         make_pipeline(
+# #             StandardScaler(),
+# #             LogisticRegression(
+# #                 solver="saga",
+# #                 l1_ratio=0.5,
+# #                 max_iter=5000,
+# #                 random_state=42,
+# #             ),
+# #         ),
+# #     ),
 #     (
-#         "GB_default",
-#         GradientBoostingClassifier(
+#         "KumoTabular_small",
+#         mll.KumoTabularClassifier(
+#             size="small",
+#             n_estimators=8,
+#             pretrained=True,
+#             device="mps",
 #             random_state=42,
 #         ),
 #     ),
-#     (
-#         "RF_200",
-#         RandomForestClassifier(
-#             n_estimators=200,
-#             random_state=42,
-#             n_jobs=1,
-#         ),
-#     ),
-#     (
-#         "RF_500_balanced",
-#         RandomForestClassifier(
-#             n_estimators=500,
-#             class_weight="balanced",
-#             random_state=42,
-#             n_jobs=1,
-#         ),
-#     ),
-#     (
-#         "RF_1000_entropy",
-#         RandomForestClassifier(
-#             n_estimators=1000,
-#             criterion="entropy",
-#             min_samples_leaf=5,
-#             max_features=0.30,
-#             random_state=42,
-#             n_jobs=1,
-#         ),
-#     ),
-#     (
-#         "XGB_500",
-#         XGBClassifier(
-#             n_estimators=500,
-#             random_state=42,
-#             n_jobs=1,
-#             verbosity=0,
-#             eval_metric="logloss",
-#         ),
-#     ),
-#     (
-#         "CatBoost_SqrtBalanced",
-#         CatBoostClassifier(
-#             iterations=600,
-#             depth=4,
-#             learning_rate=0.03,
-#             l2_leaf_reg=10,
-#             auto_class_weights="SqrtBalanced",
-#             random_seed=42,
-#             thread_count=1,
-#             verbose=False,
-#             allow_writing_files=False,
-#         ),
-#     ),
-#     (
-#         "LR_lasso",
-#         Pipeline([
-#             ("scaler", StandardScaler(with_mean=False)),
-#             ("lr", LogisticRegression(
-#                 solver="saga",
-#                 l1_ratio=1.0,
-#                 C=1.0,
-#                 max_iter=10000,
-#                 tol=1e-4,
-#                 random_state=42,
-#             )),
-#         ]),
-#     ),
-#     (
-#         "LR_elasticnet",
-#         Pipeline([
-#             ("scaler", StandardScaler(with_mean=False)),
-#             ("lr", LogisticRegression(
-#                 solver="saga",
-#                 C=0.1,
-#                 l1_ratio=0.5,
-#                 max_iter=10000,
-#                 tol=1e-4,
-#                 random_state=42,
-#             )),
-#         ]),
-#     ),
-#     (
-#         "LR_ElasticNet_Balanced",
-#         Pipeline([
-#             ("scaler", StandardScaler(with_mean=False)),
-#             ("lr", LogisticRegression(
-#                 solver="saga",
-#                 C=0.1,
-#                 l1_ratio=0.5,
-#                 class_weight="balanced",
-#                 max_iter=10000,
-#                 tol=1e-4,
-#                 random_state=42,
-#             )),
-#         ]),
-#     ),
-#     (
-#         "EN_default",
-#         make_pipeline(
-#             StandardScaler(),
-#             LogisticRegression(
-#                 solver="saga",
-#                 l1_ratio=0.5,
-#                 max_iter=5000,
-#                 random_state=42,
-#             ),
-#         ),
-#     ),
-    (
-        "KumoTabular_small",
-        mll.KumoTabularClassifier(
-            size="small",
-            n_estimators=8,
-            pretrained=True,
-            device="mps",
-            random_state=42,
-        ),
-    ),
-    # (
-    #     "KumoTabular_medium",
-    #     mll.KumoTabularClassifier(
-    #         size="medium",
-    #         n_estimators=8,
-    #         pretrained=True,
-    #         device="mps",
-    #         random_state=42,
-    #     ),
-    # ),
-    # (
-    #     "KumoTabular_large",
-    #     mll.KumoTabularClassifier(
-    #         size="large",
-    #         n_estimators=8,
-    #         pretrained=True,
-    #         device="mps",
-    #         random_state=42,
-    #     ),
-    # ),
-    (
-        "KumoTabular_small_e4",
-        mll.KumoTabularClassifier(
-            size="small",
-            n_estimators=4,
-            pretrained=True,
-            device="mps",
-            random_state=42,
-        ),
-    ),
-    # (
-    #     "KumoTabular_medium_e4",
-    #     mll.KumoTabularClassifier(
-    #         size="medium",
-    #         n_estimators=4,
-    #         pretrained=True,
-    #         device="mps",
-    #         random_state=42,
-    #     ),
-    # ),
-    (
-        "KumoTabular_large_e4",
-        mll.KumoTabularClassifier(
-            size="large",
-            n_estimators=4,
-            pretrained=True,
-            device="mps",
-            random_state=42,
-        ),
-    ),
-    (
-        "KumoTabular_large_e10",
-        mll.KumoTabularClassifier(
-            size="large",
-            n_estimators=10,
-            pretrained=True,
-            device="mps",
-            random_state=42,
-        ),
-    ),
-    # (
-    #     "TabPFN_n8",
-    #     mll.TabPFNClassifier(
-    #         n_estimators=8,
-    #         model_path="auto",
-    #         device="auto",
-    #         inference_precision="auto",
-    #         fit_mode="fit_preprocessors",
-    #         memory_saving_mode="auto",
-    #         keep_cache_on_device=True,
-    #         ignore_pretraining_limits=True,
-    #         balance_probabilities=False,
-    #         random_state=17,
-    #         n_preprocessing_jobs=1,
-    #     ),
-    # ),
-    # (
-    #     "TabPFN",
-    #     mll.TabPFNClassifier(
-    #         n_estimators="auto",
-    #         auto_scale_n_estimators=True,
-    #         model_path="auto",
-    #         device="auto",
-    #         inference_precision="auto",
-    #         fit_mode="fit_preprocessors",
-    #         memory_saving_mode="auto",
-    #         keep_cache_on_device=True,
-    #         random_state=42,
-    #         n_preprocessing_jobs=1,
-    #     ),
-    # ),
+#     # (
+#     #     "KumoTabular_medium",
+#     #     mll.KumoTabularClassifier(
+#     #         size="medium",
+#     #         n_estimators=8,
+#     #         pretrained=True,
+#     #         device="mps",
+#     #         random_state=42,
+#     #     ),
+#     # ),
+#     # (
+#     #     "KumoTabular_large",
+#     #     mll.KumoTabularClassifier(
+#     #         size="large",
+#     #         n_estimators=8,
+#     #         pretrained=True,
+#     #         device="mps",
+#     #         random_state=42,
+#     #     ),
+#     # ),
+#     # (
+#     #     "KumoTabular_small_e4",
+#     #     mll.KumoTabularClassifier(
+#     #         size="small",
+#     #         n_estimators=4,
+#     #         pretrained=True,
+#     #         device="mps",
+#     #         random_state=42,
+#     #     ),
+#     # ),
+#     # # (
+#     # #     "KumoTabular_medium_e4",
+#     # #     mll.KumoTabularClassifier(
+#     # #         size="medium",
+#     # #         n_estimators=4,
+#     # #         pretrained=True,
+#     # #         device="mps",
+#     # #         random_state=42,
+#     # #     ),
+#     # # ),
+#     # # (
+#     # #     "KumoTabular_large_e4",
+#     # #     mll.KumoTabularClassifier(
+#     # #         size="large",
+#     # #         n_estimators=4,
+#     # #         pretrained=True,
+#     # #         device="mps",
+#     # #         random_state=42,
+#     # #     ),
+#     # # ),
+#     # # (
+#     # #     "KumoTabular_large_e10",
+#     # #     mll.KumoTabularClassifier(
+#     # #         size="large",
+#     # #         n_estimators=10,
+#     # #         pretrained=True,
+#     # #         device="mps",
+#     # #         random_state=42,
+#     # #     ),
+#     # # ),
+#     # (
+#     #     "TabPFN_n8",
+#     #     mll.TabPFNClassifier(
+#     #         n_estimators=8,
+#     #         model_path="auto",
+#     #         device="auto",
+#     #         inference_precision="auto",
+#     #         fit_mode="fit_preprocessors",
+#     #         memory_saving_mode="auto",
+#     #         keep_cache_on_device=True,
+#     #         ignore_pretraining_limits=True,
+#     #         balance_probabilities=False,
+#     #         random_state=17,
+#     #         n_preprocessing_jobs=1,
+#     #     ),
+#     # ),
+#     # (
+#     #     "TabPFN",
+#     #     mll.TabPFNClassifier(
+#     #         n_estimators="auto",
+#     #         auto_scale_n_estimators=True,
+#     #         model_path="auto",
+#     #         device="auto",
+#     #         inference_precision="auto",
+#     #         fit_mode="fit_preprocessors",
+#     #         memory_saving_mode="auto",
+#     #         keep_cache_on_device=True,
+#     #         random_state=42,
+#     #         n_preprocessing_jobs=1,
+#     #     ),
+#     # ),
 
-    # (
-    #     "Causilo_default",
-    #     CausiloClassifier(
-    #         n_estimators=8,
-    #         random_state=42,
-    #         device="mps",
-    #     ),
-    # ),
-    # # (
-    # #     "TabICLv2_default",
-    # #     mll.TabICLClassifier(
-    # #         checkpoint_version="tabicl-classifier-v2-20260212.ckpt",
-    # #         random_state=42,
-    # #     ),
-    # # ),
-    # (
-    #     "RealMLP_TD_default",
-    #     mll.RealMLPClassifier(
-    #         random_state=42,
-    #         n_threads=1,
-    #     ),
-    # ),
+#     (
+#         "Causilo_default",
+#         CausiloClassifier(
+#             n_estimators=8,
+#             random_state=42,
+#             device="mps",
+#         ),
+#     ),
+#     # # (
+#     # #     "TabICLv2_default",
+#     # #     mll.TabICLClassifier(
+#     # #         checkpoint_version="tabicl-classifier-v2-20260212.ckpt",
+#     # #         random_state=42,
+#     # #     ),
+#     # # ),
+#     # (
+#     #     "RealMLP_TD_default",
+#     #     mll.RealMLPClassifier(
+#     #         random_state=42,
+#     #         n_threads=1,
+#     #     ),
+#     # ),
 
-)
+# )
 
 
 GATE = mll.QualificationGate(

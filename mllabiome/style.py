@@ -1,8 +1,6 @@
 from __future__ import annotations
-
 import re
 from pathlib import Path
-
 import matplotlib as mpl
 from matplotlib.colors import LinearSegmentedColormap
 
@@ -13,7 +11,6 @@ COL_W_2 = 183 * MM
 MAX_FIG_H = 170 * MM
 NATURE_TEXT_PT = 6.5
 NATURE_PANEL_LABEL_PT = 8.0
-
 INK = "#0f172a"
 MID = "#64748b"
 DIM = "#94a3b8"
@@ -23,8 +20,6 @@ PANEL_BG = "#f8fafc"
 ACC = "#2563eb"
 ACC_D = "#1d4ed8"
 ACC_L = "#dbeafe"
-
-
 C_NAVY = "#0C4A6E"
 C_DARK = "#1565A8"
 C_MID = "#2E9DC8"
@@ -34,7 +29,6 @@ C_PALE = "#B8E3F4"
 C_LIGHT = "#DEF1FA"
 C_TEAL = "#1D5288"
 C_HILITE = "#3277EF"
-
 METHOD_COLORS = {
     "SHAP": "#3B6B8F",
     "LIME": "#7B5EA7",
@@ -42,13 +36,11 @@ METHOD_COLORS = {
     "Permutation": "#8F5B3B",
     "consensus": INK,
 }
-
 UC_CTRL = "#8BAABF"
 UC_CASE = "#B499C2"
 MINDSET_CTRL = "#B8B8B8"
 MINDSET_CASE = "#2FA7D6"
 NET_NEUT = "#F7F7F7"
-
 HMAP_CMAP = LinearSegmentedColormap.from_list(
     "blue_hmap", [C_LIGHT, C_PALE, C_SKY, C_BRIGHT, C_MID, C_DARK, C_NAVY], N=256
 )
@@ -63,7 +55,6 @@ NET_EDGE_CMAP = LinearSegmentedColormap.from_list(
 SUPPORT_CMAP = LinearSegmentedColormap.from_list(
     "support", ["#ffffff", "#eff6ff", "#bfdbfe", "#60a5fa", "#1d4ed8"], N=256
 )
-
 RC = {
     "font.family": "sans-serif",
     "font.sans-serif": [
@@ -98,7 +89,6 @@ RC = {
     "savefig.pad_inches": 0.02,
     "savefig.dpi": 300,
 }
-
 REPRESENTATION_RC = dict(RC)
 REPRESENTATION_RC.update(
     {
@@ -133,7 +123,6 @@ def _is_panel_label(text_artist) -> bool:
 
 
 def enforce_nature_figure(fig) -> None:
-
     width_in, height_in = fig.get_size_inches()
     width_mm = float(width_in) / MM
     height_mm = float(height_in) / MM
@@ -150,7 +139,6 @@ def enforce_nature_figure(fig) -> None:
         target_w_mm *= height_scale
         target_h_mm = 170.0
     fig.set_size_inches(target_w_mm * MM, target_h_mm * MM, forward=True)
-
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
     from matplotlib.text import Text

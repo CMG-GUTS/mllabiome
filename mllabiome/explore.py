@@ -1,10 +1,8 @@
 from __future__ import annotations
-
 import json
 import math
 from pathlib import Path
 from typing import Any
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -20,7 +18,6 @@ from scipy.stats import (
     spearmanr,
     wilcoxon,
 )
-
 from .ancombc2_runtime import ANCOMBC_VERSION, run_ancombc2
 from .console import info, phase_progress
 from .data import Dataset, dataset_fingerprint, load_dataset
@@ -49,8 +46,6 @@ try:
     import statsmodels.api as sm
 except Exception:
     sm = None
-
-
 _GROUP_BASE = (
     MID,
     ACC,
@@ -3042,7 +3037,6 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
             rank_dir = root / rank
             figure_dir = rank_dir / "figures"
             table_dir = rank_dir / "tables"
-
             phase.phase(f"{rank_prefix} · alpha diversity")
             alpha = _alpha_table(
                 relative,
@@ -3051,13 +3045,11 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
                 cluster_source,
                 explore.detection_limit,
             )
-
             phase.phase(
                 f"{rank_prefix} · alpha-diversity inference · "
                 f"{int(explore.bootstrap_replicates):,} bootstrap replicates"
             )
             alpha_stats = _alpha_statistics(alpha, rank_dataset, explore)
-
             phase.phase(f"{rank_prefix} · beta-diversity distance matrices")
             distances = _distance_matrices(relative, clr, explore.detection_limit)
             phylogenetic_name = None
@@ -3074,7 +3066,6 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
                     unmatched=phylogenetic_reference.unmatched,
                     min_sample_coverage=phylogenetic_reference.min_sample_coverage,
                 )
-
             phase.phase(
                 f"{rank_prefix} · beta-diversity inference · "
                 f"{int(explore.permutations):,} permutations · "
@@ -3083,7 +3074,6 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
             beta_stats = _beta_statistics(
                 distances, _group_labels(rank_dataset), rank_clusters, explore
             )
-
             phase.phase(f"{rank_prefix} · taxon summaries and sample QC")
             summary = _taxon_summary(relative, names, explore.detection_limit)
             qc = _sample_qc(X, relative, totals, rank_dataset, explore.detection_limit)
@@ -3115,7 +3105,6 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
                     .drop(columns="_sample_order")
                     .reset_index(drop=True)
                 )
-
             phase.phase(f"{rank_prefix} · Aitchison PCoA")
             coordinates, explained = _pcoa(distances["aitchison"])
             phylogenetic_ordination = (
@@ -3123,7 +3112,6 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
                 if phylogenetic_name is not None
                 else None
             )
-
             phase.phase(f"{rank_prefix} · {_explore_da_label(scale, explore)}")
             da = _differential_abundance(
                 scale,
@@ -3137,7 +3125,6 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
                 rank_clusters,
                 explore,
             )
-
             phase.phase(f"{rank_prefix} · writing analysis tables")
             table_frames: dict[str, pd.DataFrame] = {
                 "sample_qc": qc,
@@ -3164,7 +3151,6 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
                 for name, frame in table_frames.items()
                 if not frame.empty
             }
-
             phase.phase(f"{rank_prefix} · rendering alpha-diversity figure")
             figure_dir.mkdir(parents=True, exist_ok=True)
             for stale_name in ("composition.svg", "beta_diversity_statistics.svg"):
@@ -3172,7 +3158,6 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
             alpha_figure = _plot_alpha(
                 alpha, rank_dataset, figure_dir / "alpha_diversity.svg"
             )
-
             phase.phase(f"{rank_prefix} · rendering ordination and CLR figures")
             pcoa_figure = _plot_pcoa(
                 coordinates,
@@ -3197,7 +3182,6 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
                 explore,
                 figure_dir / "clr_heatmap.svg",
             )
-
             phase.phase(f"{rank_prefix} · rendering differential-abundance figure")
             da_figure = _plot_da_volcano(
                 da.get("results", pd.DataFrame()),
@@ -3215,7 +3199,6 @@ def run_explore(sweep: Any, *, redo: bool = False) -> dict[str, Any]:
                 "CLR abundance structure": heatmap_figure,
                 "Differential abundance and taxon associations": da_figure,
             }
-
             phase.phase(f"{rank_prefix} · writing rank manifest")
             payload = {
                 "rank": rank,

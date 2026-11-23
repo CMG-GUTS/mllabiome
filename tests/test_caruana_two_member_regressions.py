@@ -103,13 +103,15 @@ def run() -> None:
         _CARUANA_IMPROVEMENT_TOL=1e-10,
         _BAGGED_CARUANA_MIN_BAGS=8,
         _BAGGED_CARUANA_MAX_BAGS=24,
-        _PARETO_SELECTORS=frozenset({
-            "pareto_optimal_auroc_logloss",
-            "pareto_optimal_ml_dl_auroc_logloss",
-            "pareto_optimal_ml_dl_auroc_logloss_capped",
-            "pareto_optimal_taxonomic_rank_auroc_logloss",
-            "pareto_optimal_taxonomic_rank_auroc_logloss_capped",
-        }),
+        _PARETO_SELECTORS=frozenset(
+            {
+                "pareto_optimal_auroc_logloss",
+                "pareto_optimal_ml_dl_auroc_logloss",
+                "pareto_optimal_ml_dl_auroc_logloss_capped",
+                "pareto_optimal_taxonomic_rank_auroc_logloss",
+                "pareto_optimal_taxonomic_rank_auroc_logloss_capped",
+            }
+        ),
         _SUPER_LEARNER_WEIGHT_TOL=1e-8,
         _metric_is_loss=lambda metric: True,
         _metric_better=better,

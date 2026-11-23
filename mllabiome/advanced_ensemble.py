@@ -1,8 +1,6 @@
 from __future__ import annotations
-
 import json
 from typing import Any, Callable, Mapping
-
 import numpy as np
 from scipy.optimize import minimize, minimize_scalar
 from scipy.special import expit, softmax

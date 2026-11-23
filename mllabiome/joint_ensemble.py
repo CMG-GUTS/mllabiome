@@ -1,13 +1,10 @@
 from __future__ import annotations
-
 import hashlib
 import json
 import time
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
-
 from .console import stage, success
 from .data import dataset_fingerprint
 from .ensemble_progress import EnsembleSearchProgress

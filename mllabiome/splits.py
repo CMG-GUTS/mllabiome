@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import hashlib
 import json
 import sqlite3
@@ -7,10 +6,8 @@ import zlib
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
-
 from .storage import read_table, table_exists, write_table
 
 _SCHEMA_VERSION = 3
@@ -31,7 +28,6 @@ _REQUIRED_COLUMNS = {
     "sample_id",
     "sample_index",
 }
-
 _ASSIGNMENT_COLUMNS = (
     "task",
     "protocol",

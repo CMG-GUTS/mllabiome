@@ -281,14 +281,20 @@ def test_heldout_only_feature_cannot_change_inner_hyperparameter_candidate_selec
     # Wall-clock resource timings cannot be identical between two fits.
     # Compare all deterministic columns, including inner scores and labels.
     timing_columns = {
-        "preprocess_seconds", "model_setup_seconds", "fit_seconds",
-        "predict_seconds", "score_seconds", "fold_wall_seconds",
+        "preprocess_seconds",
+        "model_setup_seconds",
+        "fit_seconds",
+        "predict_seconds",
+        "score_seconds",
+        "fold_wall_seconds",
     }
     pd.testing.assert_frame_equal(
         clean_inner.drop(columns=list(timing_columns), errors="ignore")
-        .sort_values(["config_id", "inner_key"]).reset_index(drop=True),
+        .sort_values(["config_id", "inner_key"])
+        .reset_index(drop=True),
         adv_inner.drop(columns=list(timing_columns), errors="ignore")
-        .sort_values(["config_id", "inner_key"]).reset_index(drop=True),
+        .sort_values(["config_id", "inner_key"])
+        .reset_index(drop=True),
         check_dtype=False,
     )
     pd.testing.assert_frame_equal(

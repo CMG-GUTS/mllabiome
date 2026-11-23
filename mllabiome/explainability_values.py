@@ -1,14 +1,11 @@
 from __future__ import annotations
-
 import inspect
 from collections.abc import Callable, Sequence
 from typing import Any
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator
-
 from .explainability_config import (
     ExplainabilityConfigurationError,
     ExplainabilityDependencyError,
@@ -363,7 +360,6 @@ def _lime_values_for_data(
         raise ExplainabilityDependencyError(
             "Explainability.methods includes LIME, but the 'lime' package is not importable."
         ) from exc
-
     X_training = _as_float_matrix(X_training)
     X_explain = _as_float_matrix(X_explain)
     rows = _sample_rows(

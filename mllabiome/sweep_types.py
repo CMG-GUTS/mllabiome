@@ -1,7 +1,5 @@
 from __future__ import annotations
-
 import math
-
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -11,7 +9,6 @@ from typing import Any, Literal, TYPE_CHECKING
 if TYPE_CHECKING:
     from .brain.explanation import BrainTraceabilityConfig
     from .brain.representations import Brain
-
 from .advanced_ensemble import ADVANCED_AGGREGATIONS
 from ._evaluation_protocols import (
     SUPPORTED_EVALUATION_PROTOCOLS,
@@ -231,7 +228,6 @@ class Evaluation:
     ] = "repeated_nested_cv"
     outer_folds: int = 5
     inner_folds: int = 3
-
     outer_only: bool = False
     repeats: int = 2
     random_state: int = 42
@@ -323,17 +319,13 @@ class Ensemble:
     ecdf_reference_learner: str = ""
     include_model_ensembles: bool = True
     late_integrations: tuple[Integration, ...] = ()
-
     include_inactive: bool = True
-
     threshold_score: float = 0.30
     threshold_max_members: int = 50
-
     exclude_config_ids: tuple[str, ...] = ()
     exclude_learners: tuple[str, ...] = ()
     exclude_resolutions: tuple[str, ...] = ()
     exclude_transformations: tuple[str, ...] = ()
-
     caruana_iterations: int = 125
     caruana_max_unique_members: int | None = None
     caruana_early_stopping: bool = False
@@ -1189,7 +1181,6 @@ class Explore:
     ancombc2_structural_zeros: bool = True
     ancombc2_neg_lb: bool | None = None
     ancombc2_workers: int = 1
-
     unifrac_tree_path: str | Path | None = None
     unifrac_feature_to_tip: Mapping[str, str] | str | Path | None = None
     unifrac_rank: str = "species"
@@ -1507,7 +1498,6 @@ class Sweep:
 
             attach_brain_representations(self)
         validate_model_specs(self.learners, context="Sweep.learners / MODELS")
-
         late_integrations = tuple(
             item
             for item in self.integrations
@@ -1526,12 +1516,10 @@ class Sweep:
 
 
 def build_sweep_from_module(mod: Any) -> Sweep:
-
     if hasattr(mod, "VIEWS"):
         raise TypeError(
             "VIEWS is not supported. Use MODALITIES with mllabiome.Modality(...)."
         )
-
     if hasattr(mod, "build_sweep"):
         obj = mod.build_sweep()
         if not isinstance(obj, Sweep):
@@ -1542,7 +1530,6 @@ def build_sweep_from_module(mod: Any) -> Sweep:
         if not isinstance(obj, Sweep):
             raise TypeError("SWEEP must be an instance of mllabiome.Sweep.")
         return obj
-
     if hasattr(mod, "SAMPLES") or hasattr(mod, "MODALITIES"):
         missing = [
             name
@@ -1613,7 +1600,6 @@ def build_sweep_from_module(mod: Any) -> Sweep:
             transformations=transformations,
             integrations=integrations,
         )
-
     required = ["EXPERIMENT_DIR", "DATA"]
     missing = [name for name in required if not hasattr(mod, name)]
     if missing:
@@ -1625,7 +1611,6 @@ def build_sweep_from_module(mod: Any) -> Sweep:
     data = mod.DATA
     if not isinstance(data, Data):
         raise TypeError("DATA must be an instance of mllabiome.Data(...).")
-
     if hasattr(mod, "RESOLUTIONS"):
         resolutions = mod.RESOLUTIONS
     elif hasattr(mod, "_RESOLUTION_SETS"):
@@ -1634,7 +1619,6 @@ def build_sweep_from_module(mod: Any) -> Sweep:
         raise TypeError(
             "Config must define RESOLUTIONS. Legacy _RESOLUTION_SETS is still accepted for compatibility."
         )
-
     if hasattr(mod, "COUNT_TRANSFORMATIONS"):
         count_transformations = mod.COUNT_TRANSFORMATIONS
     elif hasattr(mod, "_build_count_transformations"):
@@ -1643,7 +1627,6 @@ def build_sweep_from_module(mod: Any) -> Sweep:
         raise TypeError(
             "Config must define COUNT_TRANSFORMATIONS. Legacy _build_count_transformations() is still accepted for compatibility."
         )
-
     if hasattr(mod, "MODELS"):
         learners = mod.MODELS
     elif hasattr(mod, "_build_models"):
@@ -1653,7 +1636,6 @@ def build_sweep_from_module(mod: Any) -> Sweep:
             "Config must define MODELS as explicit (name, estimator) pairs. Legacy _build_models() is still accepted for compatibility."
         )
     validate_model_specs(learners, context="MODELS")
-
     return Sweep(
         title=getattr(mod, "TITLE", Path(mod.EXPERIMENT_DIR).name),
         include_representation_impact=getattr(

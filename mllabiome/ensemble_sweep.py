@@ -1,17 +1,14 @@
 from __future__ import annotations
-
 import hashlib
 import inspect
 import json
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 from scipy.stats import rankdata
 from sklearn.linear_model import LogisticRegression
-
 from .advanced_ensemble import ADVANCED_AGGREGATIONS, fit_crossfitted_advanced
 from .modern_selection import drep_select, population_ensemble_select, pseo_bqp_select
 from .compute import ResourceTracker
@@ -276,7 +273,6 @@ def _plan_max_sizes(plan: Ensemble) -> tuple[int, ...]:
     canonical = tuple(int(x) for x in getattr(plan, "max_sizes", ()))
     if legacy is not None:
         legacy_sizes = tuple(int(x) for x in legacy)
-
         if canonical and canonical != (3,) and canonical != legacy_sizes:
             raise ValueError(
                 "Ensemble.max_sizes and legacy Ensemble.sizes disagree. Use only max_sizes."
@@ -296,7 +292,6 @@ def _resolved_super_learner_loss(plan: Ensemble) -> str:
 
 def _caruana_controls(max_members: int) -> dict[str, int | float]:
     max_members = int(max_members)
-
     ceiling = min(1000, max(100, 25 * max_members))
     patience = max(20, 5 * max_members)
     minimum = min(ceiling, max(20, 5 * max_members))
@@ -745,7 +740,6 @@ def _complete_inner_scores(
     pcols = _proba_cols(pred)
     if not pcols:
         raise ValueError("Inner predictions do not contain probability columns.")
-
     if metric == "AUROC_MCC" and metric not in frame.columns:
         if not {"AUROC", "MCC"}.issubset(frame.columns):
             raise ValueError(
@@ -2213,13 +2207,11 @@ def _caruana_select(
         raise ValueError("Caruana library and prediction stack are inconsistent.")
     if max_members < 2:
         raise ValueError("Caruana max_members must be at least 2.")
-
     controls = _caruana_controls(max_members)
     max_iterations = int(controls["max_iterations"])
     patience = int(controls["patience"])
     min_iterations = int(controls["min_iterations"])
     improvement_tol = float(controls["improvement_tol"])
-
     running_sum = np.zeros_like(stack[0], dtype=float)
     chosen_indices: list[int] = []
     trajectory: list[float] = []
@@ -2231,7 +2223,6 @@ def _caruana_select(
     trace: list[dict[str, Any]] = []
     previous_score: float | None = None
     previous_loss: float | None = None
-
     for step in range(max_iterations):
         distinct = set(chosen_indices)
         denom = float(step + 1)
@@ -2291,7 +2282,6 @@ def _caruana_select(
             }
         )
         previous_score, previous_loss = float(score), float(candidate_loss)
-
         valid = len(set(chosen_indices)) >= 2
         if auroc_tolerance is not None:
             if valid:
@@ -2330,7 +2320,6 @@ def _caruana_select(
                 stale_steps = 0
             elif valid:
                 stale_steps += 1
-
         if (
             best_prefix >= 2
             and len(chosen_indices) >= min_iterations
@@ -2338,7 +2327,6 @@ def _caruana_select(
         ):
             stop_reason = "converged_patience"
             break
-
     executed_iterations = len(chosen_indices)
     chosen_indices = chosen_indices[:best_prefix]
     if len(set(chosen_indices)) < 2:
@@ -2498,7 +2486,6 @@ def _fit_nonsmooth_composite_weights(
     start: np.ndarray | None = None,
     min_weight: float = 0.0,
 ) -> np.ndarray:
-
     n_members = int(stack.shape[0])
     floor = float(min_weight)
     if n_members < 2 or floor < 0 or not np.isfinite(floor) or floor * n_members >= 1:
@@ -2514,7 +2501,6 @@ def _fit_nonsmooth_composite_weights(
     ):
         raise ValueError("Invalid initial composite ensemble weights.")
     initial = initial / initial.sum()
-
     initial = floor + (1 - floor * n_members) * initial
 
     def score(weights: np.ndarray) -> float:
@@ -2564,11 +2550,9 @@ def _fit_nonsmooth_composite_weights(
 def _fit_composite_super_learner(
     member_ids: list[str], stack: np.ndarray, y_true: np.ndarray, max_members: int
 ) -> tuple[list[str], np.ndarray, float]:
-
     n_members = len(member_ids)
     if n_members < 2 or len(set(member_ids)) != n_members or max_members < 2:
         raise ValueError("Composite Super Learner needs two distinct candidate models.")
-
     singles = [
         _metric_value(y_true, stack[index], "AUROC_MCC") for index in range(n_members)
     ]
@@ -2582,7 +2566,6 @@ def _fit_composite_super_learner(
         for index in range(n_members):
             if index in selected:
                 continue
-
             for alpha in (0.01, 0.025, 0.05, 0.1, 0.2, 0.35, 0.5, 0.75):
                 mixed = (1.0 - alpha) * current + alpha * stack[index]
                 value = _metric_value(y_true, mixed, "AUROC_MCC")
@@ -2602,7 +2585,6 @@ def _fit_composite_super_learner(
         current_score = _metric_value(y_true, current, "AUROC_MCC")
     if len(selected) < 2:
         raise RuntimeError("Composite Super Learner could not find two members.")
-
     return [member_ids[i] for i in selected], weights, float(-current_score)
 
 
@@ -4782,7 +4764,6 @@ def _candidate_table_for_pooled_pareto(
     )
     if qualified is not None:
         eligible &= set(qualified)
-
     phase(2, "Aggregating complete inner AUROC and log loss")
     columns = ["config_id", "split_key", "inner_key", "AUROC", "log_loss"]
     if "ok" in inner_results.columns:
@@ -4809,7 +4790,6 @@ def _candidate_table_for_pooled_pareto(
         raise ValueError(
             "No complete inner-validation configurations are available for Pareto selection"
         )
-
     phase(3, "Checking inner prediction coverage")
     pred_keys = ["outer_split_key", "split_key", "sample_id"]
     if not {"config_id", "y_true", *pred_keys}.issubset(inner_predictions.columns):
@@ -4818,7 +4798,6 @@ def _candidate_table_for_pooled_pareto(
         )
     expected_predictions = len(inner_predictions[pred_keys].drop_duplicates())
     counts = inner_predictions.groupby("config_id", sort=False).size()
-
     phase(4, f"Computing Pareto frontier from {len(scores):,} complete candidates")
     if str(spec["selection_strategy"]) in {
         "pareto_optimal_ml_dl_auroc_logloss",
@@ -4858,7 +4837,6 @@ def _candidate_table_for_pooled_pareto(
         raise ValueError(
             "Selected Pareto members have no inner probability predictions"
         )
-
     phase(5, f"Scoring fixed ensembles from {len(members)} pooled Pareto members")
     rows: list[dict[str, Any]] = []
     for index, spec in enumerate(specs, start=1):
@@ -5680,7 +5658,6 @@ def select_mpma_e_by_outer_fold(
         aggregation_parameters = _parse_json_dict(
             winner.get("aggregation_parameters", "{}"), "aggregation_parameters"
         )
-
         fold_outer = outer[outer["outer_split_key"].astype(str).eq(outer_key)].copy()
         if fold_outer.empty:
             raise RuntimeError(
@@ -5945,7 +5922,9 @@ def sweep_ensemble(sweep: Sweep) -> dict[str, Path]:
         import sqlite3
 
         artifact_index = root / "configs.db"
-        if artifact_index.is_file():
+        from . import cooperative_store
+
+        if artifact_index.is_file() and not cooperative_store.enabled(root):
             with sqlite3.connect(artifact_index) as connection:
                 has_index = connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='config_artifacts'"

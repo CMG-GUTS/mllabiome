@@ -1,11 +1,8 @@
 from __future__ import annotations
-
 from collections.abc import Callable
 from typing import Any
-
 import numpy as np
 import pandas as pd
-
 from .metrics import _renormalize_proba
 from .statistics_common import (
     _LODO_PROTOCOLS,

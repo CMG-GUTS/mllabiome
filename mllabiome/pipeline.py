@@ -1,10 +1,12 @@
 from __future__ import annotations
-
 from pathlib import Path
+import hashlib
+import json
+from dataclasses import asdict
 from typing import Any
-
 from .configs_sweep import Sweep, _target_task, evaluate, sweep_task, target_sweeps
-from .console import info, success
+from .console import info, success, SelectionStatus
+from . import cooperative_store
 from .ensemble_sweep import sweep_ensemble
 from .explore import run_explore as execute_explore
 from .final_explainability import explain
@@ -47,7 +49,6 @@ def run_explore(sweep: Sweep) -> dict[str, Any]:
 
     if is_joint_sweep(sweep):
         from dataclasses import replace
-
         from .joint_sweep import _targets
         from .sweep_types import _normalise_sweep_task
 
@@ -117,8 +118,133 @@ def run_explore(sweep: Sweep) -> dict[str, Any]:
 
 def run_evaluate(sweep: Sweep) -> dict[str, Any]:
     outputs = evaluate(sweep)
-    print_stage_results(sweep, "evaluate")
+
+    if not cooperative_store.enabled(sweep.root()):
+        print_stage_results(sweep, "evaluate")
     return outputs
+
+
+def run_base_selection(sweep: Sweep) -> dict[str, Any]:
+    from ._config_store import indexed_config_ids, _artifact_path, _digest, split_digest
+    from .configs_sweep import _write_selection_artifacts, _existing_outputs
+    from .joint_sweep import is_joint_sweep
+
+    if is_joint_sweep(sweep) or getattr(sweep, "uses_modalities", False):
+        raise NotImplementedError(
+            "Independent base-selection is implemented for standard classification/regression sweeps; "
+            "joint and multimodal evaluation still use the legacy orchestration."
+        )
+    info("MPMA-B · preparing target sweeps")
+    children = target_sweeps(sweep)
+    results: dict[str, Any] = {}
+    for child in children:
+        root = child.root()
+        with SelectionStatus() as status, cooperative_store.reporting(status):
+            status.phase(f"Target {child.data.target_col} · experiment {root}")
+            status.phase("Waiting for experiment initialization lock")
+            with cooperative_store.lock(root, "initialize"):
+                if not (root / "manifest.json").is_file():
+                    raise FileNotFoundError(
+                        f"Cannot select MPMA-B without an evaluation manifest: {root}"
+                    )
+                cooperative_store.initialize(root)
+            status.phase("Waiting for exclusive base-selection lock")
+            with cooperative_store.lock(root, "base-selection"):
+                status.phase("Discovering completed configurations")
+                ids = indexed_config_ids(root)
+                if not ids:
+                    raise FileNotFoundError(
+                        f"No completed MPMA artifacts found under {root / 'configs'}"
+                    )
+                info(f"MPMA-B · found {len(ids)} completed MPMAs")
+                with cooperative_store.snapshot(root, ids):
+                    manifest = json.loads(
+                        (root / "manifest.json").read_text(encoding="utf-8")
+                    )
+                    class_labels = tuple(manifest.get("class_labels") or ())
+                    status.phase("Computing MPMA-B selection and reports")
+                    _write_selection_artifacts(root, child, class_labels)
+                    status.phase("Validating selection outputs")
+                    outputs = {
+                        label: location
+                        for label, location in _existing_outputs(root).items()
+                        if label.startswith("mpma_b") and Path(location).exists()
+                    }
+                    if (
+                        "mpma_b_final_candidate" not in outputs
+                        or "mpma_b_selection" not in outputs
+                    ):
+                        raise RuntimeError(
+                            "MPMA-B selection did not produce a final candidate and fold selection. "
+                            "Check that sufficient complete inner and outer predictions exist."
+                        )
+                    status.phase("Recording source artifact identities")
+                    digests = {}
+                    for number, cid in enumerate(ids, start=1):
+                        digests[cid] = _digest(_artifact_path(root, cid))
+                        cooperative_store.report_progress(
+                            "Hashing input artifacts", number, len(ids)
+                        )
+                    snapshot = {
+                        "schema": "mllabiome-base-selection-snapshot-v1",
+                        "candidate_config_ids": ids,
+                        "candidate_digests": digests,
+                        "dataset_fingerprint": manifest.get("dataset_fingerprint"),
+                        "split_digest": split_digest(root),
+                        "optimize_metric": str(child.evaluation.optimize_metric),
+                        "base_selection": asdict(child.base_selection)
+                        if child.base_selection
+                        else None,
+                        "ensemble_selection_parameters": asdict(child.ensemble)
+                        if child.ensemble
+                        else None,
+                        "outputs": {
+                            key: str(value.relative_to(root))
+                            for key, value in outputs.items()
+                        },
+                    }
+                    fingerprint = hashlib.sha256(
+                        json.dumps(snapshot, sort_keys=True, default=str).encode()
+                    ).hexdigest()[:24]
+                    snapshot["selection_id"] = fingerprint
+                    folder = root / "selections" / "base" / fingerprint
+                    folder.mkdir(parents=True, exist_ok=True)
+                    cooperative_store.atomic_bytes(
+                        folder / "manifest.json",
+                        json.dumps(
+                            snapshot, sort_keys=True, default=str, indent=2
+                        ).encode("utf-8"),
+                    )
+                    for source, target in (
+                        (
+                            root / "tables" / "mpma_b_outer_selection.parquet",
+                            folder / "outer_selection.parquet",
+                        ),
+                        (
+                            root / "tables" / "mpma_b_final_candidate.json",
+                            folder / "final_candidate.json",
+                        ),
+                    ):
+                        if source.is_file() and not target.is_file():
+                            cooperative_store.atomic_bytes(target, source.read_bytes())
+                    results[str(child.data.target_col)] = {
+                        "selection_id": fingerprint,
+                        "snapshot": folder / "manifest.json",
+                        **outputs,
+                    }
+                    info(
+                        f"MPMA-B · snapshot {fingerprint} · {len(ids)} completed configurations"
+                    )
+                    final = json.loads(
+                        (root / "tables" / "mpma_b_final_candidate.json").read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                    if final.get("config_id"):
+                        success(
+                            f"MPMA-B · selected {final['config_id']} · {final.get('learner', 'unknown learner')} · {final.get('resolution', 'unknown resolution')}"
+                        )
+    return results if len(children) > 1 else next(iter(results.values()))
 
 
 def run_ensemble(sweep: Sweep) -> dict[str, Any]:
@@ -310,6 +436,14 @@ def run_all(sweep: Sweep) -> dict[str, Any]:
         explore_output = run_explore(sweep)
     info("Pipeline · evaluate")
     evaluate_output = run_evaluate(sweep)
+
+    has_explicit_base = not is_joint_sweep(sweep) and not getattr(
+        sweep, "uses_modalities", False
+    )
+    base_selection_output: dict[str, Any] = {}
+    if has_explicit_base:
+        info("Pipeline · base-selection")
+        base_selection_output = run_base_selection(sweep)
     info("Pipeline · ensemble")
     ensemble_output = run_ensemble(sweep)
     inference_output: dict[str, Any] = {}
@@ -330,6 +464,8 @@ def run_all(sweep: Sweep) -> dict[str, Any]:
         "explain": explain_output,
         "report": report_output,
     }
+    if base_selection_output:
+        outputs["base-selection"] = base_selection_output
     if explore_output:
         outputs["explore"] = explore_output
     if getattr(sweep, "robustness", None) is not None:
@@ -346,6 +482,7 @@ def run_stage(sweep: Sweep, stage_name: str) -> dict[str, Any]:
         "all",
         "explore",
         "evaluate",
+        "base-selection",
         "ensemble",
         "explain",
         "report",
@@ -363,6 +500,8 @@ def run_stage(sweep: Sweep, stage_name: str) -> dict[str, Any]:
         return federated_evaluate(sweep)
     if stage_name == "evaluate":
         return run_evaluate(sweep)
+    if stage_name == "base-selection":
+        return run_base_selection(sweep)
     if stage_name == "ensemble":
         return run_ensemble(sweep)
     if stage_name == "inference":

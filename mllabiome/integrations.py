@@ -1,13 +1,10 @@
 from __future__ import annotations
-
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from itertools import combinations
 from typing import Any
-
 import numpy as np
 from sklearn.decomposition import PCA
-
 from .multimodal_fusion import (
     AlignmentKernelFusion,
     BlockPLSFusion,

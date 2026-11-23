@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import importlib
 import json
 from functools import lru_cache
@@ -23,7 +22,6 @@ _DEEP_PATHS = (
     "mllabiome.exaone.EXAONETabularClassifier",
     "sklearn.neural_network._multilayer_perceptron.MLPClassifier",
 )
-
 _ML_PATHS = (
     "sklearn.ensemble._forest.RandomForestClassifier",
     "sklearn.ensemble._forest.ExtraTreesClassifier",
@@ -53,7 +51,6 @@ _ML_PATHS = (
     "mllabiome.baseline_rf.BaselineRFClassifier",
     "mllabiome.ridge_softmax.RidgeSoftmaxClassifier",
 )
-
 _SINGLE_WRAPPERS = frozenset(
     {
         "sklearn.pipeline.Pipeline",
@@ -68,14 +65,12 @@ _SINGLE_WRAPPERS = frozenset(
         "mllabiome.rank_calibration.GroupedRankCalibratedClassifier",
     }
 )
-
 _MULTI_WRAPPERS = frozenset(
     {
         "sklearn.ensemble._voting.VotingClassifier",
         "sklearn.ensemble._stacking.StackingClassifier",
     }
 )
-
 _REGISTERED: dict[type, str] = {}
 
 

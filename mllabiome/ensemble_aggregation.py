@@ -1,12 +1,9 @@
 from __future__ import annotations
-
 from collections.abc import Iterable, Mapping
 from typing import Any
-
 import numpy as np
 from scipy.special import expit, softmax
 from scipy.stats import rankdata
-
 from .advanced_ensemble import ADVANCED_AGGREGATIONS, apply_advanced_aggregation
 
 SUPPORTED_AGGREGATIONS: tuple[str, ...] = (
@@ -31,7 +28,6 @@ SUPPORTED_AGGREGATIONS: tuple[str, ...] = (
     "ecdf_learned_quantile",
     *sorted(ADVANCED_AGGREGATIONS),
 )
-
 LEARNED_AGGREGATIONS = frozenset(
     {
         "logistic_stacking",
@@ -42,7 +38,6 @@ LEARNED_AGGREGATIONS = frozenset(
         *ADVANCED_AGGREGATIONS,
     }
 )
-
 LINEAR_PROBABILITY_AGGREGATIONS = frozenset(
     {"mean_proba", "weighted_mean_proba", "cawpe"}
 )
@@ -243,11 +238,9 @@ def aggregate_member_predictions(
         )
     if not np.isfinite(stack).all() or np.any(stack < 0.0):
         raise ValueError("Member predictions must be finite and non-negative.")
-
     method = str(aggregation).strip()
     if method not in SUPPORTED_AGGREGATIONS:
         raise ValueError(f"Unsupported MPMA-E aggregation_strategy {aggregation!r}")
-
     if method == "mean_proba":
         proba = np.mean(stack, axis=0)
     elif method in {"weighted_mean_proba", "cawpe"}:
@@ -315,7 +308,6 @@ def aggregate_member_predictions(
         proba = apply_advanced_aggregation(stack, parameters)
     else:
         proba = _apply_stacking(stack, parameters)
-
     proba = np.asarray(proba, dtype=float)
     if not np.isfinite(proba).all() or np.any(proba < 0.0):
         raise ValueError("Aggregated MPMA-E predictions contain invalid values")

@@ -1,11 +1,9 @@
 from __future__ import annotations
-
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from threading import Event, RLock, Thread
 from typing import Iterator
-
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -15,9 +13,7 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-
 from .console import console, info, success, warn
-
 
 _CURRENT: ContextVar[InferenceProgress | None] = ContextVar(
     "mllabiome_inference_progress", default=None

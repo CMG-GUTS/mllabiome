@@ -1,19 +1,15 @@
 from __future__ import annotations
-
 import html
 import json
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
-
 from . import report as _report
 from .console import path_table, phase_progress, stage, success
 from .regression_explainability import _write_regression_explainability_figures
 from .task_reports import _format_metric
 from .storage import parquet_engine_available, read_table, write_table
 from .utils import dump_json_standard, prepare_report_html_path
-
 
 _MAXIMIZE = frozenset(
     {

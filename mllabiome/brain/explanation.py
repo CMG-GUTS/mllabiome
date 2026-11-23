@@ -1,13 +1,10 @@
 from __future__ import annotations
-
 import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Sequence
-
 import pandas as pd
-
 from .fmriprep import discover_fmriprep_runs
 from .source import BrainSource
 from .timeseries import extract_schaefer400

@@ -1,12 +1,8 @@
 from __future__ import annotations
-
 from typing import Any
-
 import json
-
 import numpy as np
 from scipy.optimize import minimize, minimize_scalar
-
 from .ensemble_aggregation import aggregate_member_predictions
 
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
-
 from collections.abc import Mapping
-
 import numpy as np
 from scipy.optimize import minimize
 from sklearn.cross_decomposition import PLSRegression

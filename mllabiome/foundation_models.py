@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import contextlib
 import hashlib
 import importlib.metadata
@@ -21,12 +20,9 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
-
 import numpy as np
 import pandas as pd
-
 from .transformations import TransformationCoordinate
-
 
 _WAYPOINT_RUNTIME_CACHE: dict[tuple[str, str], tuple[Any, Any, Any, Any]] = {}
 _MGM_RUNTIME_CACHE: dict[tuple[str, str, str, str], tuple[Any, Any]] = {}
@@ -56,7 +52,6 @@ WAYPOINT_REFERENCE = FoundationModelReference(
     software_url="https://github.com/Outpost-Bio/waypoint",
     package="waypoint-bio",
 )
-
 MGM_REFERENCE = FoundationModelReference(
     key="mgm",
     title="MGM as a Large-Scale Pretrained Foundation Model for Microbiome Analyses in Diverse Contexts",
@@ -67,7 +62,6 @@ MGM_REFERENCE = FoundationModelReference(
     software_url="https://github.com/HUST-NingKang-Lab/MGM",
     package="microformer-mgm",
 )
-
 MBEMBED_REFERENCE = FoundationModelReference(
     key="mbembed",
     title="Self-Supervised Representation Learning for Microbiome Improves Downstream Prediction in Data-Limited Settings and Cross-Cohort Generalizability",
@@ -78,7 +72,6 @@ MBEMBED_REFERENCE = FoundationModelReference(
     software_url="https://github.com/LironZa/MBEmbed",
     package="MBEmbed",
 )
-
 MGM2_REFERENCE = FoundationModelReference(
     key="mgm2",
     title="MGM2 as a Unified Foundation Model for Microbiome World Exploration",

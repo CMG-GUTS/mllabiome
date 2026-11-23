@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import importlib
 import json
 import sqlite3
@@ -13,6 +12,25 @@ class HistoricalConfigurationError(RuntimeError):
 
 
 def recorded_configuration(root: Path, config_id: str) -> dict[str, Any]:
+    from . import cooperative_store
+
+    if cooperative_store.enabled(Path(root)):
+        from ._config_store import (
+            _artifact_path,
+            _file_metadata,
+            _validate_artifact_context,
+        )
+
+        path = _artifact_path(Path(root), config_id)
+        if not path.is_file():
+            raise HistoricalConfigurationError(
+                f"No completed historical configuration artifact for {config_id!r} at {path}"
+            )
+        metadata = _file_metadata(path)
+        _validate_artifact_context(Path(root), metadata)
+        row = dict(metadata.get("configuration") or {})
+        row["config_id"] = str(config_id)
+        return row
     path = Path(root) / "configs.db"
     if not path.is_file():
         raise HistoricalConfigurationError(

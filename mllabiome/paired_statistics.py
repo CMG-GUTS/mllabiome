@@ -1,12 +1,9 @@
 from __future__ import annotations
-
 import itertools
 from collections.abc import Callable
 from typing import Any
-
 import numpy as np
 import pandas as pd
-
 from .metrics import metric_is_loss
 from .oof_statistics import (
     _lodo_cluster_subject_indices,

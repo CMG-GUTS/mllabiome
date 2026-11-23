@@ -1,7 +1,5 @@
 from __future__ import annotations
-
 import numpy as np
-
 from ..explainability_methods import LIME, SHAP
 from ..explainability_values import _lime_values_for_data, _shap_values_for_data
 from ..data import _taxonomic_rank

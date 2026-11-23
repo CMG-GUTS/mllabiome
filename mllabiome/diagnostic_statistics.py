@@ -1,12 +1,9 @@
 from __future__ import annotations
-
 from collections.abc import Callable
 from typing import Any
-
 import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_curve as sklearn_roc_curve
-
 from .oof_statistics import (
     _lodo_cluster_subject_indices,
     _probability_columns,

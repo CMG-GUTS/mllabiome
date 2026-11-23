@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import csv
 import json
 from contextlib import ExitStack
@@ -7,13 +6,10 @@ from tempfile import TemporaryDirectory
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
-
 import numpy as np
-
 from .fmriprep import discover_fmriprep_runs
 from .structural import discover_tissue_maps, tissue_volumes
 from .timeseries import BOLDPreprocessing, extract_schaefer400
-
 
 FUNCTIONAL = frozenset({"pearson_fc", "partial_fc", "alff", "falff"})
 ALL_REPRESENTATIONS = FUNCTIONAL | {"tissue_volumes"}
@@ -55,7 +51,6 @@ class HandcraftedResult:
     def as_modality(
         self, representation: str, *, name: str = "brain", primary: bool = False
     ):
-
         if representation not in self.feature_tables:
             raise KeyError(f"Representation {representation!r} was not exported.")
         from ..modalities import Modality
@@ -96,13 +91,11 @@ def _edge_vector(matrix: np.ndarray, *, fisher_z: bool) -> np.ndarray:
 
 
 def pearson_fc(time_series: np.ndarray, *, fisher_z: bool = True) -> np.ndarray:
-
     x = _check_ts(time_series, tr=1.0)
     return _edge_vector(np.corrcoef(x, rowvar=False), fisher_z=fisher_z)
 
 
 def partial_fc(time_series: np.ndarray, *, fisher_z: bool = True) -> np.ndarray:
-
     try:
         from sklearn.covariance import LedoitWolf
     except ImportError as exc:
@@ -124,7 +117,6 @@ def spectral_amplitudes(
     *,
     settings: HandcraftedSettings = HandcraftedSettings(),
 ) -> tuple[np.ndarray, np.ndarray]:
-
     x = _check_ts(broadband_time_series, tr=tr)
     n = x.shape[0]
     nyquist = 0.5 / tr
@@ -141,7 +133,6 @@ def spectral_amplitudes(
     broad = frequencies > 0
     if low.sum() < 2:
         raise ValueError("Too few nonzero frequency bins for ALFF band.")
-
     amplitudes = np.abs(np.fft.rfft(x - x.mean(axis=0, keepdims=True), axis=0))
     band_amp = amplitudes[low]
     alff = band_amp.mean(axis=0) * (2.0 / n)
@@ -200,7 +191,6 @@ def export_handcrafted_fmriprep(
     settings: HandcraftedSettings = HandcraftedSettings(),
     overwrite: bool = False,
 ) -> HandcraftedResult:
-
     requested = tuple(representations)
     if not requested or len(set(requested)) != len(requested):
         raise ValueError("Provide at least one unique brain representation.")
@@ -244,20 +234,17 @@ def export_handcrafted_fmriprep(
         )
     output.mkdir(parents=True, exist_ok=True)
     feature_names = {rep: _names(rep) for rep in requested}
-
     with TemporaryDirectory(prefix=".handcrafted_stage_", dir=output) as stage_dir:
         stage = Path(stage_dir)
         staged_tables = {r: stage / p.name for r, p in tables.items()}
         staged_manifest = stage / manifest.name
         staged_provenance = stage / provenance.name
         manifest_rows: list[dict[str, Any]] = []
-
         broadband_settings = replace(
             preprocessing, low_pass=None, high_pass=None, standardize=False
         )
         need_conn = bool({"pearson_fc", "partial_fc"} & set(requested))
         need_spectral = bool({"alff", "falff"} & set(requested))
-
         with ExitStack() as stack:
             writers = {}
             for rep, path in tables.items():
@@ -328,7 +315,6 @@ def export_handcrafted_fmriprep(
                         )
                     writers[rep].writerow([sid, *(f"{float(v):.10g}" for v in x)])
                 manifest_rows.append(quality)
-
         all_fields = sorted(
             {field for row in manifest_rows for field in row} - {"sample_id"}
         )
@@ -397,7 +383,6 @@ def export_handcrafted_fmriprep(
 
 
 def main(argv: list[str] | None = None) -> None:
-
     import argparse
 
     parser = argparse.ArgumentParser(

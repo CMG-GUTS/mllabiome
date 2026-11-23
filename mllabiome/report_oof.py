@@ -1,13 +1,10 @@
 from __future__ import annotations
-
 import html
 import json
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
-
 from . import report as _report_module
 from ._evaluation_protocols import is_lodo_protocol
 from .console import console, info, path_table, phase_progress, stage, success
@@ -687,7 +684,6 @@ def _decision_curve_figure_html(
         )
     import matplotlib as mpl
     import matplotlib.pyplot as plt
-
     from . import style as _style
 
     strategy_palette = {
@@ -976,7 +972,6 @@ def _decision_curve_figure_html(
             ax_dca.spines["right"].set_visible(False)
             if dca_strategies:
                 ax_dca.legend(loc="best", ncol=2 if len(dca_strategies) > 1 else 1)
-
             roc_strategies = (
                 roc_sub["Strategy"].astype(str).drop_duplicates().tolist()
                 if not roc_sub.empty
@@ -1439,7 +1434,6 @@ def _human_token(value: Any) -> str:
 def _mpma_b_composition(
     root: Path, learner_labels: dict[str, str] | None = None
 ) -> pd.DataFrame:
-
     if not (root / "final_models.json").exists():
         return pd.DataFrame()
     final = load_final_models(root)["MPMA-B"]

@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import contextlib
 import hashlib
 import json
@@ -242,7 +241,6 @@ def _glibc_version() -> tuple[int, int] | None:
 def _managed_archive() -> tuple[str, str]:
     system = platform.system().lower()
     machine = platform.machine().lower()
-
     if system == "windows":
         if machine not in {"amd64", "x86_64"}:
             raise RuntimeError(
@@ -254,7 +252,6 @@ def _managed_archive() -> tuple[str, str]:
             f"https://github.com/portable-r/portable-r-windows/releases/download/v{R_VERSION}/{name}",
             name,
         )
-
     if system == "darwin":
         if machine in {"arm64", "aarch64"}:
             arch = "arm64"
@@ -269,7 +266,6 @@ def _managed_archive() -> tuple[str, str]:
             f"https://github.com/portable-r/portable-r-macos/releases/download/v{R_VERSION}/{name}",
             name,
         )
-
     if system == "linux":
         if machine not in {"x86_64", "amd64", "aarch64", "arm64"}:
             raise RuntimeError(
@@ -285,7 +281,6 @@ def _managed_archive() -> tuple[str, str]:
         suffix = "-arm64" if machine in {"aarch64", "arm64"} else ""
         name = f"R-{R_VERSION}-manylinux_2_34{suffix}.tar.gz"
         return (f"https://cdn.posit.co/r/manylinux_2_34/{name}", name)
-
     raise RuntimeError(
         f"Automatic SIAMCAT R installation is not available on {platform.system()}. "
         "Set MLLABIOME_RSCRIPT to a compatible R 4.6.x Rscript executable."
@@ -458,7 +453,6 @@ def _managed_rscript() -> Path:
                 return rscript
         except Exception:
             pass
-
     lock = _cache_root() / "locks" / f"R-{R_VERSION}.lock"
     with _installation_lock(lock):
         if marker.exists():
@@ -469,7 +463,6 @@ def _managed_rscript() -> Path:
                     return rscript
             except Exception:
                 pass
-
         url, filename = _managed_archive()
         print(
             f"[SIAMCAT] Downloading managed R {R_VERSION} from {url}",
@@ -480,7 +473,6 @@ def _managed_rscript() -> Path:
         with tempfile.TemporaryDirectory(prefix="mllabiome-r-install-") as tmp:
             archive = Path(tmp) / filename
             _download(url, archive)
-
             with tempfile.TemporaryDirectory(
                 prefix=f".R-{R_VERSION}-staging-", dir=root.parent
             ) as staging_dir:
@@ -534,7 +526,6 @@ def _choose_rscript(
                 f"SIAMCAT backend requires R 4.6.x; found R {version} at {path}."
             )
         return path
-
     mode = str(mode).strip().lower()
     if mode not in {"auto", "system", "managed"}:
         raise ValueError("runtime must be one of: 'auto', 'system', 'managed'.")
@@ -823,7 +814,6 @@ def ensure_siamcat_runtime(
     _announce(f"Using R {r_version} at {chosen}")
     library = _library_for_rscript(chosen, r_version)
     marker = library / ".mllabiome-siamcat.json"
-
     _repair_portable_macos_packages(chosen, library)
     installed = _installed_siamcat_version(chosen, library)
     if installed != SIAMCAT_VERSION:
@@ -834,12 +824,10 @@ def ensure_siamcat_runtime(
             if installed != SIAMCAT_VERSION:
                 _install_siamcat(chosen, library)
                 installed = _installed_siamcat_version(chosen, library)
-
     if installed != SIAMCAT_VERSION:
         raise RuntimeError(
             f"SIAMCAT {SIAMCAT_VERSION} could not be prepared; found {installed!r}."
         )
-
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(
         json.dumps(

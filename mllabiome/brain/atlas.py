@@ -1,9 +1,6 @@
 from __future__ import annotations
-
 from pathlib import Path
-
 import numpy as np
-
 
 SPACE = "MNI152NLin2009cAsym"
 

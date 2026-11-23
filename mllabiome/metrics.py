@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr
@@ -19,7 +18,6 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-
 from .utils import METRIC_COLUMNS, REGRESSION_METRIC_COLUMNS
 
 
@@ -437,7 +435,6 @@ def compute_metrics(
         raise ValueError("y_true contains classes outside the declared class set.")
     if not set(np.unique(y_pred).tolist()).issubset(declared):
         raise ValueError("y_pred contains classes outside the declared class set.")
-
     out["Accuracy"] = float(accuracy_score(y_true, y_pred))
     out["BalAcc"] = _balanced_accuracy(y_true, y_pred, classes)
     out["F1w"] = float(f1_score(y_true, y_pred, average="weighted", zero_division=0))
@@ -451,7 +448,6 @@ def compute_metrics(
     out.update(_binary_diagnostic_metrics(y_true, y_pred, classes, positive_class))
     mcc = _matthews_corrcoef(y_true, y_pred, classes)
     out["MCC"] = float(mcc) if np.isfinite(mcc) else float("nan")
-
     class_to_col = {int(klass): j for j, klass in enumerate(classes)}
     true_cols = np.asarray([class_to_col[int(value)] for value in y_true], dtype=int)
     probability = _renormalize_proba(score, len(classes))
@@ -470,7 +466,6 @@ def compute_metrics(
         out["brier"] = float(np.mean((probability[:, pos_col] - binary) ** 2))
     else:
         out["brier"] = float(np.mean(np.sum((probability - target) ** 2, axis=1)))
-
     if len(classes) == 2:
         pos = int(classes[-1] if positive_class is None else positive_class)
         matches = np.flatnonzero(classes == pos)
@@ -513,10 +508,8 @@ def compute_metrics(
                 np.average(pr_auc_values, weights=pr_auc_weights)
             )
             out["AP_macro"] = float(np.mean(ap_values))
-
     if np.isfinite(out["AUROC"]) and np.isfinite(out["MCC"]):
         out["AUROC_MCC"] = 0.5 * (2.0 * out["AUROC"] - 1.0) + 0.5 * out["MCC"]
-
     return {
         key: round(value, 6) if np.isfinite(value) else float("nan")
         for key, value in out.items()

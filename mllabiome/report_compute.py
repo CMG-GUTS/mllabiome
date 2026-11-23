@@ -1,12 +1,9 @@
 from __future__ import annotations
-
 import json
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
-
 from .evaluation_predictions import comparator_config_ids
 from .storage import read_table, table_exists, write_table
 from .utils import dump_json_standard

@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-
 import gc
 import hashlib
 import importlib
@@ -11,14 +9,10 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
-
-
 import joblib
 import numpy as np
 import pandas as pd
 from sklearn.pipeline import Pipeline
-
-
 from ._version import __version__
 from .compute import ResourceTracker, machine_profile
 from .conformal import external_conformal_sets
@@ -65,7 +59,6 @@ from .transformations import (
     transformation_label,
 )
 from .utils import dump_json_standard
-
 
 _DEPLOYMENT_SCHEMA = 1
 _INFERENCE_SCHEMA = 1
@@ -562,7 +555,6 @@ def _abundance_scale(X: np.ndarray) -> str:
 
 
 def _transformation_base_token(model: dict[str, Any]) -> str:
-
     identity = str(model.get("count_transformation", "")).strip()
     if not identity:
         return ""
@@ -923,7 +915,6 @@ def _fit_member(
             test_names,
             policy=sweep.inference.feature_policy,
         )
-
     if tracker is not None:
         tracker.member_step("features aligned")
     training_scale = sweep.inference.training_abundance_scale or _abundance_scale(

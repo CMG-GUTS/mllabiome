@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import hashlib
 import json
 import time
@@ -7,12 +6,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeAlias
-
 import numpy as np
 import pandas as pd
 from joblib import delayed
 from threadpoolctl import threadpool_limits
-
 from ._evaluation_protocols import is_lodo_protocol
 from ._version import __version__
 from .compute import ResourceTracker, machine_profile, synchronize_accelerators
@@ -1704,13 +1701,7 @@ def _run_modality_tasks(
                 )
                 if complete:
                     rows.latest_config_id = config_id
-                    ranked = top_configs(
-                        context.root,
-                        selection_metric,
-                        k=2147483647,
-                        loss=metric_is_loss(selection_metric),
-                    )
-                    monitor.finalized(config_id, ranked)
+                    monitor.finalized(config_id, None)
                 else:
                     monitor.unfinished(config_id)
     success(

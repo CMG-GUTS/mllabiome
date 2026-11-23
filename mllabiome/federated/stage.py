@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import hashlib
 from collections import deque
 import importlib.util
@@ -11,11 +10,9 @@ import tempfile
 import tomllib
 from dataclasses import asdict
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import SGDClassifier
-
 from ..configs_sweep import build_sweep_configs
 from ..console import console, info, success
 from ..data import dataset_fingerprint, load_dataset
@@ -33,7 +30,6 @@ from ..transformations import (
 )
 from .config import Federated
 from .model import predict_proba, validate_parameters
-
 
 _LOCAL_SAFE_TRANSFORMS = frozenset(
     {

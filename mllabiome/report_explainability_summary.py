@@ -1,12 +1,10 @@
 from __future__ import annotations
-
 import base64
 import copy
 import html
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
-
 from .explainability_visuals import (
     plot_feature_support,
     plot_interaction_network,
@@ -19,7 +17,6 @@ from .report_explainability import (
     _xai_class_slug,
     _xai_target_metadata,
 )
-
 
 _COMPARATORS = ("MPMA-B", "Baseline RF")
 _SECTIONS = (

@@ -1,12 +1,9 @@
 from __future__ import annotations
-
 import json
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
-
 from .ensemble_aggregation import (
     PROBABILITY_PRESERVING_AGGREGATIONS,
     SUPPORTED_AGGREGATIONS,
@@ -334,7 +331,6 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
         or selection_metric
     )
     score_map = _member_scores(root, member_ids, member_score_metric)
-
     stored_weights: list[float] | None = None
     if aggregation in {"weighted_mean_proba", "weighted_mean_prediction", "cawpe"}:
         stored_weights = _stored_weights(unit, member_ids)
@@ -358,7 +354,6 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
         linear_weights = effective_aggregation_weights(
             aggregation, len(member_ids), stored_weights
         )
-
     aggregation_parameters = unit.get("aggregation_parameters", {})
     if isinstance(aggregation_parameters, str):
         text = aggregation_parameters.strip()
@@ -398,7 +393,6 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
             raise ValueError(
                 "CAWPE stored weights must equal normalized inner-CV accuracies to the fourth power."
             )
-
     if aggregation in {
         "ecdf_learned_quantile",
         "sparse_nonnegative_stacking",
@@ -440,7 +434,6 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
         raise ValueError(
             "Final MPMA-E effective member count does not match stored weights"
         )
-
     members: list[dict[str, Any]] = []
     for index, config_id in enumerate(member_ids):
         row = configs[configs["config_id"].astype(str).eq(config_id)].iloc[0]
@@ -448,10 +441,8 @@ def _build_mpma_e(root: Path, configs: pd.DataFrame) -> dict[str, Any] | None:
         member["selection_score"] = score_map[config_id]
         if linear_weights is not None:
             member["aggregation_weight"] = float(linear_weights[index])
-
             member["weight"] = float(linear_weights[index])
         members.append(member)
-
     realised_size = int(
         unit.get("member_count", unit.get("ensemble_size", len(member_ids)))
     )

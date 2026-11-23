@@ -1,13 +1,9 @@
 from __future__ import annotations
-
 from pathlib import Path
-
 import networkx as nx
 import numpy as np
 import pandas as pd
-
 from .timeseries import BOLDPreprocessing
-
 
 LABUS_ROIS = (
     "Tha",

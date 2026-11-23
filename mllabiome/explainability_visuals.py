@@ -1,9 +1,7 @@
 from __future__ import annotations
-
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
-
 import matplotlib as mpl
 import matplotlib.colors as mcolors
 import matplotlib.lines as mlines
@@ -13,7 +11,6 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.patches import ConnectionPatch
-
 from .explainability_support import top_k_rank_support
 from .style import COL_W_2, compact_svg, enforce_nature_figure
 from .utils import feature_tail_ellipsis
@@ -22,8 +19,6 @@ try:
     import networkx as nx
 except Exception:
     nx = None
-
-
 MM = 1.0 / 25.4
 INK = "#0f172a"
 MID = "#64748b"
@@ -51,7 +46,6 @@ def _support_text_color(value: float) -> str:
     except Exception:
         return INK
     rgba = SUPPORT_CMAP(float(np.clip(v, 0.0, 1.0)))
-
     lum = 0.2126 * rgba[0] + 0.7152 * rgba[1] + 0.0722 * rgba[2]
     return "#ffffff" if lum < 0.48 else INK
 
@@ -446,13 +440,11 @@ def plot_feature_support(
         valid = np.isfinite(fallback)
         if fold_stability.shape == (len(top), 1):
             fold_stability[valid, 0] = np.clip(fallback[valid], 0.0, 1.0)
-
     fig_h_mm = 39.0 if compact else max(52.0, 3.0 * n + 18.0)
     fig_w = (89.0 * MM) if compact else ((136.0 * MM) if solo_method else COL_W_2)
     fig = plt.figure(figsize=(fig_w, fig_h_mm * MM))
     fig.patch.set_facecolor(BG)
     panel = [0.016, 0.100, 0.971, 0.880] if compact else [0.035, 0.050, 0.930, 0.915]
-
     if solo_method:
         ax_lab = fig.add_axes(_bbox(panel, 0.004, 0.035, 0.455, 0.820), zorder=5)
         ax_dir = fig.add_axes(_bbox(panel, 0.485, 0.035, 0.145, 0.820), zorder=5)
@@ -505,7 +497,6 @@ def plot_feature_support(
         bracket_hm = (support_x, support_x + (0.240 if compact else 0.210))
         bracket_mean = (mean_x, mean_x + 0.068)
         bracket_stab = (stability_x, 0.970)
-
     axes_to_style = [ax_lab, ax_dir, ax_hm, ax_stab]
     if ax_mean is not None:
         axes_to_style.append(ax_mean)
@@ -517,7 +508,6 @@ def plot_feature_support(
             spine.set_visible(False)
         for yi in np.arange(n + 1) - 0.5:
             ax.axhline(yi, color=TRACK, lw=0.25, zorder=0)
-
     ax_lab.set_xlim(0, 1)
     ax_lab.set_xticks([])
     for i, feat in enumerate(features):
@@ -544,7 +534,6 @@ def plot_feature_support(
             color=INK,
             clip_on=False,
         )
-
     shifts = []
     for feat in features:
         row = stat_map.get(feat, {})
@@ -584,7 +573,6 @@ def plot_feature_support(
     for lab in ax_dir.get_xticklabels():
         lab.set_clip_on(False)
     _style_black_bottom_axis(ax_dir, show_left=False)
-
     if method_cols:
         support_matrix = (
             top[method_cols].apply(pd.to_numeric, errors="coerce").to_numpy(float)
@@ -625,7 +613,6 @@ def plot_feature_support(
         _soft_missing(ax_stab, "no fold\nfrequency")
         if ax_mean is not None:
             _soft_missing(ax_mean, "no mean")
-
     _bracket(
         fig,
         panel,
@@ -1145,7 +1132,6 @@ def _draw_network(
             zorder=1,
             solid_capstyle="round",
         )
-
     radii: dict[Any, float] = {}
     for node in G.nodes():
         data = G.nodes[node]
@@ -1170,19 +1156,16 @@ def _draw_network(
                 alpha=0.98,
             )
         )
-
     ax.set_xlim(-7.80, 7.80)
     ax.set_ylim(-4.25, 4.25)
     fig = ax.figure
     fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
     axes_box = ax.get_window_extent(renderer=renderer)
-
     left_nodes = [node for node in G.nodes() if float(pos[node][0]) < 0.0]
     right_nodes = [node for node in G.nodes() if float(pos[node][0]) >= 0.0]
     max_side = max(len(left_nodes), len(right_nodes), 1)
     base_fontsize = max(5.0, 6.35 - max(0, max_side - 14) * 0.18)
-
     label_info = {}
     for node in G.nodes():
         is_hub = bool(node == hub and hub_deg >= 4)
@@ -1263,7 +1246,6 @@ def _draw_network(
     right_anchor = float(np.clip(1.0 - right_width - 0.010, 0.745, 0.82))
     left_endpoint = left_anchor + 0.012
     right_endpoint = right_anchor - 0.012
-
     for side, nodes, packed, anchor_x, endpoint_x in (
         ("left", left_nodes, left_y, left_anchor, left_endpoint),
         ("right", right_nodes, right_y, right_anchor, right_endpoint),

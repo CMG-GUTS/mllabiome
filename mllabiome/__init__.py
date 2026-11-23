@@ -1,9 +1,7 @@
 import sys
-
 from .threading import configure_thread_limits
 
 configure_thread_limits()
-
 from ._version import __version__
 from .configs_sweep import (
     MPDR,
@@ -242,16 +240,11 @@ __all__ = [
     "validate_model_specs",
     "write_report",
 ]
-
-
 mll = sys.modules[__name__]
-
 from .brain.representations import Brain, BrainRepresentation
-
 from .learner_families import (
     learner_family,
     learner_family_from_spec,
     register_learner_family,
 )
-
 from .joint_mlp import JointMLPClassifier, JointMLPRegressor

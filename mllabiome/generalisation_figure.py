@@ -1,16 +1,12 @@
 from __future__ import annotations
-
 import json
 import re
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
-
 from .figures import _resolution_order_key
 from .metrics import canonical_metric_name, metric_is_loss
 from .storage import read_table, remove_table, table_exists, write_table
-
 
 _LINEAR_NAMES = {
     "LR_default",
@@ -371,7 +367,6 @@ def render_generalisation_figure(frame: pd.DataFrame, path: Path, metric: str) -
         vmin, vmax = float(metric_values.min()), float(metric_values.max())
         pad = max((vmax - vmin) * 0.10, 0.01)
         xlow, xhigh = vmin - pad, vmax + pad
-
     styling = {
         "font.family": "sans-serif",
         "font.sans-serif": ["Arial", "Helvetica", "Liberation Sans", "DejaVu Sans"],
@@ -383,7 +378,6 @@ def render_generalisation_figure(frame: pd.DataFrame, path: Path, metric: str) -
         "figure.facecolor": "#ffffff",
         "savefig.facecolor": "#ffffff",
     }
-
     with plt.style.context("default"), mpl.rc_context(styling):
         fig = plt.figure(figsize=(10.4, 9.55))
         grid = fig.add_gridspec(
@@ -525,7 +519,6 @@ def render_generalisation_figure(frame: pd.DataFrame, path: Path, metric: str) -
                 color="black",
                 va="center",
             )
-
         fig.lines.append(
             mpl.lines.Line2D(
                 [0.755, 0.775],
@@ -550,7 +543,6 @@ def render_generalisation_figure(frame: pd.DataFrame, path: Path, metric: str) -
         fig.text(
             0.910, 0.984, "Outer held-out", color="#145886", fontsize=7.2, va="center"
         )
-
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(path, dpi=220)

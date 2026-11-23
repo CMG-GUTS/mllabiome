@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import hashlib
 import json
 import os
@@ -8,15 +7,12 @@ import sys
 from functools import partial
 from pathlib import Path
 from typing import Any
-
 import numpy as np
-
 from .cache import atomic_path, file_identity, input_identity, signature
 from .fmriprep import discover_fmriprep_runs
 from .progress import active_progress
 from .storage import RepresentationStore
 from ..console import info, success
-
 
 REPOSITORY = "https://github.com/OneMore1/Omni-fMRI.git"
 CHECKPOINT_REPOSITORY = "OneMore1/Omni-fMRI"

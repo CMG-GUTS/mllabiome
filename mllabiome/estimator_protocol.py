@@ -1,16 +1,12 @@
 from __future__ import annotations
-
 import copy
 from typing import Any, Protocol, cast
-
 from sklearn.base import clone
 
 
 class EstimatorLike(Protocol):
     def fit(self, X: Any, y: Any = ..., **kwargs: Any) -> Any: ...
-
     def get_params(self, deep: bool = True) -> dict[str, Any]: ...
-
     def set_params(self, **params: Any) -> Any: ...
 
 

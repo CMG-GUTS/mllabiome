@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import hashlib
 import json
 import os
@@ -10,11 +9,9 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, Iterator
 from zipfile import BadZipFile
-
 import numpy as np
 import psutil
 from filelock import FileLock
-
 
 SCHEMA = "mllabiome.brain.cache.v2"
 

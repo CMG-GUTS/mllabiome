@@ -1,13 +1,14 @@
 from __future__ import annotations
-
 import hashlib
 import json
+import math
 import os
+import uuid
 import sqlite3
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-
+from . import cooperative_store
 import pandas as pd
 
 SECTIONS = (
@@ -118,7 +119,6 @@ def write_configuration(
 ) -> Path:
     import pyarrow as pa
     import pyarrow.parquet as pq
-
     from .storage import _coerce_mixed_text_columns
 
     root = Path(root)
@@ -166,7 +166,7 @@ def write_configuration(
             ).encode("utf-8")
         }
     )
-    temp = path.with_name(f".{path.stem}.{os.getpid()}.tmp")
+    temp = path.with_name(f".{path.stem}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         with pq.ParquetWriter(
             temp, schema, compression="zstd", write_statistics=True
@@ -340,6 +340,8 @@ def _register(
 
 def refresh_catalog(root: Path) -> tuple[int, int]:
     root = Path(root)
+    if cooperative_store.enabled(root):
+        return 0, 0
     folder = root / "configs"
     if not folder.exists():
         return 0, 0
@@ -384,6 +386,10 @@ def refresh_catalog(root: Path) -> tuple[int, int]:
 
 def register_configuration(root: Path, config_id: str) -> None:
     path = _artifact_path(Path(root), config_id)
+    if cooperative_store.enabled(Path(root)):
+        metadata = _file_metadata(path)
+        _validate_artifact_context(Path(root), metadata)
+        return
     meta = _file_metadata(path)
     accepted = _accepted_benchmarks(Path(root))
     expected_splits = split_digest(Path(root))
@@ -402,8 +408,47 @@ def register_configuration(root: Path, config_id: str) -> None:
         _register(conn, path, meta, _digest(path))
 
 
+def _validate_artifact_context(root: Path, metadata: Mapping[str, Any]) -> None:
+    accepted = _accepted_benchmarks(Path(root))
+    digest = split_digest(Path(root))
+    if not accepted or not digest:
+        raise ValueError(
+            "Experiment manifest and CV splits are required to read results"
+        )
+    if str(metadata.get("benchmark", "")) not in accepted:
+        raise ValueError("Configuration artifact has incompatible evaluation context")
+    if str(metadata.get("split_digest", "")) != digest:
+        raise ValueError(
+            "Configuration artifact has incompatible cross-validation splits"
+        )
+    if int(metadata.get("expected_outer_count", 0)) <= 0:
+        raise ValueError("Configuration artifact is missing expected fold count")
+
+
 def indexed_config_ids(root: Path) -> list[str]:
-    path = Path(root) / "configs.db"
+    root = Path(root)
+    if cooperative_store.enabled(root):
+        pinned = cooperative_store.pinned_ids(root)
+        if pinned is not None:
+            return list(pinned)
+        folder = root / "configs"
+        identifiers = []
+        if not folder.is_dir():
+            return []
+        paths = sorted(folder.glob("*.parquet"))
+        cooperative_store.report_progress("Discovering MPMA artifacts", 0, len(paths))
+        for number, path in enumerate(paths, start=1):
+            if path.stem and not any(
+                ch not in "0123456789abcdef" for ch in path.stem.lower()
+            ):
+                metadata = _file_metadata(path)
+                _validate_artifact_context(root, metadata)
+                identifiers.append(path.stem)
+            cooperative_store.report_progress(
+                "Discovering MPMA artifacts", number, len(paths)
+            )
+        return identifiers
+    path = root / "configs.db"
     if not path.exists():
         return []
     with sqlite3.connect(path) as conn:
@@ -427,13 +472,34 @@ def read_configurations(
         list(config_ids) if config_ids is not None else indexed_config_ids(root)
     )
     frames = []
-    for config_id in identifiers:
+    cooperative_store.report_progress(f"Loading {section}", 0, len(identifiers))
+    for number, config_id in enumerate(identifiers, start=1):
         frame = read_configuration(root, config_id, section)
         if not frame.empty:
             frames.append(frame)
+        cooperative_store.report_progress(
+            f"Loading {section}", number, len(identifiers)
+        )
     return (
         pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
     )
+
+
+def _complete_inner_ranking_score(
+    frame: pd.DataFrame, metric: str, expected_inner: int
+) -> float | None:
+    from .metrics import aggregate_validation_metric
+
+    if frame.empty or metric not in frame.columns or "inner_key" not in frame.columns:
+        return None
+    frame = frame.drop_duplicates("inner_key", keep="last")
+    if "ok" in frame.columns:
+        frame = frame.loc[pd.to_numeric(frame["ok"], errors="coerce").eq(1)]
+    frame = frame.loc[pd.to_numeric(frame[metric], errors="coerce").map(math.isfinite)]
+    if len(frame) != expected_inner or expected_inner <= 0:
+        return None
+    score, _ = aggregate_validation_metric(frame, metric)
+    return float(score) if math.isfinite(score) else None
 
 
 @lru_cache(maxsize=8192)
@@ -445,27 +511,99 @@ def _inner_ranking_score(
     file_size: int,
     mtime_ns: int,
 ) -> float | None:
-    import math
-
-    from .metrics import aggregate_validation_metric
-
     frame = read_configuration(Path(root), config_id, "inner_metrics")
-    if frame.empty or metric not in frame.columns or "inner_key" not in frame.columns:
-        return None
-    frame = frame.drop_duplicates("inner_key", keep="last")
-    if "ok" in frame.columns:
-        frame = frame.loc[pd.to_numeric(frame["ok"], errors="coerce").eq(1)]
-    frame = frame.loc[pd.to_numeric(frame[metric], errors="coerce").map(math.isfinite)]
-    if len(frame) != expected_inner:
-        return None
-    score, _ = aggregate_validation_metric(frame, metric)
-    return float(score) if math.isfinite(score) else None
+    return _complete_inner_ranking_score(frame, metric, expected_inner)
+
+
+class _CooperativeRanking:
+    def __init__(self, root: Path, metric: str, loss: bool):
+        self.root = Path(root)
+        self.metric = metric
+        self.loss = loss
+        self.entries: dict[str, tuple[int, int, float | None, int]] = {}
+
+    def ranked(self, k: int) -> list[tuple[str, float, int]]:
+        folder = self.root / "configs"
+        if not folder.is_dir():
+            self.entries.clear()
+            return []
+        accepted = _accepted_benchmarks(self.root)
+        digest = split_digest(self.root)
+        if not accepted or not digest:
+            raise ValueError(
+                "Experiment manifest and CV splits are required to rank configurations"
+            )
+        present = set()
+        with os.scandir(folder) as iterator:
+            for item in iterator:
+                if not item.is_file() or not item.name.endswith(".parquet"):
+                    continue
+                cid = item.name[:-8]
+                if not cid or any(
+                    char not in "0123456789abcdef" for char in cid.lower()
+                ):
+                    continue
+                present.add(cid)
+                stat = item.stat()
+                previous = self.entries.get(cid)
+                if previous is not None and previous[:2] == (
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                ):
+                    continue
+                meta = _file_metadata(Path(item.path))
+                if (
+                    str(meta.get("benchmark", "")) not in accepted
+                    or str(meta.get("split_digest", "")) != digest
+                ):
+                    raise ValueError(
+                        f"Configuration artifact has incompatible evaluation context: {cid}"
+                    )
+                score = None
+                outer_count = int(meta.get("outer_count", 0))
+                expected_inner = int(meta.get("inner_count", 0))
+                if str(meta.get("metric", "")) == self.metric and expected_inner > 0:
+                    saved_score = meta.get("inner_ranking_score")
+                    if saved_score is not None and math.isfinite(float(saved_score)):
+                        score = float(saved_score)
+                    else:
+                        score = _inner_ranking_score(
+                            str(self.root),
+                            cid,
+                            self.metric,
+                            expected_inner,
+                            stat.st_size,
+                            stat.st_mtime_ns,
+                        )
+                self.entries[cid] = (stat.st_size, stat.st_mtime_ns, score, outer_count)
+        for cid in self.entries.keys() - present:
+            del self.entries[cid]
+        pinned = cooperative_store.pinned_ids(self.root)
+        candidates = set(pinned) if pinned is not None else None
+        ordered = [
+            (cid, row[2], row[3])
+            for cid, row in self.entries.items()
+            if row[2] is not None and (candidates is None or cid in candidates)
+        ]
+        ordered.sort(key=lambda row: (row[1] if self.loss else -row[1], row[0]))
+        return ordered[:k]
+
+
+@lru_cache(maxsize=32)
+def _cooperative_ranking(root: str, metric: str, loss: bool) -> _CooperativeRanking:
+    return _CooperativeRanking(Path(root), metric, loss)
 
 
 def top_configs(
     root: Path, metric: str, k: int = 3, loss: bool = True
 ) -> list[tuple[str, float, int]]:
     root = Path(root)
+    if k <= 0:
+        return []
+    if cooperative_store.enabled(root):
+        return _cooperative_ranking(
+            str(root.resolve()), str(metric), bool(loss)
+        ).ranked(k)
     path = root / "configs.db"
     if not path.exists() or k <= 0:
         return []
@@ -500,6 +638,16 @@ def top_configs(
 
 
 def latest_ranked_config(root: Path, metric: str) -> str | None:
+    if cooperative_store.enabled(Path(root)):
+        ranked_ids = {
+            config_id for config_id, _, _ in top_configs(root, metric, k=2147483647)
+        }
+        if not ranked_ids:
+            return None
+        return max(
+            ranked_ids,
+            key=lambda cid: (_artifact_path(root, cid).stat().st_mtime_ns, cid),
+        )
     ranked_ids = {
         config_id for config_id, _, _ in top_configs(root, metric, k=2147483647)
     }

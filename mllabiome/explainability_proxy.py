@@ -1,12 +1,9 @@
 from __future__ import annotations
-
 from typing import Any, Sequence
-
 import numpy as np
 from scipy.stats import pearsonr, spearmanr
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import ExtraTreesRegressor
-
 from .transformations import TransformationCoordinate
 from .utils import _as_float_matrix
 

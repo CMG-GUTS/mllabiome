@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import hashlib
 import inspect
 import json
@@ -10,7 +9,6 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Sequence
 from zipfile import BadZipFile
-
 import numpy as np
 
 

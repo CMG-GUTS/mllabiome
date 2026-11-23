@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import json
 import mimetypes
 from urllib.parse import unquote, urlsplit
@@ -7,7 +6,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
-
 from .explanations import explain_sample
 from .runs import (
     RunStore,
@@ -17,7 +15,6 @@ from .runs import (
     read_saved_samples,
     read_summary,
 )
-
 
 OLLAMA = "http://127.0.0.1:11434"
 MAX_UPLOAD = 10 * 1024 * 1024
@@ -124,7 +121,6 @@ def create_server(
                     raise ApiError(400, "Expected a JSON object.")
             else:
                 body = {}
-
             path = urlsplit(self.path).path
             if self.command == "GET" and not path.startswith("/api/"):
                 requested = unquote(path)
@@ -187,7 +183,6 @@ def create_server(
                 ) as exc:
                     raise ApiError(503, "Local Ollama chat is unavailable.") from exc
                 return
-
             parts = path.strip("/").split("/")
             if len(parts) != 4 or parts[:2] != ["api", "runs"]:
                 raise ApiError(404, "Endpoint not found.")

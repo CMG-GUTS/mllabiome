@@ -1,12 +1,9 @@
 from __future__ import annotations
-
 from typing import Any, Mapping
-
 import numpy as np
 from scipy.optimize import minimize
 from scipy.special import softmax
 from sklearn.metrics import matthews_corrcoef, roc_auc_score
-
 
 METHODS = frozenset(
     {

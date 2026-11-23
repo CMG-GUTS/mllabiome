@@ -1,10 +1,9 @@
 from __future__ import annotations
-
 import importlib.util
 import json
 import sqlite3
+import uuid
 from pathlib import Path
-
 import pandas as pd
 
 
@@ -58,6 +57,20 @@ def _configs_db(path: Path) -> Path | None:
 
 
 def _read_configs_db(path: Path) -> pd.DataFrame:
+    from . import cooperative_store
+    from ._config_store import _artifact_path, _file_metadata, indexed_config_ids
+
+    if cooperative_store.enabled(Path(path).parent):
+        root = Path(path).parent
+        rows = []
+        for identifier in indexed_config_ids(root):
+            meta = _file_metadata(_artifact_path(root, identifier))
+            row = dict(meta.get("configuration", {}))
+            row["config_id"] = identifier
+
+            row["active"] = 1
+            rows.append(row)
+        return pd.DataFrame(rows)
     db = _configs_db(path)
     if db is None:
         return pd.DataFrame()
@@ -79,13 +92,21 @@ def _read_configs_db(path: Path) -> pd.DataFrame:
 def read_table(path: Path, *, dtype=None) -> pd.DataFrame:
     path = Path(path)
     parquet = _canonical_path(path)
+    from . import cooperative_store
+    from ._config_store import section_for_path, read_configurations, indexed_config_ids
+
+    section = section_for_path(parquet)
+
+    if section is not None and cooperative_store.enabled(parquet.parent.parent):
+        frame = read_configurations(parquet.parent.parent, section)
+        return frame.astype(str) if dtype is str else frame
+    if parquet.stem == "configs" and cooperative_store.enabled(parquet.parent):
+        frame = _read_configs_db(parquet)
+        return frame.astype(str) if dtype is str else frame
     if parquet.exists() and parquet.stat().st_size > 0:
         require_parquet_engine()
         frame = pd.read_parquet(parquet)
         return frame.astype(str) if dtype is str else frame
-    from ._config_store import section_for_path, read_configurations, indexed_config_ids
-
-    section = section_for_path(parquet)
     if section is not None:
         root = parquet.parent.parent
         if indexed_config_ids(root):
@@ -128,7 +149,7 @@ def write_table(path: Path, frame: pd.DataFrame) -> Path:
     require_parquet_engine()
     parquet = _canonical_path(Path(path))
     parquet.parent.mkdir(parents=True, exist_ok=True)
-    tmp = parquet.with_name(parquet.stem + ".tmp.parquet")
+    tmp = parquet.with_name(f".{parquet.stem}.{uuid.uuid4().hex}.tmp.parquet")
     if tmp.exists():
         tmp.unlink()
     try:
@@ -160,6 +181,12 @@ def table_exists(path: Path) -> bool:
     parquet = _canonical_path(path)
     if parquet.exists() and parquet.stat().st_size > 0:
         return True
+    if path.stem == "configs":
+        from . import cooperative_store
+        from ._config_store import indexed_config_ids
+
+        if cooperative_store.enabled(path.parent) and indexed_config_ids(path.parent):
+            return True
     if _configs_db(path) is not None:
         return True
     from ._config_store import section_for_path, indexed_config_ids

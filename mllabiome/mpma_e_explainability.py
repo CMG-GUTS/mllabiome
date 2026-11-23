@@ -1,14 +1,11 @@
 from __future__ import annotations
-
 import json
 import shutil
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
-
 from . import explainability as _core
 from .configs_sweep import _lodo_feature_pair
 from .console import info, progress, success, summary_table
@@ -641,7 +638,6 @@ def _write_prediction_tables(
     ensemble_rows: list[dict[str, Any]] = []
     member_rows: list[dict[str, Any]] = []
     influence_rows: list[dict[str, Any]] = []
-
     for fold in bundle["folds"]:
         test_idx = np.asarray(fold["test_idx"], dtype=int)
         stack = np.asarray(fold["member_stack"], dtype=float)
@@ -657,7 +653,6 @@ def _write_prediction_tables(
             for c, label in enumerate(dataset.class_labels):
                 base[f"proba_{label}"] = float(ensemble[local_i, c])
             ensemble_rows.append(base)
-
         for member_index, member in enumerate(fold["members"]):
             member_proba = np.asarray(member["proba"], dtype=float)
             for local_i, global_i in enumerate(test_idx):
@@ -679,7 +674,6 @@ def _write_prediction_tables(
                             * member_proba[local_i, class_index]
                         )
                     member_rows.append(rec)
-
         if stack.shape[0] > 1:
             for member_index, member in enumerate(fold["members"]):
                 neutralized = None
@@ -748,18 +742,15 @@ def _write_prediction_tables(
                                 ),
                             }
                         )
-
     outputs: dict[str, Path] = {}
     ensemble_df = pd.DataFrame(ensemble_rows)
     p = out_dir / "oof_predictions.parquet"
     write_table(p, ensemble_df)
     outputs["oof_predictions"] = p
-
     member_df = pd.DataFrame(member_rows)
     p = out_dir / "member_probability_decomposition.parquet"
     write_table(p, member_df)
     outputs["member_probability_decomposition"] = p
-
     influence_df = pd.DataFrame(influence_rows)
     p = out_dir / "member_aggregation_influence.parquet"
     write_table(p, influence_df)
@@ -805,7 +796,6 @@ def _run_hierarchical_shap(
         dataset, sweep.explainability.classes
     )
     spec = _core._method_spec(sweep.explainability.methods, "shap")
-
     representation_records: list[dict[str, Any]] = []
     exact_taxon_records: list[dict[str, Any]] = []
     participation_records: list[dict[str, Any]] = []
@@ -842,14 +832,12 @@ def _run_hierarchical_shap(
             rows_ex = np.asarray(
                 sorted(set(rows_ex.tolist()) | set(int(x) for x in forced)), dtype=int
             )
-
         exact_taxon_accumulator: dict[tuple[int, int, str], float] = {}
         exact_taxon_gross: dict[tuple[int, int, str], float] = {}
         participation_accumulator: dict[tuple[int, int, str], float] = {}
         ensemble_base = None
         ensemble_sum_phi = None
         covered_ensemble_classes: set[int] = set()
-
         for member_index, member in enumerate(fold["members"]):
             info(
                 f"MPMA-E SHAP · fold {fold_no}/{len(bundle['folds'])} · member {member_index + 1}/{len(fold['members'])} · "
@@ -952,7 +940,6 @@ def _run_hierarchical_shap(
                         "representation_feature": f"{prefix}|{coordinate.name}",
                     }
                 )
-
             for out_class_pos, class_index in output_pairs:
                 local_values = values[:, :, out_class_pos]
                 local_base = base[:, out_class_pos]
@@ -975,7 +962,6 @@ def _run_hierarchical_shap(
                             ),
                         }
                     )
-
                 propagated = local_values * weight if linear else local_values
                 for feature_index, coordinate in enumerate(coordinates):
                     coordinate_name = str(coordinate.name)
@@ -1044,7 +1030,6 @@ def _run_hierarchical_shap(
                                 participation_accumulator.get(key, 0.0)
                                 + magnitude * float(component_weight)
                             )
-
                 if linear:
                     if ensemble_base is None:
                         ensemble_base = np.zeros(
@@ -1056,7 +1041,6 @@ def _run_hierarchical_shap(
                     ensemble_sum_phi[:, class_index] += weight * local_values.sum(
                         axis=1
                     )
-
         if linear and ensemble_base is not None and ensemble_sum_phi is not None:
             ensemble_proba = np.asarray(fold["proba"], dtype=float)[rows_ex]
             for row_pos, local_test_row in enumerate(rows_ex):
@@ -1084,7 +1068,6 @@ def _run_hierarchical_shap(
                             ),
                         }
                     )
-
         if linear:
             for (
                 global_i,
@@ -1130,7 +1113,6 @@ def _run_hierarchical_shap(
                     else "constituent_member_abs_shap",
                 }
             )
-
     info("Aggregating MPMA-E member SHAP attributions and writing outputs")
     raw = pd.DataFrame(representation_records)
     outputs: dict[str, Path] = {}
@@ -1141,12 +1123,10 @@ def _run_hierarchical_shap(
         raise _core.ExplainabilityConfigurationError(
             "MPMA-E hierarchical SHAP produced no attributions."
         )
-
     coordinate_frame = pd.DataFrame(coordinate_records).drop_duplicates()
     p = out_dir / "coordinate_metadata.parquet"
     write_table(p, coordinate_frame)
     outputs["coordinate_metadata"] = p
-
     member_summary = (
         raw.assign(abs_member_shap=raw["member_shap"].abs())
         .groupby(
@@ -1175,7 +1155,6 @@ def _run_hierarchical_shap(
     p = out_dir / "feature_importance_member_shap.parquet"
     write_table(p, member_summary)
     outputs["feature_importance_member_shap"] = p
-
     participation_raw = pd.DataFrame(participation_records)
     p = out_dir / "shap_taxon_participation_oof.parquet"
     write_table(p, participation_raw)
@@ -1211,7 +1190,6 @@ def _run_hierarchical_shap(
         p = out_dir / "feature_importance_taxon_participation.parquet"
         write_table(p, participation_summary)
         outputs["feature_importance_taxon_participation"] = p
-
     if linear:
         linear_raw = raw[
             np.isfinite(pd.to_numeric(raw["propagated_shap"], errors="coerce"))
@@ -1245,7 +1223,6 @@ def _run_hierarchical_shap(
         p = out_dir / "feature_importance_mpdr_propagated_shap.parquet"
         write_table(p, representation_summary)
         outputs["feature_importance_mpdr_propagated_shap"] = p
-
         coordinate_fold_frames: list[pd.DataFrame] = []
         for split_key, fold_raw in linear_raw.groupby("split_key", sort=False):
             fold_frame = (
@@ -1281,7 +1258,6 @@ def _run_hierarchical_shap(
         p = out_dir / "feature_stability_coordinate.parquet"
         write_table(p, coordinate_stability)
         outputs["feature_stability_coordinate"] = p
-
         exact_taxon_raw = pd.DataFrame(exact_taxon_records)
         exact_taxon_summary = pd.DataFrame()
         if not exact_taxon_raw.empty:
@@ -1340,7 +1316,6 @@ def _run_hierarchical_shap(
             p = out_dir / "feature_importance_taxon_net_shap.parquet"
             write_table(p, exact_taxon_summary)
             outputs["feature_importance_taxon_net_shap"] = p
-
         if has_non_exact_coordinates:
             compat = coordinate_stability.copy()
             compat["scoring"] = "outer_fold_mean_abs_weighted_member_coordinate_shap"
@@ -1404,7 +1379,6 @@ def _run_hierarchical_shap(
         p = out_dir / "feature_importance.parquet"
         write_table(p, compat)
         outputs["importance"] = p
-
     diagnostics = pd.DataFrame(diagnostic_rows)
     p = out_dir / "shap_additivity_diagnostics.parquet"
     write_table(p, diagnostics)
@@ -1488,7 +1462,6 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
         if not rankings_path.exists():
             raise FileNotFoundError("Run evaluate(sweep) before explain(sweep).")
         rankings = read_table(rankings_path)
-
     out_dir = root / "explainability" / "mpma_e"
     out_dir.mkdir(parents=True, exist_ok=True)
     method_specs = _core._normalise_explainability_method_specs(
@@ -1516,7 +1489,6 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
             "class labels": [str(dataset.class_labels[int(i)]) for i in class_indices],
         },
     )
-
     outputs = _write_prediction_tables(bundle, mpma_e, out_dir)
     outputs.update(_write_bma_weight_table(mpma_e, out_dir))
     if member_manifest is not None:
@@ -1524,11 +1496,9 @@ def explain_mpma_e(sweep: Any, rankings: pd.DataFrame | None = None) -> dict[str
     reproduction_path = out_dir / "prediction_reproduction_diagnostics.parquet"
     write_table(reproduction_path, bundle["reproduction"])
     outputs["prediction_reproduction_diagnostics"] = reproduction_path
-
     if "shap" in global_methods:
         outputs.update(_run_hierarchical_shap(sweep, bundle, mpma_e, out_dir))
         outputs.update(_write_mpma_e_report_tables(sweep, bundle, out_dir))
-
     linear_exact = bundle["linear_weights"] is not None
     bma_exact = str(mpma_e["aggregation_strategy"]) == "bayesian_model_averaging"
     perturbation_geometries = sorted(

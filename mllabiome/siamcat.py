@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import os
 import sys
 import shutil
@@ -8,11 +7,9 @@ import tempfile
 from importlib.resources import as_file, files
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, ClassifierMixin
-
 from .siamcat_runtime import ensure_siamcat_runtime, _run_with_progress, R_STARTUP_ARGS
 from .siamcat_splits import make_siamcat_splits
 
@@ -280,7 +277,6 @@ class SIAMCATClassifier(ClassifierMixin, BaseEstimator):
             raise RuntimeError(
                 "SIAMCAT prediction output did not contain a 'score' column."
             )
-
         expected_ids = [f"sample_{i:08d}" for i in range(n_samples)]
         if "sample_id" not in out.columns:
             raise RuntimeError("SIAMCAT output did not contain sample_id.")

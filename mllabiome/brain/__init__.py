@@ -111,7 +111,6 @@ from .representations import (
     BrainRepresentationResult,
     prepare_brain_representations,
 )
-
 from .representation_explainability import (
     annotate_brain_representation_table,
     regional_feature_scores,

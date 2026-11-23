@@ -76,6 +76,11 @@ def test_cross_study_dro_requires_real_study_labels():
     folds = np.asarray(["fold0", "fold1", "fold2"] * 2)
     with pytest.raises(ValueError, match="true study labels"):
         ADVANCED.fit_crossfitted_advanced(
-            stack, labels, folds, "cross_study_dro", "log_loss",
-            _log_loss, lambda metric: True,
+            stack,
+            labels,
+            folds,
+            "cross_study_dro",
+            "log_loss",
+            _log_loss,
+            lambda metric: True,
         )

@@ -1,11 +1,9 @@
 from __future__ import annotations
-
 import json
 import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-
 
 _SPACE = "_space-MNI152NLin2009cAsym_res-2_desc-preproc_bold.nii.gz"
 _SUBJECT = re.compile(r"(?:^|_)sub-([A-Za-z0-9]+)(?=_|$)")
@@ -41,7 +39,6 @@ def _json_tr(path: Path) -> float | None:
 
 
 def _match_raw_sidecar(root: Path, bold: Path, prefix: str) -> Path:
-
     dirs: list[str] = []
     for p in bold.parent.parts:
         if p.startswith("sub-"):
@@ -66,7 +63,6 @@ def discover_fmriprep_runs(
     bids_root: str | Path | None = None,
     task: str = "rest",
 ) -> list[FMRIPrepRun]:
-
     root = Path(derivatives_dir).expanduser().resolve()
     if not root.is_dir():
         raise FileNotFoundError(f"fMRIPrep derivatives directory missing: {root}")
@@ -75,7 +71,6 @@ def discover_fmriprep_runs(
         raise FileNotFoundError(f"Raw BIDS root missing: {original}")
     if not task or not re.fullmatch(r"[A-Za-z0-9]+", task):
         raise ValueError("task must be a nonempty BIDS task identifier")
-
     files = sorted(root.rglob("*" + _SPACE))
     files = [p for p in files if f"_task-{task}_" in p.name]
     if not files:

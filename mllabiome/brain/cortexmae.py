@@ -1,12 +1,9 @@
 from __future__ import annotations
-
 import hashlib
 import json
 from pathlib import Path
 from typing import Any
-
 import numpy as np
-
 from .atlas import load_schaefer_atlas
 from .cache import (
     BrainCache,
@@ -21,7 +18,6 @@ from .progress import active_progress
 from .storage import RepresentationStore
 from .timeseries import extract_schaefer_timeseries
 from ..console import info, success
-
 
 CHECKPOINT_REPOSITORY = "medarc/CortexMAE"
 CHECKPOINT_FILE = "input_space_v3/schaefer400_lr3e-4_1/pretrain/checkpoint-last.pth"

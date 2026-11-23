@@ -1,7 +1,5 @@
 from __future__ import annotations
-
 from pathlib import Path
-
 import numpy as np
 from flwr.client import ClientApp, NumPyClient
 from flwr.client.mod import secaggplus_mod
@@ -9,7 +7,6 @@ from flwr.common import Context, ndarrays_to_parameters, parameters_to_ndarrays
 from flwr.server import Grid, LegacyContext, ServerApp, ServerConfig
 from flwr.server.strategy import FedAvg
 from flwr.server.workflow import DefaultWorkflow, SecAggPlusWorkflow
-
 from .model import initial_parameters, train_local, validate_parameters
 
 

@@ -1,9 +1,7 @@
 from __future__ import annotations
-
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import (
@@ -12,7 +10,6 @@ from sklearn.model_selection import (
     StratifiedGroupKFold,
     StratifiedKFold,
 )
-
 from ._evaluation_protocols import is_hierarchical_lodo_protocol, is_lodo_protocol
 from .splits import resolve_cv_splits
 from .sweep_types import Evaluation
@@ -263,7 +260,6 @@ def _normalise_column_names(value: str | Sequence[str] | None) -> tuple[str, ...
 def _strata_from_metadata(
     meta: pd.DataFrame, y: np.ndarray, stratify_col: str | Sequence[str] | None
 ) -> np.ndarray:
-
     cols = _normalise_column_names(stratify_col)
     if not cols:
         return np.asarray(y, dtype=str)

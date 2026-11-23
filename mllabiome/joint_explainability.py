@@ -1,11 +1,8 @@
 from __future__ import annotations
-
 import json
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
-
 from .console import info, path_table, progress, stage, success, summary_table
 from .explainability import _projection_required
 from .explainability_methods import method_has_global, method_has_local, method_name

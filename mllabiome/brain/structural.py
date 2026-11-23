@@ -1,11 +1,8 @@
 from __future__ import annotations
-
 import re
 from dataclasses import dataclass
 from pathlib import Path
-
 import numpy as np
-
 
 _SUBJECT_RE = re.compile(r"(?:^|_)sub-([a-zA-Z0-9]+)(?:_|$)")
 _TISSUES = ("GM", "WM", "CSF")
@@ -18,7 +15,6 @@ class TissueMaps:
 
 
 def discover_tissue_maps(derivatives_dir: str | Path) -> list[TissueMaps]:
-
     root = Path(derivatives_dir).expanduser().resolve()
     if not root.is_dir():
         raise FileNotFoundError(f"fMRIPrep derivatives not found: {root}")
@@ -53,21 +49,18 @@ def discover_tissue_maps(derivatives_dir: str | Path) -> list[TissueMaps]:
 
 
 def tissue_volumes(tissue: TissueMaps) -> dict[str, float]:
-
     try:
         import nibabel as nib
     except ImportError as exc:
         raise ImportError(
             "T1w volumetry requires nibabel (optional brain dependency)."
         ) from exc
-
     result: dict[str, float] = {}
     geometry = None
     for name, path in zip(_TISSUES, tissue.maps):
         img = nib.load(str(path))
         if len(img.shape) != 3:
             raise ValueError(f"{path}: expected a 3D probability map.")
-
         units = img.header.get_xyzt_units()[0]
         if units != "mm":
             raise ValueError(

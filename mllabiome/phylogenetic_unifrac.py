@@ -1,12 +1,10 @@
 from __future__ import annotations
-
 import csv
 import hashlib
 from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
-
 import numpy as np
 from scipy.sparse import csr_matrix
 
@@ -129,7 +127,6 @@ class GeneralizedUniFracPCoA:
         if not self.resolutions:
             raise ValueError("resolutions must contain at least one supported rank.")
         mapping = _load_mapping(self.feature_to_tip)
-
         self.identity = (
             f"generalized_unifrac_pcoa_a{self.alpha:g}_k{self.n_components}"
             f"_{self.tree_sha256[:12]}"
@@ -177,7 +174,6 @@ class GeneralizedUniFracPCoA:
             raise ValueError(
                 "No feature names supplied for reference phylogeny mapping."
             )
-
         if feature_blocks is not None:
             ranks = {str(name) for name, indices in feature_blocks if indices}
             if len(ranks) > 1:
@@ -298,7 +294,6 @@ class GeneralizedUniFracPCoA:
         return np.asarray(relative @ self._incidence_, dtype=np.float64)
 
     def _distances(self, left: np.ndarray, right: np.ndarray) -> np.ndarray:
-
         out = np.empty((left.shape[0], right.shape[0]), dtype=float)
         lengths = self._lengths_[None, :]
         for i, single in enumerate(left):
@@ -345,7 +340,6 @@ class GeneralizedUniFracPCoA:
         self._build_branch_matrix()
         self._train_branches_ = self._branch_abundances(values)
         distances = self._distances(self._train_branches_, self._train_branches_)
-
         distances = (distances + distances.T) / 2
         np.fill_diagonal(distances, 0.0)
         squared = distances**2
@@ -370,7 +364,6 @@ class GeneralizedUniFracPCoA:
         positive = np.flatnonzero(eigenvalues > threshold)[: self.n_components]
         self._eigenvalues_ = eigenvalues[positive]
         self._eigenvectors_ = eigenvectors[:, positive].copy()
-
         for column in range(len(positive)):
             pivot = np.argmax(np.abs(self._eigenvectors_[:, column]))
             if self._eigenvectors_[pivot, column] < 0:
@@ -466,7 +459,6 @@ def generalized_unifrac_distance_matrix(
     unmatched: str = "error",
     min_sample_coverage: float = 0.95,
 ) -> np.ndarray:
-
     X = _abundance_matrix(X)
     geometry = GeneralizedUniFracPCoA(
         tree_path,
